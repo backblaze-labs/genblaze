@@ -5,18 +5,28 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from genblaze_core._utils import new_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import GenblazeError, PipelineTimeoutError
-from genblaze_core.models.enums import Modality, ProviderErrorCode, RunStatus, StepStatus, StepType
+from genblaze_core.models.enums import (
+    Modality,
+    ProviderErrorCode,
+    RunStatus,
+    StepStatus,
+    StepType,
+)
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.prompt_template import PromptTemplate
 from genblaze_core.models.step import Step
-from genblaze_core.observability.logger import StructuredLogger
+from genblaze_core.observability.events import StreamEvent
+from genblaze_core.observability.tracer import LoggingTracer, NoOpTracer, Tracer, safe_call
 from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
+from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
@@ -29,28 +39,28 @@ if TYPE_CHECKING:
     from genblaze_core.sinks.base import BaseSink
 
 
+@dataclass
 class _PipelineStep:
     """A deferred step in a pipeline."""
 
-    def __init__(
-        self,
-        provider: BaseProvider,
-        model: str,
-        prompt: str | PromptTemplate | None,
-        params: dict,
-        modality: Modality,
-        step_type: StepType,
-        fallback_models: list[str] | None = None,
-        input_from: list[int] | None = None,
-    ):
-        self.provider = provider
-        self.model = model
-        self.prompt = prompt
-        self.params = params
-        self.modality = modality
-        self.step_type = step_type
-        self.fallback_models = fallback_models or []
-        self.input_from = input_from
+    provider: BaseProvider
+    model: str
+    prompt: str | PromptTemplate | None
+    params: dict
+    modality: Modality
+    step_type: StepType
+    fallback_models: list[str] = field(default_factory=list)
+    input_from: list[int] | None = None
+
+
+@dataclass(frozen=True)
+class _StepContext:
+    """Context passed through step execution — keeps run/step/tracer metadata
+    in one object instead of plumbing three kwargs through every call site."""
+
+    run_id: str
+    step_index: int
+    total_steps: int
 
 
 class Pipeline(Runnable[None, PipelineResult]):
@@ -82,6 +92,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         structured_log: bool = False,
         max_concurrency: int | None = None,
         moderation: ModerationHook | None = None,
+        tracer: Tracer | None = None,
     ):
         self._name = name
         self._tenant_id = tenant_id
@@ -93,10 +104,23 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._chain = chain
         self._max_concurrency = max_concurrency
         self._moderation = moderation
-        self._slog = StructuredLogger("genblaze.pipeline") if structured_log else None
+        # Tracer resolution: explicit arg wins; legacy structured_log=True maps
+        # to LoggingTracer so existing callers keep their JSON event stream.
+        if tracer is not None:
+            self._tracer: Tracer = tracer
+        elif structured_log:
+            self._tracer = LoggingTracer()
+        else:
+            self._tracer = NoOpTracer()
+        self._event_emitter: QueueEmitter | None = None
 
     def config(self, cfg: RunnableConfig) -> Pipeline:
         self._config = cfg
+        return self
+
+    def tracer(self, tracer: Tracer) -> Pipeline:
+        """Attach a tracer for run/step/event observability."""
+        self._tracer = tracer
         return self
 
     def cache(self, cache: StepCache) -> Pipeline:
@@ -131,14 +155,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             normalized_from = [input_from] if isinstance(input_from, int) else list(input_from)
         self._steps.append(
             _PipelineStep(
-                provider,
-                model,
-                prompt,
-                params,
-                modality,
-                step_type,
-                fallback_models,
-                normalized_from,
+                provider=provider,
+                model=model,
+                prompt=prompt,
+                params=params,
+                modality=modality,
+                step_type=step_type,
+                fallback_models=fallback_models or [],
+                input_from=normalized_from,
             )
         )
         return self
@@ -311,22 +335,18 @@ class Pipeline(Runnable[None, PipelineResult]):
             if not mod_result.allowed:
                 return self._apply_moderation_failure(result, mod_result, "post")
 
-        if self._slog:
-            self._slog.info(
-                "step.completed",
-                step_id=step.step_id,
-                provider=ps.provider.name,
-                model=result.model,
-                status=str(result.status),
-                duration_ms=round(duration_ms, 1),
-            )
-
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
             self._cache.put(cache_key_step, result)
 
         return result
 
-    def _execute_step(self, ps: _PipelineStep, step: Step, config: RunnableConfig | None) -> Step:
+    def _execute_step(
+        self,
+        ps: _PipelineStep,
+        step: Step,
+        config: RunnableConfig | None,
+        ctx: _StepContext,
+    ) -> Step:
         """Execute a single step with moderation, caching, and fallback models."""
         if self._moderation is not None and step.prompt is not None:
             try:
@@ -344,6 +364,15 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
+        safe_call(
+            self._tracer,
+            "on_step_start",
+            ctx.run_id,
+            step,
+            step_index=ctx.step_index,
+            total_steps=ctx.total_steps,
+        )
+
         t0 = time.monotonic()
         result = ps.provider.invoke(step, config)
 
@@ -352,7 +381,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         )
         duration_ms = (time.monotonic() - t0) * 1000
 
-        return self._post_step(
+        final = self._post_step(
             ps,
             step,
             result,
@@ -360,9 +389,22 @@ class Pipeline(Runnable[None, PipelineResult]):
             duration_ms,
             self._moderation.check_output if self._moderation else None,
         )
+        safe_call(
+            self._tracer,
+            "on_step_end",
+            ctx.run_id,
+            final,
+            duration_ms=duration_ms,
+            step_index=ctx.step_index,
+        )
+        return final
 
     async def _execute_step_async(
-        self, ps: _PipelineStep, step: Step, config: RunnableConfig | None
+        self,
+        ps: _PipelineStep,
+        step: Step,
+        config: RunnableConfig | None,
+        ctx: _StepContext,
     ) -> Step:
         """Execute a single step asynchronously with moderation, caching, and fallback."""
         if self._moderation is not None and step.prompt is not None:
@@ -380,6 +422,15 @@ class Pipeline(Runnable[None, PipelineResult]):
             cached = self._cache.get(step)
             if cached is not None:
                 return cached
+
+        safe_call(
+            self._tracer,
+            "on_step_start",
+            ctx.run_id,
+            step,
+            step_index=ctx.step_index,
+            total_steps=ctx.total_steps,
+        )
 
         t0 = time.monotonic()
         result = await ps.provider.ainvoke(step, config)
@@ -422,7 +473,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if not mod_result.allowed:
                 return self._apply_moderation_failure(result, mod_result, "post")
 
-        return self._post_step(
+        final = self._post_step(
             ps,
             step,
             result,
@@ -430,6 +481,15 @@ class Pipeline(Runnable[None, PipelineResult]):
             duration_ms,
             None,  # async moderation already handled above
         )
+        safe_call(
+            self._tracer,
+            "on_step_end",
+            ctx.run_id,
+            final,
+            duration_ms=duration_ms,
+            step_index=ctx.step_index,
+        )
+        return final
 
     def _finalize(
         self,
@@ -455,10 +515,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         builder.status(RunStatus.COMPLETED if all_succeeded else RunStatus.FAILED)
         run_obj = builder.build()
 
-        # Set run-level timestamps from pipeline execution
         if started_at_ts is not None:
-            from datetime import UTC, datetime
-
             run_obj.started_at = datetime.fromtimestamp(started_at_ts, tz=UTC)
         run_obj.completed_at = utc_now()
 
@@ -469,6 +526,163 @@ class Pipeline(Runnable[None, PipelineResult]):
             sink.write_run(run_obj, manifest)
 
         return PipelineResult(run_obj, manifest)
+
+    # ------------------------------------------------------------------
+    # Event / tracer plumbing — wired into run()/arun() and stream()/astream().
+    # Internal helpers. Kept private so they can evolve without breaking callers.
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Event emission — internal helpers feeding tracer + stream emitter.
+    # ------------------------------------------------------------------
+
+    def attach_emitter(self, emitter: QueueEmitter | None) -> QueueEmitter | None:
+        """Install (or clear) the stream event emitter, returning the prior one.
+
+        Public so composable runners (e.g. AgentLoop) can pipe pipeline events
+        into their own event stream without poking private state.
+        """
+        prior = self._event_emitter
+        self._event_emitter = emitter
+        return prior
+
+    def _install_progress_tracer(
+        self,
+        config: RunnableConfig | None,
+        user_on_progress: Any,
+        run_id: str,
+    ) -> RunnableConfig | None:
+        """Wrap on_progress so tracer + stream emitter also see each tick."""
+        has_tracer = not isinstance(self._tracer, NoOpTracer)
+        if user_on_progress is None and not has_tracer and self._event_emitter is None:
+            return config
+
+        def _composite(ev: Any) -> None:
+            if user_on_progress is not None:
+                user_on_progress(ev)
+            self._emit_event(progress_to_stream_event(ev, run_id))
+
+        merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
+        merged["on_progress"] = _composite
+        return merged
+
+    def _emit_event(self, event: StreamEvent) -> None:
+        safe_call(self._tracer, "on_event", event)
+        if self._event_emitter is not None:
+            self._event_emitter.put(event)
+
+    def _emit_run_start(self, run_id: str, total_steps: int) -> None:
+        safe_call(
+            self._tracer,
+            "on_run_start",
+            run_id,
+            self._name,
+            tenant_id=self._tenant_id,
+            total_steps=total_steps,
+        )
+        self._emit_event(
+            StreamEvent(
+                type="pipeline.started",
+                run_id=run_id,
+                total_steps=total_steps,
+                message=self._name,
+            )
+        )
+
+    def _emit_step_start(self, ctx: _StepContext, step: Step, ps: _PipelineStep) -> None:
+        self._emit_event(
+            StreamEvent(
+                type="step.started",
+                run_id=ctx.run_id,
+                step_id=step.step_id,
+                step_index=ctx.step_index,
+                total_steps=ctx.total_steps,
+                provider=ps.provider.name,
+                model=ps.model,
+            )
+        )
+
+    def _emit_step_complete_event(self, step_event: StepCompleteEvent, run_id: str) -> None:
+        # Tracer already gets on_step_end inside _execute_step; emitter-only here.
+        if self._event_emitter is not None:
+            self._event_emitter.on_step_complete(step_event)
+
+    def _emit_pipeline_end(self, result: PipelineResult, run_id: str) -> None:
+        failed = result.run.status == RunStatus.FAILED
+        self._emit_event(
+            StreamEvent(
+                type="pipeline.failed" if failed else "pipeline.completed",
+                run_id=run_id,
+                result=result,
+                message=result.error_summary() if failed else None,
+            )
+        )
+        safe_call(self._tracer, "on_run_end", run_id, result)
+
+    # ------------------------------------------------------------------
+    # Streaming — sync and async iterators over StreamEvent.
+    # ------------------------------------------------------------------
+
+    def stream(self, **run_kwargs: Any):
+        """Run the pipeline in a worker thread and yield events as they occur.
+
+        Emits ``pipeline.started``, ``step.started``, ``step.progress``,
+        ``step.completed``/``step.failed``, then ``pipeline.completed``/
+        ``pipeline.failed`` (with :class:`PipelineResult` attached).
+
+        Uncaught exceptions from the pipeline are re-raised after the
+        event stream drains.
+        """
+        import queue as _queue
+        import threading
+
+        from genblaze_core.pipeline.streaming import drain_queue_sync
+
+        q: _queue.Queue = _queue.Queue()
+        emitter = QueueEmitter(q)
+        prior = self.attach_emitter(emitter)
+
+        exc_box: list[BaseException] = []
+
+        def _worker() -> None:
+            try:
+                self.run(**run_kwargs)
+            except BaseException as exc:  # noqa: BLE001 — propagate via queue
+                exc_box.append(exc)
+            finally:
+                emitter.close()
+
+        t = threading.Thread(target=_worker, daemon=True, name="genblaze-stream")
+        t.start()
+        try:
+            yield from drain_queue_sync(q)
+        finally:
+            t.join()
+            self.attach_emitter(prior)
+            if exc_box:
+                raise exc_box[0]
+
+    async def astream(self, **run_kwargs: Any):
+        """Async version of :meth:`stream`."""
+        from genblaze_core.pipeline.streaming import drain_queue_async
+
+        q: asyncio.Queue = asyncio.Queue()
+        emitter = QueueEmitter(q)
+        prior = self.attach_emitter(emitter)
+
+        async def _worker() -> None:
+            try:
+                await self.arun(**run_kwargs)
+            finally:
+                emitter.close()
+
+        task = asyncio.create_task(_worker())
+        try:
+            async for ev in drain_queue_async(q):
+                yield ev
+        finally:
+            self.attach_emitter(prior)
+            await task  # re-raises if worker failed
 
     def invoke(self, input: None = None, config: RunnableConfig | None = None) -> PipelineResult:
         """Runnable interface — delegates to run() with a local config copy."""
@@ -528,23 +742,15 @@ class Pipeline(Runnable[None, PipelineResult]):
         else:
             config = self._config
 
-        # Inject on_progress callback into config
-        if on_progress is not None:
-            config = RunnableConfig(**config) if config else RunnableConfig()
-            config["on_progress"] = on_progress
-
         run_id = new_id()
-
-        # Create scoped logger with run_id for structured log correlation
-        slog = self._slog.with_context(run_id=run_id) if self._slog else None
+        config = self._install_progress_tracer(config, on_progress, run_id)
 
         started_at_ts = time.time()
         started_at_mono = time.monotonic()
         logger.info("Starting pipeline %r with %d steps", self._name, len(self._steps))
-        if slog:
-            slog.info("pipeline.start", name=self._name, steps=len(self._steps))
 
         total_steps = len(self._steps)
+        self._emit_run_start(run_id, total_steps)
         completed_steps: list[Step] = []
         prev_assets: list[Asset] = []
         for i, ps in enumerate(self._steps, 1):
@@ -567,18 +773,21 @@ class Pipeline(Runnable[None, PipelineResult]):
                 ps.provider.name,
                 ps.model,
             )
-            result = self._execute_step(ps, step, config)
+            ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+            self._emit_step_start(ctx, step, ps)
+            result = self._execute_step(ps, step, config, ctx)
             completed_steps.append(result)
 
             # Fire on_step_complete callback after each step
+            step_event = StepCompleteEvent(
+                step_index=i - 1,
+                total_steps=total_steps,
+                step=result,
+                elapsed_sec=time.monotonic() - started_at_mono,
+            )
             if on_step_complete is not None:
-                event = StepCompleteEvent(
-                    step_index=i - 1,
-                    total_steps=total_steps,
-                    step=result,
-                    elapsed_sec=time.monotonic() - started_at_mono,
-                )
-                on_step_complete(event)
+                on_step_complete(step_event)
+            self._emit_step_complete_event(step_event, run_id)
 
             if result.status == StepStatus.SUCCEEDED:
                 if self._chain:
@@ -597,12 +806,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             pipeline_result.run.status,
             pipeline_result.run.run_id,
         )
-        if slog:
-            slog.info(
-                "pipeline.complete",
-                status=str(pipeline_result.run.status),
-                run_id=pipeline_result.run.run_id,
-            )
+        self._emit_pipeline_end(pipeline_result, run_id)
         return pipeline_result
 
     async def arun(
@@ -655,13 +859,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         else:
             config = self._config
 
-        # Inject on_progress callback into config
-        if on_progress is not None:
-            config = RunnableConfig(**config) if config else RunnableConfig()
-            config["on_progress"] = on_progress
-
         run_id = new_id()
-        slog = self._slog.with_context(run_id=run_id) if self._slog else None
+        config = self._install_progress_tracer(config, on_progress, run_id)
 
         started_at_ts = time.time()
         started_at_mono = time.monotonic()
@@ -671,6 +870,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._name,
             total_steps,
         )
+        self._emit_run_start(run_id, total_steps)
 
         # input_from requires sequential execution (needs prior step results)
         has_input_from = any(ps.input_from is not None for ps in self._steps)
@@ -700,18 +900,21 @@ class Pipeline(Runnable[None, PipelineResult]):
                     ps.provider.name,
                     ps.model,
                 )
-                result = await self._execute_step_async(ps, step, config)
+                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                self._emit_step_start(ctx, step, ps)
+                result = await self._execute_step_async(ps, step, config, ctx)
                 completed_steps.append(result)
 
                 # Fire on_step_complete callback after each step
+                step_event = StepCompleteEvent(
+                    step_index=i - 1,
+                    total_steps=total_steps,
+                    step=result,
+                    elapsed_sec=time.monotonic() - started_at_mono,
+                )
                 if on_step_complete is not None:
-                    event = StepCompleteEvent(
-                        step_index=i - 1,
-                        total_steps=total_steps,
-                        step=result,
-                        elapsed_sec=time.monotonic() - started_at_mono,
-                    )
-                    on_step_complete(event)
+                    on_step_complete(step_event)
+                self._emit_step_complete_event(step_event, run_id)
 
                 if result.status == StepStatus.SUCCEEDED:
                     if self._chain:
@@ -726,6 +929,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         else:
             # Concurrent: use as_completed + cancel on failure when fail_fast
             steps_and_models = [(ps, self._build_step(ps)) for ps in self._steps]
+            for idx, (ps, step) in enumerate(steps_and_models):
+                self._emit_step_start(
+                    _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
+                    step,
+                    ps,
+                )
 
             # Check pipeline-level timeout before launching concurrent steps
             if pipeline_timeout is not None:
@@ -741,15 +950,23 @@ class Pipeline(Runnable[None, PipelineResult]):
             concurrency = max_concurrency or self._max_concurrency
             sem = asyncio.Semaphore(concurrency) if concurrency else None
 
+            step_positions = {step.step_id: idx for idx, (_, step) in enumerate(steps_and_models)}
+
+            def _ctx_for(step: Step) -> _StepContext:
+                return _StepContext(
+                    run_id=run_id,
+                    step_index=step_positions[step.step_id],
+                    total_steps=total_steps,
+                )
+
             async def _sem_execute(ps: _PipelineStep, step: Step) -> Step:
                 if sem:
                     async with sem:
-                        return await self._execute_step_async(ps, step, config)
-                return await self._execute_step_async(ps, step, config)
+                        return await self._execute_step_async(ps, step, config, _ctx_for(step))
+                return await self._execute_step_async(ps, step, config, _ctx_for(step))
 
-            # Build the concurrent coroutine
             if fail_fast:
-                coro = self._gather_fail_fast(steps_and_models, config, semaphore=sem)
+                coro = self._gather_fail_fast(steps_and_models, config, _ctx_for, semaphore=sem)
             else:
                 coro = asyncio.gather(*(_sem_execute(ps, step) for ps, step in steps_and_models))
 
@@ -778,15 +995,16 @@ class Pipeline(Runnable[None, PipelineResult]):
 
             # Note: in concurrent mode, callbacks fire after all steps complete
             # (not incrementally as each finishes). Use chain=True for per-step callbacks.
-            if on_step_complete is not None:
-                for idx, step_result in enumerate(completed_steps):
-                    event = StepCompleteEvent(
-                        step_index=idx,
-                        total_steps=total_steps,
-                        step=step_result,
-                        elapsed_sec=time.monotonic() - started_at_mono,
-                    )
-                    on_step_complete(event)
+            for idx, step_result in enumerate(completed_steps):
+                step_event = StepCompleteEvent(
+                    step_index=idx,
+                    total_steps=total_steps,
+                    step=step_result,
+                    elapsed_sec=time.monotonic() - started_at_mono,
+                )
+                if on_step_complete is not None:
+                    on_step_complete(step_event)
+                self._emit_step_complete_event(step_event, run_id)
 
         pipeline_result = self._finalize(completed_steps, sink, run_id, started_at_ts)
         logger.info(
@@ -794,12 +1012,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             pipeline_result.run.status,
             pipeline_result.run.run_id,
         )
-        if slog:
-            slog.info(
-                "pipeline.complete",
-                status=str(pipeline_result.run.status),
-                run_id=pipeline_result.run.run_id,
-            )
+        self._emit_pipeline_end(pipeline_result, run_id)
         return pipeline_result
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
@@ -816,20 +1029,20 @@ class Pipeline(Runnable[None, PipelineResult]):
         self,
         steps_and_models: list[tuple[_PipelineStep, Step]],
         config: RunnableConfig | None,
+        ctx_for: Any,
         *,
         semaphore: asyncio.Semaphore | None = None,
     ) -> list[Step]:
         """Run steps concurrently, cancelling remaining on first failure."""
         tasks: list[asyncio.Task] = []
-        # Map task → original index + pipeline step to preserve ordering
         task_index: dict[asyncio.Task, int] = {}
         task_ps: dict[asyncio.Task, _PipelineStep] = {}
 
         async def _run(ps: _PipelineStep, step: Step) -> Step:
             if semaphore:
                 async with semaphore:
-                    return await self._execute_step_async(ps, step, config)
-            return await self._execute_step_async(ps, step, config)
+                    return await self._execute_step_async(ps, step, config, ctx_for(step))
+            return await self._execute_step_async(ps, step, config, ctx_for(step))
 
         for idx, (ps, step) in enumerate(steps_and_models):
             t = asyncio.create_task(_run(ps, step))
@@ -939,17 +1152,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         for prompt_or_vars in prompts:
             pipe = copy.copy(self)
             pipe._steps = [
-                _PipelineStep(
-                    ps.provider,
-                    ps.model,
-                    self._resolve_prompt(ps, prompt_or_vars),
-                    ps.params,
-                    ps.modality,
-                    ps.step_type,
-                    ps.fallback_models,
-                    ps.input_from,
-                )
-                for ps in self._steps
+                replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars)) for ps in self._steps
             ]
             results.append(
                 pipe.run(

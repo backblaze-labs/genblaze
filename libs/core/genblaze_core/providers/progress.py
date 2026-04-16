@@ -17,6 +17,9 @@ class ProgressEvent:
         progress_pct: 0.0–1.0 if the provider reports progress, else None.
         elapsed_sec: Seconds elapsed since step start.
         message: Optional human-readable status message.
+        preview_url: Optional URL to an intermediate preview (e.g. draft frame,
+            waveform thumbnail). Providers set this opportunistically when the
+            underlying API exposes in-progress artifacts.
     """
 
     step_id: str
@@ -26,3 +29,4 @@ class ProgressEvent:
     progress_pct: float | None
     elapsed_sec: float
     message: str | None = None
+    preview_url: str | None = None

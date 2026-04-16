@@ -25,6 +25,10 @@ Tracks open recommendations for developer experience and production hardening.
 - **Webhooks** — Event notification with retry, event filtering, SSRF protection. 12 tests.
 - **Job resume** — `BaseProvider.resume()` / `aresume()` with checkpoint callback.
 - **PipelineResult** — `failed_steps()` and `succeeded_steps()` convenience methods.
+- **Streaming** — `Pipeline.stream()`/`astream()` yield `StreamEvent` iterators; `preview_url` on `ProgressEvent`. See `docs/features/streaming.md`.
+- **Tracer abstraction** — Pluggable `Tracer` ABC with NoOp/Logging/OTel/Composite backends; `structured_log=True` still works. See `docs/features/observability.md`.
+- **LangSmith connector** — `genblaze-langsmith` package with `LangSmithTracer`.
+- **Agent loop** — `AgentLoop` + `Evaluator` for generate→evaluate→retry with manifest lineage. See `docs/features/agents.md`.
 
 ## Recommended Execution Order
 

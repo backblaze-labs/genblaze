@@ -219,6 +219,7 @@ class BaseProvider(Runnable[Step, Step]):
         start_time: float,
         progress_pct: float | None = None,
         message: str | None = None,
+        preview_url: str | None = None,
     ) -> None:
         """Fire on_progress callback if one is configured."""
         callback = (config or {}).get("on_progress")
@@ -232,6 +233,7 @@ class BaseProvider(Runnable[Step, Step]):
                     progress_pct=progress_pct,
                     elapsed_sec=time.monotonic() - start_time,
                     message=message,
+                    preview_url=preview_url,
                 )
             )
 

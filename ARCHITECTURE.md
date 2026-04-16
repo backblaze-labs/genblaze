@@ -1,9 +1,9 @@
-<!-- last_verified: 2026-04-16 -->
+<!-- last_verified: 2026-04-17 -->
 # Architecture
 
 ## Components
 
-- **genblaze-core** (`libs/core/`) — Python SDK: Pydantic v2 models, builders, canonical JSON, media handlers, sinks, pipeline
+- **genblaze-core** (`libs/core/`) — Python SDK: Pydantic v2 models, builders, canonical JSON, media handlers, sinks, pipeline, agents, observability
 - **Provider adapters** (`libs/connectors/`) — One package per provider:
   - `genblaze-openai` — OpenAI (Sora video, DALL-E/gpt-image-1 image, TTS audio)
   - `genblaze-google` — Google GenAI (Veo video, Imagen image)
@@ -16,6 +16,7 @@
   - `genblaze-lmnt` — LMNT (fast TTS)
   - `genblaze-gmicloud` — GMICloud (Kling video via request queue)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
+- **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
 - **JSON Schemas** (`libs/spec/schemas/manifest/v1/`) — Language-neutral schema definitions
 
@@ -108,6 +109,9 @@
 - Webhook notifications: `WebhookNotifier` fire-and-forget HTTP status events via background thread; HTTPS-only URLs validated at construction, DNS-resolved against private IP ranges on first dispatch
 - SSRF protection: shared `check_ssrf()` in `_utils.py` blocks private/loopback IPs; used by both `AssetTransfer` and `WebhookNotifier`
 - OTel bridging: `StepSpan` optionally starts real OpenTelemetry spans when the SDK is installed
+- Tracer abstraction: pluggable `Tracer` ABC with NoOp/Logging/OTel/Composite backends; routes run+step lifecycle hooks + StreamEvents
+- Streaming: `Pipeline.stream()` / `astream()` yield `StreamEvent` iterators; events also forwarded to the attached tracer
+- Agent loop: `AgentLoop` composes a `Pipeline` factory with an `Evaluator`; each iteration linked via `parent_run_id` for lineage-preserving retry
 
 ## Canonical Files
 
@@ -133,10 +137,19 @@
 - WAV handler: `libs/core/genblaze_core/media/wav.py`
 - EmbedPolicy: `libs/core/genblaze_core/models/policy.py`
 - Data models: `libs/core/genblaze_core/models/`
+- StreamEvent: `libs/core/genblaze_core/observability/events.py`
+- Tracer ABC + backends: `libs/core/genblaze_core/observability/tracer.py`
+- Streaming helpers: `libs/core/genblaze_core/pipeline/streaming.py`
+- Agent loop: `libs/core/genblaze_core/agents/loop.py`
+- Evaluator: `libs/core/genblaze_core/agents/evaluator.py`
+- LangSmith tracer: `libs/connectors/langsmith/genblaze_langsmith/tracer.py`
 
 ## Features
 
 - [Pipeline](docs/features/pipeline.md)
+- [Streaming](docs/features/streaming.md)
+- [Observability](docs/features/observability.md)
+- [Agents](docs/features/agents.md)
 - [Prompt Templates](docs/features/prompt-templates.md)
 - [Asset Transforms](docs/features/asset-transforms.md)
 - [Pipeline Templates](docs/features/pipeline-templates.md)

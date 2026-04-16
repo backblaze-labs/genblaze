@@ -28,6 +28,23 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "FFmpegCompositor": ("genblaze_core.providers.compositor", "FFmpegCompositor"),
     "FFmpegTransform": ("genblaze_core.providers.transform", "FFmpegTransform"),
     "ProgressEvent": ("genblaze_core.providers.progress", "ProgressEvent"),
+    # observability
+    "StreamEvent": ("genblaze_core.observability.events", "StreamEvent"),
+    "Tracer": ("genblaze_core.observability.tracer", "Tracer"),
+    "NoOpTracer": ("genblaze_core.observability.tracer", "NoOpTracer"),
+    "LoggingTracer": ("genblaze_core.observability.tracer", "LoggingTracer"),
+    "OTelTracer": ("genblaze_core.observability.tracer", "OTelTracer"),
+    "CompositeTracer": ("genblaze_core.observability.tracer", "CompositeTracer"),
+    "StructuredLogger": ("genblaze_core.observability.logger", "StructuredLogger"),
+    # agents
+    "AgentLoop": ("genblaze_core.agents.loop", "AgentLoop"),
+    "AgentContext": ("genblaze_core.agents.loop", "AgentContext"),
+    "AgentIteration": ("genblaze_core.agents.loop", "AgentIteration"),
+    "AgentResult": ("genblaze_core.agents.loop", "AgentResult"),
+    "Evaluator": ("genblaze_core.agents.evaluator", "Evaluator"),
+    "EvaluationResult": ("genblaze_core.agents.evaluator", "EvaluationResult"),
+    "CallableEvaluator": ("genblaze_core.agents.evaluator", "CallableEvaluator"),
+    "ThresholdEvaluator": ("genblaze_core.agents.evaluator", "ThresholdEvaluator"),
     # models
     "Manifest": ("genblaze_core.models.manifest", "Manifest"),
     "Run": ("genblaze_core.models.run", "Run"),
