@@ -1,0 +1,14 @@
+# Default owner for everything
+* @jdeleon
+
+# Core SDK
+libs/core/ @jdeleon
+
+# CLI
+cli/ @jdeleon
+
+# Connectors
+libs/connectors/ @jdeleon
+
+# CI / repo config
+.github/ @jdeleon

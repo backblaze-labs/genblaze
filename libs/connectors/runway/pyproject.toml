@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-runway"
+version = "0.1.0"
+description = "Runway Gen video provider adapter for genblaze"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+]
+dependencies = [
+    "genblaze-core>=0.1.0",
+    "runwayml>=0.6",
+]
+
+[project.urls]
+Documentation = "https://genblaze.dev"
+Repository = "https://github.com/backblaze-b2-samples/genblaze"
+Issues = "https://github.com/backblaze-b2-samples/genblaze/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.entry-points."genblaze.providers"]
+runway = "genblaze_runway:RunwayProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_runway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

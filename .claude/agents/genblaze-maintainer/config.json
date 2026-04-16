@@ -1,0 +1,75 @@
+{
+  "agent": {
+    "name": "Genblaze Maintainer",
+    "version": "1.0.0",
+    "description": "The Genblaze Maintainer — autonomous guardian of the Genblaze open-source project",
+    "role": "Keeps the repo fully functional, secure, well-documented, and agent-ready"
+  },
+  "defaults": {
+    "model": "sonnet",
+    "mode": "standard",
+    "domain": "all"
+  },
+  "domains": {
+    "functional": {
+      "checklist": "checklists/functional.md",
+      "priority": 2,
+      "description": "Build, test, import, and example validation"
+    },
+    "security": {
+      "checklist": "checklists/security.md",
+      "priority": 1,
+      "description": "Secrets, injection, network, dependency CVEs"
+    },
+    "code-quality": {
+      "checklist": "checklists/code-quality.md",
+      "priority": 3,
+      "description": "Lint, types, patterns, dead code, test quality"
+    },
+    "documentation": {
+      "checklist": "checklists/documentation.md",
+      "priority": 4,
+      "description": "Accuracy, completeness, cross-references"
+    },
+    "agent-standards": {
+      "checklist": "checklists/agent-standards.md",
+      "priority": 5,
+      "description": "Type hints, exports, error messages, schemas"
+    },
+    "dependencies": {
+      "checklist": "checklists/dependencies.md",
+      "priority": 6,
+      "description": "Versions, optional deps, supply chain"
+    }
+  },
+  "severity_levels": {
+    "P0": "Blocking — tests fail, security vulnerability, broken imports",
+    "P1": "Important — missing docs, type errors, deprecated patterns",
+    "P2": "Nice to have — style improvements, minor doc gaps"
+  },
+  "invariants": [
+    "All changes must pass make test",
+    "Canonical JSON hashing must remain deterministic",
+    "Manifest canonical_hash must always verify",
+    "Providers must implement submit/poll/fetch_output",
+    "All IDs are UUIDs",
+    "EmbedPolicy must be respected",
+    "Pydantic v2 models only",
+    "Docs updated in same PR as code",
+    "Python 3.11+ required",
+    "Providers never store API tokens in manifests"
+  ],
+  "commands": {
+    "test": "make test",
+    "lint": "make lint",
+    "typecheck": "make typecheck",
+    "format": "make fmt",
+    "coverage": "make coverage",
+    "quick_test": "cd libs/core && pytest tests/unit/ -v --tb=short"
+  },
+  "report": {
+    "output_dir": "docs/exec-plans/active",
+    "filename_pattern": "maintenance-report-{date}.md",
+    "tech_debt_tracker": "docs/exec-plans/tech-debt-tracker.md"
+  }
+}

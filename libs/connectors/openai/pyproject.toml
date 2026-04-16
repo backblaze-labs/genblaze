@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-openai"
+version = "0.1.0"
+description = "OpenAI provider adapters for genblaze (Sora, DALL-E, TTS)"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+]
+dependencies = [
+    "genblaze-core>=0.1.0",
+    "openai>=1.0",
+]
+
+[project.urls]
+Documentation = "https://genblaze.dev"
+Repository = "https://github.com/backblaze-b2-samples/genblaze"
+Issues = "https://github.com/backblaze-b2-samples/genblaze/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.entry-points."genblaze.providers"]
+openai-sora = "genblaze_openai:SoraProvider"
+openai-dalle = "genblaze_openai:DalleProvider"
+openai-tts = "genblaze_openai:OpenAITTSProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_openai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

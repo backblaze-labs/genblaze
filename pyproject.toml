@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze"
+version = "0.1.0"
+description = "Orchestration framework for media generation with manifest persistence"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[tool.hatch.build]
+skip-excluded-dirs = true
+
+[tool.pytest.ini_options]
+testpaths = ["libs/core/tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = [
+    "S101",  # assert is fine in tests
+    "S603",  # subprocess without shell=True is fine
+    "S607",  # partial path to executable is fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]
+"libs/core/tests/**/*.py" = ["S101", "S106"]
+"libs/connectors/**/tests/**/*.py" = ["S101", "S106"]

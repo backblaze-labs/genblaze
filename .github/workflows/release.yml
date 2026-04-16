@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write  # Trusted publishing to PyPI
+
+jobs:
+  publish-core:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: pip install build
+      - name: Build genblaze-core
+        run: cd libs/core && python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: libs/core/dist/
+
+  publish-cli:
+    runs-on: ubuntu-latest
+    needs: publish-core
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: pip install build
+      - name: Build genblaze-cli
+        run: cd cli && python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: cli/dist/
+
+  publish-connectors:
+    runs-on: ubuntu-latest
+    needs: publish-core
+    environment: pypi
+    strategy:
+      matrix:
+        connector:
+          - replicate
+          - s3
+          - openai
+          - google
+          - runway
+          - luma
+          - decart
+          - elevenlabs
+          - stability-audio
+          - lmnt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: pip install build
+      - name: Build connector
+        run: cd libs/connectors/${{ matrix.connector }} && python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: libs/connectors/${{ matrix.connector }}/dist/

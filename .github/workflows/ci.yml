@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check libs/ cli/ examples/
+      - run: ruff format --check libs/ cli/ examples/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          pip install -e "libs/core[dev]"
+          pip install -e "libs/connectors/replicate[dev]"
+          pip install -e "libs/connectors/s3[dev]"
+          pip install -e "libs/connectors/openai[dev]"
+          pip install -e "libs/connectors/google[dev]"
+          pip install -e "libs/connectors/runway[dev]"
+          pip install -e "libs/connectors/luma[dev]"
+          pip install -e "libs/connectors/decart[dev]"
+          pip install -e "libs/connectors/elevenlabs[dev]"
+          pip install -e "libs/connectors/stability-audio[dev]"
+          pip install -e "libs/connectors/lmnt[dev]"
+          pip install -e "cli[dev]"
+          pip install mypy
+      - name: Typecheck core
+        run: mypy libs/core/genblaze_core/ --ignore-missing-imports
+      - name: Typecheck connectors
+        run: |
+          failed=""
+          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt; do
+            echo "=== Typechecking $conn ==="
+            if ! mypy libs/connectors/$conn/genblaze_*/ --ignore-missing-imports; then
+              failed="$failed $conn"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::Typecheck failed for:$failed"
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install -e "libs/core[dev]"
+          pip install -e "libs/connectors/replicate[dev]"
+          pip install -e "libs/connectors/s3[dev]"
+          pip install -e "libs/connectors/openai[dev]"
+          pip install -e "libs/connectors/google[dev]"
+          pip install -e "libs/connectors/runway[dev]"
+          pip install -e "libs/connectors/luma[dev]"
+          pip install -e "libs/connectors/decart[dev]"
+          pip install -e "libs/connectors/elevenlabs[dev]"
+          pip install -e "libs/connectors/stability-audio[dev]"
+          pip install -e "libs/connectors/lmnt[dev]"
+          pip install -e "cli[dev]"
+          pip install pytest-cov
+      - name: Run core tests with coverage
+        run: |
+          cd libs/core && pytest tests/ -v --cov=genblaze_core --cov-report=xml --cov-report=term-missing
+      - name: Run connector tests
+        run: |
+          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt; do
+            echo "=== Testing $conn ==="
+            (cd libs/connectors/$conn && pytest -v)
+          done
+      - name: Run CLI tests
+        run: |
+          cd cli && pytest tests/ -v
+      - name: Upload coverage
+        if: matrix.python-version == '3.13'
+        uses: codecov/codecov-action@v4
+        with:
+          file: libs/core/coverage.xml
+          fail_ci_if_error: false

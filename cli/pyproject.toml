@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-cli"
+version = "0.1.0"
+description = "CLI for genblaze manifest operations"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Environment :: Console",
+]
+dependencies = [
+    "genblaze-core>=0.1.0",
+    "click>=8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/backblaze-b2-samples/genblaze"
+Issues = "https://github.com/backblaze-b2-samples/genblaze/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+genblaze = "genblaze_cli.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
