@@ -178,18 +178,10 @@ class TestDecartVideoCompliance(ProviderComplianceTests):
         from genblaze_decart import DecartVideoProvider
 
         mock_client = MagicMock()
-        mock_client.queue.submit = AsyncMock(
-            return_value=SimpleNamespace(job_id="job-abc")
-        )
-        mock_client.queue.status = AsyncMock(
-            return_value=SimpleNamespace(status="completed")
-        )
-        mock_client.queue.result = AsyncMock(
-            return_value=SimpleNamespace(data=b"fake-video-data")
-        )
-        provider = DecartVideoProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        mock_client.queue.submit = AsyncMock(return_value=SimpleNamespace(job_id="job-abc"))
+        mock_client.queue.status = AsyncMock(return_value=SimpleNamespace(status="completed"))
+        mock_client.queue.result = AsyncMock(return_value=SimpleNamespace(data=b"fake-video-data"))
+        provider = DecartVideoProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._client = mock_client
         return provider
 
@@ -209,12 +201,8 @@ class TestDecartImageCompliance(ProviderComplianceTests):
         from genblaze_decart import DecartImageProvider
 
         mock_client = MagicMock()
-        mock_client.process = AsyncMock(
-            return_value=SimpleNamespace(data=b"fake-image-data")
-        )
-        provider = DecartImageProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        mock_client.process = AsyncMock(return_value=SimpleNamespace(data=b"fake-image-data"))
+        provider = DecartImageProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._client = mock_client
         return provider
 

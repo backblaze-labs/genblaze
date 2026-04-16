@@ -136,9 +136,7 @@ class TestOpenAITTSCompliance(ProviderComplianceTests):
         )
         mock_client = MagicMock()
         mock_client.audio.speech.create.return_value = mock_response
-        provider = OpenAITTSProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        provider = OpenAITTSProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._client = mock_client
         return provider
 

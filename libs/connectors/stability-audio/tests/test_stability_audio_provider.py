@@ -181,9 +181,7 @@ class TestStabilityAudioCompliance(ProviderComplianceTests):
         mock_response.content = b"fake-audio-bytes"
         mock_http = MagicMock()
         mock_http.post.return_value = mock_response
-        provider = StabilityAudioProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        provider = StabilityAudioProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._http_client = mock_http
         return provider
 

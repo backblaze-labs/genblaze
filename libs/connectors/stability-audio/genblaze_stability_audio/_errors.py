@@ -3,9 +3,7 @@
 from genblaze_core.models.enums import ProviderErrorCode
 
 
-def map_stability_audio_error(
-    exc: Exception, status_code: int | None = None
-) -> ProviderErrorCode:
+def map_stability_audio_error(exc: Exception, status_code: int | None = None) -> ProviderErrorCode:
     """Map a Stability API error to a ProviderErrorCode.
 
     Args:

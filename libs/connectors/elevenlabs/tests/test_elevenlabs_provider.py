@@ -227,16 +227,12 @@ class TestElevenLabsTTSCompliance(ProviderComplianceTests):
 
         mock_client = MagicMock()
         mock_client.text_to_speech.convert.return_value = iter([b"fake-audio"])
-        provider = ElevenLabsTTSProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        provider = ElevenLabsTTSProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._client = mock_client
         return provider
 
     def make_step(self):
-        return Step(
-            provider="elevenlabs-tts", model="eleven_v3", prompt="test prompt"
-        )
+        return Step(provider="elevenlabs-tts", model="eleven_v3", prompt="test prompt")
 
 
 class TestElevenLabsSFXCompliance(ProviderComplianceTests):
@@ -255,9 +251,7 @@ class TestElevenLabsSFXCompliance(ProviderComplianceTests):
 
         mock_client = MagicMock()
         mock_client.text_to_sound_effects.convert.return_value = iter([b"fake-sfx"])
-        provider = ElevenLabsSFXProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        provider = ElevenLabsSFXProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._client = mock_client
         return provider
 

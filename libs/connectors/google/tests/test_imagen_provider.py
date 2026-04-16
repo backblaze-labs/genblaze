@@ -163,9 +163,7 @@ class TestImagenCompliance(ProviderComplianceTests):
         mock_response.generated_images = [MagicMock(image=mock_image)]
         mock_client = MagicMock()
         mock_client.models.generate_images.return_value = mock_response
-        provider = ImagenProvider(
-            api_key="test-key", output_dir=tempfile.mkdtemp()
-        )
+        provider = ImagenProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._client = mock_client
         return provider
 

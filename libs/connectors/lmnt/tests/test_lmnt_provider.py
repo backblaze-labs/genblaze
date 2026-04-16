@@ -140,9 +140,7 @@ class TestLMNTCompliance(ProviderComplianceTests):
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):
-        with patch.dict(
-            "sys.modules", {"lmnt": MagicMock(), "lmnt.api": MagicMock()}
-        ):
+        with patch.dict("sys.modules", {"lmnt": MagicMock(), "lmnt.api": MagicMock()}):
             yield
 
     def make_provider(self):

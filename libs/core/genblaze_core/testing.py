@@ -282,9 +282,7 @@ class ProviderComplianceTests(ABC):
             pytest.skip("Provider did not succeed — cannot verify metadata")
         for asset in result.assets:
             if asset.media_type and asset.media_type.startswith("audio/"):
-                assert asset.audio is not None, (
-                    f"Audio asset missing AudioMetadata: {asset.url}"
-                )
+                assert asset.audio is not None, f"Audio asset missing AudioMetadata: {asset.url}"
                 assert isinstance(asset.audio, AudioMetadata)
 
     # --- Chain input validation ---
