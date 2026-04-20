@@ -108,7 +108,7 @@ class DecartVideoProvider(BaseProvider):
             from decart import models
 
             params: dict = {
-                "model": models.video(step.model),
+                "model": models.video(step.model),  # type: ignore[arg-type]
                 "prompt": step.prompt or "",
             }
 

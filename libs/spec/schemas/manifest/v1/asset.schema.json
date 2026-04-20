@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/manifest/v1/asset.schema.json",
+  "title": "Asset",
+  "description": "A generated media asset within a step.",
+  "type": "object",
+  "required": ["asset_id", "url", "media_type"],
+  "properties": {
+    "asset_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this asset."
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL where the asset can be retrieved."
+    },
+    "media_type": {
+      "type": "string",
+      "description": "MIME type of the asset (e.g. image/png, video/mp4)."
+    },
+    "sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the asset content.",
+      "default": null
+    },
+    "size_bytes": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "File size in bytes.",
+      "default": null
+    },
+    "width": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Width in pixels (for image/video assets).",
+      "default": null
+    },
+    "height": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Height in pixels (for image/video assets).",
+      "default": null
+    },
+    "duration": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Duration in seconds (for audio/video assets).",
+      "default": null
+    },
+    "video": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "description": "Video-specific technical metadata.",
+          "properties": {
+            "frame_rate": {"type": ["number", "null"], "default": null},
+            "codec": {"type": ["string", "null"], "default": null},
+            "bitrate": {"type": ["integer", "null"], "default": null},
+            "color_space": {"type": ["string", "null"], "default": null},
+            "has_audio": {"type": ["boolean", "null"], "default": null},
+            "resolution": {"type": ["string", "null"], "default": null}
+          },
+          "additionalProperties": false
+        }
+      ],
+      "default": null
+    },
+    "audio": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "description": "Audio-specific technical metadata.",
+          "properties": {
+            "sample_rate": {"type": ["integer", "null"], "default": null},
+            "channels": {"type": ["integer", "null"], "default": null},
+            "codec": {"type": ["string", "null"], "default": null},
+            "bitrate": {"type": ["integer", "null"], "default": null},
+            "word_timings": {
+              "oneOf": [
+                {"type": "null"},
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["word", "start", "end"],
+                    "properties": {
+                      "word": {
+                        "type": "string",
+                        "description": "The spoken word or token."
+                      },
+                      "start": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Start time in seconds."
+                      },
+                      "end": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "End time in seconds."
+                      },
+                      "confidence": {
+                        "type": ["number", "null"],
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "Recognition confidence 0-1."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "default": null
+    },
+    "tracks": {
+      "type": ["array", "null"],
+      "default": null,
+      "description": "Media tracks in this container asset.",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "Track type: 'video', 'audio', 'subtitle'."
+          },
+          "codec": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "Track codec (e.g. 'h264', 'aac')."
+          },
+          "label": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "Human-readable label (e.g. 'generated-audio')."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Arbitrary key-value metadata."
+    }
+  },
+  "additionalProperties": false
+}

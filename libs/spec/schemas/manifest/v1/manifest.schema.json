@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/manifest/v1/manifest.schema.json",
+  "title": "Manifest",
+  "description": "A canonical, hash-verified generation manifest.",
+  "type": "object",
+  "required": ["schema_version", "run", "canonical_hash"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"],
+      "description": "Schema version identifier."
+    },
+    "run": {
+      "$ref": "run.schema.json"
+    },
+    "canonical_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the canonical JSON representation."
+    },
+    "manifest_uri": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "default": null,
+      "description": "URI pointing to the full manifest when using pointer mode."
+    },
+    "encryption_scheme": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Encryption scheme used for manifest content."
+    },
+    "signature": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Cryptographic signature of the manifest."
+    },
+    "transfer_failures": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Asset IDs that failed to transfer to storage. Transport-layer diagnostic, not part of the canonical hash."
+    }
+  },
+  "additionalProperties": false
+}

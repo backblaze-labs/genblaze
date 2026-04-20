@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/manifest/v1/step.schema.json",
+  "title": "Step",
+  "description": "A single generation step within a run.",
+  "type": "object",
+  "required": ["step_id", "provider", "model", "status"],
+  "properties": {
+    "step_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "default": null
+    },
+    "provider": {
+      "type": "string",
+      "description": "Provider name (e.g. replicate, runway, elevenlabs)."
+    },
+    "model": {
+      "type": "string",
+      "description": "Model identifier (e.g. black-forest-labs/flux-schnell)."
+    },
+    "step_type": {
+      "type": "string",
+      "enum": ["generate", "upscale", "transcode", "mix", "edit", "custom"],
+      "default": "generate",
+      "description": "Type of operation performed in this step."
+    },
+    "model_version": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Specific model version identifier."
+    },
+    "model_hash": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Hash of the model weights used."
+    },
+    "modality": {
+      "type": "string",
+      "enum": ["image", "video", "audio", "text"],
+      "description": "Output modality."
+    },
+    "prompt": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Generation prompt."
+    },
+    "negative_prompt": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "prompt_visibility": {
+      "type": "string",
+      "enum": ["public", "private", "redacted", "encrypted"],
+      "default": "public"
+    },
+    "seed": {
+      "type": ["integer", "null"],
+      "default": null,
+      "description": "Random seed used for generation."
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Provider-specific generation parameters."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "submitted", "processing", "succeeded", "failed", "cancelled"]
+    },
+    "inputs": {
+      "type": "array",
+      "items": { "$ref": "asset.schema.json" },
+      "default": [],
+      "description": "Input assets for this step."
+    },
+    "assets": {
+      "type": "array",
+      "items": { "$ref": "asset.schema.json" },
+      "default": []
+    },
+    "provider_payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Raw provider response data, namespaced per provider."
+    },
+    "retries": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Number of retries attempted."
+    },
+    "cost_usd": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "default": null,
+      "description": "Estimated cost in USD for this step."
+    },
+    "error": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "error_code": {
+      "type": ["string", "null"],
+      "enum": ["timeout", "rate_limit", "auth_failure", "invalid_input", "model_error", "server_error", "unknown", null],
+      "default": null,
+      "description": "Normalized error code."
+    },
+    "started_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "default": null
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "default": null
+    },
+    "step_index": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "default": null,
+      "description": "Position of this step within the run (0-based)."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "additionalProperties": false
+}

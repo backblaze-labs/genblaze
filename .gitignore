@@ -10,7 +10,7 @@ build/
 *.egg-info/
 *.egg
 wheels/
-MANIFEST
+/MANIFEST
 
 # Virtual environments
 .venv/

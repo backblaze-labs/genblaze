@@ -136,7 +136,7 @@ class LMNTProvider(SyncProvider):
             if durations:
                 word_timings = [
                     WordTiming(
-                        word=d.get("phonemes", d.get("text", d.get("word", ""))),
+                        word=d.get("phonemes", d.get("text", d.get("word", ""))) or "",
                         start=d["start"],
                         end=d["start"] + d["duration"] if "duration" in d else d.get("end", 0),
                     )

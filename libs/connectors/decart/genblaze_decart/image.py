@@ -86,7 +86,7 @@ class DecartImageProvider(SyncProvider):
             from decart import models
 
             params: dict = {
-                "model": models.image(step.model),
+                "model": models.image(step.model),  # type: ignore[arg-type]
                 "prompt": step.prompt or "",
             }
 

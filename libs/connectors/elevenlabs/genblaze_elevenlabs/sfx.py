@@ -130,13 +130,13 @@ class ElevenLabsSFXProvider(SyncProvider):
             # Probe actual output duration, fall back to params
             from genblaze_core._utils import probe_audio_duration
 
-            dur = probe_audio_duration(out_path)
-            if dur is None:
-                dur = float(step.params.get("duration_seconds", 5))
-            asset.duration = dur
+            probed_dur = probe_audio_duration(out_path)
+            if probed_dur is None:
+                probed_dur = float(step.params.get("duration_seconds", 5))
+            asset.duration = probed_dur
             step.assets.append(asset)
 
-            bucket = _sfx_price_bucket(dur)
+            bucket = _sfx_price_bucket(probed_dur)
             step.cost_usd = _SFX_PRICING[bucket]
 
             return step

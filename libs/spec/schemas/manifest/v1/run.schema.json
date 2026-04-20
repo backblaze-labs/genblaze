@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/manifest/v1/run.schema.json",
+  "title": "Run",
+  "description": "A collection of generation steps forming a single pipeline execution.",
+  "type": "object",
+  "required": ["run_id", "steps", "created_at"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "tenant_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional tenant/org identifier for multi-tenant deployments."
+    },
+    "project_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional project identifier."
+    },
+    "name": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Human-readable name for this run."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "completed", "failed", "cancelled"],
+      "default": "pending",
+      "description": "Overall run status."
+    },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "step.schema.json" }
+    },
+    "parent_run_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "default": null,
+      "description": "Parent run ID for replay/fork lineage."
+    },
+    "idempotency_key": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Client-provided key for deduplication."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "started_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "default": null,
+      "description": "Execution start timestamp."
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "default": null,
+      "description": "Execution completion timestamp."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "additionalProperties": false
+}

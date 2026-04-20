@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/manifest/v1/policy.schema.json",
+  "title": "EmbedPolicy",
+  "description": "Policy controlling how manifest data is embedded into media files.",
+  "type": "object",
+  "properties": {
+    "prompt_visibility": {
+      "type": "string",
+      "enum": ["public", "private", "redacted"],
+      "default": "public",
+      "description": "Controls whether prompts are included in embedded manifests."
+    },
+    "embed_mode": {
+      "type": "string",
+      "enum": ["full", "pointer", "none"],
+      "default": "full",
+      "description": "full=embed entire manifest, pointer=embed only URI+hash, none=no embedding."
+    },
+    "include_params": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to include generation parameters in embedded manifest."
+    },
+    "include_seed": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to include the random seed in embedded manifest."
+    }
+  },
+  "additionalProperties": false
+}
