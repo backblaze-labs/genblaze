@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any
 
 from genblaze_core._utils import new_id, utc_now
@@ -36,6 +37,7 @@ logger = logging.getLogger("genblaze.pipeline")
 if TYPE_CHECKING:
     from genblaze_core.models.asset import Asset
     from genblaze_core.pipeline.cache import StepCache
+    from genblaze_core.pipeline.template import PipelineTemplate
     from genblaze_core.sinks.base import BaseSink
 
 
@@ -992,6 +994,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                             return await self._execute_step_async(ps, step, config, _ctx_for(step))
                     return await self._execute_step_async(ps, step, config, _ctx_for(step))
 
+                coro: Awaitable[list[Step]]
                 if fail_fast:
                     coro = self._gather_fail_fast(
                         steps_and_models, config, _ctx_for, semaphore=sem
@@ -1010,7 +1013,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg)
                     try:
-                        result = await asyncio.wait_for(coro, timeout=remaining)
+                        concurrent_result = await asyncio.wait_for(coro, timeout=remaining)
                     except TimeoutError:
                         elapsed = time.monotonic() - started_at_mono
                         msg = (
@@ -1019,9 +1022,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg) from None
                 else:
-                    result = await coro
+                    concurrent_result = await coro
 
-                completed_steps = list(result) if not isinstance(result, list) else result
+                completed_steps = list(concurrent_result)
 
                 # Concurrent mode: per-step callbacks fire after all steps complete.
                 for idx, step_result in enumerate(completed_steps):
@@ -1294,7 +1297,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         description: str | None = None,
         version: str | None = None,
         tags: list[str] | None = None,
-    ) -> PipelineTemplate:  # noqa: F821
+    ) -> PipelineTemplate:
         """Export this pipeline's definition as a serializable template.
 
         Returns a PipelineTemplate that can be saved to JSON and

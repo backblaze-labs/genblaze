@@ -164,18 +164,19 @@ class AgentLoop:
         from genblaze_core.pipeline.streaming import drain_queue_sync
 
         q: queue.Queue = queue.Queue()
-        self._emitter = QueueEmitter(q)
+        emitter = QueueEmitter(q)
+        self._emitter = emitter
         exc_box: list[BaseException] = []
         done = threading.Event()
 
         def _worker() -> None:
             try:
                 final = self.run(**run_kwargs)
-                self._emitter.put(self._agent_completed_event(final))
+                emitter.put(self._agent_completed_event(final))
             except BaseException as exc:  # noqa: BLE001
                 exc_box.append(exc)
             finally:
-                self._emitter.close()
+                emitter.close()
                 done.set()
 
         t = threading.Thread(target=_worker, daemon=True, name="genblaze-agent-stream")
@@ -198,14 +199,15 @@ class AgentLoop:
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
-        self._emitter = QueueEmitter(q)
+        emitter = QueueEmitter(q)
+        self._emitter = emitter
 
         async def _worker() -> None:
             try:
                 final = await self.arun(**run_kwargs)
-                self._emitter.put(self._agent_completed_event(final))
+                emitter.put(self._agent_completed_event(final))
             finally:
-                self._emitter.close()
+                emitter.close()
 
         task = asyncio.create_task(_worker())
         try:
