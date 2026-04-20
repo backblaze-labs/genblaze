@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "genblaze-gmicloud"
 version = "0.1.0"
-description = "GMICloud video provider adapter for genblaze"
+description = "GMICloud media provider adapters for genblaze (video, image, audio)"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
@@ -15,13 +15,13 @@ classifiers = [
 ]
 dependencies = [
     "genblaze-core>=0.1.0",
-    "gmicloud>=0.1.10",
+    "httpx>=0.24",
 ]
 
 [project.urls]
-Documentation = "https://genblaze.dev"
-Repository = "https://github.com/backblaze-b2-samples/genblaze"
-Issues = "https://github.com/backblaze-b2-samples/genblaze/issues"
+Documentation = "https://www.backblaze.com/docs/"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -30,6 +30,8 @@ dev = [
 
 [project.entry-points."genblaze.providers"]
 gmicloud = "genblaze_gmicloud:GMICloudVideoProvider"
+gmicloud-image = "genblaze_gmicloud:GMICloudImageProvider"
+gmicloud-audio = "genblaze_gmicloud:GMICloudAudioProvider"
 
 [tool.hatch.build.targets.wheel]
 packages = ["genblaze_gmicloud"]

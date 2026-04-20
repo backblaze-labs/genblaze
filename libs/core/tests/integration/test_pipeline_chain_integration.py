@@ -173,14 +173,15 @@ def test_batch_run_with_chain_mode() -> None:
 
 
 def test_error_summary_includes_transfer_failures() -> None:
-    """PipelineResult.error_summary includes transfer failure metadata."""
+    """PipelineResult.error_summary includes transfer failure diagnostics."""
     from genblaze_core.models.manifest import Manifest
     from genblaze_core.models.run import Run
     from genblaze_core.pipeline.result import PipelineResult
 
     step = Step(provider="test", model="m", prompt="p", status=StepStatus.SUCCEEDED)
-    run = Run(steps=[step], metadata={"_transfer_failures": ["asset-abc", "asset-def"]})
+    run = Run(steps=[step])
     manifest = Manifest.from_run(run)
+    manifest.transfer_failures = ["asset-abc", "asset-def"]
     result = PipelineResult(run, manifest)
 
     summary = result.error_summary()

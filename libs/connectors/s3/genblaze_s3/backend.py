@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, BinaryIO
 
 from genblaze_core._version import __version__
@@ -139,3 +140,42 @@ class S3StorageBackend(StorageBackend):
 
     # close() intentionally not overridden — base class no-op is correct.
     # boto3 clients don't have a close() method; calling it would raise.
+
+    @classmethod
+    def for_backblaze(
+        cls,
+        bucket: str,
+        *,
+        region: str = "us-west-004",
+        key_id: str | None = None,
+        app_key: str | None = None,
+        public_url_base: str | None = None,
+    ) -> S3StorageBackend:
+        """Construct an S3StorageBackend preconfigured for Backblaze B2.
+
+        Derives B2's S3 endpoint from ``region`` and falls back to the
+        ``B2_KEY_ID`` / ``B2_APP_KEY`` environment variables when
+        credentials are not passed explicitly.
+
+        Args:
+            bucket: B2 bucket name.
+            region: B2 region slug (e.g. "us-west-004", "eu-central-003").
+            key_id: B2 application key ID. Defaults to ``$B2_KEY_ID``.
+            app_key: B2 application key. Defaults to ``$B2_APP_KEY``.
+            public_url_base: Optional B2 friendly-URL base for public buckets,
+                e.g. ``"https://f004.backblazeb2.com/file/my-bucket"``. When
+                set, :meth:`get_url` returns these instead of pre-signed URLs.
+
+        Example::
+
+            backend = S3StorageBackend.for_backblaze("my-bucket")
+            sink = ObjectStorageSink(backend, key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
+        """
+        return cls(
+            bucket=bucket,
+            endpoint_url=f"https://s3.{region}.backblazeb2.com",
+            region=region,
+            public_url_base=public_url_base,
+            aws_access_key_id=key_id or os.environ.get("B2_KEY_ID"),
+            aws_secret_access_key=app_key or os.environ.get("B2_APP_KEY"),
+        )

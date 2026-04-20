@@ -116,6 +116,12 @@ Async via `loop.astream()`.
 
 `AgentResult.total_cost_usd` sums `step.cost_usd` across every iteration's steps — so a 3-iter loop with a $0.04 image model reports $0.12.
 
+## Memory footprint
+
+`AgentLoop` retains every iteration's `PipelineResult` for the duration of the loop (the factory receives them via `AgentContext.prior_results`). Results hold URL references to assets — not the asset bytes — so per-iteration cost is typically 5–50 KB (manifest + step metadata). Even 100 iterations is a few MB.
+
+If a factory only needs the most recent evaluation (the common case), it should read `ctx.last_evaluation` rather than walking `ctx.prior_results`. For very long loops or large manifests, cap `max_iterations` rather than relying on the evaluator to break early.
+
 ## Internals
 
 - `libs/core/genblaze_core/agents/loop.py` — `AgentLoop`, `AgentResult`

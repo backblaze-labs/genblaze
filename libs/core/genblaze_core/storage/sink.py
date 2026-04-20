@@ -107,15 +107,18 @@ class ObjectStorageSink(BaseSink):
                 ", ".join(failed_asset_ids),
             )
 
-        # 2. Recompute manifest hash after asset transfers mutated URLs/hashes
-        # NOTE: _transfer_failures is written AFTER hash to avoid poisoning provenance
+        # 2. Record partial failures on the manifest as transport-layer
+        # diagnostics — NOT on run.metadata, which is part of the hashed
+        # payload (see manifest._RUN_HASH_EXCLUDE). transfer_failures is a
+        # non-hashed Manifest field, so writing it here doesn't affect hash
+        # integrity and verify() still succeeds after partial failures.
+        if failed_asset_ids:
+            manifest.transfer_failures = list(failed_asset_ids)
+
+        # 3. Recompute manifest hash after asset transfers mutated URLs/hashes
         manifest.compute_hash()
 
-        # Record partial failures in run metadata for downstream visibility
-        if failed_asset_ids:
-            run.metadata["_transfer_failures"] = failed_asset_ids
-
-        # 3. Upload manifest JSON (lock protects check-then-put atomicity)
+        # 4. Upload manifest JSON (lock protects check-then-put atomicity)
         manifest_key = self._build_manifest_key(run)
         with self._manifest_lock:
             if not self._backend.exists(manifest_key):
@@ -128,7 +131,7 @@ class ObjectStorageSink(BaseSink):
                 manifest.manifest_uri = self._backend.get_url(manifest_key)
                 logger.info("Manifest uploaded: %s", manifest_key)
 
-        # 4. Optionally write to ParquetSink
+        # 5. Optionally write to ParquetSink
         if self._parquet_sink is not None:
             self._parquet_sink.write_run(run, manifest)
 

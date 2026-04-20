@@ -91,3 +91,71 @@ class TestS3StorageBackend:
         backend, mock_client = self._make_backend(mock_boto3)
         backend.close()  # Should not raise
         mock_client.close.assert_not_called()
+
+
+class TestForBackblaze:
+    """S3StorageBackend.for_backblaze() — Backblaze B2 preset factory."""
+
+    def _boto3_call_kwargs(self, mock_boto3):
+        mock_boto3.client.return_value = MagicMock()
+        return mock_boto3.client.call_args.kwargs
+
+    def test_derives_b2_endpoint_from_region(self, mock_boto3, monkeypatch):
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "env-key")
+        monkeypatch.setenv("B2_APP_KEY", "env-secret")
+        mock_boto3.client.return_value = MagicMock()
+
+        S3StorageBackend.for_backblaze("my-bucket", region="us-west-004")
+
+        kwargs = mock_boto3.client.call_args.kwargs
+        assert kwargs["endpoint_url"] == "https://s3.us-west-004.backblazeb2.com"
+        assert kwargs["region_name"] == "us-west-004"
+        assert kwargs["aws_access_key_id"] == "env-key"
+        assert kwargs["aws_secret_access_key"] == "env-secret"  # noqa: S105 — test fixture
+
+    def test_explicit_credentials_override_env(self, mock_boto3, monkeypatch):
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "env-key")
+        monkeypatch.setenv("B2_APP_KEY", "env-secret")
+        mock_boto3.client.return_value = MagicMock()
+
+        S3StorageBackend.for_backblaze(
+            "my-bucket", key_id="explicit-key", app_key="explicit-secret"
+        )
+
+        kwargs = mock_boto3.client.call_args.kwargs
+        assert kwargs["aws_access_key_id"] == "explicit-key"
+        assert kwargs["aws_secret_access_key"] == "explicit-secret"  # noqa: S105 — test fixture
+
+    def test_public_url_base_passthrough(self, mock_boto3, monkeypatch):
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_boto3.client.return_value = MagicMock()
+
+        backend = S3StorageBackend.for_backblaze(
+            "my-bucket",
+            public_url_base="https://f004.backblazeb2.com/file/my-bucket",
+        )
+        url = backend.get_url("assets/img.png")
+        assert url == "https://f004.backblazeb2.com/file/my-bucket/assets/img.png"
+
+    def test_missing_env_vars_passes_none_to_boto3(self, mock_boto3, monkeypatch):
+        """No B2_KEY_ID/B2_APP_KEY set → boto3 falls back to its own credential chain."""
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.delenv("B2_KEY_ID", raising=False)
+        monkeypatch.delenv("B2_APP_KEY", raising=False)
+        mock_boto3.client.return_value = MagicMock()
+
+        S3StorageBackend.for_backblaze("my-bucket")
+
+        kwargs = mock_boto3.client.call_args.kwargs
+        # When key_id/app_key are None the backend omits them entirely,
+        # letting boto3's default credential resolution take over.
+        assert "aws_access_key_id" not in kwargs
+        assert "aws_secret_access_key" not in kwargs

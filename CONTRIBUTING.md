@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This guide will help you get started.
 ## Development setup
 
 ```bash
-git clone https://github.com/backblaze-b2-samples/genblaze.git
+git clone https://github.com/backblaze-labs/genblaze.git
 cd genblaze
 make install-dev
 make test          # Verify setup
@@ -71,7 +71,7 @@ make coverage   # Tests with coverage report (70% minimum)
 
 ## Reporting bugs
 
-Use [GitHub Issues](https://github.com/backblaze-b2-samples/genblaze/issues) with the bug report template. Include:
+Use [GitHub Issues](https://github.com/backblaze-labs/genblaze/issues) with the bug report template. Include:
 - What you expected vs. what happened
 - Minimal reproduction steps
 - Python version and OS

@@ -24,7 +24,7 @@ def _build_xmp(manifest_json: str) -> bytes:
         '<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
         '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
         f'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"'
-        f' xmlns:mf="https://genblaze.dev/ns/1.0/">'
+        f' xmlns:mf="https://github.com/backblaze-labs/genblaze/ns/1.0/">'
         f'<rdf:Description rdf:about="">'
         f"<mf:manifest>{escaped}</mf:manifest>"
         f"</rdf:Description>"

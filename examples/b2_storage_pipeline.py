@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Example: Backblaze B2 storage pipeline.
+"""Example: Backblaze B2 storage pipeline — the recommended default sink.
 
-Demonstrates genblaze with Backblaze B2 object storage. Assets are downloaded
-from provider CDNs, content-hashed (SHA-256), and uploaded to B2 with dedup.
-Manifests are stored alongside assets for full provenance tracking.
+Assets are downloaded from provider CDNs, content-hashed (SHA-256), and
+uploaded to B2 with dedup. Manifests are stored alongside assets for full
+provenance tracking.
 
 Requirements:
     pip install genblaze-s3 genblaze-replicate
@@ -15,8 +15,6 @@ Usage:
     python examples/b2_storage_pipeline.py
 """
 
-import os
-
 from genblaze_core import KeyStrategy, ObjectStorageSink, Pipeline
 from genblaze_s3 import S3StorageBackend
 
@@ -25,14 +23,13 @@ def main() -> None:
     from genblaze_replicate import ReplicateProvider
 
     # --- Configure Backblaze B2 storage ---
-    backend = S3StorageBackend(
-        bucket="my-genblaze-bucket",
-        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+    # for_backblaze() reads B2_KEY_ID / B2_APP_KEY from env and derives the
+    # S3 endpoint from the region. Pass public_url_base only for public
+    # buckets; otherwise get_url() returns pre-signed URLs.
+    backend = S3StorageBackend.for_backblaze(
+        "my-genblaze-bucket",
         region="us-west-004",
-        # B2 friendly URLs for public access (no pre-signed URLs needed)
         public_url_base="https://f004.backblazeb2.com/file/my-genblaze-bucket",
-        aws_access_key_id=os.environ["B2_KEY_ID"],
-        aws_secret_access_key=os.environ["B2_APP_KEY"],
     )
 
     # Content-addressable keys deduplicate identical assets automatically.

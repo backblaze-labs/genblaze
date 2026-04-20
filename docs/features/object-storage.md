@@ -1,26 +1,41 @@
 # Object Storage
 
-Upload run assets and manifests to any S3-compatible bucket (AWS S3, Backblaze B2, Cloudflare R2, MinIO).
+Upload run assets and manifests to any S3-compatible bucket. **Backblaze B2 is
+the recommended default**; AWS S3, Cloudflare R2, and MinIO work too via the
+generic constructor.
 
 ## How it works
 
 Pass `sink=storage` to `pipeline.run()`. The `ObjectStorageSink`:
 
 1. **Transfers assets** — downloads from provider CDN, computes SHA-256, uploads to storage
-2. **Recomputes manifest hash** — the canonical hash reflects post-transfer URLs/hashes. Transfer failures are recorded in `run.metadata["_transfer_failures"]` *after* the hash, so the provenance hash is stable regardless of partial upload failures
-3. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
-4. **Rewrites URLs** — asset URLs in the run now point to your bucket
+2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash, so `manifest.verify()` remains True even on partial failures
+3. **Recomputes manifest hash** — the canonical hash reflects post-transfer asset URLs/SHA-256
+4. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
+5. **Rewrites URLs** — asset URLs in the run now point to your bucket
+
+### Quickstart (Backblaze B2)
 
 ```python
 from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
 from genblaze_s3 import S3StorageBackend
 
+# Reads B2_KEY_ID / B2_APP_KEY from env; override with key_id=/app_key= if needed.
 storage = ObjectStorageSink(
-    S3StorageBackend(bucket="my-bucket", endpoint_url="https://..."),
+    S3StorageBackend.for_backblaze("my-bucket"),
     key_strategy=KeyStrategy.HIERARCHICAL,
 )
 
 result = Pipeline("my-pipeline").step(...).run(sink=storage)
+```
+
+### Other S3-compatible providers
+
+```python
+storage = ObjectStorageSink(
+    S3StorageBackend(bucket="my-bucket", endpoint_url="https://..."),
+    key_strategy=KeyStrategy.HIERARCHICAL,
+)
 ```
 
 ## Key strategies
@@ -80,9 +95,10 @@ the local file so it carries its own provenance.
 
 ```python
 from genblaze_core import ObjectStorageSink, KeyStrategy, ParquetSink
+from genblaze_s3 import S3StorageBackend
 
 storage = ObjectStorageSink(
-    backend,
+    S3StorageBackend.for_backblaze("my-bucket"),
     key_strategy=KeyStrategy.HIERARCHICAL,
     parquet_sink=ParquetSink("data/"),
 )

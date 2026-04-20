@@ -214,15 +214,15 @@ def test_step_with_edit_type():
 # --- Schema 1.2 migration ---
 
 
-def test_new_manifest_gets_schema_1_4():
-    """New manifests default to schema version 1.4."""
+def test_new_manifest_gets_current_schema_version():
+    """New manifests default to the current SCHEMA_VERSION constant."""
     from genblaze_core.models.manifest import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == "1.4"
+    assert SCHEMA_VERSION == "1.5"
     s = Step(provider="p", model="m")
     r = Run(steps=[s])
     m = Manifest.from_run(r)
-    assert m.schema_version == "1.4"
+    assert m.schema_version == "1.5"
 
 
 def test_equivalent_reruns_produce_same_hash():

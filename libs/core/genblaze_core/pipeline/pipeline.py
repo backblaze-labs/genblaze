@@ -372,32 +372,31 @@ class Pipeline(Runnable[None, PipelineResult]):
             step_index=ctx.step_index,
             total_steps=ctx.total_steps,
         )
-
         t0 = time.monotonic()
-        result = ps.provider.invoke(step, config)
-
-        result, cache_key_step = self._try_fallback_models(
-            ps, step, result, config, ps.provider.invoke
-        )
-        duration_ms = (time.monotonic() - t0) * 1000
-
-        final = self._post_step(
-            ps,
-            step,
-            result,
-            cache_key_step,
-            duration_ms,
-            self._moderation.check_output if self._moderation else None,
-        )
-        safe_call(
-            self._tracer,
-            "on_step_end",
-            ctx.run_id,
-            final,
-            duration_ms=duration_ms,
-            step_index=ctx.step_index,
-        )
-        return final
+        final: Step = step  # fallback for on_step_end if provider.invoke raises
+        try:
+            result = ps.provider.invoke(step, config)
+            result, cache_key_step = self._try_fallback_models(
+                ps, step, result, config, ps.provider.invoke
+            )
+            final = self._post_step(
+                ps,
+                step,
+                result,
+                cache_key_step,
+                (time.monotonic() - t0) * 1000,
+                self._moderation.check_output if self._moderation else None,
+            )
+            return final
+        finally:
+            safe_call(
+                self._tracer,
+                "on_step_end",
+                ctx.run_id,
+                final,
+                duration_ms=(time.monotonic() - t0) * 1000,
+                step_index=ctx.step_index,
+            )
 
     async def _execute_step_async(
         self,
@@ -431,65 +430,68 @@ class Pipeline(Runnable[None, PipelineResult]):
             step_index=ctx.step_index,
             total_steps=ctx.total_steps,
         )
-
         t0 = time.monotonic()
-        result = await ps.provider.ainvoke(step, config)
+        final: Step = step  # fallback for on_step_end if ainvoke raises
+        try:
+            result = await ps.provider.ainvoke(step, config)
 
-        # Fallback loop (inlined because ainvoke requires await)
-        cache_key_step = step
-        if (
-            result.status == StepStatus.FAILED
-            and result.error_code == ProviderErrorCode.MODEL_ERROR
-            and ps.fallback_models
-        ):
-            original_model = step.model
-            for fb_model in ps.fallback_models:
-                logger.info("Falling back from %s to %s", step.model, fb_model)
-                fb_step = self._build_step(ps, step.inputs or None)
-                fb_step.model = fb_model
-                fb_step.metadata = {
-                    "fallback_from": original_model,
-                    "fallback_model": fb_model,
-                }
-                result = await ps.provider.ainvoke(fb_step, config)
-                if result.status == StepStatus.SUCCEEDED:
-                    cache_key_step = fb_step
-                    break
-        duration_ms = (time.monotonic() - t0) * 1000
+            # Fallback loop (inlined because ainvoke requires await)
+            cache_key_step = step
+            if (
+                result.status == StepStatus.FAILED
+                and result.error_code == ProviderErrorCode.MODEL_ERROR
+                and ps.fallback_models
+            ):
+                original_model = step.model
+                for fb_model in ps.fallback_models:
+                    logger.info("Falling back from %s to %s", step.model, fb_model)
+                    fb_step = self._build_step(ps, step.inputs or None)
+                    fb_step.model = fb_model
+                    fb_step.metadata = {
+                        "fallback_from": original_model,
+                        "fallback_model": fb_model,
+                    }
+                    result = await ps.provider.ainvoke(fb_step, config)
+                    if result.status == StepStatus.SUCCEEDED:
+                        cache_key_step = fb_step
+                        break
 
-        # Async post-moderation — run before shared _post_step
-        if (
-            self._moderation is not None
-            and result.status == StepStatus.SUCCEEDED
-            and result.assets
-        ):
-            try:
-                mod_result = await self._moderation.acheck_output(result.assets)
-            except Exception as exc:
-                result.status = StepStatus.FAILED
-                result.error = f"Moderation hook error: {exc}"
-                result.error_code = ProviderErrorCode.UNKNOWN
-                return result
-            if not mod_result.allowed:
-                return self._apply_moderation_failure(result, mod_result, "post")
+            # Async post-moderation — run before shared _post_step
+            if (
+                self._moderation is not None
+                and result.status == StepStatus.SUCCEEDED
+                and result.assets
+            ):
+                try:
+                    mod_result = await self._moderation.acheck_output(result.assets)
+                except Exception as exc:
+                    result.status = StepStatus.FAILED
+                    result.error = f"Moderation hook error: {exc}"
+                    result.error_code = ProviderErrorCode.UNKNOWN
+                    final = result
+                    return result
+                if not mod_result.allowed:
+                    final = self._apply_moderation_failure(result, mod_result, "post")
+                    return final
 
-        final = self._post_step(
-            ps,
-            step,
-            result,
-            cache_key_step,
-            duration_ms,
-            None,  # async moderation already handled above
-        )
-        safe_call(
-            self._tracer,
-            "on_step_end",
-            ctx.run_id,
-            final,
-            duration_ms=duration_ms,
-            step_index=ctx.step_index,
-        )
-        return final
+            final = self._post_step(
+                ps,
+                step,
+                result,
+                cache_key_step,
+                (time.monotonic() - t0) * 1000,
+                None,  # async moderation already handled above
+            )
+            return final
+        finally:
+            safe_call(
+                self._tracer,
+                "on_step_end",
+                ctx.run_id,
+                final,
+                duration_ms=(time.monotonic() - t0) * 1000,
+                step_index=ctx.step_index,
+            )
 
     def _finalize(
         self,
@@ -632,6 +634,11 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Uncaught exceptions from the pipeline are re-raised after the
         event stream drains.
+
+        Early break: if the caller breaks out of iteration before the
+        terminal event, we return immediately and let the (daemon) worker
+        thread finish in the background. Remaining events are discarded
+        and any post-break exception in the pipeline is suppressed.
         """
         import queue as _queue
         import threading
@@ -643,6 +650,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         prior = self.attach_emitter(emitter)
 
         exc_box: list[BaseException] = []
+        done = threading.Event()
 
         def _worker() -> None:
             try:
@@ -651,19 +659,28 @@ class Pipeline(Runnable[None, PipelineResult]):
                 exc_box.append(exc)
             finally:
                 emitter.close()
+                done.set()
 
         t = threading.Thread(target=_worker, daemon=True, name="genblaze-stream")
         t.start()
         try:
             yield from drain_queue_sync(q)
         finally:
-            t.join()
             self.attach_emitter(prior)
-            if exc_box:
-                raise exc_box[0]
+            if done.is_set():
+                t.join()  # fast — worker already returned
+                if exc_box:
+                    raise exc_box[0]
+            # else: consumer broke early; worker keeps running as a daemon
+            # thread and exits when the pipeline naturally completes.
 
     async def astream(self, **run_kwargs: Any):
-        """Async version of :meth:`stream`."""
+        """Async version of :meth:`stream`.
+
+        Early break: cancels the worker task so in-flight provider calls
+        unwind at their next await point. Any post-break exception from
+        the pipeline is suppressed.
+        """
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
@@ -682,7 +699,14 @@ class Pipeline(Runnable[None, PipelineResult]):
                 yield ev
         finally:
             self.attach_emitter(prior)
-            await task  # re-raises if worker failed
+            if task.done():
+                await task  # re-raises if worker failed
+            else:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
+                    logger.debug("astream worker aborted: %s", exc)
 
     def invoke(self, input: None = None, config: RunnableConfig | None = None) -> PipelineResult:
         """Runnable interface — delegates to run() with a local config copy."""
@@ -753,61 +777,68 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._emit_run_start(run_id, total_steps)
         completed_steps: list[Step] = []
         prev_assets: list[Asset] = []
-        for i, ps in enumerate(self._steps, 1):
-            # Check pipeline-level timeout before each step
-            if pipeline_timeout is not None:
-                elapsed = time.monotonic() - started_at_mono
-                if elapsed >= pipeline_timeout:
-                    msg = (
-                        f"Pipeline timeout exceeded after {elapsed:.1f}s"
-                        f" (limit: {pipeline_timeout}s)"
-                    )
-                    raise PipelineTimeoutError(msg)
+        pipeline_result: PipelineResult | None = None
+        try:
+            for i, ps in enumerate(self._steps, 1):
+                # Check pipeline-level timeout before each step
+                if pipeline_timeout is not None:
+                    elapsed = time.monotonic() - started_at_mono
+                    if elapsed >= pipeline_timeout:
+                        msg = (
+                            f"Pipeline timeout exceeded after {elapsed:.1f}s"
+                            f" (limit: {pipeline_timeout}s)"
+                        )
+                        raise PipelineTimeoutError(msg)
 
-            inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-            step = self._build_step(ps, inputs)
-            logger.debug(
-                "Executing step %d/%d: %s/%s",
-                i,
-                len(self._steps),
-                ps.provider.name,
-                ps.model,
+                inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
+                step = self._build_step(ps, inputs)
+                logger.debug(
+                    "Executing step %d/%d: %s/%s",
+                    i,
+                    len(self._steps),
+                    ps.provider.name,
+                    ps.model,
+                )
+                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                self._emit_step_start(ctx, step, ps)
+                result = self._execute_step(ps, step, config, ctx)
+                completed_steps.append(result)
+
+                step_event = StepCompleteEvent(
+                    step_index=i - 1,
+                    total_steps=total_steps,
+                    step=result,
+                    elapsed_sec=time.monotonic() - started_at_mono,
+                )
+                if on_step_complete is not None:
+                    on_step_complete(step_event)
+                self._emit_step_complete_event(step_event, run_id)
+
+                if result.status == StepStatus.SUCCEEDED:
+                    if self._chain:
+                        prev_assets = list(result.assets)
+                elif result.status == StepStatus.FAILED:
+                    if self._chain:
+                        prev_assets = []
+                    logger.warning("Step %d failed: %s", i, result.error)
+                    if fail_fast:
+                        break
+
+            pipeline_result = self._finalize(completed_steps, sink, run_id, started_at_ts)
+            logger.info(
+                "Pipeline complete: status=%s, run_id=%s",
+                pipeline_result.run.status,
+                pipeline_result.run.run_id,
             )
-            ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
-            self._emit_step_start(ctx, step, ps)
-            result = self._execute_step(ps, step, config, ctx)
-            completed_steps.append(result)
-
-            # Fire on_step_complete callback after each step
-            step_event = StepCompleteEvent(
-                step_index=i - 1,
-                total_steps=total_steps,
-                step=result,
-                elapsed_sec=time.monotonic() - started_at_mono,
+            return pipeline_result
+        finally:
+            # Guarantee on_run_end fires — covers timeouts, KeyboardInterrupt,
+            # and bugs in _finalize. Synthesizes an aborted result if the
+            # normal flow didn't reach _finalize.
+            self._emit_pipeline_end(
+                pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
+                run_id,
             )
-            if on_step_complete is not None:
-                on_step_complete(step_event)
-            self._emit_step_complete_event(step_event, run_id)
-
-            if result.status == StepStatus.SUCCEEDED:
-                if self._chain:
-                    prev_assets = list(result.assets)
-            elif result.status == StepStatus.FAILED:
-                # Clear chain inputs so the next step doesn't reuse stale outputs
-                if self._chain:
-                    prev_assets = []
-                logger.warning("Step %d failed: %s", i, result.error)
-                if fail_fast:
-                    break
-
-        pipeline_result = self._finalize(completed_steps, sink, run_id, started_at_ts)
-        logger.info(
-            "Pipeline complete: status=%s, run_id=%s",
-            pipeline_result.run.status,
-            pipeline_result.run.run_id,
-        )
-        self._emit_pipeline_end(pipeline_result, run_id)
-        return pipeline_result
 
     async def arun(
         self,
@@ -874,146 +905,150 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         # input_from requires sequential execution (needs prior step results)
         has_input_from = any(ps.input_from is not None for ps in self._steps)
+        completed_steps: list[Step] = []
+        pipeline_result: PipelineResult | None = None
+        try:
+            if self._chain or has_input_from:
+                # Sequential: each step's outputs feed the next step's inputs
+                prev_assets: list[Asset] = []
+                for i, ps in enumerate(self._steps, 1):
+                    if pipeline_timeout is not None:
+                        elapsed = time.monotonic() - started_at_mono
+                        if elapsed >= pipeline_timeout:
+                            msg = (
+                                f"Pipeline timeout exceeded after {elapsed:.1f}s"
+                                f" (limit: {pipeline_timeout}s)"
+                            )
+                            raise PipelineTimeoutError(msg)
 
-        if self._chain or has_input_from:
-            # Sequential: each step's outputs feed the next step's inputs
-            completed_steps: list[Step] = []
-            prev_assets: list[Asset] = []
-            for i, ps in enumerate(self._steps, 1):
-                # Check pipeline-level timeout before each step
+                    inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
+                    step = self._build_step(ps, inputs)
+                    logger.debug(
+                        "Executing step %d/%d: %s/%s",
+                        i,
+                        len(self._steps),
+                        ps.provider.name,
+                        ps.model,
+                    )
+                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                    self._emit_step_start(ctx, step, ps)
+                    result = await self._execute_step_async(ps, step, config, ctx)
+                    completed_steps.append(result)
+
+                    step_event = StepCompleteEvent(
+                        step_index=i - 1,
+                        total_steps=total_steps,
+                        step=result,
+                        elapsed_sec=time.monotonic() - started_at_mono,
+                    )
+                    if on_step_complete is not None:
+                        on_step_complete(step_event)
+                    self._emit_step_complete_event(step_event, run_id)
+
+                    if result.status == StepStatus.SUCCEEDED:
+                        if self._chain:
+                            prev_assets = list(result.assets)
+                    elif result.status == StepStatus.FAILED:
+                        if self._chain:
+                            prev_assets = []
+                        logger.warning("Step %d failed: %s", i, result.error)
+                        if fail_fast:
+                            break
+            else:
+                # Concurrent: use as_completed + cancel on failure when fail_fast
+                steps_and_models = [(ps, self._build_step(ps)) for ps in self._steps]
+                for idx, (ps, step) in enumerate(steps_and_models):
+                    self._emit_step_start(
+                        _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
+                        step,
+                        ps,
+                    )
+
                 if pipeline_timeout is not None:
                     elapsed = time.monotonic() - started_at_mono
                     if elapsed >= pipeline_timeout:
                         msg = (
-                            f"Pipeline timeout exceeded after"
-                            f" {elapsed:.1f}s"
+                            f"Pipeline timeout exceeded after {elapsed:.1f}s"
                             f" (limit: {pipeline_timeout}s)"
                         )
                         raise PipelineTimeoutError(msg)
 
-                inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                step = self._build_step(ps, inputs)
-                logger.debug(
-                    "Executing step %d/%d: %s/%s",
-                    i,
-                    len(self._steps),
-                    ps.provider.name,
-                    ps.model,
-                )
-                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
-                self._emit_step_start(ctx, step, ps)
-                result = await self._execute_step_async(ps, step, config, ctx)
-                completed_steps.append(result)
+                concurrency = max_concurrency or self._max_concurrency
+                sem = asyncio.Semaphore(concurrency) if concurrency else None
+                step_positions = {
+                    step.step_id: idx for idx, (_, step) in enumerate(steps_and_models)
+                }
 
-                # Fire on_step_complete callback after each step
-                step_event = StepCompleteEvent(
-                    step_index=i - 1,
-                    total_steps=total_steps,
-                    step=result,
-                    elapsed_sec=time.monotonic() - started_at_mono,
-                )
-                if on_step_complete is not None:
-                    on_step_complete(step_event)
-                self._emit_step_complete_event(step_event, run_id)
-
-                if result.status == StepStatus.SUCCEEDED:
-                    if self._chain:
-                        prev_assets = list(result.assets)
-                elif result.status == StepStatus.FAILED:
-                    # Clear chain inputs so the next step doesn't reuse stale outputs
-                    if self._chain:
-                        prev_assets = []
-                    logger.warning("Step %d failed: %s", i, result.error)
-                    if fail_fast:
-                        break
-        else:
-            # Concurrent: use as_completed + cancel on failure when fail_fast
-            steps_and_models = [(ps, self._build_step(ps)) for ps in self._steps]
-            for idx, (ps, step) in enumerate(steps_and_models):
-                self._emit_step_start(
-                    _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
-                    step,
-                    ps,
-                )
-
-            # Check pipeline-level timeout before launching concurrent steps
-            if pipeline_timeout is not None:
-                elapsed = time.monotonic() - started_at_mono
-                if elapsed >= pipeline_timeout:
-                    msg = (
-                        f"Pipeline timeout exceeded after {elapsed:.1f}s"
-                        f" (limit: {pipeline_timeout}s)"
+                def _ctx_for(step: Step) -> _StepContext:
+                    return _StepContext(
+                        run_id=run_id,
+                        step_index=step_positions[step.step_id],
+                        total_steps=total_steps,
                     )
-                    raise PipelineTimeoutError(msg)
 
-            # Apply concurrency limit (param > constructor > unlimited)
-            concurrency = max_concurrency or self._max_concurrency
-            sem = asyncio.Semaphore(concurrency) if concurrency else None
+                async def _sem_execute(ps: _PipelineStep, step: Step) -> Step:
+                    if sem:
+                        async with sem:
+                            return await self._execute_step_async(ps, step, config, _ctx_for(step))
+                    return await self._execute_step_async(ps, step, config, _ctx_for(step))
 
-            step_positions = {step.step_id: idx for idx, (_, step) in enumerate(steps_and_models)}
-
-            def _ctx_for(step: Step) -> _StepContext:
-                return _StepContext(
-                    run_id=run_id,
-                    step_index=step_positions[step.step_id],
-                    total_steps=total_steps,
-                )
-
-            async def _sem_execute(ps: _PipelineStep, step: Step) -> Step:
-                if sem:
-                    async with sem:
-                        return await self._execute_step_async(ps, step, config, _ctx_for(step))
-                return await self._execute_step_async(ps, step, config, _ctx_for(step))
-
-            if fail_fast:
-                coro = self._gather_fail_fast(steps_and_models, config, _ctx_for, semaphore=sem)
-            else:
-                coro = asyncio.gather(*(_sem_execute(ps, step) for ps, step in steps_and_models))
-
-            # Enforce pipeline_timeout around the concurrent execution
-            if pipeline_timeout is not None:
-                remaining = pipeline_timeout - (time.monotonic() - started_at_mono)
-                if remaining <= 0:
-                    msg = (
-                        f"Pipeline timeout exceeded before concurrent launch"
-                        f" (limit: {pipeline_timeout}s)"
+                if fail_fast:
+                    coro = self._gather_fail_fast(
+                        steps_and_models, config, _ctx_for, semaphore=sem
                     )
-                    raise PipelineTimeoutError(msg)
-                try:
-                    result = await asyncio.wait_for(coro, timeout=remaining)
-                except TimeoutError:
-                    elapsed = time.monotonic() - started_at_mono
-                    msg = (
-                        f"Pipeline timeout exceeded after {elapsed:.1f}s"
-                        f" (limit: {pipeline_timeout}s)"
+                else:
+                    coro = asyncio.gather(
+                        *(_sem_execute(ps, step) for ps, step in steps_and_models)
                     )
-                    raise PipelineTimeoutError(msg) from None
-            else:
-                result = await coro
 
-            completed_steps = list(result) if not isinstance(result, list) else result
+                if pipeline_timeout is not None:
+                    remaining = pipeline_timeout - (time.monotonic() - started_at_mono)
+                    if remaining <= 0:
+                        msg = (
+                            f"Pipeline timeout exceeded before concurrent launch"
+                            f" (limit: {pipeline_timeout}s)"
+                        )
+                        raise PipelineTimeoutError(msg)
+                    try:
+                        result = await asyncio.wait_for(coro, timeout=remaining)
+                    except TimeoutError:
+                        elapsed = time.monotonic() - started_at_mono
+                        msg = (
+                            f"Pipeline timeout exceeded after {elapsed:.1f}s"
+                            f" (limit: {pipeline_timeout}s)"
+                        )
+                        raise PipelineTimeoutError(msg) from None
+                else:
+                    result = await coro
 
-            # Note: in concurrent mode, callbacks fire after all steps complete
-            # (not incrementally as each finishes). Use chain=True for per-step callbacks.
-            for idx, step_result in enumerate(completed_steps):
-                step_event = StepCompleteEvent(
-                    step_index=idx,
-                    total_steps=total_steps,
-                    step=step_result,
-                    elapsed_sec=time.monotonic() - started_at_mono,
-                )
-                if on_step_complete is not None:
-                    on_step_complete(step_event)
-                self._emit_step_complete_event(step_event, run_id)
+                completed_steps = list(result) if not isinstance(result, list) else result
 
-        pipeline_result = self._finalize(completed_steps, sink, run_id, started_at_ts)
-        logger.info(
-            "Pipeline complete: status=%s, run_id=%s",
-            pipeline_result.run.status,
-            pipeline_result.run.run_id,
-        )
-        self._emit_pipeline_end(pipeline_result, run_id)
-        return pipeline_result
+                # Concurrent mode: per-step callbacks fire after all steps complete.
+                for idx, step_result in enumerate(completed_steps):
+                    step_event = StepCompleteEvent(
+                        step_index=idx,
+                        total_steps=total_steps,
+                        step=step_result,
+                        elapsed_sec=time.monotonic() - started_at_mono,
+                    )
+                    if on_step_complete is not None:
+                        on_step_complete(step_event)
+                    self._emit_step_complete_event(step_event, run_id)
+
+            pipeline_result = self._finalize(completed_steps, sink, run_id, started_at_ts)
+            logger.info(
+                "Pipeline complete: status=%s, run_id=%s",
+                pipeline_result.run.status,
+                pipeline_result.run.run_id,
+            )
+            return pipeline_result
+        finally:
+            # Guarantee on_run_end fires — covers timeouts, cancellation,
+            # and bugs in _finalize. Synthesizes a result if we didn't reach it.
+            self._emit_pipeline_end(
+                pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
+                run_id,
+            )
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
         """Create a FAILED step from an unhandled exception."""

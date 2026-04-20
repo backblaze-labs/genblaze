@@ -39,7 +39,7 @@ def test_png_roundtrip(tmp_path: Path):
 
     # 5. Verify round-trip fidelity
     assert extracted.canonical_hash == original_hash
-    assert extracted.schema_version == "1.4"
+    assert extracted.schema_version == "1.5"
     assert extracted.run.run_id == run.run_id
     assert extracted.run.name == "golden-test"
     assert extracted.run.tenant_id == "test-org"

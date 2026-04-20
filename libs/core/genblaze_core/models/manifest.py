@@ -15,7 +15,7 @@ from genblaze_core.models.run import Run
 if TYPE_CHECKING:
     from genblaze_core.models.policy import EmbedPolicy
 
-SCHEMA_VERSION = "1.4"
+SCHEMA_VERSION = "1.5"
 
 # Operational fields excluded from canonical hash — these are non-deterministic
 # (timestamps, status) or potentially sensitive (error messages, provider payloads).
@@ -109,6 +109,14 @@ class Manifest(BaseModel):
     signature: str | None = Field(
         default=None,
         description="Cryptographic signature (reserved). Not included in hash.",
+    )
+    transfer_failures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Asset IDs that failed to transfer to storage during sink.write_run(). "
+            "Populated by ObjectStorageSink on partial failures. Not included in hash — "
+            "these are transport-layer diagnostics, not provenance."
+        ),
     )
 
     def __repr__(self) -> str:
@@ -231,6 +239,17 @@ def _migrate_v1_3_to_v1_4(data: dict) -> dict:
     return data
 
 
+def _migrate_v1_4_to_v1_5(data: dict) -> dict:
+    """Migrate a v1.4 manifest dict so it parses under the v1.5 model.
+
+    v1.5 adds an optional top-level ``transfer_failures`` field (non-hashed
+    transport-layer diagnostics). Hash payload semantics are unchanged.
+    Does NOT change schema_version so verify() reproduces the original hash.
+    """
+    data.setdefault("transfer_failures", [])
+    return data
+
+
 def parse_manifest(data: dict) -> Manifest:
     """Parse a manifest dict, migrating from older schema versions if needed.
 
@@ -242,15 +261,21 @@ def parse_manifest(data: dict) -> Manifest:
         data = _migrate_v1_1_to_v1_2(data)
         data = _migrate_v1_2_to_v1_3(data)
         data = _migrate_v1_3_to_v1_4(data)
+        data = _migrate_v1_4_to_v1_5(data)
     elif version == "1.1":
         data = _migrate_v1_1_to_v1_2(data)
         data = _migrate_v1_2_to_v1_3(data)
         data = _migrate_v1_3_to_v1_4(data)
+        data = _migrate_v1_4_to_v1_5(data)
     elif version == "1.2":
         data = _migrate_v1_2_to_v1_3(data)
         data = _migrate_v1_3_to_v1_4(data)
+        data = _migrate_v1_4_to_v1_5(data)
     elif version == "1.3":
         data = _migrate_v1_3_to_v1_4(data)
+        data = _migrate_v1_4_to_v1_5(data)
+    elif version == "1.4":
+        data = _migrate_v1_4_to_v1_5(data)
 
     manifest = Manifest.model_validate(data)
 

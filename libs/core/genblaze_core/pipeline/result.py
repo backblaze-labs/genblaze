@@ -72,10 +72,9 @@ class PipelineResult:
         for i, step in enumerate(self.run.steps):
             if step.error:
                 lines.append(f"Step {i} ({step.provider}/{step.model}): {step.error}")
-        # Include transfer failures if the sink recorded them
-        failures = self.run.metadata.get("_transfer_failures")
-        if failures:
-            lines.append(f"Asset transfers failed: {', '.join(failures)}")
+        # Include transfer failures if the sink recorded them on the manifest
+        if self.manifest.transfer_failures:
+            lines.append(f"Asset transfers failed: {', '.join(self.manifest.transfer_failures)}")
         return "\n".join(lines) if lines else None
 
     def save(

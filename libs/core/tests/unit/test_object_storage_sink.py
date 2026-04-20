@@ -188,6 +188,29 @@ class TestObjectStorageSink:
         # Manifest hash should still verify (recomputed after mutation)
         assert manifest.verify()
 
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_manifest_verifies_after_partial_transfer_failure(self, mock_urlopen, _mock_dns):
+        """Partial transfer failures must not poison canonical_hash integrity.
+
+        Regression: previously, sink wrote failure IDs into run.metadata
+        (which is part of the hashed payload) AFTER compute_hash(), so
+        manifest.verify() returned False on any run with failed transfers.
+        """
+        # urlopen raises on every asset download — forces a failure path
+        mock_urlopen.side_effect = RuntimeError("network down")
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        # Sink recorded the failure on the manifest (non-hashed field)
+        assert manifest.transfer_failures == [run.steps[0].assets[0].asset_id]
+        # Hash must still verify despite the partial failure
+        assert manifest.verify()
+
 
 def _mock_urlopen():
     """Helper: patch urlopen to return fake image data."""

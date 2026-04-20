@@ -77,6 +77,20 @@ for event in pipe.stream(on_progress=log_progress):  # both fire
 
 If the pipeline raises an uncaught exception (not captured as a step failure), `stream()` drains any events already queued, then re-raises the exception after the iterator completes. Wrap iteration in a try/except to surface it.
 
+## Early break
+
+Breaking out of iteration before the terminal event (`pipeline.completed` / `pipeline.failed`) is safe and non-blocking. The worker thread (sync) or task (async) keeps running until the pipeline naturally completes, but control returns to the caller immediately. Consequences:
+
+- Remaining events after the break are discarded.
+- Any post-break exception in the pipeline is suppressed.
+- Asset generation, sink writes, and tracer callbacks still run to completion — breaking out of the stream does **not** abort the pipeline.
+
+To actually cancel pending work, use `astream()` (which cancels the worker task; in-flight `asyncio` awaits raise `CancelledError`) or kill the surrounding process. There is no way to interrupt a sync `run()` mid-flight.
+
+## Buffering / backpressure
+
+Event queues are unbounded. In practice this is fine — even a 30-minute video run emits only ~60 events (≤100 KB) because providers poll at 1–30s intervals. The queue grows only while a consumer is blocked; a slow consumer holding the iterator for minutes could buffer a few MB at most. No backpressure is applied to providers; if you need to throttle work, use `max_concurrency` on the pipeline rather than slowing the stream consumer.
+
 ## Internals
 
 - `stream()` runs `run()` in a worker thread, yielding from `queue.Queue`.

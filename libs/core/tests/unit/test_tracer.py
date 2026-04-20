@@ -178,3 +178,68 @@ def test_pipeline_tracer_setter() -> None:
     pipe.tracer(tracer)
     pipe.run()
     assert any(c[0] == "on_run_start" for c in tracer.calls)
+
+
+# --- Lifecycle invariants: start/end hooks always pair up ---------------------
+
+
+class _RaisingProvider(BaseProvider):
+    """Provider that raises from invoke() via a non-retryable error path."""
+
+    name = "raising"
+
+    def submit(self, step, config=None):
+        raise RuntimeError("kaboom")
+
+    def poll(self, prediction_id, config=None) -> bool:  # pragma: no cover
+        return True
+
+    def fetch_output(self, prediction_id, step):  # pragma: no cover
+        return step
+
+
+def _hook_sequence(tracer: _RecordingTracer) -> list[str]:
+    return [c[0] for c in tracer.calls]
+
+
+def test_on_step_end_fires_when_step_fails() -> None:
+    """Regression: on_step_start must always be paired with on_step_end."""
+    tracer = _RecordingTracer()
+    Pipeline("t", tracer=tracer).step(_RaisingProvider(), model="m", prompt="p").run()
+
+    seq = _hook_sequence(tracer)
+    assert seq.count("on_step_start") == seq.count("on_step_end") == 1
+
+
+def test_on_run_end_fires_on_pipeline_timeout() -> None:
+    """Regression: PipelineTimeoutError used to skip on_run_end, leaking tracer state."""
+    from genblaze_core.exceptions import PipelineTimeoutError
+
+    tracer = _RecordingTracer()
+    # pipeline_timeout=0 triggers an immediate timeout on the first pre-step check
+    pipe = Pipeline("t", tracer=tracer).step(_OKProvider(), model="m", prompt="p")
+    try:
+        pipe.run(pipeline_timeout=0.0)
+    except PipelineTimeoutError:
+        pass
+
+    seq = _hook_sequence(tracer)
+    assert seq.count("on_run_start") == seq.count("on_run_end") == 1
+
+
+def test_otel_tracer_no_leak_on_timeout() -> None:
+    """OTelTracer's internal run_spans dict must empty even when run() aborts."""
+    from genblaze_core.exceptions import PipelineTimeoutError
+    from genblaze_core.observability.tracer import OTelTracer
+
+    tracer = OTelTracer()
+    pipe = Pipeline("t", tracer=tracer).step(_OKProvider(), model="m", prompt="p")
+    try:
+        pipe.run(pipeline_timeout=0.0)
+    except PipelineTimeoutError:
+        pass
+
+    # Even if the OTel SDK isn't installed (self._tracer is None), the dicts
+    # stay empty. If the SDK is installed, on_run_end popped the entry.
+    assert tracer._run_spans == {}
+    assert tracer._step_spans == {}

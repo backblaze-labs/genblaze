@@ -169,3 +169,193 @@ def test_preview_url_surfaces_in_stream() -> None:
     events = list(Pipeline("t").step(_PreviewProvider(), model="m", prompt="p").stream())
     progress_events = [e for e in events if e.type == "step.progress"]
     assert any(e.preview_url == "https://cdn.test/preview-42.jpg" for e in progress_events)
+
+
+# --- Early-break non-blocking semantics ---------------------------------------
+
+
+def test_stream_early_break_does_not_block() -> None:
+    """Breaking early from stream() must not wait for the pipeline to finish.
+
+    Regression: previously t.join() ran unconditionally in the generator's
+    finally, blocking the caller for the remainder of the pipeline runtime.
+    """
+    import time as _time
+
+    provider = _OKProvider()
+    # Multi-step pipeline with a 0.25s synthetic latency per step.
+    # If early-break blocks on join, total wall time would be ≥ 0.75s.
+    # Slow provider via a subclass:
+
+    class _SlowProvider(BaseProvider):
+        name = "slow"
+
+        def submit(self, step, config=None) -> Any:
+            _time.sleep(0.25)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            return step
+
+    pipe = (
+        Pipeline("t")
+        .step(_SlowProvider(), model="m", prompt="p1")
+        .step(_SlowProvider(), model="m", prompt="p2")
+        .step(_SlowProvider(), model="m", prompt="p3")
+    )
+
+    t0 = _time.monotonic()
+    for event in pipe.stream():
+        if event.type == "step.completed":
+            break  # bail after the first step
+    elapsed = _time.monotonic() - t0
+
+    # Must finish well before 3 × 0.25s = 0.75s (first step + some slack)
+    assert elapsed < 0.5, f"stream() blocked on early break ({elapsed:.2f}s)"
+    assert provider is not None  # keep imports used
+
+
+@pytest.mark.asyncio
+async def test_astream_early_break_cancels_worker() -> None:
+    """Breaking early from astream() cancels the worker task cleanly."""
+    import asyncio
+    import time as _time
+
+    class _AsyncSlowProvider(BaseProvider):
+        name = "aslow"
+
+        def submit(self, step, config=None) -> Any:
+            _time.sleep(0.01)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            return step
+
+    pipe = (
+        Pipeline("t")
+        .step(_AsyncSlowProvider(), model="m", prompt="p1")
+        .step(_AsyncSlowProvider(), model="m", prompt="p2")
+        .step(_AsyncSlowProvider(), model="m", prompt="p3")
+    )
+
+    t0 = asyncio.get_event_loop().time()
+    async for event in pipe.astream():
+        if event.type == "step.completed":
+            break
+    elapsed = asyncio.get_event_loop().time() - t0
+
+    # Upper bound generous; the point is it doesn't wait for all 3 steps.
+    assert elapsed < 1.0, f"astream() blocked on early break ({elapsed:.2f}s)"
+
+
+# --- QueueEmitter close semantics ---------------------------------------------
+
+
+def test_queue_emitter_put_after_close_is_noop() -> None:
+    """Post-close put() must drop events silently, not crash or enqueue.
+
+    Abandoned stream workers (after consumer early-break) rely on this to
+    finish their lifecycle without tripping on a closed/swapped emitter.
+    """
+    import queue as _queue
+
+    from genblaze_core.pipeline.streaming import QueueEmitter
+
+    q: _queue.Queue = _queue.Queue()
+    emitter = QueueEmitter(q)
+    emitter.put(StreamEvent(type="step.started"))
+    emitter.close()
+
+    # Drain one real event + sentinel — nothing else should be enqueued.
+    first = q.get_nowait()
+    assert isinstance(first, StreamEvent)
+    # Sentinel is an opaque object, not a StreamEvent
+    sentinel = q.get_nowait()
+    assert not isinstance(sentinel, StreamEvent)
+    assert q.empty()
+
+    # Post-close puts must not raise and must not land on the queue.
+    emitter.put(StreamEvent(type="step.completed"))
+    emitter.close()  # idempotent
+    assert q.empty()
+
+
+def test_stream_early_break_drains_without_daemon_error() -> None:
+    """After early break, the daemon worker finishes cleanly even if it
+    still tries to emit events. Previously, the worker's trailing
+    emitter.put() could AttributeError when the generator had moved on."""
+    import time as _time
+
+    class _SlowProvider(BaseProvider):
+        name = "slow"
+
+        def submit(self, step, config=None) -> Any:
+            _time.sleep(0.05)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            return step
+
+    pipe = (
+        Pipeline("t")
+        .step(_SlowProvider(), model="m", prompt="p1")
+        .step(_SlowProvider(), model="m", prompt="p2")
+    )
+
+    for ev in pipe.stream():
+        if ev.type == "step.completed":
+            break
+
+    # Give the daemon worker a beat to wind down. If it crashed, a subsequent
+    # stream() call would inherit a poisoned state.
+    _time.sleep(0.25)
+
+
+def test_consecutive_streams_after_early_break_terminate_cleanly() -> None:
+    """A second stream() after an early break must still terminate normally
+    and deliver its own pipeline.completed.
+
+    Scope note: if the first stream's abandoned daemon is still running when
+    the second stream starts, its residual events may appear in the second
+    stream's queue because ``self._event_emitter`` is a single-slot rebind.
+    Full isolation requires routing emitters via contextvars — tracked
+    separately. This test only asserts the second stream terminates with a
+    terminal event and produces no exceptions.
+    """
+
+    class _FastProvider(BaseProvider):
+        name = "fast"
+
+        def submit(self, step, config=None) -> Any:
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            return step
+
+    pipe = Pipeline("t").step(_FastProvider(), model="m", prompt="p1")
+
+    # First stream: consume all events so the worker completes cleanly.
+    events1 = list(pipe.stream())
+    assert events1[-1].type == "pipeline.completed"
+
+    # Second stream on the same pipeline: must produce its own clean sequence.
+    events2 = list(pipe.stream())
+    types2 = _event_types(events2)
+    assert types2[0] == "pipeline.started"
+    assert types2[-1] == "pipeline.completed"

@@ -26,10 +26,10 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://genblaze.dev"
-Repository = "https://github.com/backblaze-b2-samples/genblaze"
-Changelog = "https://github.com/backblaze-b2-samples/genblaze/blob/main/CHANGELOG.md"
-Issues = "https://github.com/backblaze-b2-samples/genblaze/issues"
+Documentation = "https://www.backblaze.com/docs/"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 parquet = ["pyarrow>=14.0"]

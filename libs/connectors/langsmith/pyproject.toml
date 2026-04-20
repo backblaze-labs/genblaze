@@ -19,9 +19,9 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://genblaze.dev"
-Repository = "https://github.com/backblaze-b2-samples/genblaze"
-Issues = "https://github.com/backblaze-b2-samples/genblaze/issues"
+Documentation = "https://www.backblaze.com/docs/"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 dev = [

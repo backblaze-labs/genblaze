@@ -12,7 +12,7 @@
 [![PyPI](https://img.shields.io/pypi/v/genblaze-core)](https://pypi.org/project/genblaze-core/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
-[![CI](https://github.com/backblaze-b2-samples/genblaze/actions/workflows/ci.yml/badge.svg)](https://github.com/backblaze-b2-samples/genblaze/actions/workflows/ci.yml)
+[![CI](https://github.com/backblaze-labs/genblaze/actions/workflows/ci.yml/badge.svg)](https://github.com/backblaze-labs/genblaze/actions/workflows/ci.yml)
 
 </div>
 
@@ -35,12 +35,12 @@ genblaze ships with provider adapters for major generative AI platforms:
 | **ElevenLabs** | — | — | TTS + Sound Effects |
 | **Stability AI** | — | — | Stable Audio (music) |
 | **LMNT** | — | — | TTS |
-| **GMICloud** | Kling (via request queue) | — | — |
+| **GMICloud** | Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
 
 ## Features
 
 - **Pipeline API** — Fluent, composable multi-step generation pipelines with fan-in (`input_from`) and AV compositing
-- **13 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud (across 11 connector packages)
+- **15 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud (across 11 connector packages)
 - **Manifest provenance** — Every run produces a canonical, SHA-256-verified manifest
 - **Media embedding** — Embed manifests into PNG, JPEG, WebP, MP4, MP3, WAV
 - **S3-compatible storage** — Upload assets to Backblaze B2, AWS S3, Cloudflare R2, MinIO
@@ -63,7 +63,7 @@ pip install genblaze-replicate   # Replicate (Flux, SDXL, etc.)
 pip install genblaze-elevenlabs  # ElevenLabs TTS + sound effects
 pip install genblaze-stability-audio  # Stability AI Stable Audio
 pip install genblaze-lmnt        # LMNT fast TTS
-pip install genblaze-gmicloud    # GMICloud (Kling video via request queue)
+pip install genblaze-gmicloud    # GMICloud (video, image, audio via request queue)
 
 # Add storage + CLI
 pip install genblaze-s3          # S3-compatible storage (B2, AWS, R2)
@@ -107,13 +107,16 @@ The manifest captures the full provenance chain — provider, model, prompt, par
 
 Upload assets and manifests to any S3-compatible bucket with `sink=storage`. The sink handles asset transfer, manifest upload, and URL rewriting in a single operation.
 
+**Backblaze B2 is the recommended default** — one-liner, reads credentials from
+`B2_KEY_ID` / `B2_APP_KEY`:
+
 ```python
 from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
 from genblaze_openai import SoraProvider
 from genblaze_s3 import S3StorageBackend
 
 storage = ObjectStorageSink(
-    S3StorageBackend(bucket="my-bucket", endpoint_url="https://s3.us-west-004.backblazeb2.com"),
+    S3StorageBackend.for_backblaze("my-bucket"),
     key_strategy=KeyStrategy.HIERARCHICAL,
 )
 
@@ -124,7 +127,17 @@ result = Pipeline("my-pipeline").step(
     modality=Modality.VIDEO,
 ).run(sink=storage, timeout=300)
 
-print(f"Asset URL: {result.run.steps[0].assets[0].url}")  # Points to your bucket
+print(f"Asset URL: {result.run.steps[0].assets[0].url}")  # Points to your B2 bucket
+```
+
+**Other S3-compatible providers** (AWS S3, Cloudflare R2, MinIO) — use the
+generic constructor with an explicit `endpoint_url`:
+
+```python
+storage = ObjectStorageSink(
+    S3StorageBackend(bucket="my-bucket", endpoint_url="https://..."),
+    key_strategy=KeyStrategy.HIERARCHICAL,
+)
 ```
 
 **Cloud + local embed** — upload to cloud, then embed provenance into the local copy:
@@ -148,7 +161,7 @@ result.save(local_path)
 from genblaze_core import ParquetSink
 
 storage = ObjectStorageSink(
-    S3StorageBackend(bucket="my-bucket", endpoint_url="https://..."),
+    S3StorageBackend.for_backblaze("my-bucket"),
     key_strategy=KeyStrategy.HIERARCHICAL,
     parquet_sink=ParquetSink("data/"),  # Also write structured data locally
 )

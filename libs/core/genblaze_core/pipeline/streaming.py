@@ -68,20 +68,36 @@ class QueueEmitter:
     ``asyncio.Queue`` (for :meth:`Pipeline.astream` and the agent loop's
     async stream). The put/put_nowait dispatch lives here so callers
     don't replicate the isinstance branching.
+
+    After :meth:`close`, subsequent :meth:`put` calls are silent no-ops.
+    This lets abandoned background workers (after early stream break)
+    drop events without crashing when the consumer has moved on.
     """
 
     def __init__(self, q: queue.Queue | asyncio.Queue, run_id: str | None = None) -> None:
         self._q = q
         self.run_id = run_id
+        self._closed = False
 
     def put(self, event: StreamEvent | object) -> None:
+        if self._closed:
+            return
         if isinstance(self._q, asyncio.Queue):
             self._q.put_nowait(event)
         else:
             self._q.put(event)
 
     def close(self) -> None:
-        self.put(_SENTINEL)
+        """Emit the sentinel once, then silence further puts. Idempotent."""
+        if self._closed:
+            return
+        # Sentinel must land on the queue before we flip the flag,
+        # otherwise the drain loop would block forever.
+        if isinstance(self._q, asyncio.Queue):
+            self._q.put_nowait(_SENTINEL)
+        else:
+            self._q.put(_SENTINEL)
+        self._closed = True
 
     def on_progress(self, ev: ProgressEvent) -> None:
         self.put(progress_to_stream_event(ev, self.run_id))

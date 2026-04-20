@@ -1,4 +1,4 @@
-"""GMICloudVideoProvider — video generation via the GMICloud request queue.
+"""GMICloudImageProvider — image generation via the GMICloud request queue.
 
 Auth: Set GMI_API_KEY env var or pass api_key= to the constructor.
 
@@ -7,10 +7,12 @@ Docs: https://docs.gmicloud.ai
 
 from __future__ import annotations
 
+import mimetypes
 from typing import Any
+from urllib.parse import urlparse
 
 from genblaze_core.exceptions import ProviderError
-from genblaze_core.models.asset import Asset, AudioMetadata, Track, VideoMetadata
+from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers.base import (
@@ -25,33 +27,23 @@ from ._errors import map_gmicloud_error
 
 # Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
 # Unknown models pass through to the API; cost_usd will be None.
-_VIDEO_PRICING: dict[str, float] = {
-    "Veo3": 0.40,
-    "Veo3-Fast": 0.15,
-    "Sora-2-Pro": 0.50,
-    "Kling-Image2Video-V2.1-Master": 0.28,
-    "Kling-Text2Video-V2.1-Master": 0.28,
-    "Kling-Image2Video-V1.6-Pro": 0.098,
-    "Kling-Text2Video-V1.6-Pro": 0.098,
-    "Kling-Image2Video-V1.5-Pro": 0.098,
-    "Kling-Text2Video-V1.5-Pro": 0.098,
-    "Minimax-Hailuo-2.3-Fast": 0.032,
-    "PixVerse-v5.6": 0.03,
-    "Wan-2.6-T2V": 0.15,
-    "Wan-2.6-I2V": 0.15,
-    "Luma-Ray-2": 0.20,
-    "Vidu-Q1": 0.10,
+_IMAGE_PRICING: dict[str, float] = {
+    "Seedream-5.0-Lite": 0.035,
+    "Gemini-2.5-Flash-Image": 0.039,
+    "Reve-Edit-Fast": 0.007,
+    "FLUX-Kontext-Pro": 0.05,
+    "Seededit": 0.03,
+    "Bria-Blending": 0.02,
+    "Bria-Relighting": 0.02,
+    "Bria-Restoration": 0.02,
 }
 
-# Models that produce audio alongside video (multi-track output)
-_HAS_AUDIO_MODELS: set[str] = {"Veo3", "Veo3-Fast"}
 
+class GMICloudImageProvider(GMICloudBase):
+    """Provider adapter for GMICloud image generation via the request queue.
 
-class GMICloudVideoProvider(GMICloudBase):
-    """Provider adapter for GMICloud video generation via the request queue.
-
-    Models: Kling, Veo, Sora, Wan, Minimax Hailuo, PixVerse, Luma Ray, Vidu,
-    and any new model added to GMICloud's queue (unknown models pass through).
+    Models: Seedream, Gemini Flash Image, FLUX-Kontext, Reve, Bria series,
+    and any new image model added to GMICloud's queue (unknown models pass through).
 
     Args:
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
@@ -59,24 +51,16 @@ class GMICloudVideoProvider(GMICloudBase):
         http_timeout: HTTP request timeout in seconds (default 120).
     """
 
-    name = "gmicloud"
+    name = "gmicloud-image"
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            supported_modalities=[Modality.VIDEO],
+            supported_modalities=[Modality.IMAGE],
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
-            models=sorted(_VIDEO_PRICING),
-            output_formats=["video/mp4"],
+            models=sorted(_IMAGE_PRICING),
+            output_formats=["image/png", "image/jpeg"],
         )
-
-    def normalize_params(self, params: dict, modality: Any = None) -> dict:
-        p = dict(params)
-        if "duration" in p:
-            p["duration"] = int(p["duration"])
-        if "cfg_scale" not in p and "guidance_scale" in p:
-            p["cfg_scale"] = p.pop("guidance_scale")
-        return p
 
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         try:
@@ -84,7 +68,7 @@ class GMICloudVideoProvider(GMICloudBase):
             if step.prompt:
                 payload["prompt"] = step.prompt
 
-            for key in ("duration", "cfg_scale", "aspect_ratio", "negative_prompt"):
+            for key in ("aspect_ratio", "negative_prompt", "number_of_images"):
                 if key in step.params:
                     payload[key] = step.params[key]
 
@@ -115,29 +99,24 @@ class GMICloudVideoProvider(GMICloudBase):
 
             if status in ("failed", "cancelled"):
                 raise ProviderError(
-                    str(detail.get("error") or f"Video generation {status}"),
+                    str(detail.get("error") or f"Image generation {status}"),
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            video_url = outcome.get("video_url") or outcome.get("url")
-            if not video_url:
-                raise ProviderError("GMICloud request completed but no video URL found")
+            image_url = outcome.get("image_url") or outcome.get("url")
+            if not image_url:
+                raise ProviderError("GMICloud request completed but no image URL found")
 
-            validate_asset_url(str(video_url))
-            asset = Asset(url=str(video_url), media_type="video/mp4")
+            validate_asset_url(str(image_url))
 
-            has_audio = step.model in _HAS_AUDIO_MODELS
-            asset.video = VideoMetadata(has_audio=has_audio)
-            if has_audio:
-                asset.tracks = [
-                    Track(kind="video", codec="h264"),
-                    Track(kind="audio", codec="aac", label="generated-audio"),
-                ]
-                asset.audio = AudioMetadata(codec="aac")
+            path = urlparse(str(image_url)).path
+            mime, _ = mimetypes.guess_type(path)
+            if mime is None or not mime.startswith("image/"):
+                mime = "image/png"
 
-            step.assets.append(asset)
+            step.assets.append(Asset(url=str(image_url), media_type=mime))
 
-            per_gen = _VIDEO_PRICING.get(step.model)
+            per_gen = _IMAGE_PRICING.get(step.model)
             if per_gen is not None:
                 step.cost_usd = per_gen * len(step.assets)
 

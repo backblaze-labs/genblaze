@@ -155,6 +155,9 @@ class AgentLoop:
         Emits per-pipeline events (piped from each iteration's pipeline) and
         agent-level events (``agent.iteration.started``,
         ``agent.iteration.evaluated``, ``agent.completed``).
+
+        Early break: if the caller abandons iteration, the worker keeps
+        running as a daemon thread and its remaining events are discarded.
         """
         import threading
 
@@ -163,6 +166,7 @@ class AgentLoop:
         q: queue.Queue = queue.Queue()
         self._emitter = QueueEmitter(q)
         exc_box: list[BaseException] = []
+        done = threading.Event()
 
         def _worker() -> None:
             try:
@@ -172,19 +176,25 @@ class AgentLoop:
                 exc_box.append(exc)
             finally:
                 self._emitter.close()
+                done.set()
 
         t = threading.Thread(target=_worker, daemon=True, name="genblaze-agent-stream")
         t.start()
         try:
             yield from drain_queue_sync(q)
         finally:
-            t.join()
             self._emitter = None
-            if exc_box:
-                raise exc_box[0]
+            if done.is_set():
+                t.join()
+                if exc_box:
+                    raise exc_box[0]
 
     async def astream(self, **run_kwargs: Any):
-        """Async version of :meth:`stream`."""
+        """Async version of :meth:`stream`.
+
+        Early break: cancels the worker task; in-flight awaits propagate
+        :class:`asyncio.CancelledError` and the exception is suppressed.
+        """
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
@@ -203,7 +213,14 @@ class AgentLoop:
                 yield ev
         finally:
             self._emitter = None
-            await task
+            if task.done():
+                await task
+            else:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
+                    logger.debug("astream worker aborted: %s", exc)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -34,6 +34,8 @@ Implement any subset of these hooks — defaults are no-ops:
 
 **Safety**: tracer exceptions are caught + logged at WARNING. A broken tracer never breaks a pipeline.
 
+**Lifecycle invariant**: every `on_run_start` is paired with exactly one `on_run_end`, and every `on_step_start` with exactly one `on_step_end` — including on pipeline timeouts, provider exceptions, and `KeyboardInterrupt`. Backends that maintain per-run or per-step state (span handles, remote run IDs) can rely on the end hook firing to release it. A synthetic "aborted" `PipelineResult` is passed to `on_run_end` when the run didn't reach normal completion.
+
 ## Built-in backends
 
 - **NoOpTracer** — default; zero cost

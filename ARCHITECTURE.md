@@ -14,7 +14,7 @@
   - `genblaze-elevenlabs` — ElevenLabs (TTS + sound effects)
   - `genblaze-stability-audio` — Stability AI (Stable Audio music)
   - `genblaze-lmnt` — LMNT (fast TTS)
-  - `genblaze-gmicloud` — GMICloud (Kling video via request queue)
+  - `genblaze-gmicloud` — GMICloud (video, image, audio via request queue)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
@@ -35,7 +35,7 @@
 
 ## Data Stores
 
-- **Object storage** — S3-compatible upload via `ObjectStorageSink`
+- **Object storage** — S3-compatible upload via `ObjectStorageSink`. Backblaze B2 is the recommended default backend (`S3StorageBackend.for_backblaze(...)`); AWS S3, Cloudflare R2, and MinIO are supported via the generic constructor.
   - **HIERARCHICAL** (run-grouped):
     ```
     {prefix}/runs/{tenant}/{date}/{run_id}/manifest.json
@@ -63,7 +63,7 @@
 - **ElevenLabs API** — TTS + sound effects (`genblaze-elevenlabs`)
 - **Stability AI API** — Stable Audio music (`genblaze-stability-audio`)
 - **LMNT API** — Fast TTS (`genblaze-lmnt`)
-- **GMICloud API** — Kling video via request queue (`genblaze-gmicloud`)
+- **GMICloud API** — Video, image, audio via request queue (`genblaze-gmicloud`)
 - All accessed via lazy SDK imports — no runtime dependency unless the connector is used
 
 ## Trust Boundaries
