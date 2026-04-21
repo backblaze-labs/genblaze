@@ -197,6 +197,12 @@ class Mp4Handler(BaseMediaHandler):
                     break
 
                 if box_type == b"uuid":
+                    # Skip malformed uuid boxes too short to hold a UUID; otherwise
+                    # payload_size would go negative and f.read(-N) would consume
+                    # the rest of the file — OOM risk on multi-GB inputs.
+                    if box_size < header_size + 16:
+                        pos += box_size
+                        continue
                     uuid_bytes = f.read(16)
                     if uuid_bytes == GENBLAZE_UUID_BYTES:
                         payload_size = box_size - header_size - 16

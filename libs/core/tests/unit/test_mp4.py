@@ -105,6 +105,27 @@ def test_mp4_embed_preserves_original_bytes_as_prefix(
     assert tail[8:24] == GENBLAZE_UUID_BYTES
 
 
+def test_mp4_extract_streaming_rejects_malformed_uuid_box(tmp_path: Path) -> None:
+    """A uuid box with box_size < header+16 must not trigger an unbounded read.
+
+    Before the guard, payload_size = box_size - header_size - 16 went negative
+    and f.read(-N) reads to EOF — an OOM vector for multi-GB inputs. The fix
+    skips the malformed box instead of attempting to read its payload.
+    """
+    ftyp = b"\x00\x00\x00\x14" + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"isom"
+    # Declared size 20 but the 16 bytes at offset 8 happen to match our UUID —
+    # worst case for the unguarded code path.
+    bad_uuid_box = (20).to_bytes(4, "big") + b"uuid" + GENBLAZE_UUID_BYTES
+    trailing = b"\x00" * 1024
+    mp4 = tmp_path / "malformed.mp4"
+    mp4.write_bytes(ftyp + bad_uuid_box + trailing)
+
+    result = Mp4Handler()._extract_streaming(mp4, mp4.stat().st_size)
+    assert result is None, (
+        "Malformed uuid box must not return payload via negative-size f.read()"
+    )
+
+
 def test_mp4_embed_replace_keeps_prefix_stable(tmp_path: Path, sample_manifest: Manifest) -> None:
     """Re-embedding strips the prior UUID and appends the new one — the
     pre-mdat prefix stays byte-identical across both embeds."""
