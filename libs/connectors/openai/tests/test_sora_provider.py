@@ -159,6 +159,11 @@ def test_submit_rejects_unsafe_chain_input_url(mock_openai):
 class TestSoraCompliance(ProviderComplianceTests):
     """Verify SoraProvider satisfies the genblaze provider contract."""
 
+    # Sora pricing formula (model × resolution × seconds) not yet implemented.
+    # Flat-cost attribution was removed to avoid misreporting; re-enable
+    # when the per-second formula lands.
+    expects_cost = False
+
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):
         with patch.dict("sys.modules", {"openai": MagicMock()}):

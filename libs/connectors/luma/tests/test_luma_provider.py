@@ -89,29 +89,18 @@ def test_invalid_aspect_ratio_raises(mock_luma):
         provider.submit(step)
 
 
-def test_cost_tracked(mock_luma):
-    """Cost is set based on model tier."""
+def test_cost_not_populated_until_formula_lands(mock_luma):
+    """Cost stays None for all models.
+
+    Luma bills by duration; the previous flat per-generation attribution
+    misreported costs and was removed. Re-enable once a duration-aware
+    formula is implemented.
+    """
     provider, _ = mock_luma
-    step = Step(provider="luma", model="ray-2", prompt="a sunset")
-    result = provider.fetch_output("gen-abc", step)
-    assert result.cost_usd is not None
-    assert result.cost_usd == 0.40
-
-
-def test_cost_tracked_flash(mock_luma):
-    """Flash model has lower cost."""
-    provider, _ = mock_luma
-    step = Step(provider="luma", model="ray-flash-2", prompt="a sunset")
-    result = provider.fetch_output("gen-abc", step)
-    assert result.cost_usd == 0.20
-
-
-def test_cost_none_unknown_model(mock_luma):
-    """Cost stays None for unknown model."""
-    provider, _ = mock_luma
-    step = Step(provider="luma", model="unknown-model", prompt="a sunset")
-    result = provider.fetch_output("gen-abc", step)
-    assert result.cost_usd is None
+    for model in ("ray-2", "ray-flash-2", "unknown-model"):
+        step = Step(provider="luma", model=model, prompt="a sunset")
+        result = provider.fetch_output("gen-abc", step)
+        assert result.cost_usd is None, f"cost_usd must be None for {model}"
 
 
 def test_duration_param_forwarded(mock_luma):
@@ -133,6 +122,11 @@ def test_duration_param_forwarded(mock_luma):
 
 class TestLumaCompliance(ProviderComplianceTests):
     """Verify LumaProvider satisfies the genblaze provider contract."""
+
+    # Luma bills by duration, not per generation. Flat-cost attribution was
+    # removed to avoid misreporting; re-enable when a (model, duration)
+    # formula lands.
+    expects_cost = False
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):

@@ -172,9 +172,10 @@ class LumaProvider(BaseProvider):
                     asset.video = VideoMetadata(has_audio=False)
                     step.assets.append(asset)
 
-                    per_gen = _PRICING.get(step.model)
-                    if per_gen is not None:
-                        step.cost_usd = per_gen * len(step.assets)
+                    # Cost attribution intentionally omitted — Luma bills by
+                    # duration, not per generation. Flat per-gen pricing
+                    # misreports costs. Revisit with (model, duration) formula.
+                    _ = _PRICING  # keep reference so the dict isn't flagged as unused
 
                     return step
 

@@ -220,9 +220,12 @@ class SoraProvider(BaseProvider):
             asset.video = VideoMetadata(has_audio=False, codec="h264")
             step.assets.append(asset)
 
-            price = _SORA_PRICING.get(step.model)
-            if price is not None:
-                step.cost_usd = price
+            # Cost attribution intentionally omitted — Sora pricing varies by
+            # model, resolution, and duration (per-second billing). A flat
+            # per-video dict misreports cost by 10x+ on longer clips. A correct
+            # formula requires (model, size, seconds) inputs; wire this up
+            # before re-enabling step.cost_usd. See tech-debt tracker.
+            _ = _SORA_PRICING  # keep reference so the dict isn't flagged as unused
 
             return step
         except ProviderError:
