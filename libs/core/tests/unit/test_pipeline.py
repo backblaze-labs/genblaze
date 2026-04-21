@@ -247,6 +247,14 @@ async def test_pipeline_empty_arun_raises() -> None:
         await Pipeline("empty").arun()
 
 
+def test_pipeline_ctor_rejects_invalid_max_concurrency() -> None:
+    """Pipeline(max_concurrency < 1) must raise at construction time."""
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        Pipeline("ctor", max_concurrency=0)
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        Pipeline("ctor", max_concurrency=-1)
+
+
 @pytest.mark.asyncio
 async def test_pipeline_arun_rejects_invalid_max_concurrency() -> None:
     """arun(max_concurrency < 1) must fail before any tracer events are emitted.
