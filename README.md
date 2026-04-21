@@ -26,6 +26,7 @@ genblaze ships with provider adapters for major generative AI platforms:
 
 | | Video | Image | Audio |
 |---|---|---|---|
+| **GMICloud** | Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
 | **OpenAI** | Sora | DALL-E / gpt-image-1 | TTS |
 | **Google** | Veo | Imagen | — |
 | **Runway** | Gen-4 Turbo | — | — |
@@ -35,12 +36,11 @@ genblaze ships with provider adapters for major generative AI platforms:
 | **ElevenLabs** | — | — | TTS + Sound Effects |
 | **Stability AI** | — | — | Stable Audio (music) |
 | **LMNT** | — | — | TTS |
-| **GMICloud** | Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
 
 ## Features
 
 - **Pipeline API** — Fluent, composable multi-step generation pipelines with fan-in (`input_from`) and AV compositing
-- **10 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud (across 10 connector packages)
+- **10 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud
 - **Manifest provenance** — Every run produces a canonical, SHA-256-verified manifest
 - **Media embedding** — Embed manifests into PNG, JPEG, WebP, MP4, MP3, WAV
 - **S3-compatible storage** — Upload assets to Backblaze B2, AWS S3, Cloudflare R2, MinIO
@@ -72,26 +72,28 @@ pip install genblaze-cli         # CLI tools
 
 ## Quickstart
 
-Generate a video with OpenAI Sora — just one env var:
+Generate a video with GMICloud — just one env var:
 
 ```bash
-pip install genblaze-core genblaze-openai
-export OPENAI_API_KEY=...
+pip install genblaze-core genblaze-gmicloud
+export GMI_API_KEY=...
 ```
 
 ```python
 from genblaze_core import Pipeline, Modality
-from genblaze_openai import SoraProvider
+from genblaze_gmicloud import GMICloudVideoProvider
 
 run, manifest = (
     Pipeline("my-first-pipeline")
     .step(
-        SoraProvider(),
-        model="sora-2",
+        GMICloudVideoProvider(),
+        model="Kling-Text2Video-V1.6-Pro",
         prompt="A drone shot soaring over a coastal city at golden hour",
         modality=Modality.VIDEO,
+        duration=10,
+        aspect_ratio="16:9",
     )
-    .run(timeout=300)
+    .run(timeout=600)
 )
 
 print(f"Video:    {run.steps[0].assets[0].url}")
@@ -102,6 +104,36 @@ print(f"Verified: {manifest.verify()}")
 The manifest captures the full provenance chain — provider, model, prompt, parameters, timestamps, and a canonical hash for integrity verification.
 
 > **No API key?** Try `examples/quickstart_local.py` — builds and verifies a manifest with zero external calls.
+
+**Persist to Backblaze B2** — add one sink to upload the asset + manifest to your bucket on every run:
+
+```bash
+pip install genblaze-s3
+export B2_KEY_ID=...
+export B2_APP_KEY=...
+```
+
+```python
+from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
+from genblaze_gmicloud import GMICloudVideoProvider
+from genblaze_s3 import S3StorageBackend
+
+storage = ObjectStorageSink(
+    S3StorageBackend.for_backblaze("my-bucket"),
+    key_strategy=KeyStrategy.HIERARCHICAL,
+)
+
+result = Pipeline("my-first-pipeline").step(
+    GMICloudVideoProvider(),
+    model="Kling-Text2Video-V1.6-Pro",
+    prompt="A drone shot soaring over a coastal city at golden hour",
+    modality=Modality.VIDEO,
+    duration=10,
+    aspect_ratio="16:9",
+).run(sink=storage, timeout=600)
+
+print(f"Asset URL: {result.run.steps[0].assets[0].url}")  # Points to your B2 bucket
+```
 
 ## Storage
 
@@ -212,30 +244,39 @@ Every manifest carries a `parent_run_id` pointer (excluded from the canonical ha
 
 ### More examples
 
+Every example below uses the same `storage` sink — assets + manifests land in your Backblaze B2 bucket automatically.
+
 ```python
+from genblaze_core import ObjectStorageSink, KeyStrategy
+from genblaze_s3 import S3StorageBackend
+
+# Reused across every pipeline — credentials from B2_KEY_ID / B2_APP_KEY
+storage = ObjectStorageSink(
+    S3StorageBackend.for_backblaze("my-bucket"),
+    key_strategy=KeyStrategy.HIERARCHICAL,
+)
+
 # Multi-step: generate image then animate to video
 from genblaze_core import Pipeline, Modality
-from genblaze_openai import DalleProvider, SoraProvider
+from genblaze_gmicloud import GMICloudImageProvider, GMICloudVideoProvider
 
 run, manifest = (
     Pipeline("image-to-video", chain=True)
-    .step(DalleProvider(), model="dall-e-3", prompt="cyberpunk cityscape", modality=Modality.IMAGE)
-    .step(SoraProvider(), model="sora-2", prompt="camera slowly pans right", modality=Modality.VIDEO)
-    .run(timeout=300)
+    .step(GMICloudImageProvider(), model="Seedream-5.0-Lite", prompt="cyberpunk cityscape", modality=Modality.IMAGE)
+    .step(GMICloudVideoProvider(), model="Kling-Image2Video-V2.1-Master", prompt="camera slowly pans right", modality=Modality.VIDEO)
+    .run(sink=storage, timeout=600)
 )
 
 # Video with Luma Dream Machine
-from genblaze_core import Pipeline, Modality
 from genblaze_luma import LumaProvider
 
 run, manifest = (
     Pipeline("luma-video")
     .step(LumaProvider(), model="ray-2", prompt="a cat playing piano", modality=Modality.VIDEO)
-    .run(timeout=300)
+    .run(sink=storage, timeout=300)
 )
 
 # Generate speech with ElevenLabs
-from genblaze_core import Pipeline, Modality
 from genblaze_elevenlabs import ElevenLabsTTSProvider
 
 run, manifest = (
@@ -247,11 +288,10 @@ run, manifest = (
         modality=Modality.AUDIO,
         voice_id="JBFqnCBsd6RMkjVDRZzb",
     )
-    .run()
+    .run(sink=storage)
 )
 
 # Generate music with Stability Audio
-from genblaze_core import Pipeline, Modality
 from genblaze_stability_audio import StabilityAudioProvider
 
 run, manifest = (
@@ -263,14 +303,17 @@ run, manifest = (
         modality=Modality.AUDIO,
         duration=60,
     )
-    .run(timeout=120)
+    .run(sink=storage, timeout=120)
 )
 ```
 
 ### Embed manifest into media files
 
 ```python
+from pathlib import Path
 from genblaze_core.media import Mp4Handler
+
+mp4_path = Path("output/video.mp4")
 
 handler = Mp4Handler()
 handler.embed(mp4_path, manifest)
