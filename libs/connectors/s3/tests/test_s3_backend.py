@@ -179,3 +179,5 @@ class TestForBackblaze:
         config_kwargs = mock_config.call_args.kwargs
         assert config_kwargs["user_agent_extra"] == f"b2ai-genblaze/{__version__}"
         assert config_kwargs["retries"] == {"max_attempts": 3, "mode": "adaptive"}
+        assert config_kwargs["connect_timeout"] == 30
+        assert config_kwargs["read_timeout"] == 300

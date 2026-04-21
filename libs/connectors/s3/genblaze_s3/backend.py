@@ -68,10 +68,14 @@ class S3StorageBackend(StorageBackend):
         if aws_secret_access_key:
             kwargs["aws_secret_access_key"] = aws_secret_access_key
 
-        # Set user agent so B2 can identify genblaze traffic + retry transient failures
+        # User agent for B2 attribution; adaptive retries for transient 429/503s;
+        # explicit timeouts because boto3's 60s default read_timeout can fire
+        # mid-upload on slow links with GB-sized video payloads.
         kwargs["config"] = BotoConfig(
             user_agent_extra=_USER_AGENT,
             retries={"max_attempts": 3, "mode": "adaptive"},
+            connect_timeout=30,
+            read_timeout=300,
         )
 
         self._client = boto3.client("s3", **kwargs)
