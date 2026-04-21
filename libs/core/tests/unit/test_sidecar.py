@@ -48,22 +48,24 @@ def test_extract_missing_sidecar(tmp_path: Path) -> None:
         handler.extract(src)
 
 
-def test_embed_with_policy_redacts(tmp_path: Path, sample_manifest: Manifest) -> None:
-    """embed(policy=...) applies redaction before writing."""
+def test_embed_full_mode_private_prompt_raises(tmp_path: Path, sample_manifest: Manifest) -> None:
+    """Sidecar embed must propagate the ManifestError from to_embed_json
+    when full-mode redaction would desync hash from payload.
+
+    Users who want redaction must switch to embed_mode='pointer' — see
+    test_pointer_sidecar_embed_and_extract.
+    """
+    import pytest
+    from genblaze_core.exceptions import ManifestError
+    from genblaze_core.models.enums import PromptVisibility
+
     src = tmp_path / "image.png"
     src.write_bytes(b"fake png")
 
-    from genblaze_core.models.enums import PromptVisibility
-
     policy = EmbedPolicy(prompt_visibility=PromptVisibility.PRIVATE)
     handler = SidecarHandler()
-    sidecar = handler.embed(src, sample_manifest, policy=policy)
-
-    data = json.loads(sidecar.read_text(encoding="utf-8"))
-    # Prompt should be redacted
-    for step in data["run"]["steps"]:
-        assert step["prompt"] is None
-        assert step["prompt_visibility"] == "redacted"
+    with pytest.raises(ManifestError, match="embed_mode='pointer'"):
+        handler.embed(src, sample_manifest, policy=policy)
 
 
 def test_pointer_sidecar_embed_and_extract(tmp_path: Path, sample_manifest: Manifest) -> None:

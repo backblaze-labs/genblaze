@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from genblaze_core.media.embedder import SmartEmbedder
-from genblaze_core.media.png import PngHandler
 from genblaze_core.models import Manifest, Run, Step
 from genblaze_core.models.enums import PromptVisibility
 from genblaze_core.models.policy import EmbedPolicy
@@ -74,20 +73,48 @@ def test_embed_truly_unknown_extension_sidecar(tmp_path: Path) -> None:
     assert result.sidecar_path.exists()
 
 
-def test_embed_with_policy_redaction(tmp_path: Path) -> None:
-    """SmartEmbedder should apply policy redaction."""
+def test_embed_full_mode_private_prompt_raises(tmp_path: Path) -> None:
+    """SmartEmbedder must surface ManifestError when the caller requests
+    redaction without switching to pointer mode.
+
+    Previously, the embedder would silently write a manifest whose
+    canonical_hash did not match its embedded (redacted) payload. The
+    correct UX is to push the caller to pointer mode, which preserves
+    verifiability.
+    """
+    import pytest
+    from genblaze_core.exceptions import ManifestError
+
     png = tmp_path / "test.png"
     Image.new("RGBA", (1, 1)).save(png)
 
     embedder = SmartEmbedder()
     policy = EmbedPolicy(prompt_visibility=PromptVisibility.PRIVATE)
-    result = embedder.embed(png, _make_manifest(), policy=policy)
-    assert result.method == "inline"
+    with pytest.raises(ManifestError, match="embed_mode='pointer'"):
+        embedder.embed(png, _make_manifest(), policy=policy)
 
-    # Extract and verify prompt was redacted
-    handler = PngHandler()
-    extracted = handler.extract(png)
-    assert extracted.run.steps[0].prompt is None
+
+def test_embed_pointer_mode_preserves_verifiability(tmp_path: Path) -> None:
+    """The escape hatch: redact via embed_mode='pointer' so the embedded
+    pointer's hash still verifies against the server-held full manifest."""
+    import json
+
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+
+    manifest = _make_manifest()
+    manifest.manifest_uri = "https://example.com/manifests/abc.json"
+
+    embedder = SmartEmbedder()
+    policy = EmbedPolicy(embed_mode="pointer", prompt_visibility=PromptVisibility.PRIVATE)
+    result = embedder.embed(png, manifest, policy=policy)
+    assert result.method == "pointer"
+    assert result.sidecar_path is not None
+
+    pointer = json.loads(result.sidecar_path.read_text(encoding="utf-8"))
+    assert pointer["canonical_hash"] == manifest.canonical_hash
+    # Server-held full manifest still verifies.
+    assert manifest.verify()
 
 
 def test_embed_pointer_mode_writes_sidecar(tmp_path: Path) -> None:

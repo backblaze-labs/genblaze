@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from genblaze_core.exceptions import EmbeddingError
+from genblaze_core.exceptions import EmbeddingError, ManifestError
 from genblaze_core.media.base import BaseMediaHandler
 from genblaze_core.models.manifest import Manifest
 
@@ -81,7 +81,9 @@ class SidecarHandler(BaseMediaHandler):
                     pass
                 raise
             return sidecar
-        except EmbeddingError:
+        except (EmbeddingError, ManifestError):
+            # ManifestError surfaces policy misuse (e.g. full-mode redaction);
+            # propagate as-is so callers can recognize it distinct from I/O.
             raise
         except Exception as exc:
             raise EmbeddingError(f"Failed to write sidecar: {exc}") from exc

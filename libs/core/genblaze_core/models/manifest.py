@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -153,12 +152,21 @@ class Manifest(BaseModel):
         return self.canonical_hash == canonical_hash(payload)
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
-        """Return canonical JSON with fields redacted per policy.
+        """Return canonical JSON for embedding per policy.
 
-        - pointer mode: return only manifest_uri + canonical_hash
-        - private prompt: strip prompt/negative_prompt from steps
-        - include_params=False: strip params
-        - include_seed=False: strip seed
+        - ``embed_mode='pointer'`` returns ``{schema_version, canonical_hash,
+          manifest_uri}`` only. The full manifest stays at ``manifest_uri``;
+          consumers fetch and :meth:`verify` it there.
+        - ``embed_mode='full'`` with no redaction returns the full canonical
+          manifest unchanged — ``verify()`` round-trips.
+        - ``embed_mode='full'`` combined with ANY redaction (``PRIVATE``
+          prompt, ``include_params=False``, ``include_seed=False``) raises
+          :class:`ManifestError`. Writing the pre-redaction
+          ``canonical_hash`` next to redacted content produces a manifest
+          that can never ``verify()`` against its own payload, which silently
+          breaks the provenance guarantee. Use ``embed_mode='pointer'`` for
+          privacy — pointer mode preserves verifiability while keeping the
+          sensitive fields off-media.
         """
         if not self.canonical_hash:
             self.compute_hash()
@@ -173,23 +181,20 @@ class Manifest(BaseModel):
             }
             return canonical_json(pointer)
 
-        data = copy.deepcopy(self.model_dump(mode="python"))
+        # Full mode: reject any redaction that would desynchronize hash and payload.
+        if (
+            policy.prompt_visibility == PromptVisibility.PRIVATE
+            or not policy.include_params
+            or not policy.include_seed
+        ):
+            raise ManifestError(
+                "Redaction with embed_mode='full' produces a manifest whose "
+                "canonical_hash cannot verify against its redacted payload. "
+                "Use embed_mode='pointer' to embed {hash, manifest_uri} and "
+                "keep the full (verifiable) manifest at manifest_uri."
+            )
 
-        if policy.prompt_visibility == PromptVisibility.PRIVATE:
-            for step in data.get("run", {}).get("steps", []):
-                step["prompt"] = None
-                step["negative_prompt"] = None
-                step["prompt_visibility"] = PromptVisibility.REDACTED.value
-
-        if not policy.include_params:
-            for step in data.get("run", {}).get("steps", []):
-                step["params"] = {}
-
-        if not policy.include_seed:
-            for step in data.get("run", {}).get("steps", []):
-                step["seed"] = None
-
-        return canonical_json(data)
+        return canonical_json(self.model_dump(mode="python"))
 
 
 def _migrate_v1_0_to_v1_1(data: dict) -> dict:
