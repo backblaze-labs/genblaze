@@ -137,6 +137,35 @@ def test_pipeline_cache_miss_different_model_version(tmp_path: Path) -> None:
     assert step_cache_key(a) != step_cache_key(b)
 
 
+@pytest.mark.parametrize(
+    ("field", "val_a", "val_b"),
+    [
+        ("model_hash", "abc123", "def456"),
+        pytest.param(
+            "prompt_visibility",
+            "public",
+            "private",
+            id="prompt_visibility",
+        ),
+        pytest.param("step_type", "generate", "upscale", id="step_type"),
+        pytest.param("modality", "image", "video", id="modality"),
+    ],
+)
+def test_pipeline_cache_miss_different_new_fields(field: str, val_a: str, val_b: str) -> None:
+    """Each new cache-key field must flip the key when changed in isolation.
+
+    Locks in the 4 fields added in b642f6a (model_hash, prompt_visibility,
+    step_type, modality) so they cannot be silently dropped from
+    step_cache_key without a test failure.
+    """
+    from genblaze_core.models.step import Step
+    from genblaze_core.pipeline.cache import step_cache_key
+
+    a = Step(provider="p", model="m", prompt="same", **{field: val_a})
+    b = Step(provider="p", model="m", prompt="same", **{field: val_b})
+    assert step_cache_key(a) != step_cache_key(b)
+
+
 def test_pipeline_cache_clear(tmp_path: Path) -> None:
     """Cache.clear() should invalidate all entries."""
     cache = StepCache(tmp_path / "cache")
