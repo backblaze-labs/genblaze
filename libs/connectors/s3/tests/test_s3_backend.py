@@ -159,3 +159,23 @@ class TestForBackblaze:
         # letting boto3's default credential resolution take over.
         assert "aws_access_key_id" not in kwargs
         assert "aws_secret_access_key" not in kwargs
+
+    def test_boto_config_has_user_agent_and_retries(self, mock_boto3, monkeypatch):
+        """BotoConfig must carry user_agent_extra (for B2 attribution) and a
+        retry policy — either being silently dropped would break B2 usage
+        reporting or resilience to transient 429/503s.
+        """
+        from genblaze_core._version import __version__
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_boto3.client.return_value = MagicMock()
+
+        S3StorageBackend.for_backblaze("my-bucket")
+
+        mock_config = sys.modules["botocore.config"].Config
+        mock_config.assert_called_once()
+        config_kwargs = mock_config.call_args.kwargs
+        assert config_kwargs["user_agent_extra"] == f"b2ai-genblaze/{__version__}"
+        assert config_kwargs["retries"] == {"max_attempts": 3, "mode": "adaptive"}
