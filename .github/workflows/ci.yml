@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: "**/pyproject.toml"
       - run: pip install ruff
       - run: ruff check libs/ cli/ examples/
       - run: ruff format --check libs/ cli/ examples/
@@ -29,6 +31,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: "**/pyproject.toml"
       - name: Install dependencies
         run: |
           pip install -e "libs/core[dev]"
@@ -42,6 +46,8 @@ jobs:
           pip install -e "libs/connectors/elevenlabs[dev]"
           pip install -e "libs/connectors/stability-audio[dev]"
           pip install -e "libs/connectors/lmnt[dev]"
+          pip install -e "libs/connectors/gmicloud[dev]"
+          pip install -e "libs/connectors/langsmith[dev]"
           pip install -e "cli[dev]"
           pip install mypy
       - name: Typecheck core
@@ -49,7 +55,7 @@ jobs:
       - name: Typecheck connectors
         run: |
           failed=""
-          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt; do
+          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt gmicloud langsmith; do
             echo "=== Typechecking $conn ==="
             if ! mypy libs/connectors/$conn/genblaze_*/ --ignore-missing-imports; then
               failed="$failed $conn"
@@ -70,6 +76,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: "**/pyproject.toml"
       - name: Install dependencies
         run: |
           pip install -e "libs/core[dev]"
@@ -83,6 +91,8 @@ jobs:
           pip install -e "libs/connectors/elevenlabs[dev]"
           pip install -e "libs/connectors/stability-audio[dev]"
           pip install -e "libs/connectors/lmnt[dev]"
+          pip install -e "libs/connectors/gmicloud[dev]"
+          pip install -e "libs/connectors/langsmith[dev]"
           pip install -e "cli[dev]"
           pip install pytest-cov
       - name: Run core tests with coverage
@@ -90,7 +100,7 @@ jobs:
           cd libs/core && pytest tests/ -v --cov=genblaze_core --cov-report=xml --cov-report=term-missing
       - name: Run connector tests
         run: |
-          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt; do
+          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt gmicloud langsmith; do
             echo "=== Testing $conn ==="
             (cd libs/connectors/$conn && pytest -v)
           done

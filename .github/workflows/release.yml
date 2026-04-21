@@ -17,9 +17,11 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install build tools
-        run: pip install build
+        run: pip install build twine
       - name: Build genblaze-core
         run: cd libs/core && python -m build
+      - name: Validate wheel metadata
+        run: twine check libs/core/dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -35,9 +37,11 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install build tools
-        run: pip install build
+        run: pip install build twine
       - name: Build genblaze-cli
         run: cd cli && python -m build
+      - name: Validate wheel metadata
+        run: twine check cli/dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -60,15 +64,19 @@ jobs:
           - elevenlabs
           - stability-audio
           - lmnt
+          - gmicloud
+          - langsmith
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Install build tools
-        run: pip install build
+        run: pip install build twine
       - name: Build connector
         run: cd libs/connectors/${{ matrix.connector }} && python -m build
+      - name: Validate wheel metadata
+        run: twine check libs/connectors/${{ matrix.connector }}/dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
