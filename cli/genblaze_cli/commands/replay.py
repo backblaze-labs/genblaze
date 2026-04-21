@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import click
+from genblaze_core.models.enums import PromptVisibility
 
 
 def _load_provider(provider_name: str, allowed: tuple[str, ...] | None):
@@ -41,8 +42,14 @@ def _detect_chain_mode(run) -> bool:
     return bool(non_first) and all(len(step.inputs) > 0 for step in non_first)
 
 
-def _print_summary(run) -> None:
-    """Print manifest run summary."""
+def _print_summary(run, *, show_prompts: bool) -> None:
+    """Print manifest run summary.
+
+    Prompts are only shown when ``show_prompts`` is True AND the step's
+    prompt_visibility is PUBLIC. Non-public prompts are redacted to avoid
+    leaking private content to terminals/CI logs when replaying manifests
+    pulled from shared storage.
+    """
     click.echo(f"Run:    {run.run_id}")
     click.echo(f"Name:   {run.name or '(unnamed)'}")
     click.echo(f"Steps:  {len(run.steps)}")
@@ -51,7 +58,13 @@ def _print_summary(run) -> None:
     for i, step in enumerate(run.steps, 1):
         click.echo(f"  Step {i}: {step.provider}/{step.model}")
         click.echo(f"    Type:     {step.step_type}")
-        click.echo(f"    Prompt:   {step.prompt or '(none)'}")
+        if show_prompts and step.prompt_visibility == PromptVisibility.PUBLIC:
+            click.echo(f"    Prompt:   {step.prompt or '(none)'}")
+        else:
+            click.echo(
+                f"    Prompt:   [redacted — visibility={step.prompt_visibility};"
+                " pass --show-prompts to reveal public prompts]"
+            )
         click.echo(f"    Modality: {step.modality}")
         if step.params:
             click.echo(f"    Params:   {step.params}")
@@ -71,9 +84,18 @@ _UNREPLAYABLE_FIELDS = [
     multiple=True,
     help="Only allow these providers (can be specified multiple times).",
 )
+@click.option(
+    "--show-prompts",
+    is_flag=True,
+    help="Show public-visibility prompts in the summary. Non-public prompts are always redacted.",
+)
 @click.option("--force", is_flag=True, help="Skip manifest hash verification.")
 def replay(
-    manifest_file: Path, dry_run: bool, allow_provider: tuple[str, ...], force: bool
+    manifest_file: Path,
+    dry_run: bool,
+    allow_provider: tuple[str, ...],
+    show_prompts: bool,
+    force: bool,
 ) -> None:
     """Re-execute a pipeline from a manifest JSON file."""
     from genblaze_core.models.manifest import parse_manifest
@@ -95,7 +117,7 @@ def replay(
             raise click.Abort()
 
     run = manifest.run
-    _print_summary(run)
+    _print_summary(run, show_prompts=show_prompts)
 
     if dry_run:
         click.echo()
@@ -106,7 +128,24 @@ def replay(
     click.echo()
     click.echo("Replaying pipeline...")
 
-    allowed = allow_provider if allow_provider else None
+    allowed: tuple[str, ...] | None = allow_provider if allow_provider else None
+
+    # Safety: when no allowlist is provided, confirm each unique provider.
+    # A hostile manifest could reference any installed provider and execute
+    # paid API calls on the user's credentials without consent.
+    if allowed is None:
+        unique_providers = sorted({step.provider for step in run.steps})
+        click.echo(
+            "No --allow-provider allowlist set. Confirm each provider before execution:",
+            err=True,
+        )
+        confirmed: list[str] = []
+        for name in unique_providers:
+            if click.confirm(f"  Execute with provider '{name}'?", default=False):
+                confirmed.append(name)
+            else:
+                raise click.Abort()
+        allowed = tuple(confirmed)
 
     # Detect chain mode from step inputs in the manifest
     chain = _detect_chain_mode(run)
