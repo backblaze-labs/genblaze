@@ -221,6 +221,13 @@ def test_compositor_in_pipeline():
         patch(f"{_UTILS}.shutil.which", return_value="/usr/bin/ffmpeg"),
         patch(f"{_UTILS}.subprocess.run") as mock_run,
         patch("pathlib.Path.stat") as mock_stat,
+        # SSRF guard resolves DNS for https chain inputs; the mock providers
+        # use example.test/mock.test hosts that don't resolve, so stub the
+        # resolver with a public IP to exercise the happy path.
+        patch(
+            "genblaze_core._utils.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ),
     ):
         mock_run.return_value = MagicMock(returncode=0, stderr=b"")
         mock_stat.return_value = MagicMock(st_size=8_000_000)
@@ -250,7 +257,11 @@ def test_importable_from_top_level():
 
 @patch(f"{_UTILS}.shutil.which", return_value="/usr/bin/ffmpeg")
 @patch(f"{_UTILS}.subprocess.run")
-def test_https_input_urls_passed_directly(mock_run, mock_which):
+@patch(
+    "genblaze_core._utils.socket.getaddrinfo",
+    return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+)
+def test_https_input_urls_passed_directly(mock_dns, mock_run, mock_which):
     """HTTPS URLs are passed directly to ffmpeg (it supports them natively)."""
     mock_run.return_value = MagicMock(returncode=0, stderr=b"")
 

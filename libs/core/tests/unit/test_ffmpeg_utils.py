@@ -42,6 +42,21 @@ class TestResolveInputPath:
         result = resolve_input_path("https://cdn.example.com/video.mp4")
         assert result == "https://cdn.example.com/video.mp4"
 
+    @patch("genblaze_core._utils.socket.getaddrinfo")
+    def test_https_url_rejects_private_ip(self, mock_dns):
+        """HTTPS URLs resolving to private IPs must be rejected (SSRF guard)."""
+        # Cloud IMDS endpoint — never legitimate as an ffmpeg input
+        mock_dns.return_value = [(2, 1, 6, "", ("169.254.169.254", 0))]
+        with pytest.raises(ProviderError, match="Private/loopback"):
+            resolve_input_path("https://metadata.example.com/token")
+
+    @patch("genblaze_core._utils.socket.getaddrinfo")
+    def test_https_url_rejects_loopback(self, mock_dns):
+        """Hostnames resolving to 127.0.0.0/8 must be rejected."""
+        mock_dns.return_value = [(2, 1, 6, "", ("127.0.0.1", 0))]
+        with pytest.raises(ProviderError, match="Private/loopback"):
+            resolve_input_path("https://evil.example.com/payload.mp4")
+
     def test_unsupported_scheme_rejected(self):
         with pytest.raises(ProviderError, match="Unsupported URL scheme"):
             resolve_input_path("ftp://example.com/file.mp4")

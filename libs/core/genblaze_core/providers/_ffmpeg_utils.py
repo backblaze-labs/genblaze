@@ -53,9 +53,15 @@ def resolve_input_path(url: str, *, extra_roots: list[Path] | None = None) -> st
             )
         return str(resolved)
     if parsed.scheme == "https":
+        from genblaze_core._utils import check_ssrf
         from genblaze_core.providers.base import validate_asset_url
 
         validate_asset_url(url)
+        # SSRF guard: ffmpeg will do its own HTTP fetch; reject private/loopback
+        # hosts before we hand off the URL. Without this, a chain input pointing
+        # at cloud IMDS (169.254.169.254, metadata.google.internal, etc.) would
+        # execute through ffmpeg and exfiltrate credentials.
+        check_ssrf(url, exc_type=ProviderError)
         return url
     raise ProviderError(
         f"Unsupported URL scheme '{parsed.scheme}' for ffmpeg input. "

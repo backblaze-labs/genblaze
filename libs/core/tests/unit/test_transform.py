@@ -260,7 +260,11 @@ def test_get_capabilities():
 
 @patch(f"{_UTILS}.shutil.which", return_value="/usr/bin/ffmpeg")
 @patch(f"{_UTILS}.subprocess.run")
-def test_transform_in_pipeline_chain(mock_run, mock_which):
+@patch(
+    "genblaze_core._utils.socket.getaddrinfo",
+    return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+)
+def test_transform_in_pipeline_chain(mock_dns, mock_run, mock_which):
     """Transform works as a chained step after generation."""
     from genblaze_core.pipeline.pipeline import Pipeline
     from genblaze_core.testing import MockVideoProvider
