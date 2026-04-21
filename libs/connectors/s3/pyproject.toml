@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-s3"
 version = "0.1.0"
 description = "S3-compatible storage backend for genblaze (B2, R2, MinIO, AWS)"
+readme = "../../../README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
@@ -14,7 +15,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "genblaze-core>=0.1.0",
+    "genblaze-core>=0.1.0,<0.2",
     "boto3>=1.28",
 ]
 

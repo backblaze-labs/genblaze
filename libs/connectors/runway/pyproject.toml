@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-runway"
 version = "0.1.0"
 description = "Runway Gen video provider adapter for genblaze"
+readme = "../../../README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
@@ -14,7 +15,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "genblaze-core>=0.1.0",
+    "genblaze-core>=0.1.0,<0.2",
     "runwayml>=0.6",
 ]
 
