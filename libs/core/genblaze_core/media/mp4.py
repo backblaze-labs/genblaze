@@ -48,7 +48,15 @@ class Mp4Handler(BaseMediaHandler):
             raise EmbeddingError(f"Failed to embed manifest in MP4: {exc}") from exc
 
     def _embed_inmemory(self, source: Path, manifest: Manifest, output: Path) -> Path:
-        """In-memory embed for small files (< 500 MB)."""
+        """In-memory embed for small files (< 500 MB).
+
+        Appends the UUID box at EOF rather than inserting before mdat.
+        Fast-start MP4 files (ftyp | moov | mdat) carry absolute file
+        offsets in moov.stco / co64 pointing into mdat — shifting mdat
+        by the UUID-box size would invalidate every sample offset and
+        break playback. Appending at EOF leaves every pre-existing byte
+        at its original position.
+        """
         data = source.read_bytes()
         if not _is_mp4(data):
             raise EmbeddingError(f"Not a valid MP4 file: {source}")
@@ -57,7 +65,7 @@ class Mp4Handler(BaseMediaHandler):
         box = _build_uuid_box(manifest_bytes)
 
         cleaned = _remove_genblaze_box(data)
-        result = _insert_before_mdat(cleaned, box)
+        result = cleaned + box
 
         _atomic_write_bytes(Path(output), result)
         return output
@@ -65,8 +73,10 @@ class Mp4Handler(BaseMediaHandler):
     def _embed_streaming(self, source: Path, manifest: Manifest, output: Path) -> Path:
         """Seek-based embed for large files (500 MB–2 GB).
 
-        Reads box headers sequentially, copies box data in chunks, and injects
-        the UUID box before mdat without loading the full file into RAM.
+        Copies every non-genblaze top-level box verbatim and appends our
+        UUID box at EOF. Same invariant as _embed_inmemory: never shift
+        any pre-existing byte, so moov stco/co64 sample offsets stay
+        valid and playback is preserved.
         """
         with open(source, "rb") as f:
             header = f.read(8)
@@ -82,7 +92,6 @@ class Mp4Handler(BaseMediaHandler):
             with open(source, "rb") as src, open(tmp, "wb") as dst:
                 file_size = source.stat().st_size
                 pos = 0
-                inserted = False
 
                 while pos < file_size - 8:
                     src.seek(pos)
@@ -108,7 +117,8 @@ class Mp4Handler(BaseMediaHandler):
                         _copy_chunks(src, dst, file_size - pos)
                         break
 
-                    # Skip existing genblaze UUID boxes
+                    # Skip existing genblaze UUID boxes — we re-append ours
+                    # at EOF below so every re-embed produces exactly one.
                     if box_type == b"uuid" and box_size > 24:
                         src.seek(pos + 8)
                         box_uuid = src.read(16)
@@ -116,18 +126,12 @@ class Mp4Handler(BaseMediaHandler):
                             pos += box_size
                             continue
 
-                    # Insert our UUID box before mdat
-                    if box_type == b"mdat" and not inserted:
-                        dst.write(uuid_box)
-                        inserted = True
-
                     src.seek(pos)
                     _copy_chunks(src, dst, box_size)
                     pos += box_size
 
-                # Append at end if no mdat found
-                if not inserted:
-                    dst.write(uuid_box)
+                # Append UUID at EOF (after mdat) so moov offsets stay valid.
+                dst.write(uuid_box)
 
             os.replace(tmp, output)
         except BaseException:
@@ -321,17 +325,3 @@ def _remove_genblaze_box(data: bytes) -> bytes:
             result.extend(data[pos : pos + box_size])
         pos += box_size
     return bytes(result)
-
-
-def _insert_before_mdat(data: bytes, box: bytes) -> bytes:
-    """Insert a box before the mdat box, or append at end."""
-    pos = 0
-    while pos < len(data) - 8:
-        box_size = _read_box_size(data, pos)
-        if box_size < 8 or box_size > len(data) - pos:
-            break
-        box_type = data[pos + 4 : pos + 8]
-        if box_type == b"mdat":
-            return data[:pos] + box + data[pos:]
-        pos += box_size
-    return data + box

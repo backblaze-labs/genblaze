@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.mp4 import Mp4Handler
+from genblaze_core.media.mp4 import GENBLAZE_UUID_BYTES, Mp4Handler
 from genblaze_core.models import Manifest
 
 
@@ -57,3 +57,71 @@ def test_mp4_invalid_file(tmp_path: Path, sample_manifest: Manifest) -> None:
 
 def test_mp4_capabilities() -> None:
     assert Mp4Handler.capabilities() == ["video/mp4"]
+
+
+def _fast_start_mp4_bytes() -> bytes:
+    """Synthetic fast-start MP4 layout: ftyp | moov | mdat.
+
+    We don't need a real codec-valid stbl — only the property that the
+    byte offset of mdat (and therefore any offset moov.stco would point
+    into) must be preserved across embed. The test verifies that by
+    asserting the pre-embed bytes survive as a strict prefix.
+    """
+    ftyp = b"\x00\x00\x00\x14" + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"isom"
+    # 32-byte moov filler standing in for mvhd + trak; real stco entries
+    # would reference absolute offsets into mdat below.
+    moov = b"\x00\x00\x00\x20" + b"moov" + (b"\x00" * 24)
+    mdat_payload = b"SAMPLE_DATA_AT_KNOWN_POSITION"
+    mdat = (len(mdat_payload) + 8).to_bytes(4, "big") + b"mdat" + mdat_payload
+    return ftyp + moov + mdat
+
+
+def test_mp4_embed_preserves_original_bytes_as_prefix(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """Embedding must never shift mdat or any pre-existing box.
+
+    Fast-start MP4s (ftyp | moov | mdat) carry absolute sample offsets in
+    moov.stco / co64 pointing into mdat. An insert-before-mdat strategy
+    would shift mdat forward and invalidate every sample offset. We
+    append at EOF instead — the original bytes remain byte-identical.
+    """
+    original = _fast_start_mp4_bytes()
+    mp4 = tmp_path / "fast_start.mp4"
+    mp4.write_bytes(original)
+
+    Mp4Handler().embed(mp4, sample_manifest)
+    embedded = mp4.read_bytes()
+
+    assert embedded[: len(original)] == original, (
+        "Embed shifted pre-existing bytes — moov stco offsets would now be stale"
+    )
+
+    # The tail must be a single, well-formed UUID box carrying our marker.
+    tail = embedded[len(original) :]
+    tail_box_size = int.from_bytes(tail[:4], "big")
+    assert tail_box_size == len(tail), "Tail must be exactly one UUID box"
+    assert tail[4:8] == b"uuid"
+    assert tail[8:24] == GENBLAZE_UUID_BYTES
+
+
+def test_mp4_embed_replace_keeps_prefix_stable(tmp_path: Path, sample_manifest: Manifest) -> None:
+    """Re-embedding strips the prior UUID and appends the new one — the
+    pre-mdat prefix stays byte-identical across both embeds."""
+    original = _fast_start_mp4_bytes()
+    mp4 = tmp_path / "fast_start.mp4"
+    mp4.write_bytes(original)
+
+    handler = Mp4Handler()
+    handler.embed(mp4, sample_manifest)
+    handler.embed(mp4, sample_manifest)
+
+    embedded = mp4.read_bytes()
+    assert embedded[: len(original)] == original
+
+    tail = embedded[len(original) :]
+    assert int.from_bytes(tail[:4], "big") == len(tail), (
+        "Tail must be exactly one UUID box after a second embed"
+    )
+    assert tail[4:8] == b"uuid"
+    assert tail[8:24] == GENBLAZE_UUID_BYTES
