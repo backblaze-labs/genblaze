@@ -119,9 +119,7 @@ def test_mp4_embed_preserves_original_bytes_as_prefix(
     assert tail[8:24] == GENBLAZE_UUID_BYTES
 
 
-def test_mp4_embed_slow_start_preserves_prefix(
-    tmp_path: Path, sample_manifest: Manifest
-) -> None:
+def test_mp4_embed_slow_start_preserves_prefix(tmp_path: Path, sample_manifest: Manifest) -> None:
     """moov-after-mdat layout must also preserve all original bytes on embed.
 
     This is the layout the 3d05019 fix was written to protect: when moov
@@ -162,9 +160,7 @@ def test_mp4_extract_streaming_rejects_malformed_uuid_box(tmp_path: Path) -> Non
     mp4.write_bytes(ftyp + bad_uuid_box + trailing)
 
     result = Mp4Handler()._extract_streaming(mp4, mp4.stat().st_size)
-    assert result is None, (
-        "Malformed uuid box must not return payload via negative-size f.read()"
-    )
+    assert result is None, "Malformed uuid box must not return payload via negative-size f.read()"
 
 
 def test_mp4_embed_replace_keeps_prefix_stable(tmp_path: Path, sample_manifest: Manifest) -> None:
