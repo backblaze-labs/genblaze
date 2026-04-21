@@ -104,6 +104,10 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._config: RunnableConfig | None = None
         self._cache: StepCache | None = None
         self._chain = chain
+        if max_concurrency is not None and max_concurrency < 1:
+            raise GenblazeError(
+                f"max_concurrency must be None (unlimited) or >= 1, got {max_concurrency}"
+            )
         self._max_concurrency = max_concurrency
         self._moderation = moderation
         # Tracer resolution: explicit arg wins; legacy structured_log=True maps
@@ -975,6 +979,10 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg)
 
+                if max_concurrency is not None and max_concurrency < 1:
+                    raise GenblazeError(
+                        f"max_concurrency must be None (unlimited) or >= 1, got {max_concurrency}"
+                    )
                 concurrency = max_concurrency or self._max_concurrency
                 sem = asyncio.Semaphore(concurrency) if concurrency else None
                 step_positions = {

@@ -18,13 +18,19 @@ logger = logging.getLogger("genblaze.cache")
 def step_cache_key(step: Step) -> str:
     """Compute deterministic cache key from step inputs.
 
-    Key is derived from: provider, model, prompt, params, seed, modality,
-    step_type, and input asset IDs (for chain mode correctness).
+    Key is derived from every Step field whose change would legitimately
+    yield a different output: provider, model, model_version, model_hash,
+    prompt, negative_prompt, prompt_visibility (affects redaction on reuse),
+    params, seed, modality, step_type, and input asset content IDs.
     """
     key_data = {
         "provider": step.provider,
         "model": step.model,
+        "model_version": step.model_version,
+        "model_hash": step.model_hash,
         "prompt": step.prompt,
+        "negative_prompt": step.negative_prompt,
+        "prompt_visibility": (step.prompt_visibility.value if step.prompt_visibility else None),
         "params": step.params,
         "seed": step.seed,
         "modality": step.modality.value if step.modality else None,

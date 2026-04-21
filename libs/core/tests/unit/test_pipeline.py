@@ -117,6 +117,26 @@ def test_pipeline_cache_miss_different_params(tmp_path: Path) -> None:
     assert provider.invoke_count == 2
 
 
+def test_pipeline_cache_miss_different_negative_prompt(tmp_path: Path) -> None:
+    """Steps that differ only in negative_prompt must get distinct cache entries."""
+    from genblaze_core.models.step import Step
+    from genblaze_core.pipeline.cache import step_cache_key
+
+    a = Step(provider="p", model="m", prompt="same", negative_prompt="red")
+    b = Step(provider="p", model="m", prompt="same", negative_prompt="blue")
+    assert step_cache_key(a) != step_cache_key(b)
+
+
+def test_pipeline_cache_miss_different_model_version(tmp_path: Path) -> None:
+    """Steps with different model_version must not share a cache entry."""
+    from genblaze_core.models.step import Step
+    from genblaze_core.pipeline.cache import step_cache_key
+
+    a = Step(provider="p", model="m", prompt="p", model_version="v1")
+    b = Step(provider="p", model="m", prompt="p", model_version="v2")
+    assert step_cache_key(a) != step_cache_key(b)
+
+
 def test_pipeline_cache_clear(tmp_path: Path) -> None:
     """Cache.clear() should invalidate all entries."""
     cache = StepCache(tmp_path / "cache")
