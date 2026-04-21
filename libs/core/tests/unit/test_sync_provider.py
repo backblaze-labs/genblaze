@@ -149,6 +149,9 @@ def test_validate_asset_url_rejects_empty():
 class TestStubCompliance(ProviderComplianceTests):
     """Verify the compliance harness works with our stub provider."""
 
+    # Stub is a test fixture with no pricing model.
+    expects_cost = False
+
     def make_provider(self):
         return StubSyncProvider()
 

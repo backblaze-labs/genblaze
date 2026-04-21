@@ -168,6 +168,11 @@ def test_rate_limit_error_code(mock_stability):
 class TestStabilityAudioCompliance(ProviderComplianceTests):
     """Verify StabilityAudioProvider satisfies the genblaze provider contract."""
 
+    # StabilityAudioProvider populates cost_usd from asset.duration, but the
+    # compliance fixture's fake audio blob doesn't carry a duration through
+    # the mutagen probe path. Dedicated cost tests cover the real code path.
+    expects_cost = False
+
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):
         with patch.dict("sys.modules", {"httpx": MagicMock()}):

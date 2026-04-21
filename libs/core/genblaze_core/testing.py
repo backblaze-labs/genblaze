@@ -162,7 +162,15 @@ class ProviderComplianceTests(ABC):
 
     Provides ~10 tests that verify a provider conforms to the genblaze
     provider contract. Subclass and implement make_provider() and make_step().
+
+    Override ``expects_cost = False`` for providers that intentionally do not
+    populate ``step.cost_usd`` (e.g. local-only tools like FFmpegCompositor,
+    mock/stub providers, or connectors whose pricing formula is pending fix).
     """
+
+    # Providers must populate step.cost_usd on successful runs by default.
+    # Set False on subclasses where cost is not applicable or not yet wired.
+    expects_cost: bool = True
 
     @abstractmethod
     def make_provider(self) -> BaseProvider:
@@ -312,14 +320,19 @@ class ProviderComplianceTests(ABC):
     # --- Cost tracking ---
 
     def test_invoke_populates_cost(self) -> None:
-        """Successful invoke should populate step.cost_usd (soft check)."""
+        """Successful invoke must populate step.cost_usd unless opted out.
+
+        To waive, set ``expects_cost = False`` on the subclass and note why.
+        """
+        if not self.expects_cost:
+            pytest.skip("Provider opts out of cost tracking (expects_cost=False)")
         provider = self.make_provider()
         step = self.make_step()
         result = provider.invoke(step)
-        if result.status == StepStatus.SUCCEEDED and result.cost_usd is None:
-            import warnings
-
-            warnings.warn(
-                f"Provider '{provider.name}' does not populate cost_usd",
-                stacklevel=1,
-            )
+        if result.status != StepStatus.SUCCEEDED:
+            pytest.skip("Provider did not succeed — cannot verify cost_usd")
+        assert result.cost_usd is not None, (
+            f"Provider '{provider.name}' returned SUCCEEDED but did not populate "
+            "step.cost_usd. Either set it in fetch_output()/generate() or override "
+            "`expects_cost = False` on the compliance test to document the gap."
+        )

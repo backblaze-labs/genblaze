@@ -315,6 +315,12 @@ def test_token_not_in_provider_payload():
 class TestReplicateCompliance(ProviderComplianceTests):
     """Verify ReplicateProvider satisfies the genblaze provider contract."""
 
+    # ReplicateProvider populates cost_usd from prediction.metrics.predict_time,
+    # but the FakePrediction compliance fixture doesn't expose that metric.
+    # A dedicated test (test_cost_tracked_from_predict_time) covers the real
+    # code path; compliance waives the check here.
+    expects_cost = False
+
     def make_provider(self):
         provider = ReplicateProvider(api_token="test-token")
         mock_client = MagicMock()
