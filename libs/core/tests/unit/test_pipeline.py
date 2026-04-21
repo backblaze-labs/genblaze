@@ -247,6 +247,20 @@ async def test_pipeline_empty_arun_raises() -> None:
         await Pipeline("empty").arun()
 
 
+@pytest.mark.asyncio
+async def test_pipeline_arun_rejects_invalid_max_concurrency() -> None:
+    """arun(max_concurrency < 1) must fail before any tracer events are emitted.
+
+    Previously the guard fired inside the concurrent branch, after run_start
+    and per-step step_start events had already been written.
+    """
+    pipeline = Pipeline("mc").step(MockProvider(), model="m", prompt="p")
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        await pipeline.arun(max_concurrency=0)
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        await pipeline.arun(max_concurrency=-1)
+
+
 # --- PipelineResult.save tests ---
 
 

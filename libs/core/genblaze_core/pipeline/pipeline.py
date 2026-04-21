@@ -882,6 +882,13 @@ class Pipeline(Runnable[None, PipelineResult]):
             msg = "Pipeline has no steps. Add steps with .step() before calling .arun()."
             raise GenblazeError(msg)
 
+        # Validate max_concurrency up front so we never emit run_start / step_start
+        # tracer events for a run that can't execute.
+        if max_concurrency is not None and max_concurrency < 1:
+            raise GenblazeError(
+                f"max_concurrency must be None (unlimited) or >= 1, got {max_concurrency}"
+            )
+
         self._validate_steps()
 
         # Resolve config: explicit override > inline kwargs > pipeline-level config
@@ -979,10 +986,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg)
 
-                if max_concurrency is not None and max_concurrency < 1:
-                    raise GenblazeError(
-                        f"max_concurrency must be None (unlimited) or >= 1, got {max_concurrency}"
-                    )
                 concurrency = max_concurrency or self._max_concurrency
                 sem = asyncio.Semaphore(concurrency) if concurrency else None
                 step_positions = {
