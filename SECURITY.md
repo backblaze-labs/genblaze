@@ -11,7 +11,7 @@
 If you discover a security vulnerability, please report it responsibly:
 
 1. **Do not** open a public GitHub issue.
-2. Use [GitHub Security Advisories](https://github.com/genblaze/genblaze/security/advisories/new) to privately report the vulnerability, including:
+2. Use [GitHub Security Advisories](https://github.com/backblaze-labs/genblaze/security/advisories/new) to privately report the vulnerability, including:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact

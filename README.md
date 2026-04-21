@@ -40,7 +40,7 @@ genblaze ships with provider adapters for major generative AI platforms:
 ## Features
 
 - **Pipeline API** — Fluent, composable multi-step generation pipelines with fan-in (`input_from`) and AV compositing
-- **15 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud (across 11 connector packages)
+- **10 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud (across 10 connector packages)
 - **Manifest provenance** — Every run produces a canonical, SHA-256-verified manifest
 - **Media embedding** — Embed manifests into PNG, JPEG, WebP, MP4, MP3, WAV
 - **S3-compatible storage** — Upload assets to Backblaze B2, AWS S3, Cloudflare R2, MinIO
