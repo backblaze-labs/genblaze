@@ -76,6 +76,20 @@ def _fast_start_mp4_bytes() -> bytes:
     return ftyp + moov + mdat
 
 
+def _slow_start_mp4_bytes() -> bytes:
+    """Synthetic slow-start (non-faststart) layout: ftyp | mdat | moov.
+
+    This is the common mux order when `-movflags +faststart` is not set.
+    moov.stco offsets already point into mdat; appending the UUID box at
+    EOF (after moov) still leaves every pre-existing byte in place.
+    """
+    ftyp = b"\x00\x00\x00\x14" + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"isom"
+    mdat_payload = b"SAMPLE_DATA_SLOW_START"
+    mdat = (len(mdat_payload) + 8).to_bytes(4, "big") + b"mdat" + mdat_payload
+    moov = b"\x00\x00\x00\x20" + b"moov" + (b"\x00" * 24)
+    return ftyp + mdat + moov
+
+
 def test_mp4_embed_preserves_original_bytes_as_prefix(
     tmp_path: Path, sample_manifest: Manifest
 ) -> None:
@@ -101,6 +115,33 @@ def test_mp4_embed_preserves_original_bytes_as_prefix(
     tail = embedded[len(original) :]
     tail_box_size = int.from_bytes(tail[:4], "big")
     assert tail_box_size == len(tail), "Tail must be exactly one UUID box"
+    assert tail[4:8] == b"uuid"
+    assert tail[8:24] == GENBLAZE_UUID_BYTES
+
+
+def test_mp4_embed_slow_start_preserves_prefix(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """moov-after-mdat layout must also preserve all original bytes on embed.
+
+    This is the layout the 3d05019 fix was written to protect: when moov
+    sits after mdat, inserting the UUID box anywhere other than EOF would
+    shift moov and invalidate any offsets it carries. The existing
+    fast-start test alone doesn't cover this mux order.
+    """
+    original = _slow_start_mp4_bytes()
+    mp4 = tmp_path / "slow_start.mp4"
+    mp4.write_bytes(original)
+
+    Mp4Handler().embed(mp4, sample_manifest)
+    embedded = mp4.read_bytes()
+
+    assert embedded[: len(original)] == original, (
+        "Embed shifted pre-existing bytes in slow-start layout"
+    )
+
+    tail = embedded[len(original) :]
+    assert int.from_bytes(tail[:4], "big") == len(tail)
     assert tail[4:8] == b"uuid"
     assert tail[8:24] == GENBLAZE_UUID_BYTES
 
