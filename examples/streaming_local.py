@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from genblaze_core import Pipeline
-from genblaze_core.testing import MockProvider
+from genblaze_core import MockProvider, Pipeline
 
 pipe = Pipeline("hero").step(MockProvider(cost_usd=0.04), model="mock-v1", prompt="a sunset")
 

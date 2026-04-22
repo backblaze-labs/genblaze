@@ -10,8 +10,7 @@ Usage:
     python examples/batch_with_templates.py
 """
 
-from genblaze_core import Modality, Pipeline
-from genblaze_core.models.prompt_template import PromptTemplate
+from genblaze_core import Modality, Pipeline, PromptTemplate
 
 
 def main() -> None:
@@ -34,7 +33,6 @@ def main() -> None:
                 {"style": "oil", "subject": "mountain village", "time_of_day": "dawn"},
                 {"style": "pencil sketch", "subject": "old bookshop", "time_of_day": "midnight"},
             ],
-            max_concurrency=3,
             timeout=120,
         )
     )

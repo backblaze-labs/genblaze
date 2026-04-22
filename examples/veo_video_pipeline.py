@@ -41,7 +41,7 @@ def main() -> None:
             ),
             modality=Modality.VIDEO,
             aspect_ratio="16:9",
-            duration_seconds="8",
+            duration_seconds=8,
             resolution="720p",
             enhance_prompt=True,
         )

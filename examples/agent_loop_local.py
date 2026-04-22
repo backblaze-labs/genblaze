@@ -16,46 +16,36 @@ from genblaze_core import (
     AgentLoop,
     CallableEvaluator,
     EvaluationResult,
+    MockProvider,
     Pipeline,
 )
-from genblaze_core.testing import MockProvider
 
 provider = MockProvider(cost_usd=0.04)
 
 
 def build_pipeline(ctx: AgentContext) -> Pipeline:
-    """Build the next iteration's pipeline, folding in prior feedback."""
+    """Build the next iteration's pipeline, folding in prior feedback.
+
+    Records ``ctx.iteration`` in the step params so the evaluator can
+    gate on attempt number. ``params`` survives normalization and ends
+    up on the executed Step, which is what the evaluator inspects.
+    """
     base_prompt = "a serene mountain lake at sunrise"
     if ctx.last_evaluation and ctx.last_evaluation.feedback:
         prompt = f"{base_prompt} — {ctx.last_evaluation.feedback}"
     else:
         prompt = base_prompt
-    return Pipeline(f"hero-iter-{ctx.iteration}").step(provider, model="mock-v1", prompt=prompt)
-
-
-def judge(result):
-    """Mock quality check that passes on the 3rd attempt."""
-    attempt = result.run.steps[-1].metadata.get("_attempt", 0)
-    return EvaluationResult(
-        passed=attempt >= 2,
-        score=0.3 + 0.3 * attempt,
-        feedback="add more dramatic clouds" if attempt < 2 else None,
+    pipe = Pipeline(f"hero-iter-{ctx.iteration}").step(
+        provider,
+        model="mock-v1",
+        prompt=prompt,
+        _attempt=ctx.iteration,
     )
-
-
-# Counter metadata gets set per iteration — track attempts through the factory
-_attempt_counter = {"n": 0}
-
-
-def build_pipeline_with_tracking(ctx: AgentContext) -> Pipeline:
-    _attempt_counter["n"] = ctx.iteration
-    pipe = build_pipeline(ctx)
-    # Mutate the deferred step to record which attempt this is
-    pipe._steps[-1].params["_attempt"] = ctx.iteration
     return pipe
 
 
-def judge_by_iteration(result):
+def judge_by_iteration(result) -> EvaluationResult:
+    """Mock quality check that passes on the 3rd attempt."""
     attempt = result.run.steps[-1].params.get("_attempt", 0)
     passed = attempt >= 2
     return EvaluationResult(
@@ -66,7 +56,7 @@ def judge_by_iteration(result):
 
 
 loop = AgentLoop(
-    build_pipeline_with_tracking,
+    build_pipeline,
     CallableEvaluator(judge_by_iteration),
     max_iterations=4,
 )

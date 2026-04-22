@@ -61,13 +61,6 @@ def main() -> None:
             print(f"  Asset:    {asset.url}")
             print(f"  SHA-256:  {asset.sha256}")
 
-    # Optional: write structured run data to Parquet for analytics
-    # from genblaze_core import ParquetSink
-    # parquet = ParquetSink("data/")
-    # parquet.write_run(result.run, result.manifest)
-
-    backend.close()
-
 
 if __name__ == "__main__":
     main()

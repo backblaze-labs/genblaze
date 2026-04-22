@@ -7,8 +7,7 @@ Usage:
 No API keys needed — uses MockProvider for demonstration.
 """
 
-from genblaze_core import Modality, Pipeline
-from genblaze_core.testing import MockProvider, MockVideoProvider
+from genblaze_core import MockProvider, MockVideoProvider, Modality, Pipeline
 
 
 def main() -> None:

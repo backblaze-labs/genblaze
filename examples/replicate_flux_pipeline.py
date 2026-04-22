@@ -20,7 +20,7 @@ def main() -> None:
 
     # Build and execute pipeline
     run, manifest = (
-        Pipeline("flux-demo", tenant_id="examples")
+        Pipeline("flux-demo", project_id="examples")
         .step(
             provider,
             model="black-forest-labs/flux-schnell",
@@ -30,7 +30,7 @@ def main() -> None:
             num_outputs=1,
             aspect_ratio="1:1",
         )
-        .run()
+        .run(timeout=120, max_retries=1)
     )
 
     print(f"Run ID:    {run.run_id}")
@@ -38,15 +38,10 @@ def main() -> None:
     print(f"Status:    {run.steps[0].status}")
     print(f"Assets:    {len(run.steps[0].assets)}")
     print(f"Hash:      {manifest.canonical_hash}")
+    print(f"Verified:  {manifest.verify()}")
 
-    # If the output is a URL, download and embed
     if run.steps[0].assets:
-        asset_url = run.steps[0].assets[0].url
-        print(f"Output:    {asset_url}")
-
-        # In a real app you'd download the image and embed the manifest
-        # handler = PngHandler()
-        # handler.embed(downloaded_path, manifest)
+        print(f"Output:    {run.steps[0].assets[0].url}")
 
 
 if __name__ == "__main__":

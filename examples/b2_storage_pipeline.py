@@ -62,8 +62,6 @@ def main() -> None:
             print(f"  Asset:    {asset.url}")
             print(f"  SHA-256:  {asset.sha256}")
 
-    backend.close()
-
 
 if __name__ == "__main__":
     main()
