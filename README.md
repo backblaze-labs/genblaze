@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-16 -->
+<!-- last_verified: 2026-04-22 -->
 <h1 align="center" style="border-bottom: none">
     Genblaze
 </h1>
@@ -16,9 +16,11 @@
 
 </div>
 
-Orchestration framework for generative media pipelines with built-in provenance tracking.
+Genblaze is an AI pipeline SDK by Backblaze for building and orchestrating generative media workflows across video, image, and audio providers.
 
-Genblaze embeds verifiable provenance metadata into video, audio, and image files automatically. Every output carries a SHA-256-verified manifest recording the model, prompt, and parameters used to create it — embedded directly into the media file or stored alongside it.
+It provides a unified interface to experiment with providers like Runway, Luma, ElevenLabs, Stability Audio, and Hume AI, along with models available through platforms such as GMI Cloud, without rewriting pipeline logic.
+
+Every output includes a SHA-256–verified provenance manifest capturing how the media was generated, with support for embedding metadata directly into files. Genblaze integrates with S3-compatible storage such as Backblaze B2 to store and scale AI-generated media pipelines in production.
 
 ## Providers
 
@@ -27,7 +29,7 @@ genblaze ships with provider adapters for major generative AI platforms:
 | | Video | Image | Audio |
 |---|---|---|---|
 | **GMICloud** | Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
-| **OpenAI** | Sora | DALL-E / gpt-image-1 | TTS |
+| **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS |
 | **Google** | Veo | Imagen | — |
 | **Runway** | Gen-4 Turbo | — | — |
 | **Luma** | Dream Machine | — | — |
@@ -360,7 +362,7 @@ examples/               # Usage examples
 
 ```bash
 make install-dev    # Install all packages in dev mode
-make test           # Run all tests (873 across 13 packages)
+make test           # Run full test suite across all 13 packages
 make lint           # Run ruff linter
 make fmt            # Format code with ruff
 make typecheck      # Run mypy type checker

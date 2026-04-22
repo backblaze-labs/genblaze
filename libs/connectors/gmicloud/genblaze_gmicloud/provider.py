@@ -84,10 +84,14 @@ class GMICloudVideoProvider(GMICloudBase):
             if step.prompt:
                 payload["prompt"] = step.prompt
 
-            for key in ("duration", "cfg_scale", "aspect_ratio", "negative_prompt"):
+            for key in ("duration", "cfg_scale", "aspect_ratio"):
                 if key in step.params:
                     payload[key] = step.params[key]
 
+            # Pipeline hoists negative_prompt and seed out of params onto the
+            # top-level Step fields, so read them there (params won't have them).
+            if step.negative_prompt:
+                payload["negative_prompt"] = step.negative_prompt
             if step.seed is not None:
                 payload["seed"] = step.seed
 

@@ -65,6 +65,7 @@ site/
 # Claude Code — local/ephemeral
 .claude/settings.local.json
 .claude/worktrees/
+CLAUDE.local.md
 
 # Hypothesis test cache
 .hypothesis/

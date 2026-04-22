@@ -3,6 +3,12 @@ name: genblaze-maintainer
 description: "The Genblaze Maintainer — autonomous guardian of the Genblaze repo. Audits functional integrity, security, code quality, documentation, AI agent standards, and dependency health. Invoke for full repo audits, security scans, or targeted domain checks."
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
+isolation: worktree
+permissionMode: acceptEdits
+skills:
+  - test-package
+  - verify-docs
+  - release-check
 ---
 
 # Genblaze Maintainer

@@ -15,7 +15,11 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import ProviderCapabilities, validate_asset_url
+from genblaze_core.providers.base import (
+    ProviderCapabilities,
+    validate_asset_url,
+    validate_chain_input_url,
+)
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._base import GMICloudBase
@@ -33,6 +37,11 @@ _AUDIO_PRICING: dict[str, float] = {
 
 # Music models produce stereo output; TTS models produce mono
 _MUSIC_MODELS: set[str] = {"MiniMax-Music-2.5"}
+
+# Voice cloning models accept a reference audio sample via step.inputs[0].
+# Payload field name follows MiniMax's native voice-clone convention; confirm
+# against the GMICloud request-queue schema on first live integration.
+_VOICE_CLONE_MODELS: set[str] = {"MiniMax-Voice-Clone-Speech-2.6-HD"}
 
 
 class GMICloudAudioProvider(GMICloudBase):
@@ -52,7 +61,8 @@ class GMICloudAudioProvider(GMICloudBase):
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             supported_modalities=[Modality.AUDIO],
-            supported_inputs=["text"],
+            supported_inputs=["text", "audio"],
+            accepts_chain_input=True,
             models=sorted(_AUDIO_PRICING),
             output_formats=["audio/mpeg", "audio/wav"],
         )
@@ -75,6 +85,13 @@ class GMICloudAudioProvider(GMICloudBase):
 
             if step.seed is not None:
                 payload["seed"] = step.seed
+
+            # Always SSRF-validate any chain input; forward to payload only for
+            # voice-clone models that actually consume a reference audio sample.
+            if step.inputs:
+                validate_chain_input_url(step.inputs[0].url)
+                if step.model in _VOICE_CLONE_MODELS:
+                    payload["reference_audio"] = step.inputs[0].url
 
             return self._submit_request(step.model, payload)
 

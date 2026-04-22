@@ -50,6 +50,19 @@ def test_submit_forwards_params(provider):
     assert body["payload"]["aspect_ratio"] == "16:9"
 
 
+def test_submit_forwards_negative_prompt_from_step_field(provider):
+    """Pipeline hoists negative_prompt out of params onto the Step field."""
+    step = Step(
+        provider="gmicloud-image",
+        model="Seedream-5.0-Lite",
+        prompt="a cat",
+        negative_prompt="blurry, watermark",
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert body["payload"]["negative_prompt"] == "blurry, watermark"
+
+
 def test_submit_edit_model_with_image_input(provider):
     from genblaze_core.models.asset import Asset
 

@@ -61,7 +61,7 @@ Providers should always raise `ProviderError` with an explicit `error_code`. The
 
 ## Cost Tracking
 Providers populate `step.cost_usd` using static per-model pricing tables:
-- DALL-E: keyed by (model, quality, size) per image
+- DALL-E / gpt-image: per-model `_ImageModelSpec.pricing` dict, keyed by (quality, size). `gpt-image-2` pricing is undisclosed — `cost_usd=None`. Unknown models (aliases, snapshots) pass through with `cost_usd=None`.
 - Sora: flat per-video price by model
 - TTS (OpenAI, ElevenLabs): per-character pricing by model
 - Imagen: per-image pricing by model
@@ -129,7 +129,7 @@ All fields are optional (default `None` = unspecified). The base `get_capabiliti
 
 ## Asset Contract
 - All asset URLs must be HTTPS or file:// (for locally-saved content) — call `validate_asset_url()` for remote URLs
-- Providers that receive binary data (gpt-image-1, TTS, Imagen, etc.) save to local files and use `file://` URIs
+- Providers that receive binary data (gpt-image-\* family, TTS, Imagen, etc.) save to local files and use `file://` URIs. `DalleProvider` also accepts `file://` and `https://` inputs for the `/images/edits` endpoint — routing is automatic based on `step.inputs` presence.
 - Set `Asset.media_type` to the most specific MIME type available
 - TTS providers should populate `Asset.audio.word_timings` when timing data is available
 - Never store API tokens in `step.provider_payload`

@@ -51,6 +51,51 @@ def test_submit_forwards_params(provider):
     assert body["payload"]["language"] == "en"
 
 
+# --- Voice cloning (reference audio input) ---
+
+
+def test_voice_clone_forwards_reference_audio(provider):
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud-audio",
+        model="MiniMax-Voice-Clone-Speech-2.6-HD",
+        prompt="Hello world",
+        inputs=[Asset(url="https://example.com/sample.mp3", media_type="audio/mpeg")],
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert body["payload"]["reference_audio"] == "https://example.com/sample.mp3"
+
+
+def test_non_clone_model_does_not_forward_reference_audio(provider):
+    """Inputs attached to a non-clone model must be ignored (not forwarded)."""
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud-audio",
+        model="ElevenLabs-TTS-v3",
+        prompt="Hello",
+        inputs=[Asset(url="https://example.com/sample.mp3", media_type="audio/mpeg")],
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert "reference_audio" not in body["payload"]
+
+
+def test_voice_clone_rejects_http_reference_audio(provider):
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud-audio",
+        model="MiniMax-Voice-Clone-Speech-2.6-HD",
+        prompt="Hello",
+        inputs=[Asset(url="http://evil.com/sample.mp3", media_type="audio/mpeg")],
+    )
+    with pytest.raises(ProviderError, match="[Uu]nsafe"):
+        provider.submit(step)
+
+
 # --- Poll ---
 
 

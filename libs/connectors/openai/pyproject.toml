@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://www.backblaze.com/docs/"
+Documentation = "https://github.com/backblaze-labs/genblaze"
 Repository = "https://github.com/backblaze-labs/genblaze"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 

@@ -50,6 +50,19 @@ def test_submit_forwards_params(provider):
     assert body["payload"]["cfg_scale"] == 0.5
 
 
+def test_submit_forwards_negative_prompt_from_step_field(provider):
+    """Pipeline hoists negative_prompt out of params onto the Step field."""
+    step = Step(
+        provider="gmicloud",
+        model="Kling-Text2Video-V1.6-Pro",
+        prompt="a sunset",
+        negative_prompt="blurry, low-res",
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert body["payload"]["negative_prompt"] == "blurry, low-res"
+
+
 def test_submit_image_to_video(provider):
     from genblaze_core.models.asset import Asset
 
