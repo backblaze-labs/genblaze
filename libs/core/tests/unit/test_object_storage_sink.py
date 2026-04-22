@@ -72,7 +72,7 @@ def _make_run_and_manifest():
 
 
 class TestObjectStorageSink:
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_write_run_uploads_manifest(self, mock_urlopen):
         """write_run should upload manifest JSON to storage."""
         mock_resp = MagicMock()
@@ -93,7 +93,7 @@ class TestObjectStorageSink:
         assert manifest_key in backend.store
         assert manifest.manifest_uri is not None
 
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_write_run_sets_manifest_uri(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [b"data", b""]
@@ -110,7 +110,7 @@ class TestObjectStorageSink:
 
         assert manifest.manifest_uri == f"https://mem/pfx/manifests/{run.run_id}.json"
 
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_idempotent_manifest_upload(self, mock_urlopen):
         """Second write_run should skip manifest upload if already exists."""
         mock_resp = MagicMock()
@@ -137,7 +137,7 @@ class TestObjectStorageSink:
         sink.close()
         assert backend.closed
 
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_thread_safety(self, mock_urlopen):
         """Multiple threads calling write_run should not crash."""
         mock_resp = MagicMock()
@@ -176,7 +176,7 @@ class TestObjectStorageSink:
         assert errors == [], f"Thread errors: {errors}"
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_manifest_verifies_after_sink(self, mock_urlopen, _mock_dns):
         """manifest.verify() returns True after sink mutates asset URLs."""
         mock_resp = MagicMock()
@@ -254,7 +254,7 @@ class TestObjectStorageSink:
         )
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_persisted_artifacts_carry_no_signature(self, mock_urlopen, _mock_dns):
         """No persisted URL (asset.url, manifest_uri, manifest body) may
         contain SigV4 signature/credential query parameters.
@@ -302,7 +302,7 @@ class TestObjectStorageSink:
                     )
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_manifest_verifies_after_partial_transfer_failure(self, mock_urlopen, _mock_dns):
         """Partial transfer failures must not poison canonical_hash integrity.
 
@@ -339,7 +339,7 @@ class TestObjectStorageSinkHierarchical:
     """HIERARCHICAL layout groups manifest + assets under one run folder."""
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_manifest_grouped_with_run(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -352,7 +352,7 @@ class TestObjectStorageSinkHierarchical:
         assert expected_key in backend.store
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_assets_grouped_with_run(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -369,7 +369,7 @@ class TestObjectStorageSinkHierarchical:
         assert asset_id in asset_keys[0]
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_with_tenant(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -395,7 +395,7 @@ class TestContentAddressableRegression:
     """CA layout keeps assets and manifests in separate trees (unchanged)."""
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_content_addressable_layout_unchanged(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -424,7 +424,7 @@ class TestCacheControlPolicy:
     """
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_cas_assets_get_immutable_cache_control(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -440,7 +440,7 @@ class TestCacheControlPolicy:
         )
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_assets_get_private_short_ttl(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -453,7 +453,7 @@ class TestCacheControlPolicy:
         assert backend.put_extra_args[asset_keys[0]]["CacheControl"] == "private, max-age=3600"
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_cas_manifest_gets_immutable_cache_control(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -468,7 +468,7 @@ class TestCacheControlPolicy:
         )
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_manifest_gets_private_short_ttl(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         backend = MemoryBackend()
@@ -485,7 +485,7 @@ class TestManifestObjectLock:
     """Object Lock on manifests — the B2-native provenance retention story."""
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_governance_mode_passes_lock_to_backend(self, mock_urlopen, _mock_dns):
         mock_urlopen.return_value = _mock_urlopen()
         retain_until = datetime(2030, 1, 1, tzinfo=UTC)
@@ -505,7 +505,7 @@ class TestManifestObjectLock:
         assert extra["ObjectLockRetainUntilDate"] == retain_until
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_compliance_mode_logs_warning(self, mock_urlopen, _mock_dns, caplog):
         """COMPLIANCE mode is a foot-gun — the sink should log loudly at init."""
         import logging
@@ -520,7 +520,7 @@ class TestManifestObjectLock:
         assert any("COMPLIANCE" in rec.message for rec in caplog.records)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_no_lock_by_default(self, mock_urlopen, _mock_dns):
         """Without explicit manifest_lock, no ObjectLock keys are written."""
         mock_urlopen.return_value = _mock_urlopen()
@@ -535,7 +535,7 @@ class TestManifestObjectLock:
         assert "ObjectLockRetainUntilDate" not in extra
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_lock_preserves_cache_control(self, mock_urlopen, _mock_dns):
         """Object Lock and Cache-Control both end up on the same put call."""
         mock_urlopen.return_value = _mock_urlopen()

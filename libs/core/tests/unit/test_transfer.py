@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import socket
-import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -161,7 +160,7 @@ class TestAssetTransfer:
         return AssetTransfer(backend, prefix="assets"), backend
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_transfer_updates_asset(self, mock_urlopen, _mock_dns):
         """Transfer should set sha256, size_bytes, and url on the asset."""
         mock_resp = MagicMock()
@@ -183,7 +182,7 @@ class TestAssetTransfer:
         assert key in backend.store
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_content_addressable_dedup(self, mock_urlopen, _mock_dns):
         """Content-addressable uploads skip if key already exists."""
         mock_resp = MagicMock()
@@ -258,7 +257,7 @@ class TestAssetTransfer:
         assert key in backend.store
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_transfer_streams_to_file_object(self, mock_urlopen, _mock_dns):
         """Remote transfers pass a file-like object to backend.put(), not bytes."""
         # Simulate a response larger than _SPOOL_THRESHOLD to test disk spooling
@@ -300,17 +299,20 @@ class TestAssetTransfer:
         assert received_data[0] == "SpooledTemporaryFile"
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
-    def test_download_timeout_raises_storage_error(self, mock_urlopen, _mock_dns):
-        """urlopen timeout propagates as StorageError."""
-        mock_urlopen.side_effect = urllib.error.URLError("timed out")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_download_timeout_raises_storage_error(self, mock_get_stream, _mock_dns):
+        """HTTP transport failures propagate as StorageError."""
+        # _http_get_stream already wraps urllib3 errors as StorageError, but
+        # we simulate a raw transport fail from deeper in the stack to prove
+        # the outer except-Exception handler also wraps cleanly.
+        mock_get_stream.side_effect = OSError("connection refused")
         transfer, _ = self._make_transfer()
         asset = Asset(url="https://slow.example.com/huge.mp4", media_type="video/mp4")
         with pytest.raises(StorageError, match="Failed to download"):
             transfer.transfer(asset)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
-    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_oversized_download_aborted(self, mock_urlopen, _mock_dns):
         """Downloads exceeding max_download_bytes are rejected."""
         # Return chunks that exceed the small limit
@@ -359,6 +361,124 @@ class TestReadLocalFile:
         missing = tmp_path / "nope.png"
         with pytest.raises(StorageError, match="Failed to read"):
             _read_local_file(f"file://{missing}")
+
+
+class TestConnectionLifecycle:
+    """release_conn() must fire on every transfer — success, failure, and
+    partial-read paths. Otherwise the urllib3 pool leaks connections."""
+
+    def _mock_resp(self, chunks: list[bytes]) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = chunks
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.release_conn = MagicMock()
+        return mock_resp
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_release_conn_on_success(self, mock_get_stream, _mock_dns):
+        mock_resp = self._mock_resp([b"payload", b""])
+        mock_get_stream.return_value = mock_resp
+
+        backend = FakeBackend()
+        transfer = AssetTransfer(backend, prefix="assets")
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+        transfer.transfer(asset)
+
+        mock_resp.release_conn.assert_called_once()
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_release_conn_on_size_cap(self, mock_get_stream, _mock_dns):
+        """Oversized download aborts mid-stream — connection still released."""
+        mock_resp = self._mock_resp([b"x" * 2048, b"x" * 2048, b""])
+        mock_get_stream.return_value = mock_resp
+
+        backend = FakeBackend()
+        transfer = AssetTransfer(backend, prefix="assets", max_download_bytes=1024)
+        asset = Asset(url="https://cdn.example.com/big.mp4", media_type="video/mp4")
+        with pytest.raises(StorageError, match="exceeds"):
+            transfer.transfer(asset)
+
+        mock_resp.release_conn.assert_called_once()
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_release_conn_on_backend_put_failure(self, mock_get_stream, _mock_dns):
+        """Backend upload failure after successful download still releases conn."""
+        mock_resp = self._mock_resp([b"payload", b""])
+        mock_get_stream.return_value = mock_resp
+
+        class BrokenBackend(FakeBackend):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
+                raise StorageError("backend down")
+
+        transfer = AssetTransfer(BrokenBackend(), prefix="assets")
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+        with pytest.raises(StorageError):
+            transfer.transfer(asset)
+
+        mock_resp.release_conn.assert_called_once()
+
+
+class TestHttpPool:
+    """urllib3 connection pool — the shared download path."""
+
+    def test_pool_is_singleton(self):
+        """A module-level pool means connections reuse across asset transfers
+        AND across runs in the same process. Re-importing must not rebuild it."""
+        from genblaze_core.storage import transfer
+        from genblaze_core.storage.transfer import _HTTP_POOL
+
+        assert _HTTP_POOL is transfer._HTTP_POOL
+
+    def test_pool_retries_on_transient_failures(self):
+        """429/5xx responses should be retried without the caller seeing them.
+        Without this, a single transient 503 during a batch run takes out
+        the whole transfer instead of bouncing off boto3's server."""
+        import urllib3
+        from genblaze_core.storage.transfer import _HTTP_POOL
+
+        retries = _HTTP_POOL.connection_pool_kw.get("retries")
+        # urllib3 stores the Retry on the PoolManager after being set via kwarg
+        # or as the default. Inspect either the pool_kw or the manager's own retry.
+        if retries is None:
+            retries = _HTTP_POOL.retries
+        assert isinstance(retries, urllib3.Retry)
+        assert retries.total is not None and retries.total >= 3
+        assert 429 in retries.status_forcelist
+        assert 503 in retries.status_forcelist
+
+    def test_get_stream_raises_on_http_error_status(self):
+        """4xx/5xx after retries-exhausted should surface as StorageError,
+        not a raw urllib3 response object the caller would then try to read()."""
+        from unittest.mock import MagicMock, patch
+
+        from genblaze_core.storage.transfer import _http_get_stream
+
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+        mock_resp.release_conn = MagicMock()
+        with patch("genblaze_core.storage.transfer._HTTP_POOL.request", return_value=mock_resp):
+            with pytest.raises(StorageError, match="HTTP 404"):
+                _http_get_stream("https://cdn.example.com/missing.png", timeout=30.0)
+        # Must release the connection even on the error path.
+        mock_resp.release_conn.assert_called_once()
+
+    def test_get_stream_wraps_urllib3_errors(self):
+        """Transport errors from urllib3 surface as StorageError with
+        provenance preserved in the exception chain."""
+        from unittest.mock import patch
+
+        import urllib3
+        from genblaze_core.storage.transfer import _http_get_stream
+
+        with patch(
+            "genblaze_core.storage.transfer._HTTP_POOL.request",
+            side_effect=urllib3.exceptions.ConnectTimeoutError(None, "connect timeout"),
+        ):
+            with pytest.raises(StorageError, match="Download failed"):
+                _http_get_stream("https://slow.example.com/img.png", timeout=30.0)
 
 
 class TestPerformanceDefaults:

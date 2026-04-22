@@ -7,10 +7,11 @@ import hashlib
 import logging
 import mimetypes
 import tempfile
-import urllib.request
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import urlparse
+
+import urllib3
 
 from genblaze_core._utils import ALLOWED_FILE_ROOTS, check_ssrf
 from genblaze_core._version import __version__
@@ -56,6 +57,54 @@ _USER_AGENT = f"b2ai-genblaze/{__version__}"
 # keys are UUID-based but per-run, so a shorter TTL is safer.
 _CAS_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _HIERARCHICAL_CACHE_CONTROL = "private, max-age=3600"
+
+
+# Shared HTTPS connection pool for asset downloads. urllib.request opens a
+# fresh TCP + TLS handshake per call; at 150 ms per handshake a batch run
+# with 50 images from the same CDN burns 7.5 s purely on connection setup.
+# urllib3's PoolManager reuses connections across the sink's worker threads
+# (thread-safe) and across subsequent runs in the same process.
+#
+# Retry on 429/5xx is built into urllib3, giving us transient-failure
+# resilience the previous urllib path lacked entirely.
+_HTTP_POOL = urllib3.PoolManager(
+    num_pools=10,
+    maxsize=20,
+    retries=urllib3.Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+    ),
+)
+
+
+def _http_get_stream(url: str, *, timeout: float) -> Any:
+    """Open a streaming GET via the shared urllib3 pool.
+
+    Returns a ``urllib3.HTTPResponse`` in ``preload_content=False`` mode so
+    the caller can read chunks via ``resp.read(n)``. The caller MUST call
+    ``resp.release_conn()`` in a ``finally`` to return the connection to
+    the pool — otherwise the pool exhausts under load.
+
+    Raises ``StorageError`` on HTTP errors and transport failures so
+    ``AssetTransfer`` sees a single exception type regardless of the
+    underlying failure mode.
+    """
+    try:
+        resp = _HTTP_POOL.request(
+            "GET",
+            url,
+            preload_content=False,
+            timeout=urllib3.Timeout(connect=30.0, read=timeout),
+            headers={"User-Agent": _USER_AGENT},
+        )
+    except urllib3.exceptions.HTTPError as exc:
+        raise StorageError(f"Download failed for {url}: {exc}") from exc
+    if resp.status >= 400:
+        resp.release_conn()
+        raise StorageError(f"HTTP {resp.status} downloading {url}")
+    return resp
 
 
 def _cache_control_for(strategy: KeyStrategy) -> str:
@@ -207,8 +256,8 @@ class AssetTransfer:
             # Remote URL → validate and stream to temp file (avoids holding large videos in RAM)
             _validate_url(asset.url)
             try:
-                req = urllib.request.Request(asset.url, headers={"User-Agent": _USER_AGENT})  # noqa: S310
-                with urllib.request.urlopen(req, timeout=self._download_timeout) as resp:  # noqa: S310
+                resp = _http_get_stream(asset.url, timeout=self._download_timeout)
+                try:
                     content_type = resp.headers.get("Content-Type")
                     hasher = hashlib.sha256()
                     size = 0
@@ -257,6 +306,10 @@ class AssetTransfer:
                             )
                     finally:
                         tmp.close()
+                finally:
+                    # Return the connection to the pool — otherwise the pool
+                    # exhausts after maxsize in-flight transfers.
+                    resp.release_conn()
             except StorageError:
                 raise
             except Exception as exc:
