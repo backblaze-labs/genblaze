@@ -28,7 +28,7 @@ class FakeBackend(StorageBackend):
     def __init__(self):
         self.store: dict[str, bytes] = {}
 
-    def put(self, key, data, *, content_type=None, metadata=None):
+    def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
         if isinstance(data, bytes):
             self.store[key] = data
         else:
@@ -270,7 +270,7 @@ class TestAssetTransfer:
         received_data = []
 
         class TrackingBackend(FakeBackend):
-            def put(self, key, data, *, content_type=None, metadata=None):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
                 received_data.append(type(data).__name__)
                 # Read file-like object for storage
                 if hasattr(data, "read"):

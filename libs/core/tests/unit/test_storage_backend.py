@@ -24,7 +24,7 @@ class TestStorageBackendABC:
         """Subclass missing abstract methods should raise TypeError."""
 
         class Partial(StorageBackend):
-            def put(self, key, data, *, content_type=None, metadata=None):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
                 return ""
 
         with pytest.raises(TypeError):
@@ -34,7 +34,7 @@ class TestStorageBackendABC:
         """A subclass implementing all abstract methods should work."""
 
         class Complete(StorageBackend):
-            def put(self, key, data, *, content_type=None, metadata=None):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
                 return f"url://{key}"
 
             def get(self, key):
@@ -57,7 +57,7 @@ class TestStorageBackendABC:
         """Default close() should not raise."""
 
         class Minimal(StorageBackend):
-            def put(self, key, data, *, content_type=None, metadata=None):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
                 return ""
 
             def get(self, key):

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
@@ -17,6 +18,23 @@ logger = logging.getLogger("genblaze.s3")
 
 # User agent for B2/S3 API tracking
 _USER_AGENT = f"b2ai-genblaze/{__version__}"
+
+# Single-PUT vs multipart cutoff. Above this, boto3 splits into 16 MB parts
+# and uploads up to _MAX_CONCURRENCY in parallel — each part individually
+# retryable, which matters for multi-GB video payloads on flaky links.
+_MULTIPART_THRESHOLD = 16 * 1024 * 1024
+_MULTIPART_CHUNKSIZE = 16 * 1024 * 1024
+_MAX_CONCURRENCY = 4
+
+# urllib3 connection pool ceiling. With 4 asset workers × 4 part workers we
+# can saturate 16 concurrent connections; headroom for HEAD/auth prefetch.
+_MAX_POOL_CONNECTIONS = 20
+
+# Lifecycle defaults applied by ensure_lifecycle_defaults() / auto_lifecycle=True.
+# Orphaned multipart uploads from mid-stream failures otherwise sit billable
+# indefinitely — a real cost vector once the multipart path is the default.
+_DEFAULT_CANCEL_MULTIPART_DAYS = 7
+_DEFAULT_NONCURRENT_EXPIRE_DAYS = 30
 
 
 class S3StorageBackend(StorageBackend):
@@ -47,10 +65,14 @@ class S3StorageBackend(StorageBackend):
     ):
         self._bucket = bucket
         self._public_url_base = public_url_base.rstrip("/") if public_url_base else None
+        # Region may be updated later by auto-detection (see _ensure_region_verified).
+        self._region = region
+        self._region_verified = False
 
         # Lazy import boto3 (same pattern as replicate connector)
         try:
             import boto3
+            from boto3.s3.transfer import TransferConfig
             from botocore.config import Config as BotoConfig
         except ImportError as exc:
             raise ImportError(
@@ -71,14 +93,30 @@ class S3StorageBackend(StorageBackend):
         # User agent for B2 attribution; adaptive retries for transient 429/503s;
         # explicit timeouts because boto3's 60s default read_timeout can fire
         # mid-upload on slow links with GB-sized video payloads.
+        #
+        # request/response_checksum_calculation="when_required" disables the
+        # default CRC32 trailer that boto3 >= 1.36 injects. That header broke
+        # B2 uploads until B2 added support in July 2025; keeping it off
+        # avoids the landmine across any S3-compat endpoint that lags on
+        # checksum-header support (older B2, MinIO, Wasabi). We pass SHA-256
+        # explicitly per upload via ExtraArgs instead.
         kwargs["config"] = BotoConfig(
             user_agent_extra=_USER_AGENT,
             retries={"max_attempts": 3, "mode": "adaptive"},
             connect_timeout=30,
             read_timeout=300,
+            max_pool_connections=_MAX_POOL_CONNECTIONS,
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
         )
 
         self._client = boto3.client("s3", **kwargs)
+        self._transfer_config = TransferConfig(
+            multipart_threshold=_MULTIPART_THRESHOLD,
+            multipart_chunksize=_MULTIPART_CHUNKSIZE,
+            max_concurrency=_MAX_CONCURRENCY,
+            use_threads=True,
+        )
 
     def put(
         self,
@@ -87,18 +125,51 @@ class S3StorageBackend(StorageBackend):
         *,
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
+        extra_args: dict[str, Any] | None = None,
     ) -> str:
-        """Upload an object to S3. Returns the storage URL."""
+        """Upload an object to S3. Returns the storage URL.
+
+        Uses boto3's managed ``upload_fileobj`` so large payloads are
+        automatically split into multipart uploads (16 MB parts, 4-way
+        parallel) and each part is individually retryable. Per-part SHA-256
+        checksums are negotiated server-side via ``ChecksumAlgorithm``.
+        """
         try:
-            kwargs: dict = {"Bucket": self._bucket, "Key": key, "Body": data}
-            if content_type:
-                kwargs["ContentType"] = content_type
-            if metadata:
-                kwargs["Metadata"] = metadata
-            self._client.put_object(**kwargs)
+            self._ensure_region_verified()
+            merged = self._build_extra_args(content_type, metadata, extra_args)
+            stream: BinaryIO = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
+            self._client.upload_fileobj(
+                stream,
+                self._bucket,
+                key,
+                ExtraArgs=merged,
+                Config=self._transfer_config,
+            )
             return self.get_url(key)
+        except StorageError:
+            raise
         except Exception as exc:
             raise StorageError(f"S3 put failed for {key}: {exc}") from exc
+
+    @staticmethod
+    def _build_extra_args(
+        content_type: str | None,
+        metadata: dict[str, str] | None,
+        extra_args: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Merge kwargs into a boto3-style ExtraArgs dict, honoring caller overrides."""
+        merged: dict[str, Any] = {}
+        if content_type:
+            merged["ContentType"] = content_type
+        if metadata:
+            merged["Metadata"] = metadata
+        # Caller-provided keys win (including overriding ChecksumAlgorithm).
+        if extra_args:
+            merged.update(extra_args)
+        # Default to SHA-256 per-part integrity unless caller pinned a checksum.
+        if "ChecksumAlgorithm" not in merged and "ChecksumSHA256" not in merged:
+            merged["ChecksumAlgorithm"] = "SHA256"
+        return merged
 
     def get(self, key: str) -> bytes:
         """Download an object from S3."""
@@ -142,6 +213,122 @@ class S3StorageBackend(StorageBackend):
         except Exception as exc:
             raise StorageError(f"S3 get_url failed for {key}: {exc}") from exc
 
+    def _ensure_region_verified(self) -> None:
+        """Lazy-verify the bucket region on first use; follow redirect if wrong.
+
+        B2 (and AWS) return 301 ``PermanentRedirect`` with an
+        ``x-amz-bucket-region`` header when the client is pointed at the
+        wrong region. We catch that once and rebuild the client pointing at
+        the correct B2 endpoint — users stop needing to hand-pick the right
+        ``region=`` on ``for_backblaze``.
+        """
+        if self._region_verified:
+            return
+        from botocore.exceptions import ClientError
+
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+            self._region_verified = True
+        except ClientError as exc:
+            actual = (
+                exc.response.get("ResponseMetadata", {})
+                .get("HTTPHeaders", {})
+                .get("x-amz-bucket-region")
+            )
+            code = exc.response.get("Error", {}).get("Code")
+            if actual and actual != self._region and code in {"301", "PermanentRedirect"}:
+                logger.info(
+                    "Bucket %s lives in %s (client was pointed at %s); reconfiguring.",
+                    self._bucket,
+                    actual,
+                    self._region,
+                )
+                self._reconfigure_for_region(actual)
+                self._region_verified = True
+                return
+            raise StorageError(
+                f"Bucket {self._bucket!r} preflight failed: {exc}. "
+                "Check bucket name, region, and credentials."
+            ) from exc
+
+    def _reconfigure_for_region(self, region: str) -> None:
+        """Rebuild the boto3 client for a different B2 region."""
+        import boto3
+        from boto3.s3.transfer import TransferConfig
+        from botocore.config import Config as BotoConfig
+
+        self._region = region
+        self._client = boto3.client(
+            "s3",
+            endpoint_url=f"https://s3.{region}.backblazeb2.com",
+            region_name=region,
+            aws_access_key_id=self._client.meta.config.__dict__.get("aws_access_key_id"),
+            aws_secret_access_key=self._client.meta.config.__dict__.get("aws_secret_access_key"),
+            config=BotoConfig(
+                user_agent_extra=_USER_AGENT,
+                retries={"max_attempts": 3, "mode": "adaptive"},
+                connect_timeout=30,
+                read_timeout=300,
+                max_pool_connections=_MAX_POOL_CONNECTIONS,
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
+        )
+        self._transfer_config = TransferConfig(
+            multipart_threshold=_MULTIPART_THRESHOLD,
+            multipart_chunksize=_MULTIPART_CHUNKSIZE,
+            max_concurrency=_MAX_CONCURRENCY,
+            use_threads=True,
+        )
+
+    def ensure_lifecycle_defaults(
+        self,
+        *,
+        cancel_multipart_after_days: int = _DEFAULT_CANCEL_MULTIPART_DAYS,
+        noncurrent_version_expire_days: int | None = _DEFAULT_NONCURRENT_EXPIRE_DAYS,
+    ) -> None:
+        """Apply idempotent lifecycle rules tuned for a genblaze workload.
+
+        Orphaned multipart uploads from failed video transfers otherwise
+        accumulate billable storage forever. Noncurrent-version expiry
+        tidies the per-run manifest history that B2's always-on versioning
+        creates when manifests are rewritten.
+
+        Pass ``noncurrent_version_expire_days=None`` to keep all manifest
+        versions forever (full provenance history, higher storage cost).
+        """
+        rules: list[dict[str, Any]] = [
+            {
+                "ID": "genblaze-cancel-unfinished-multipart",
+                "Status": "Enabled",
+                "Filter": {"Prefix": ""},
+                "AbortIncompleteMultipartUpload": {
+                    "DaysAfterInitiation": cancel_multipart_after_days
+                },
+            }
+        ]
+        if noncurrent_version_expire_days is not None:
+            rules.append(
+                {
+                    "ID": "genblaze-expire-noncurrent-versions",
+                    "Status": "Enabled",
+                    "Filter": {"Prefix": ""},
+                    "NoncurrentVersionExpiration": {
+                        "NoncurrentDays": noncurrent_version_expire_days
+                    },
+                }
+            )
+        try:
+            self._client.put_bucket_lifecycle_configuration(
+                Bucket=self._bucket,
+                LifecycleConfiguration={"Rules": rules},
+            )
+            logger.info("Applied %d lifecycle rule(s) to bucket %s", len(rules), self._bucket)
+        except Exception as exc:
+            # Non-fatal — users with read-only keys or managed infra should
+            # still be able to upload. Log and continue.
+            logger.warning("Failed to apply lifecycle defaults to %s: %s", self._bucket, exc)
+
     # close() intentionally not overridden — base class no-op is correct.
     # boto3 clients don't have a close() method; calling it would raise.
 
@@ -154,32 +341,67 @@ class S3StorageBackend(StorageBackend):
         key_id: str | None = None,
         app_key: str | None = None,
         public_url_base: str | None = None,
+        auto_lifecycle: bool = True,
     ) -> S3StorageBackend:
         """Construct an S3StorageBackend preconfigured for Backblaze B2.
 
         Derives B2's S3 endpoint from ``region`` and falls back to the
         ``B2_KEY_ID`` / ``B2_APP_KEY`` environment variables when
-        credentials are not passed explicitly.
+        credentials are not passed explicitly. Raises ``ValueError`` if
+        credentials are missing entirely — prefer a clear error at
+        construction over a cryptic ``NoCredentialsError`` mid-upload.
+
+        The first ``put()`` / ``exists()`` call auto-detects the bucket's
+        actual region; passing ``region=`` is an optimization hint, not a
+        requirement. If the bucket lives elsewhere the backend transparently
+        reconfigures itself.
 
         Args:
             bucket: B2 bucket name.
-            region: B2 region slug (e.g. "us-west-004", "eu-central-003").
+            region: B2 region slug hint (e.g. "us-west-004", "eu-central-003").
+                Auto-corrected on first use if the bucket lives in a different
+                region.
             key_id: B2 application key ID. Defaults to ``$B2_KEY_ID``.
             app_key: B2 application key. Defaults to ``$B2_APP_KEY``.
             public_url_base: Optional B2 friendly-URL base for public buckets,
                 e.g. ``"https://f004.backblazeb2.com/file/my-bucket"``. When
                 set, :meth:`get_url` returns these instead of pre-signed URLs.
+            auto_lifecycle: When True (default), apply recommended lifecycle
+                rules on construction — cancel orphaned multipart uploads
+                after 7 days and expire noncurrent manifest versions after
+                30 days. Set False if lifecycle is managed out-of-band
+                (Terraform, console, IaC).
 
         Example::
 
             backend = S3StorageBackend.for_backblaze("my-bucket")
             sink = ObjectStorageSink(backend, key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
         """
-        return cls(
+        resolved_key = key_id or os.environ.get("B2_KEY_ID")
+        resolved_secret = app_key or os.environ.get("B2_APP_KEY")
+        if not resolved_key or not resolved_secret:
+            raise ValueError(
+                "Backblaze B2 credentials missing. Set B2_KEY_ID / B2_APP_KEY "
+                "environment variables, or pass key_id= and app_key= "
+                "explicitly to for_backblaze()."
+            )
+        backend = cls(
             bucket=bucket,
             endpoint_url=f"https://s3.{region}.backblazeb2.com",
             region=region,
             public_url_base=public_url_base,
-            aws_access_key_id=key_id or os.environ.get("B2_KEY_ID"),
-            aws_secret_access_key=app_key or os.environ.get("B2_APP_KEY"),
+            aws_access_key_id=resolved_key,
+            aws_secret_access_key=resolved_secret,
         )
+        if auto_lifecycle:
+            # Region may still be wrong here — ensure_lifecycle_defaults calls
+            # put_bucket_lifecycle_configuration which surfaces 301 cleanly
+            # via the normal region-redirect path. Verify first so the
+            # lifecycle call lands on the right region.
+            try:
+                backend._ensure_region_verified()
+            except StorageError as exc:
+                logger.warning("auto_lifecycle skipped — bucket preflight failed: %s", exc)
+                return backend
+            backend.ensure_lifecycle_defaults()
+        return backend

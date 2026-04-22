@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 
 class KeyStrategy(StrEnum):
@@ -36,8 +36,15 @@ class StorageBackend(ABC):
         *,
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
+        extra_args: dict[str, Any] | None = None,
     ) -> str:
-        """Upload an object. Returns the storage URL."""
+        """Upload an object. Returns the storage URL.
+
+        ``extra_args`` is a backend-specific passthrough — for the S3 backend it
+        maps to boto3's ``ExtraArgs`` (Cache-Control, ServerSideEncryption,
+        ObjectLockMode, etc.). Backends that don't recognize a key should
+        ignore it rather than raise.
+        """
         ...
 
     @abstractmethod

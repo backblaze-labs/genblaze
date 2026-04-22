@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `genblaze-s3`: multipart uploads via `upload_fileobj` + `TransferConfig` —
+  assets >16 MB now split into 16 MB parts uploaded 4-way in parallel, each
+  part individually retryable. Transforms multi-GB video uploads from a
+  lottery ticket into a reliable operation.
+- `genblaze-s3`: per-part SHA-256 integrity via `ChecksumAlgorithm=SHA256`
+  on every upload so B2 server-side-verifies transfer integrity.
+- `genblaze-s3`: `S3StorageBackend.ensure_lifecycle_defaults()` helper that
+  applies idempotent `AbortIncompleteMultipartUpload` (7 days) and
+  `NoncurrentVersionExpiration` (30 days) rules. Called automatically by
+  `for_backblaze(auto_lifecycle=True)` (default).
+- `genblaze-s3`: automatic bucket-region auto-detection — the first
+  `put()`/`exists()` call runs a HeadBucket preflight and transparently
+  reconfigures the client if the bucket lives in a different region.
+- `genblaze-s3`: `StorageBackend.put()` gains an `extra_args` passthrough
+  for boto3-style `ExtraArgs` (Cache-Control, SSE, Object Lock, etc.).
+- `genblaze-core`: immutable Cache-Control on CONTENT_ADDRESSABLE uploads
+  (`public, max-age=31536000, immutable`), shorter private TTL on
+  HIERARCHICAL. Unlocks the B2 + Cloudflare Bandwidth Alliance zero-egress
+  delivery pattern documented in `docs/features/object-storage.md`.
+- Docs: "Serving media at zero egress: B2 + Cloudflare" recipe.
+
+### Changed
+- `genblaze-s3`: `for_backblaze()` raises a clear `ValueError` when both
+  `B2_KEY_ID`/`B2_APP_KEY` env vars and explicit `key_id`/`app_key` are
+  missing — prevents opaque mid-upload `NoCredentialsError`.
+- `genblaze-s3`: `BotoConfig` now pins
+  `request_checksum_calculation="when_required"` /
+  `response_checksum_validation="when_required"` so boto3 never sends
+  `x-amz-sdk-checksum-algorithm` trailer headers that older B2 deployments
+  and other S3-compat endpoints reject. Genblaze sets SHA-256 explicitly.
+- `genblaze-s3`: default `max_pool_connections` bumped to 20 to accommodate
+  concurrent multipart uploads.
+
 ## [0.1.0] - 2026-04-22
 
 ### Added

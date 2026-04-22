@@ -21,6 +21,9 @@ from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
 from genblaze_s3 import S3StorageBackend
 
 # Reads B2_KEY_ID / B2_APP_KEY from env; override with key_id=/app_key= if needed.
+# Auto-applies recommended lifecycle rules (cancel orphaned multipart uploads
+# after 7 days; expire noncurrent manifest versions after 30 days). Pass
+# auto_lifecycle=False if lifecycle is managed out-of-band.
 storage = ObjectStorageSink(
     S3StorageBackend.for_backblaze("my-bucket"),
     key_strategy=KeyStrategy.HIERARCHICAL,
@@ -28,6 +31,33 @@ storage = ObjectStorageSink(
 
 result = Pipeline("my-pipeline").step(...).run(sink=storage)
 ```
+
+### What `for_backblaze()` does for you
+
+`S3StorageBackend.for_backblaze()` is the recommended entry point when your
+bucket is on B2 — it encodes the B2-specific tuning so you don't have to:
+
+- **Credentials check** — raises a clear `ValueError` at construction if
+  neither env vars nor explicit args are present (no opaque mid-upload
+  `NoCredentialsError`).
+- **Region auto-detect** — on first use, verifies the bucket's region via a
+  single `HeadBucket` call. If the bucket lives in a different region than
+  the ``region=`` hint, the backend reconfigures itself transparently.
+- **Lifecycle defaults** — applies `AbortIncompleteMultipartUpload` after 7
+  days and noncurrent-version expiry after 30 days. Prevents orphaned
+  multipart uploads from silently accruing storage cost.
+- **Multipart uploads** — any asset larger than 16 MB is split into
+  16 MB parts uploaded 4-way in parallel. Each part is individually
+  retryable on transient failures.
+- **Per-part SHA-256 integrity** — every upload carries
+  `ChecksumAlgorithm=SHA256` so B2 server-side-verifies transfer integrity.
+- **Checksum header compat** — the backend pins
+  `request_checksum_calculation="when_required"`, so boto3's default
+  `x-amz-sdk-checksum-algorithm` header is never sent. This keeps the
+  backend portable across all S3-compatible services (including older B2
+  deployments, MinIO, Wasabi).
+- **User-Agent attribution** — all requests carry `b2ai-genblaze/{version}`
+  for B2 usage reporting.
 
 ### Other S3-compatible providers
 
@@ -121,3 +151,42 @@ result = Pipeline("full-pipeline").step(...).run(sink=storage)
 ## Backward compatibility
 
 Existing buckets using the previous HIERARCHICAL layout (assets at `{prefix}/assets/{tenant}/{date}/{run_id}/{asset_id}.ext`) continue to work — URLs stored in manifests remain valid regardless of layout changes. Only newly written data uses the updated paths.
+
+## Serving media at zero egress: B2 + Cloudflare
+
+Backblaze B2 and Cloudflare have a
+[Bandwidth Alliance partnership](https://www.backblaze.com/blog/backblaze-and-cloudflare-partner-to-provide-free-data-transfer/)
+that makes egress from B2 to Cloudflare **free**. Paired with `genblaze-s3`'s
+immutable `Cache-Control` headers on content-addressable keys, this is the
+cheapest production-grade media delivery path for AI-generated assets.
+
+**Setup (one-time):**
+
+1. Make the bucket public in the B2 console.
+2. Add a CNAME in Cloudflare DNS:
+   `media.example.com → f004.backblazeb2.com` (use the realm for your region).
+3. Enable **Proxy** (orange cloud) on the CNAME.
+4. In Cloudflare, add a **Transform Rule** to rewrite the request path:
+   `/my-bucket/$1` → keeps URLs clean at `media.example.com/assets/...`.
+5. Enable **Cache Rules** with `Cache everything` for your bucket prefix.
+
+**In your code — just point `public_url_base` at your Cloudflare hostname:**
+
+```python
+from genblaze_core import ObjectStorageSink, KeyStrategy
+from genblaze_s3 import S3StorageBackend
+
+storage = ObjectStorageSink(
+    S3StorageBackend.for_backblaze(
+        "my-bucket",
+        public_url_base="https://media.example.com",
+    ),
+    key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+)
+```
+
+Because the assets are CAS-keyed (hash-derived), genblaze automatically sets
+`Cache-Control: public, max-age=31536000, immutable` on each upload — so
+Cloudflare caches indefinitely and B2 only serves each asset once per
+Cloudflare edge. The net effect: **storage cost from B2, near-zero egress,
+instant media playback for end users.**

@@ -23,10 +23,14 @@ class MemoryBackend(StorageBackend):
 
     def __init__(self):
         self.store: dict[str, bytes] = {}
+        # Per-key record of the ExtraArgs dict passed on upload — lets
+        # individual tests assert per-upload Cache-Control/checksum policy.
+        self.put_extra_args: dict[str, dict] = {}
         self.closed = False
 
-    def put(self, key, data, *, content_type=None, metadata=None):
+    def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
         self.store[key] = data if isinstance(data, bytes) else data.read()
+        self.put_extra_args[key] = dict(extra_args or {})
         return f"https://mem/{key}"
 
     def get(self, key):
@@ -300,3 +304,69 @@ class TestContentAddressableRegression:
         asset_keys = [k for k in backend.store if k != manifest_key]
         assert len(asset_keys) == 1
         assert asset_keys[0].startswith("pfx/assets/")
+
+
+class TestCacheControlPolicy:
+    """Cache-Control headers must match the key-strategy immutability guarantee.
+
+    CAS keys are SHA-256-derived → content is immutable forever → mark public
+    + year-long + immutable so Cloudflare/B2 edge can cache aggressively.
+    HIERARCHICAL keys are UUID-per-run → shorter private TTL.
+    """
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_cas_assets_get_immutable_cache_control(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        asset_keys = [k for k in backend.store if k.startswith("p/assets/")]
+        assert len(asset_keys) == 1
+        assert (
+            backend.put_extra_args[asset_keys[0]]["CacheControl"]
+            == "public, max-age=31536000, immutable"
+        )
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_hierarchical_assets_get_private_short_ttl(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.HIERARCHICAL)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        asset_keys = [k for k in backend.store if "/assets/" in k]
+        assert len(asset_keys) == 1
+        assert backend.put_extra_args[asset_keys[0]]["CacheControl"] == "private, max-age=3600"
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_cas_manifest_gets_immutable_cache_control(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        manifest_key = f"p/manifests/{run.run_id}.json"
+        assert (
+            backend.put_extra_args[manifest_key]["CacheControl"]
+            == "public, max-age=31536000, immutable"
+        )
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_hierarchical_manifest_gets_private_short_ttl(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.HIERARCHICAL)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        date_str = run.created_at.strftime("%Y-%m-%d")
+        manifest_key = f"p/runs/{date_str}/{run.run_id}/manifest.json"
+        assert backend.put_extra_args[manifest_key]["CacheControl"] == "private, max-age=3600"
