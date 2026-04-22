@@ -240,6 +240,89 @@ class TestRegionPreflight:
         # boto3.client must have been called exactly once (no reconfigure).
         assert mock_boto3.client.call_count == 1
 
+    def test_concurrent_first_use_preflights_once(self, mock_boto3):
+        """Four threads racing through a fresh-backend put() must only issue
+        one head_bucket. Without double-checked locking we'd get N HEADs.
+        """
+        import threading
+
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        # Gate head_bucket so all four threads are definitely inside
+        # _ensure_region_verified before any completes.
+        gate = threading.Event()
+        release = threading.Event()
+
+        def gated_head_bucket(**_kwargs):
+            gate.set()
+            release.wait(timeout=2.0)
+
+        mock_client.head_bucket.side_effect = gated_head_bucket
+
+        backend = S3StorageBackend(
+            bucket="b",
+            endpoint_url="https://s3.us-west-004.backblazeb2.com",
+            region="us-west-004",
+        )
+
+        errors: list[BaseException] = []
+
+        def worker():
+            try:
+                backend.put(f"k-{threading.get_ident()}", b"d")
+            except BaseException as exc:  # noqa: BLE001 — capture for assertion
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        # Wait for at least one thread to enter the critical section.
+        assert gate.wait(timeout=2.0)
+        # Release — only one thread should have called head_bucket.
+        release.set()
+        for t in threads:
+            t.join(timeout=2.0)
+
+        assert errors == []
+        assert mock_client.head_bucket.call_count == 1, (
+            "Double-checked locking must prevent redundant HEAD calls."
+        )
+
+    def test_sticky_preflight_error_reused_on_subsequent_calls(self, mock_boto3):
+        """A non-redirect preflight failure should cache its helpful
+        StorageError and re-raise the same message on every subsequent call,
+        not fall through to the raw boto3 error on call 2+.
+        """
+        from genblaze_core.exceptions import StorageError
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        mock_client.head_bucket.side_effect = _FakeClientError(
+            {
+                "Error": {"Code": "AccessDenied"},
+                "ResponseMetadata": {"HTTPHeaders": {}},
+            },
+            "HeadBucket",
+        )
+
+        backend = S3StorageBackend(
+            bucket="b",
+            endpoint_url="https://s3.us-west-004.backblazeb2.com",
+            region="us-west-004",
+        )
+
+        with pytest.raises(StorageError, match="preflight failed"):
+            backend.put("k1", b"d")
+        # Second call must raise the same helpful message — not re-HEAD,
+        # not fall through to raw error.
+        with pytest.raises(StorageError, match="preflight failed"):
+            backend.put("k2", b"d")
+        # head_bucket fired exactly once; second call reused cached error.
+        assert mock_client.head_bucket.call_count == 1
+
 
 class TestRegionPreflightOnAllMethods:
     """get/exists/delete/get_url all preflight the region on first use."""

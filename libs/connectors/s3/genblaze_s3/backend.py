@@ -5,16 +5,13 @@ from __future__ import annotations
 import io
 import logging
 import os
+import threading
 from typing import TYPE_CHECKING, Any, BinaryIO
 
+from botocore.exceptions import ClientError
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import StorageBackend
-
-try:
-    from botocore.exceptions import ClientError
-except ImportError:  # pragma: no cover — botocore ships with boto3
-    ClientError = Exception  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     pass
@@ -99,6 +96,15 @@ class S3StorageBackend(StorageBackend):
         # Region may be updated later by auto-detection (see _ensure_region_verified).
         self._region = region
         self._region_verified = False
+        # Serializes first-use preflight. ObjectStorageSink calls put() from a
+        # ThreadPoolExecutor, so multiple workers race through the preflight
+        # on a fresh backend. Without the lock we'd issue N HEADs and N
+        # client rebuilds instead of 1.
+        self._region_lock = threading.Lock()
+        # Sticky non-redirect preflight failure (bad creds, wrong bucket, etc.)
+        # — cache once so call 2+ gets the same helpful message as call 1
+        # without re-HEADing.
+        self._preflight_error: StorageError | None = None
         # boto3's Config object does NOT hold credentials (they live in the
         # session's resolver), so we can't recover them from self._client
         # after construction — persist them explicitly for _reconfigure_for_region.
@@ -281,40 +287,57 @@ class S3StorageBackend(StorageBackend):
         ``for_backblaze``. For other endpoints (AWS S3, R2, MinIO) we don't
         attempt to rebuild the endpoint URL since we can't synthesize it;
         we just surface the error with guidance.
+
+        Uses double-checked locking so concurrent first-use callers (the
+        ``ObjectStorageSink`` thread pool) only run preflight once.
         """
+        # Fast path — uncontended attribute read, no lock.
         if self._region_verified:
+            if self._preflight_error is not None:
+                raise self._preflight_error
             return
 
-        try:
-            self._client.head_bucket(Bucket=self._bucket)
-            self._region_verified = True
-            return
-        except ClientError as exc:
-            actual = (
-                exc.response.get("ResponseMetadata", {})
-                .get("HTTPHeaders", {})
-                .get("x-amz-bucket-region")
-            )
-            code = exc.response.get("Error", {}).get("Code")
-            is_redirect = code in {"301", "PermanentRedirect"}
-            if self._is_b2 and is_redirect and actual and actual != self._region:
-                logger.info(
-                    "Bucket %s lives in %s (client was pointed at %s); reconfiguring.",
-                    self._bucket,
-                    actual,
-                    self._region,
-                )
-                self._reconfigure_for_region(actual)
+        with self._region_lock:
+            # Second check after acquiring the lock — another thread may
+            # have verified while we were waiting.
+            if self._region_verified:
+                if self._preflight_error is not None:
+                    raise self._preflight_error
+                return
+
+            try:
+                self._client.head_bucket(Bucket=self._bucket)
                 self._region_verified = True
                 return
-            # Mark verified even on non-redirect errors so we don't re-HEAD
-            # on every subsequent call. The error will recur on the real
-            # operation (get/put/etc.) and be surfaced consistently there.
-            self._region_verified = True
-            raise StorageError(
-                f"Bucket {self._bucket!r} preflight failed: {exc}. "
-                "Check bucket name, region, and credentials."
-            ) from exc
+            except ClientError as exc:
+                actual = (
+                    exc.response.get("ResponseMetadata", {})
+                    .get("HTTPHeaders", {})
+                    .get("x-amz-bucket-region")
+                )
+                code = exc.response.get("Error", {}).get("Code")
+                is_redirect = code in {"301", "PermanentRedirect"}
+                if self._is_b2 and is_redirect and actual and actual != self._region:
+                    logger.info(
+                        "Bucket %s lives in %s (client was pointed at %s); reconfiguring.",
+                        self._bucket,
+                        actual,
+                        self._region,
+                    )
+                    self._reconfigure_for_region(actual)
+                    self._region_verified = True
+                    return
+                # Sticky failure: cache once and re-raise the same helpful
+                # message on every subsequent call. Avoids both the repeated
+                # HEAD cost and the inconsistent (helpful-on-call-1, raw-on-
+                # call-2+) error the previous implementation produced.
+                err = StorageError(
+                    f"Bucket {self._bucket!r} preflight failed: {exc}. "
+                    "Check bucket name, region, and credentials."
+                )
+                self._preflight_error = err
+                self._region_verified = True
+                raise err from exc
 
     def _reconfigure_for_region(self, region: str) -> None:
         """Rebuild the boto3 client for a different B2 region.
