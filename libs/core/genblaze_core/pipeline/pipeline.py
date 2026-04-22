@@ -649,6 +649,40 @@ class Pipeline(Runnable[None, PipelineResult]):
         if self._event_emitter is not None:
             self._event_emitter.on_step_complete(step_event)
 
+    def _notify_sink_step_complete(
+        self,
+        sink: BaseSink | None,
+        step: Step,
+        run_id: str,
+        started_at_ts: float,
+    ) -> None:
+        """Fire the sink's on_step_complete hook if a sink is attached.
+
+        Sinks that support eager asset transfer use this to kick off
+        uploads while subsequent steps continue generating. Default
+        implementation in BaseSink is a no-op; we still check
+        ``hasattr`` to be kind to sinks that predate this hook.
+
+        Failures here don't fail the pipeline — worst case, the sink's
+        ``write_run`` will handle all transfers at the end.
+        """
+        if sink is None or not hasattr(sink, "on_step_complete"):
+            return
+        try:
+            sink.on_step_complete(
+                step,
+                run_id=run_id,
+                tenant_id=self._tenant_id,
+                date_str=datetime.fromtimestamp(started_at_ts, tz=UTC).strftime("%Y-%m-%d"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "sink.on_step_complete raised for step %s: %s — "
+                "write_run will handle this asset's transfer instead.",
+                step.step_id,
+                exc,
+            )
+
     def _emit_pipeline_end(self, result: PipelineResult, run_id: str) -> None:
         failed = result.run.status == RunStatus.FAILED
         self._emit_event(
@@ -844,6 +878,11 @@ class Pipeline(Runnable[None, PipelineResult]):
                 result = self._execute_step(ps, step, config, ctx)
                 completed_steps.append(result)
 
+                # Give the sink a chance to eagerly start asset transfers
+                # while subsequent steps keep generating. Sinks without
+                # eager support (default) no-op here.
+                self._notify_sink_step_complete(sink, result, run_id, started_at_ts)
+
                 step_event = StepCompleteEvent(
                     step_index=i - 1,
                     total_steps=total_steps,
@@ -982,6 +1021,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                     result = await self._execute_step_async(ps, step, config, ctx)
                     completed_steps.append(result)
 
+                    # Eager-transfer hook (sinks opt in).
+                    self._notify_sink_step_complete(sink, result, run_id, started_at_ts)
+
                     step_event = StepCompleteEvent(
                         step_index=i - 1,
                         total_steps=total_steps,
@@ -1072,7 +1114,11 @@ class Pipeline(Runnable[None, PipelineResult]):
                 completed_steps = list(concurrent_result)
 
                 # Concurrent mode: per-step callbacks fire after all steps complete.
+                # Note: eager-transfer sinks won't see much speedup here since
+                # all steps have already finished — chain/sequential is where
+                # the hook pays off. We still fire it for API consistency.
                 for idx, step_result in enumerate(completed_steps):
+                    self._notify_sink_step_complete(sink, step_result, run_id, started_at_ts)
                     step_event = StepCompleteEvent(
                         step_index=idx,
                         total_steps=total_steps,

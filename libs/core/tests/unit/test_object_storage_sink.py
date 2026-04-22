@@ -335,6 +335,191 @@ def _mock_urlopen():
     return mock_resp
 
 
+class TestEagerTransfer:
+    """Eager transfer: sink starts asset uploads during subsequent step
+    generation, overlapping what was previously serial wall-clock."""
+
+    def _asset(self, url: str = "https://cdn.example.com/img.png") -> Asset:
+        return Asset(url=url, media_type="image/png")
+
+    def _succeeded_step(self, *assets: Asset) -> Step:
+        return Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=list(assets),
+        )
+
+    def test_default_is_disabled(self):
+        """Eager transfer is opt-in — existing sinks see no behavior change."""
+        sink = ObjectStorageSink(MemoryBackend())
+        assert sink._eager_transfer is False
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_on_step_complete_noop_when_disabled(self, mock_get_stream, _mock_dns):
+        """Disabled → no pool created, no futures submitted."""
+        sink = ObjectStorageSink(MemoryBackend(), eager_transfer=False)
+        step = self._succeeded_step(self._asset())
+        sink.on_step_complete(step, run_id="r1", tenant_id=None, date_str="2026-04-22")
+        assert sink._eager_pool is None
+        assert sink._eager_pending == {}
+        # Download path must not have been hit.
+        mock_get_stream.assert_not_called()
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_on_step_complete_submits_transfers_eagerly(self, mock_get_stream, _mock_dns):
+        mock_get_stream.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="eager", eager_transfer=True)
+
+        asset = self._asset()
+        step = self._succeeded_step(asset)
+        sink.on_step_complete(step, run_id="r1", tenant_id=None, date_str="2026-04-22")
+        # Pool created, future tracked.
+        assert sink._eager_pool is not None
+        assert asset.asset_id in sink._eager_pending
+        # Let the pool drain before asserting results.
+        fut = sink._eager_pending[asset.asset_id]
+        fut.result(timeout=2.0)
+        # Asset transferred: mutated in place.
+        assert asset.sha256 is not None
+        assert asset.size_bytes == len(b"img data")
+        sink.close()
+
+    def test_on_step_complete_skips_failed_steps(self):
+        """Failed steps have no assets to transfer — don't even spin up
+        the pool; sinks handle a 'nothing to do' path cleanly."""
+        sink = ObjectStorageSink(MemoryBackend(), eager_transfer=True)
+        failed = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.FAILED,
+            error="boom",
+        )
+        sink.on_step_complete(failed, run_id="r1", tenant_id=None, date_str="2026-04-22")
+        assert sink._eager_pool is None
+        assert sink._eager_pending == {}
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_write_run_awaits_eager_then_transfers_rest(self, mock_get_stream, _mock_dns):
+        """Write_run awaits any eagerly-submitted futures, then transfers
+        any remaining (non-eager) assets via the legacy parallel loop.
+        Both paths converge on the same manifest + transfer_failures."""
+        mock_get_stream.side_effect = lambda *a, **kw: _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="eager", eager_transfer=True)
+        run, manifest = _make_run_and_manifest()
+
+        # Simulate the pipeline hook firing for the one step.
+        sink.on_step_complete(
+            run.steps[0],
+            run_id=run.run_id,
+            tenant_id=run.tenant_id,
+            date_str=run.created_at.strftime("%Y-%m-%d"),
+        )
+        # Eager pending visible.
+        assert len(sink._eager_pending) == 1
+
+        sink.write_run(run, manifest)
+        # Write_run drained pending.
+        assert sink._eager_pending == {}
+        # Asset transferred exactly once (no double-upload).
+        asset_keys = [k for k in backend.store if k.startswith("eager/assets/")]
+        assert len(asset_keys) == 1
+        # Manifest written.
+        assert any("manifests" in k for k in backend.store)
+        sink.close()
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_eager_transfer_failure_recorded_on_manifest(self, mock_get_stream, _mock_dns):
+        """A failure in the eager pool still propagates into
+        manifest.transfer_failures — provenance remains intact."""
+        mock_get_stream.side_effect = RuntimeError("CDN down")
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="eager", eager_transfer=True)
+        run, manifest = _make_run_and_manifest()
+
+        sink.on_step_complete(
+            run.steps[0],
+            run_id=run.run_id,
+            tenant_id=run.tenant_id,
+            date_str=run.created_at.strftime("%Y-%m-%d"),
+        )
+        sink.write_run(run, manifest)
+
+        assert manifest.transfer_failures == [run.steps[0].assets[0].asset_id]
+        # Manifest still uploaded — verify integrity preserved.
+        assert manifest.verify()
+        sink.close()
+
+    def test_close_shuts_down_eager_pool(self):
+        """close() must drain and shut down the eager pool so users can
+        construct a fresh sink without FD/thread leaks accruing."""
+        sink = ObjectStorageSink(MemoryBackend(), eager_transfer=True)
+        # Touch the pool.
+        asset = self._asset("file:///nonexistent")  # doesn't actually transfer
+        step = self._succeeded_step(asset)
+        # Failing-step path would avoid pool creation; force pool creation
+        # by patching the transfer call directly.
+        with patch.object(sink._transfer, "transfer", return_value="key"):
+            sink.on_step_complete(step, run_id="r1", tenant_id=None, date_str="2026-04-22")
+        assert sink._eager_pool is not None
+        sink.close()
+        assert sink._eager_pool is None
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_mixed_eager_and_non_eager_assets(self, mock_get_stream, _mock_dns):
+        """Some assets eager-submitted via on_step_complete, others arrive
+        new in write_run. Both sets transfer exactly once, result is identical
+        to the all-non-eager path."""
+        mock_get_stream.side_effect = lambda *a, **kw: _mock_urlopen()
+        backend = MemoryBackend()
+        # HIERARCHICAL layout: per-asset keys, no CAS dedup-to-one.
+        sink = ObjectStorageSink(
+            backend,
+            prefix="mix",
+            key_strategy=KeyStrategy.HIERARCHICAL,
+            eager_transfer=True,
+        )
+
+        step1 = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[self._asset("https://cdn.example.com/a.png")],
+        )
+        step2 = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[self._asset("https://cdn.example.com/b.png")],
+        )
+        run = Run(name="mix", status=RunStatus.COMPLETED, steps=[step1, step2])
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+
+        # Only step1 notified eagerly — step2 is a "remaining" asset.
+        sink.on_step_complete(
+            step1,
+            run_id=run.run_id,
+            tenant_id=None,
+            date_str=run.created_at.strftime("%Y-%m-%d"),
+        )
+        sink.write_run(run, manifest)
+
+        asset_keys = [k for k in backend.store if "/assets/" in k]
+        assert len(asset_keys) == 2, (
+            "Both assets should be transferred exactly once — no duplicates"
+            " across eager + remaining paths."
+        )
+        sink.close()
+
+
 class TestObjectStorageSinkHierarchical:
     """HIERARCHICAL layout groups manifest + assets under one run folder."""
 

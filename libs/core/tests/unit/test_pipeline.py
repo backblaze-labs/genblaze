@@ -1515,3 +1515,79 @@ def test_pipeline_allows_normal_params() -> None:
         .run()
     )
     assert result.run.status == RunStatus.COMPLETED
+
+
+# -----------------------------------------------------------------------------
+# F2 — on_step_complete sink hook: fires per-step, survives sink errors.
+# -----------------------------------------------------------------------------
+
+
+class _RecordingSink:
+    """Minimal sink capturing on_step_complete + write_run invocations
+    so we can assert the pipeline fires the hook at the right point."""
+
+    def __init__(self, raise_in_hook: bool = False) -> None:
+        self.step_completes: list[tuple[str, str | None, str]] = []
+        self.write_run_called = False
+        self.closed = False
+        self._raise = raise_in_hook
+
+    def on_step_complete(self, step, *, run_id, tenant_id, date_str):
+        self.step_completes.append((step.step_id, tenant_id, date_str))
+        if self._raise:
+            raise RuntimeError("sink hook failed")
+
+    def write_run(self, run, manifest):
+        self.write_run_called = True
+
+    def close(self):
+        self.closed = True
+
+
+def test_sink_on_step_complete_fires_per_step_in_sync_run() -> None:
+    """Each successful step fires the hook; order matches completion."""
+    p = MockProvider()
+    sink = _RecordingSink()
+    pipe = (
+        Pipeline("multi", chain=False)
+        .step(p, model="m1", prompt="p1")
+        .step(p, model="m2", prompt="p2")
+    )
+    result = pipe.run(sink=sink)
+    assert len(sink.step_completes) == 2, (
+        "Hook should fire once per step in sync run, before write_run."
+    )
+    assert sink.write_run_called
+    # The hook receives the step_id of each step.
+    assert all(cs[0] for cs in sink.step_completes)
+    assert result.run.status == RunStatus.COMPLETED
+
+
+def test_sink_on_step_complete_survives_hook_exception() -> None:
+    """A failing on_step_complete hook MUST NOT fail the pipeline —
+    worst case, write_run picks up the transfer work at the end."""
+    p = MockProvider()
+    sink = _RecordingSink(raise_in_hook=True)
+    result = Pipeline("resilient").step(p, model="m", prompt="p").run(sink=sink)
+    assert result.run.status == RunStatus.COMPLETED
+    assert sink.write_run_called, "Pipeline must still call write_run despite hook failure"
+
+
+def test_sink_on_step_complete_not_required() -> None:
+    """Sinks without the hook (predate F2) still work via BaseSink's no-op."""
+
+    class LegacySink:
+        def __init__(self):
+            self.write_run_called = False
+
+        def write_run(self, run, manifest):
+            self.write_run_called = True
+
+        def close(self):
+            pass
+
+    p = MockProvider()
+    sink = LegacySink()
+    result = Pipeline("legacy").step(p, model="m", prompt="p").run(sink=sink)
+    assert result.run.status == RunStatus.COMPLETED
+    assert sink.write_run_called
