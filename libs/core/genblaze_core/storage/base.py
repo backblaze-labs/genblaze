@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, BinaryIO, Literal
+
+from genblaze_core._utils import utc_now
 
 _lock_logger = logging.getLogger("genblaze.storage.object_lock")
 
@@ -51,7 +53,7 @@ class ObjectLockConfig:
                 "Pass a datetime with tzinfo set (e.g. "
                 "datetime.now(timezone.utc) + timedelta(days=365))."
             )
-        if self.retain_until <= datetime.now(UTC):
+        if self.retain_until <= utc_now():
             # Past retention uploads an effectively-unlocked object — surface
             # loudly but don't block, in case the caller is intentionally
             # testing or migrating.

@@ -11,6 +11,11 @@ from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import StorageBackend
 
+try:
+    from botocore.exceptions import ClientError
+except ImportError:  # pragma: no cover — botocore ships with boto3
+    ClientError = Exception  # type: ignore[assignment,misc]
+
 if TYPE_CHECKING:
     pass
 
@@ -35,6 +40,32 @@ _MAX_POOL_CONNECTIONS = 20
 # indefinitely — a real cost vector once the multipart path is the default.
 _DEFAULT_CANCEL_MULTIPART_DAYS = 7
 _DEFAULT_NONCURRENT_EXPIRE_DAYS = 30
+
+
+def _build_boto_config() -> Any:
+    """BotoConfig factory — shared by the client constructor and reconfigure path.
+
+    ``request/response_checksum_calculation="when_required"`` disables the
+    default CRC32 trailer that boto3 >= 1.36 injects. That header broke B2
+    uploads until B2 added support in July 2025; keeping it off avoids the
+    landmine across any S3-compat endpoint that lags on checksum-header
+    support (older B2, MinIO, Wasabi). We pass SHA-256 explicitly per upload
+    via ExtraArgs instead.
+
+    Explicit connect/read timeouts exist because boto3's 60s default
+    read_timeout can fire mid-upload on slow links with GB-sized video payloads.
+    """
+    from botocore.config import Config as BotoConfig
+
+    return BotoConfig(
+        user_agent_extra=_USER_AGENT,
+        retries={"max_attempts": 3, "mode": "adaptive"},
+        connect_timeout=30,
+        read_timeout=300,
+        max_pool_connections=_MAX_POOL_CONNECTIONS,
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    )
 
 
 class S3StorageBackend(StorageBackend):
@@ -68,60 +99,48 @@ class S3StorageBackend(StorageBackend):
         # Region may be updated later by auto-detection (see _ensure_region_verified).
         self._region = region
         self._region_verified = False
-        # Persist credentials + endpoint so _reconfigure_for_region can rebuild
-        # the client without losing them. boto3's Config object does NOT hold
-        # credentials (those live in the session's resolver), so we can't
-        # recover them from self._client after construction.
+        # boto3's Config object does NOT hold credentials (they live in the
+        # session's resolver), so we can't recover them from self._client
+        # after construction — persist them explicitly for _reconfigure_for_region.
         self._aws_access_key_id = aws_access_key_id
         self._aws_secret_access_key = aws_secret_access_key
         self._endpoint_url = endpoint_url
-        # True when the endpoint points at B2 — gates B2-specific behaviors
-        # like rewriting endpoint_url on region redirect.
-        self._is_b2 = bool(endpoint_url and "backblazeb2.com" in endpoint_url)
 
-        # Lazy import boto3 (same pattern as replicate connector)
         try:
             import boto3
-            from boto3.s3.transfer import TransferConfig
-            from botocore.config import Config as BotoConfig
         except ImportError as exc:
             raise ImportError(
                 "boto3 is required for S3StorageBackend. "
                 'Install it with: pip install "genblaze-s3"'
             ) from exc
 
-        kwargs: dict = {}
-        if endpoint_url:
-            kwargs["endpoint_url"] = endpoint_url
-        if region:
-            kwargs["region_name"] = region
-        if aws_access_key_id:
-            kwargs["aws_access_key_id"] = aws_access_key_id
-        if aws_secret_access_key:
-            kwargs["aws_secret_access_key"] = aws_secret_access_key
+        self._client = boto3.client("s3", **self._client_kwargs())
+        self._transfer_config = self._build_transfer_config()
 
-        # User agent for B2 attribution; adaptive retries for transient 429/503s;
-        # explicit timeouts because boto3's 60s default read_timeout can fire
-        # mid-upload on slow links with GB-sized video payloads.
-        #
-        # request/response_checksum_calculation="when_required" disables the
-        # default CRC32 trailer that boto3 >= 1.36 injects. That header broke
-        # B2 uploads until B2 added support in July 2025; keeping it off
-        # avoids the landmine across any S3-compat endpoint that lags on
-        # checksum-header support (older B2, MinIO, Wasabi). We pass SHA-256
-        # explicitly per upload via ExtraArgs instead.
-        kwargs["config"] = BotoConfig(
-            user_agent_extra=_USER_AGENT,
-            retries={"max_attempts": 3, "mode": "adaptive"},
-            connect_timeout=30,
-            read_timeout=300,
-            max_pool_connections=_MAX_POOL_CONNECTIONS,
-            request_checksum_calculation="when_required",
-            response_checksum_validation="when_required",
-        )
+    @property
+    def _is_b2(self) -> bool:
+        """True when the endpoint points at B2 — gates B2-specific behaviors."""
+        return bool(self._endpoint_url and "backblazeb2.com" in self._endpoint_url)
 
-        self._client = boto3.client("s3", **kwargs)
-        self._transfer_config = TransferConfig(
+    def _client_kwargs(self) -> dict[str, Any]:
+        """Assemble boto3.client kwargs from current instance state."""
+        kwargs: dict[str, Any] = {"config": _build_boto_config()}
+        if self._endpoint_url:
+            kwargs["endpoint_url"] = self._endpoint_url
+        if self._region:
+            kwargs["region_name"] = self._region
+        if self._aws_access_key_id:
+            kwargs["aws_access_key_id"] = self._aws_access_key_id
+        if self._aws_secret_access_key:
+            kwargs["aws_secret_access_key"] = self._aws_secret_access_key
+        return kwargs
+
+    @staticmethod
+    def _build_transfer_config() -> Any:
+        """TransferConfig factory — shared by __init__ and _reconfigure_for_region."""
+        from boto3.s3.transfer import TransferConfig
+
+        return TransferConfig(
             multipart_threshold=_MULTIPART_THRESHOLD,
             multipart_chunksize=_MULTIPART_CHUNKSIZE,
             max_concurrency=_MAX_CONCURRENCY,
@@ -177,11 +196,7 @@ class S3StorageBackend(StorageBackend):
         extra_args: dict[str, Any],
     ) -> str:
         """Single-PUT path used when the caller pinned a whole-object checksum."""
-        body: Any = data if isinstance(data, (bytes, bytearray)) else data
-        kwargs: dict[str, Any] = {"Bucket": self._bucket, "Key": key, "Body": body}
-        # ExtraArgs keys map 1:1 to put_object params (PascalCase).
-        kwargs.update(extra_args)
-        self._client.put_object(**kwargs)
+        self._client.put_object(Bucket=self._bucket, Key=key, Body=data, **extra_args)
         return self.get_url(key)
 
     @staticmethod
@@ -217,8 +232,6 @@ class S3StorageBackend(StorageBackend):
 
     def exists(self, key: str) -> bool:
         """Check if an object exists in S3."""
-        from botocore.exceptions import ClientError
-
         try:
             self._ensure_region_verified()
             self._client.head_object(Bucket=self._bucket, Key=key)
@@ -271,7 +284,6 @@ class S3StorageBackend(StorageBackend):
         """
         if self._region_verified:
             return
-        from botocore.exceptions import ClientError
 
         try:
             self._client.head_bucket(Bucket=self._bucket)
@@ -313,35 +325,11 @@ class S3StorageBackend(StorageBackend):
         does not hold them.
         """
         import boto3
-        from boto3.s3.transfer import TransferConfig
-        from botocore.config import Config as BotoConfig
 
         self._region = region
         self._endpoint_url = f"https://s3.{region}.backblazeb2.com"
-        kwargs: dict = {
-            "endpoint_url": self._endpoint_url,
-            "region_name": region,
-            "config": BotoConfig(
-                user_agent_extra=_USER_AGENT,
-                retries={"max_attempts": 3, "mode": "adaptive"},
-                connect_timeout=30,
-                read_timeout=300,
-                max_pool_connections=_MAX_POOL_CONNECTIONS,
-                request_checksum_calculation="when_required",
-                response_checksum_validation="when_required",
-            ),
-        }
-        if self._aws_access_key_id:
-            kwargs["aws_access_key_id"] = self._aws_access_key_id
-        if self._aws_secret_access_key:
-            kwargs["aws_secret_access_key"] = self._aws_secret_access_key
-        self._client = boto3.client("s3", **kwargs)
-        self._transfer_config = TransferConfig(
-            multipart_threshold=_MULTIPART_THRESHOLD,
-            multipart_chunksize=_MULTIPART_CHUNKSIZE,
-            max_concurrency=_MAX_CONCURRENCY,
-            use_threads=True,
-        )
+        self._client = boto3.client("s3", **self._client_kwargs())
+        self._transfer_config = self._build_transfer_config()
 
     def ensure_lifecycle_defaults(
         self,
@@ -390,8 +378,6 @@ class S3StorageBackend(StorageBackend):
             # Non-fatal — users with read-only keys or managed infra should
             # still be able to upload. Log and continue.
             logger.warning("Failed to apply lifecycle defaults to %s: %s", self._bucket, exc)
-
-    # close() intentionally not overridden — base class no-op is sufficient.
 
     @classmethod
     def for_backblaze(
