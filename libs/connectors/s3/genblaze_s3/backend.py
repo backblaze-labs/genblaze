@@ -266,6 +266,14 @@ class S3StorageBackend(StorageBackend):
         to its content-addressed final key once the hash is known. B2's
         S3 API supports this natively and charges nothing for server-side
         bandwidth (just two transaction class-C calls).
+
+        Note: single-call ``copy_object`` has a **5 GB source limit**
+        per AWS S3 semantics (B2 matches). Objects larger than that
+        require ``UploadPartCopy`` multipart orchestration — future
+        work. Until then, assets approaching the 5 GB
+        ``_DEFAULT_MAX_DOWNLOAD_BYTES`` ceiling should prefer
+        HIERARCHICAL key strategy with pipelined_transfer, which
+        skips the copy step entirely.
         """
         try:
             self._ensure_region_verified()

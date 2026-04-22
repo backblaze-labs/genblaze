@@ -520,6 +520,73 @@ class TestEagerTransfer:
         sink.close()
 
 
+class TestPipelinedAndEagerCombined:
+    """F1 + F2 together — both flags on the same sink.
+
+    This is the recommended configuration for video-heavy pipelines.
+    Eager (F2) starts uploads as each step finishes; pipelined (F1)
+    halves the wall-clock of each individual upload. The two axes
+    compound without interfering.
+    """
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_both_flags_cooperate_without_double_transfer(self, mock_get_stream, _mock_dns):
+        """With both flags on: eager pool submits assets, pool workers
+        execute the pipelined transfer path. Each asset transferred
+        exactly once; no duplicate uploads in the seam between
+        on_step_complete and write_run."""
+        mock_get_stream.side_effect = lambda *a, **kw: _mock_urlopen()
+        backend = MemoryBackend()
+        # Both flags: pipelined transfer AND eager transfer.
+        # HIERARCHICAL to get per-asset keys (so we can count them).
+        sink = ObjectStorageSink(
+            backend,
+            prefix="combo",
+            key_strategy=KeyStrategy.HIERARCHICAL,
+            pipelined_transfer=True,
+            eager_transfer=True,
+        )
+        # Verify the flag actually threaded through to the AssetTransfer.
+        assert sink._transfer._pipelined_transfer is True
+        assert sink._eager_transfer is True
+
+        run, manifest = _make_run_and_manifest()
+        date_str = run.created_at.strftime("%Y-%m-%d")
+
+        # Simulate the pipeline firing the hook mid-execution.
+        sink.on_step_complete(
+            run.steps[0],
+            run_id=run.run_id,
+            tenant_id=run.tenant_id,
+            date_str=date_str,
+        )
+        assert len(sink._eager_pending) == 1
+
+        # Now the pipeline finishes and calls write_run.
+        sink.write_run(run, manifest)
+
+        # No temp keys left over (HIERARCHICAL doesn't use them).
+        assert not any(".tmp/" in k for k in backend.store), (
+            "HIERARCHICAL + pipelined should not leave any temp keys."
+        )
+        # Exactly one asset key + one manifest key.
+        asset_keys = [k for k in backend.store if "/assets/" in k]
+        manifest_keys = [k for k in backend.store if "manifest" in k]
+        assert len(asset_keys) == 1, (
+            f"Asset must be uploaded exactly once; found {len(asset_keys)}: {asset_keys}"
+        )
+        assert len(manifest_keys) == 1
+        # Manifest verifies (hash stable under URL mutation thanks to
+        # _ASSET_HASH_EXCLUDE including 'url').
+        assert manifest.verify()
+        # Asset URL is durable (no SigV4 signature).
+        for step in run.steps:
+            for asset in step.assets:
+                assert "X-Amz-Signature" not in asset.url
+        sink.close()
+
+
 class TestObjectStorageSinkHierarchical:
     """HIERARCHICAL layout groups manifest + assets under one run folder."""
 

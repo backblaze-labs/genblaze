@@ -441,7 +441,18 @@ class AssetTransfer:
         known upfront). CAS mode uploads to ``{prefix}/.tmp/{asset_id}.ext``,
         reads the hash from the stream wrapper, then promotes via
         server-side ``copy`` to the content-addressed final key and deletes
-        the temp. Two extra transactions for CAS; worth it on video payloads.
+        the temp.
+
+        Cost tradeoff for CAS
+        ---------------------
+        * Dedup *miss* (new content): 1 put + 1 exists + 1 copy + 1 delete
+          = 4 ops vs. spooled's 1 exists + 1 put = 2 ops. Worth it for
+          large files where the pipelined upload saves 50% wall-clock.
+        * Dedup *hit* (duplicate content): 1 put + 1 exists + 1 delete
+          = 3 ops vs. spooled's 1 exists (short-circuits before upload).
+          Pipelined CAS is **strictly worse** when duplicates dominate —
+          stick with the spooled default for workloads that re-run the
+          same prompt many times.
 
         Returns (key, sha256, size).
         """
