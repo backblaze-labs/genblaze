@@ -40,9 +40,16 @@ bucket is on B2 — it encodes the B2-specific tuning so you don't have to:
 - **Credentials check** — raises a clear `ValueError` at construction if
   neither env vars nor explicit args are present (no opaque mid-upload
   `NoCredentialsError`).
-- **Region auto-detect** — on first use, verifies the bucket's region via a
-  single `HeadBucket` call. If the bucket lives in a different region than
-  the ``region=`` hint, the backend reconfigures itself transparently.
+- **Region hint with auto-correct** — the `region=` argument defaults to
+  `us-west-004`. If your bucket lives elsewhere (e.g. `us-east-005`,
+  `eu-central-003`), pass it explicitly to skip the redirect round-trip:
+  ```python
+  S3StorageBackend.for_backblaze("my-bucket", region="us-east-005")
+  ```
+  On first use the backend issues one `HeadBucket` and, if the bucket lives
+  in a different region than the hint, transparently reconfigures itself
+  against the correct B2 regional endpoint. The hint is an optimization, not
+  a requirement — but wrong hints still pay one extra HEAD per backend.
 - **Lifecycle defaults** — applies `AbortIncompleteMultipartUpload` after 7
   days and noncurrent-version expiry after 30 days. Prevents orphaned
   multipart uploads from silently accruing storage cost.

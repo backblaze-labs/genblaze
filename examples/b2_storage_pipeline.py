@@ -24,8 +24,12 @@ def main() -> None:
 
     # --- Configure Backblaze B2 storage ---
     # for_backblaze() reads B2_KEY_ID / B2_APP_KEY from env and derives the
-    # S3 endpoint from the region. Pass public_url_base only for public
-    # buckets; otherwise get_url() returns pre-signed URLs.
+    # S3 endpoint from the region. region= defaults to "us-west-004"; pass
+    # the region your bucket actually lives in (e.g. "us-east-005",
+    # "eu-central-003") to skip the one-time redirect. The backend will
+    # auto-correct the region on first use either way.
+    # Pass public_url_base only for public buckets; otherwise get_url()
+    # returns pre-signed URLs.
     backend = S3StorageBackend.for_backblaze(
         "my-genblaze-bucket",
         region="us-west-004",

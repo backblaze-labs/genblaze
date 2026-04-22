@@ -43,6 +43,9 @@ from genblaze_replicate import ReplicateProvider
 
 backend = S3StorageBackend.for_backblaze(
     "my-genblaze-bucket",
+    # Defaults to "us-west-004". Pass the region your bucket actually lives
+    # in (e.g. "us-east-005", "eu-central-003") to skip the redirect hop —
+    # the backend auto-corrects on first use, but a right hint saves an RTT.
     region="us-west-004",
     # Optional: pass public_url_base for public buckets (get_url returns permanent URLs)
     public_url_base="https://f004.backblazeb2.com/file/my-genblaze-bucket",

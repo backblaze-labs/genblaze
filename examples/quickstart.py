@@ -16,18 +16,29 @@ Usage:
     python examples/quickstart.py
 
 Replace "my-bucket" below with the name of a B2 bucket you own. The
-backend auto-detects the bucket's region on first use.
+backend auto-detects the bucket's region on first use, so passing
+``region=`` is just an optimization hint (default ``us-west-004``).
+If your bucket lives in ``us-east-005`` or ``eu-central-003``, pass
+it explicitly to skip the redirect round-trip.
 
 For a simpler demo without any API keys, see quickstart_local.py.
 """
+
+import logging
 
 from genblaze_core import KeyStrategy, Modality, ObjectStorageSink, Pipeline
 from genblaze_gmicloud import GMICloudVideoProvider
 from genblaze_s3 import S3StorageBackend
 
+# Surface genblaze progress events (uploads, API polling, etc.) while running.
+logging.getLogger("genblaze").setLevel(logging.DEBUG)
+
 
 def main() -> None:
     storage = ObjectStorageSink(
+        # Default region is us-west-004. Override with region="us-east-005"
+        # (or whatever region your bucket was created in) to skip the
+        # one-time redirect when the hint doesn't match.
         S3StorageBackend.for_backblaze("my-bucket"),
         key_strategy=KeyStrategy.HIERARCHICAL,
     )
