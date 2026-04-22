@@ -481,6 +481,250 @@ class TestHttpPool:
                 _http_get_stream("https://slow.example.com/img.png", timeout=30.0)
 
 
+class TestHashingStreamReader:
+    """The stream wrapper that lets boto3 read directly from the HTTP
+    response while we compute SHA-256 in-flight."""
+
+    def _mock_resp(self, *chunks: bytes) -> MagicMock:
+        resp = MagicMock()
+        # Mock .read(n): ignore n, return next scripted chunk. Closest to
+        # how urllib3 behaves in streaming mode — returns up to n bytes but
+        # may return less.
+        resp.read.side_effect = list(chunks) + [b""]
+        return resp
+
+    def test_read_chunked_hashes_in_flight(self):
+        from genblaze_core.storage.transfer import _HashingStreamReader
+
+        resp = self._mock_resp(b"abc", b"def", b"ghi")
+        reader = _HashingStreamReader(resp, max_bytes=1000)
+
+        # boto3-style: loop reads of specific sizes
+        assert reader.read(1024) == b"abc"
+        assert reader.read(1024) == b"def"
+        assert reader.read(1024) == b"ghi"
+        assert reader.read(1024) == b""
+        # Hash matches the full concatenated payload
+        import hashlib
+
+        expected = hashlib.sha256(b"abcdefghi").hexdigest()
+        assert reader.sha256_hex == expected
+        assert reader.size == 9
+
+    def test_read_all_at_once_supported(self):
+        """read(-1) / read() must return all remaining bytes, not one chunk."""
+        from genblaze_core.storage.transfer import _HashingStreamReader
+
+        resp = self._mock_resp(b"aaa", b"bbb", b"ccc")
+        reader = _HashingStreamReader(resp, max_bytes=1000)
+        assert reader.read() == b"aaabbbccc"
+        assert reader.size == 9
+
+    def test_enforces_max_bytes_mid_stream(self):
+        from genblaze_core.storage.transfer import _HashingStreamReader
+
+        resp = self._mock_resp(b"x" * 512, b"x" * 512)
+        reader = _HashingStreamReader(resp, max_bytes=1000)
+        reader.read(512)
+        with pytest.raises(StorageError, match="exceeds"):
+            reader.read(512)
+
+    def test_seekable_false(self):
+        """boto3 uses seekable() to gate its retry strategy. For streams
+        from an HTTP response it must be False so boto3 buffers each
+        multipart part in memory rather than trying to rewind."""
+        from genblaze_core.storage.transfer import _HashingStreamReader
+
+        reader = _HashingStreamReader(self._mock_resp(b""), max_bytes=1000)
+        assert reader.seekable() is False
+        assert reader.readable() is True
+
+
+class TestPipelinedTransfer:
+    """Pipelined mode: HTTP response → backend multipart, no disk spool."""
+
+    def _mock_resp(self, *chunks: bytes) -> MagicMock:
+        resp = MagicMock()
+        resp.read.side_effect = list(chunks) + [b""]
+        resp.headers = {"Content-Type": "image/png"}
+        resp.release_conn = MagicMock()
+        return resp
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_hierarchical_streams_straight_to_final_key(self, mock_get_stream, _mock_dns):
+        """HIERARCHICAL key is known upfront (asset_id based) — no temp key,
+        no copy-and-delete. Just one backend.put."""
+        mock_get_stream.return_value = self._mock_resp(b"payload-bytes")
+        backend = FakeBackend()
+        transfer = AssetTransfer(
+            backend,
+            prefix="assets",
+            key_strategy=KeyStrategy.HIERARCHICAL,
+            pipelined_transfer=True,
+        )
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+
+        key = transfer.transfer(asset, tenant="acme", date_str="2026-04-22", run_id="r1")
+
+        assert asset.sha256 is not None
+        assert len(asset.sha256) == 64
+        assert asset.size_bytes == len(b"payload-bytes")
+        # Stored once at the HIERARCHICAL key — no temp detour.
+        assert len(backend.store) == 1
+        assert key in backend.store
+        assert backend.store[key] == b"payload-bytes"
+        # Connection returned to the pool.
+        mock_get_stream.return_value.release_conn.assert_called_once()
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_cas_promotes_via_temp_key_and_copy(self, mock_get_stream, _mock_dns):
+        """CAS key depends on the hash, not known upfront. Upload to
+        .tmp/{asset_id}, then copy to final CAS key, then delete temp."""
+        payload = b"deterministic-content"
+        mock_get_stream.return_value = self._mock_resp(payload)
+        backend = FakeBackend()
+        transfer = AssetTransfer(
+            backend,
+            prefix="assets",
+            key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+            pipelined_transfer=True,
+        )
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+
+        key = transfer.transfer(asset)
+
+        import hashlib
+
+        expected_sha = hashlib.sha256(payload).hexdigest()
+        assert asset.sha256 == expected_sha
+        # Final key is CAS path; temp key should have been cleaned up.
+        cas_keys = [k for k in backend.store if ".tmp/" not in k]
+        temp_keys = [k for k in backend.store if ".tmp/" in k]
+        assert len(cas_keys) == 1
+        assert temp_keys == [], "temp key should be deleted after promote"
+        assert key == cas_keys[0]
+        assert key.endswith(f"/{expected_sha}.png")
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_cas_dedup_hit_discards_temp(self, mock_get_stream, _mock_dns):
+        """If the CAS key already exists (dedup hit), drop the temp upload
+        without copying — the existing content is authoritative."""
+        payload = b"shared-content"
+        mock_get_stream.return_value = self._mock_resp(payload)
+        backend = FakeBackend()
+
+        # Pre-populate the CAS key so the exists() check hits.
+        import hashlib
+
+        sha = hashlib.sha256(payload).hexdigest()
+        cas_key = f"assets/{sha[:2]}/{sha[2:4]}/{sha}.png"
+        backend.store[cas_key] = payload
+
+        transfer = AssetTransfer(
+            backend,
+            prefix="assets",
+            key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+            pipelined_transfer=True,
+        )
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+
+        key = transfer.transfer(asset)
+
+        # Only the pre-populated CAS entry remains; temp is cleaned up.
+        assert len(backend.store) == 1
+        assert key == cas_key
+        assert asset.sha256 == sha
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_cleans_up_temp_on_copy_failure(self, mock_get_stream, _mock_dns):
+        """If upload succeeds but copy fails, the temp-key orphan must be
+        deleted defensively (not just left for the lifecycle rule)."""
+        mock_get_stream.return_value = self._mock_resp(b"data")
+
+        class BrokenCopyBackend(FakeBackend):
+            def copy(self, src_key, dst_key):
+                raise StorageError("copy failed")
+
+        backend = BrokenCopyBackend()
+        transfer = AssetTransfer(
+            backend,
+            prefix="assets",
+            key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+            pipelined_transfer=True,
+        )
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+
+        with pytest.raises(StorageError):
+            transfer.transfer(asset)
+        # Temp key cleaned up — nothing left behind.
+        assert not any(".tmp/" in k for k in backend.store)
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_size_cap_enforced_pipelined(self, mock_get_stream, _mock_dns):
+        """The download cap is enforced in the reader, not at the end."""
+        # Four 512-byte chunks — total 2048 > 1024 cap.
+        mock_get_stream.return_value = self._mock_resp(
+            b"x" * 512, b"x" * 512, b"x" * 512, b"x" * 512
+        )
+        backend = FakeBackend()
+        transfer = AssetTransfer(
+            backend,
+            prefix="assets",
+            key_strategy=KeyStrategy.HIERARCHICAL,
+            pipelined_transfer=True,
+            max_download_bytes=1024,
+        )
+        asset = Asset(url="https://cdn.example.com/big.mp4", media_type="video/mp4")
+        with pytest.raises(StorageError, match="exceeds"):
+            transfer.transfer(asset, run_id="r1", date_str="2026-04-22")
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_release_conn_on_pipelined_failure(self, mock_get_stream, _mock_dns):
+        mock_get_stream.return_value = self._mock_resp(b"data")
+
+        class BrokenBackend(FakeBackend):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
+                raise StorageError("upload failed")
+
+        transfer = AssetTransfer(
+            BrokenBackend(),
+            prefix="assets",
+            key_strategy=KeyStrategy.HIERARCHICAL,
+            pipelined_transfer=True,
+        )
+        asset = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+        with pytest.raises(StorageError):
+            transfer.transfer(asset, run_id="r1", date_str="2026-04-22")
+
+        mock_get_stream.return_value.release_conn.assert_called_once()
+
+    def test_default_is_spooled(self):
+        """Pipelined mode is opt-in — don't change existing users' behavior."""
+        backend = FakeBackend()
+        transfer = AssetTransfer(backend, prefix="assets")
+        assert transfer._pipelined_transfer is False
+
+
+class TestBackendCopy:
+    """The new StorageBackend.copy() method — default and subclass overrides."""
+
+    def test_default_fallback_downloads_and_reuploads(self):
+        """The ABC's default copy() is a slow fallback that any backend
+        gets for free. S3 backends override with server-side copy_object."""
+        backend = FakeBackend()
+        backend.store["src"] = b"payload"
+        backend.copy("src", "dst")
+        assert backend.store["dst"] == b"payload"
+        # Source remains — copy is not a move.
+        assert backend.store["src"] == b"payload"
+
+
 class TestPerformanceDefaults:
     """Guardrails for the performance-tuning constants.
 

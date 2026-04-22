@@ -147,5 +147,18 @@ class StorageBackend(ABC):
         """
         ...
 
+    def copy(self, src_key: str, dst_key: str) -> None:
+        """Copy an object from src_key to dst_key.
+
+        Used by the pipelined CAS transfer path: content is streamed into a
+        temporary key, then copied to its content-addressed final key once
+        the hash is known. The default implementation downloads and
+        re-uploads — correct but wasteful. Subclasses should override with
+        a native server-side copy (S3 ``CopyObject``, B2 ``b2_copy_file``)
+        to avoid pointless bandwidth through the client.
+        """
+        data = self.get(src_key)
+        self.put(dst_key, data)
+
     def close(self) -> None:  # noqa: B027
         """Release any held resources. Override if needed."""

@@ -79,6 +79,69 @@ _HTTP_POOL = urllib3.PoolManager(
 )
 
 
+class _HashingStreamReader:
+    """File-like wrapper around an HTTP response for pipelined transfer.
+
+    The spooled transfer path fully downloads to a SpooledTemporaryFile
+    before handing bytes to boto3. This wrapper lets boto3's multipart
+    machinery read directly from the HTTP response — bytes never touch
+    disk. SHA-256 is computed incrementally as boto3 reads chunks, so
+    the whole-object hash is available the moment the upload completes.
+
+    Deliberately not inheriting from ``io.RawIOBase`` / ``io.IOBase`` —
+    boto3's ``upload_fileobj`` only needs duck-typed ``.read(n)`` and
+    (for retry detection) ``.seekable()``. Avoiding the ABC keeps the
+    allocation profile simple and the type-checker happy.
+
+    Unseekable by design: boto3 reads multipart chunks sequentially,
+    buffering each 16 MB part in memory before upload. Part-level
+    retries work against that buffer, not the source stream — so a
+    mid-stream retry of the upload leg doesn't require the download to
+    rewind (which it can't).
+    """
+
+    def __init__(self, resp: Any, *, max_bytes: int) -> None:
+        self._resp = resp
+        self._hasher = hashlib.sha256()
+        self._size = 0
+        self._max_bytes = max_bytes
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            # Read-until-EOF per the file-like contract. boto3 passes
+            # specific sizes for multipart, but keep the contract honest
+            # for callers (tests, future backends) that do .read().
+            chunks = []
+            while True:
+                chunk = self._resp.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            data = b"".join(chunks)
+        else:
+            data = self._resp.read(size)
+        if data:
+            self._hasher.update(data)
+            self._size += len(data)
+            if self._size > self._max_bytes:
+                raise StorageError(f"Download exceeds {self._max_bytes} byte limit")
+        return data
+
+    def readable(self) -> bool:  # boto3 checks this
+        return True
+
+    def seekable(self) -> bool:  # boto3's retry path gates on this
+        return False
+
+    @property
+    def sha256_hex(self) -> str:
+        return self._hasher.hexdigest()
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+
 def _http_get_stream(url: str, *, timeout: float) -> Any:
     """Open a streaming GET via the shared urllib3 pool.
 
@@ -207,6 +270,7 @@ class AssetTransfer:
         allowed_roots: list[Path] | None = None,
         max_download_bytes: int = _DEFAULT_MAX_DOWNLOAD_BYTES,
         download_timeout: float = _DEFAULT_DOWNLOAD_TIMEOUT,
+        pipelined_transfer: bool = False,
     ):
         self._backend = backend
         self._prefix = prefix
@@ -214,6 +278,12 @@ class AssetTransfer:
         self._allowed_roots = allowed_roots
         self._max_download_bytes = max_download_bytes
         self._download_timeout = download_timeout
+        # When True, stream bytes directly from the HTTP response into the
+        # backend's multipart upload — no SpooledTemporaryFile in the middle.
+        # Halves wall-clock on large video (download and upload overlap)
+        # but costs 2 extra S3 calls per CAS asset (temp-key + copy + delete).
+        # Opt-in: users with video-heavy workloads flip this on.
+        self._pipelined_transfer = pipelined_transfer
 
     def transfer(
         self,
@@ -253,67 +323,17 @@ class AssetTransfer:
                     extra_args={"CacheControl": _cache_control_for(self._strategy)},
                 )
         else:
-            # Remote URL → validate and stream to temp file (avoids holding large videos in RAM)
+            # Remote URL → validate, then either stream to temp file (default)
+            # or pipeline directly into the multipart upload (opt-in).
             _validate_url(asset.url)
-            try:
-                resp = _http_get_stream(asset.url, timeout=self._download_timeout)
-                try:
-                    content_type = resp.headers.get("Content-Type")
-                    hasher = hashlib.sha256()
-                    size = 0
-                    tmp = tempfile.SpooledTemporaryFile(max_size=_SPOOL_THRESHOLD)
-                    try:
-                        while True:
-                            chunk = resp.read(_CHUNK_SIZE)
-                            if not chunk:
-                                break
-                            hasher.update(chunk)
-                            tmp.write(chunk)
-                            size += len(chunk)
-                            if size > self._max_download_bytes:
-                                raise StorageError(
-                                    f"Download exceeds {self._max_download_bytes} byte limit"
-                                )
-
-                        sha256 = hasher.hexdigest()
-                        ext = _guess_extension(asset.url, content_type)
-
-                        key = _build_key(
-                            self._strategy,
-                            self._prefix,
-                            asset,
-                            sha256,
-                            ext,
-                            tenant=tenant,
-                            date_str=date_str,
-                            run_id=run_id,
-                        )
-
-                        # Skip upload if content-addressable and already exists
-                        already_exists = (
-                            self._strategy == KeyStrategy.CONTENT_ADDRESSABLE
-                            and self._backend.exists(key)
-                        )
-                        if already_exists:
-                            logger.debug("Asset already exists at %s, skipping upload", key)
-                        else:
-                            tmp.seek(0)
-                            self._backend.put(
-                                key,
-                                cast(BinaryIO, tmp),
-                                content_type=content_type,
-                                extra_args={"CacheControl": _cache_control_for(self._strategy)},
-                            )
-                    finally:
-                        tmp.close()
-                finally:
-                    # Return the connection to the pool — otherwise the pool
-                    # exhausts after maxsize in-flight transfers.
-                    resp.release_conn()
-            except StorageError:
-                raise
-            except Exception as exc:
-                raise StorageError(f"Failed to download asset {asset.url}: {exc}") from exc
+            if self._pipelined_transfer:
+                key, sha256, size = self._transfer_pipelined(
+                    asset, tenant=tenant, date_str=date_str, run_id=run_id
+                )
+            else:
+                key, sha256, size = self._transfer_spooled(
+                    asset, tenant=tenant, date_str=date_str, run_id=run_id
+                )
 
         # Update asset metadata in place. Use the durable (credential-free)
         # URL — never a presigned URL. The result lands in manifests,
@@ -325,6 +345,184 @@ class AssetTransfer:
         asset.url = self._backend.get_durable_url(key)
 
         return key
+
+    def _transfer_spooled(
+        self,
+        asset: Asset,
+        *,
+        tenant: str | None,
+        date_str: str | None,
+        run_id: str | None,
+    ) -> tuple[str, str, int]:
+        """Download fully to SpooledTemporaryFile, then upload.
+
+        Default path: simple, handles CAS dedup cheaply (one exists() check
+        avoids the temp-key+copy dance the pipelined CAS variant needs).
+        Pays a download-then-upload serialization that the pipelined path
+        avoids on large files. Returns (key, sha256, size).
+        """
+        try:
+            resp = _http_get_stream(asset.url, timeout=self._download_timeout)
+            try:
+                content_type = resp.headers.get("Content-Type")
+                hasher = hashlib.sha256()
+                size = 0
+                tmp = tempfile.SpooledTemporaryFile(max_size=_SPOOL_THRESHOLD)
+                try:
+                    while True:
+                        chunk = resp.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                        tmp.write(chunk)
+                        size += len(chunk)
+                        if size > self._max_download_bytes:
+                            raise StorageError(
+                                f"Download exceeds {self._max_download_bytes} byte limit"
+                            )
+
+                    sha256 = hasher.hexdigest()
+                    ext = _guess_extension(asset.url, content_type)
+
+                    key = _build_key(
+                        self._strategy,
+                        self._prefix,
+                        asset,
+                        sha256,
+                        ext,
+                        tenant=tenant,
+                        date_str=date_str,
+                        run_id=run_id,
+                    )
+
+                    # Skip upload if content-addressable and already exists
+                    already_exists = (
+                        self._strategy == KeyStrategy.CONTENT_ADDRESSABLE
+                        and self._backend.exists(key)
+                    )
+                    if already_exists:
+                        logger.debug("Asset already exists at %s, skipping upload", key)
+                    else:
+                        tmp.seek(0)
+                        self._backend.put(
+                            key,
+                            cast(BinaryIO, tmp),
+                            content_type=content_type,
+                            extra_args={"CacheControl": _cache_control_for(self._strategy)},
+                        )
+                finally:
+                    tmp.close()
+            finally:
+                # Return the connection to the pool — otherwise the pool
+                # exhausts after maxsize in-flight transfers.
+                resp.release_conn()
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"Failed to download asset {asset.url}: {exc}") from exc
+
+        return key, sha256, size
+
+    def _transfer_pipelined(
+        self,
+        asset: Asset,
+        *,
+        tenant: str | None,
+        date_str: str | None,
+        run_id: str | None,
+    ) -> tuple[str, str, int]:
+        """Stream bytes directly from CDN → backend multipart upload.
+
+        Eliminates the download-to-disk intermediate step that the spooled
+        path pays on large assets. For a 1 GB video at 100 MB/s both legs:
+        spooled wall-clock = 20 s (D + U), pipelined = ~10 s (max(D, U)).
+
+        HIERARCHICAL mode streams straight to the final key (asset_id based,
+        known upfront). CAS mode uploads to ``{prefix}/.tmp/{asset_id}.ext``,
+        reads the hash from the stream wrapper, then promotes via
+        server-side ``copy`` to the content-addressed final key and deletes
+        the temp. Two extra transactions for CAS; worth it on video payloads.
+
+        Returns (key, sha256, size).
+        """
+        resp = _http_get_stream(asset.url, timeout=self._download_timeout)
+        temp_key: str | None = None
+        try:
+            content_type = resp.headers.get("Content-Type")
+            ext = _guess_extension(asset.url, content_type)
+            reader = _HashingStreamReader(resp, max_bytes=self._max_download_bytes)
+            cache_control = {"CacheControl": _cache_control_for(self._strategy)}
+
+            if self._strategy == KeyStrategy.HIERARCHICAL:
+                # Key known upfront — stream directly.
+                key = _build_key(
+                    self._strategy,
+                    self._prefix,
+                    asset,
+                    "",  # unused for HIERARCHICAL
+                    ext,
+                    tenant=tenant,
+                    date_str=date_str,
+                    run_id=run_id,
+                )
+                self._backend.put(
+                    key,
+                    cast(BinaryIO, reader),
+                    content_type=content_type,
+                    extra_args=cache_control,
+                )
+            else:
+                # CAS: upload to temp key, then promote based on hash.
+                temp_key = f"{self._prefix}/.tmp/{asset.asset_id}{ext}"
+                self._backend.put(
+                    temp_key,
+                    cast(BinaryIO, reader),
+                    content_type=content_type,
+                    extra_args=cache_control,
+                )
+                final_key = _build_key(
+                    self._strategy,
+                    self._prefix,
+                    asset,
+                    reader.sha256_hex,
+                    ext,
+                    tenant=tenant,
+                    date_str=date_str,
+                    run_id=run_id,
+                )
+                if self._backend.exists(final_key):
+                    # Dedup hit — discard our copy.
+                    self._backend.delete(temp_key)
+                    temp_key = None
+                else:
+                    # Promote: server-side copy, then delete temp.
+                    self._backend.copy(temp_key, final_key)
+                    self._backend.delete(temp_key)
+                    temp_key = None
+                key = final_key
+
+            sha256 = reader.sha256_hex
+            size = reader.size
+        except StorageError:
+            # Defensive: if we uploaded to temp_key before the error, try
+            # to clean it up so orphans don't accrue.
+            if temp_key is not None:
+                try:
+                    self._backend.delete(temp_key)
+                except Exception:
+                    logger.warning("Failed to clean up temp key %s after error", temp_key)
+            raise
+        except Exception as exc:
+            if temp_key is not None:
+                try:
+                    self._backend.delete(temp_key)
+                except Exception:
+                    logger.warning("Failed to clean up temp key %s after error", temp_key)
+            raise StorageError(f"Failed to download asset {asset.url}: {exc}") from exc
+        finally:
+            resp.release_conn()
+
+        return key, sha256, size
 
     async def atransfer(
         self,

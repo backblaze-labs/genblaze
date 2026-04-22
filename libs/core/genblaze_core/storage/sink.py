@@ -40,13 +40,19 @@ class ObjectStorageSink(BaseSink):
         parquet_sink: ParquetSink | None = None,
         max_upload_workers: int = _DEFAULT_UPLOAD_WORKERS,
         manifest_lock: ObjectLockConfig | None = None,
+        pipelined_transfer: bool = False,
     ):
         self._backend = backend
         self._prefix = prefix
         self._key_strategy = key_strategy
         is_hierarchical = key_strategy == KeyStrategy.HIERARCHICAL
         asset_prefix = f"{prefix}/runs" if is_hierarchical else f"{prefix}/assets"
-        self._transfer = AssetTransfer(backend, prefix=asset_prefix, key_strategy=key_strategy)
+        self._transfer = AssetTransfer(
+            backend,
+            prefix=asset_prefix,
+            key_strategy=key_strategy,
+            pipelined_transfer=pipelined_transfer,
+        )
         self._parquet_sink = parquet_sink
         self._max_upload_workers = max_upload_workers
         self._manifest_object_lock = manifest_lock

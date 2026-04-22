@@ -6,6 +6,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from genblaze_core.exceptions import StorageError
 
 
 class _FakeClientError(Exception):
@@ -157,6 +158,28 @@ class TestS3StorageBackend:
         backend, mock_client = self._make_backend(mock_boto3)
         backend.close()  # Should not raise
         mock_client.close.assert_not_called()
+
+    def test_copy_uses_server_side_copy_object(self, mock_boto3):
+        """copy() must go through S3 CopyObject — NOT the ABC's default
+        download-and-reupload fallback. Server-side copy keeps the bytes
+        on B2 and charges nothing for bandwidth."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        backend.copy("src/key", "dst/key")
+        mock_client.copy_object.assert_called_once_with(
+            Bucket="my-bucket",
+            Key="dst/key",
+            CopySource={"Bucket": "my-bucket", "Key": "src/key"},
+        )
+        # Critically: the fallback would have called get + put; neither fires.
+        mock_client.get_object.assert_not_called()
+        mock_client.upload_fileobj.assert_not_called()
+        mock_client.put_object.assert_not_called()
+
+    def test_copy_wraps_errors_as_storage_error(self, mock_boto3):
+        backend, mock_client = self._make_backend(mock_boto3)
+        mock_client.copy_object.side_effect = RuntimeError("permission denied")
+        with pytest.raises(StorageError, match="copy failed"):
+            backend.copy("src/key", "dst/key")
 
 
 class TestRegionPreflight:

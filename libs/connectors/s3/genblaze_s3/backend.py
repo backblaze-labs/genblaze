@@ -259,6 +259,26 @@ class S3StorageBackend(StorageBackend):
         except Exception as exc:
             raise StorageError(f"S3 delete failed for {key}: {exc}") from exc
 
+    def copy(self, src_key: str, dst_key: str) -> None:
+        """Server-side copy — bytes never transit the client.
+
+        Used by the pipelined CAS transfer path to promote a temp upload
+        to its content-addressed final key once the hash is known. B2's
+        S3 API supports this natively and charges nothing for server-side
+        bandwidth (just two transaction class-C calls).
+        """
+        try:
+            self._ensure_region_verified()
+            self._client.copy_object(
+                Bucket=self._bucket,
+                Key=dst_key,
+                CopySource={"Bucket": self._bucket, "Key": src_key},
+            )
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 copy failed for {src_key} -> {dst_key}: {exc}") from exc
+
     def get_url(self, key: str, *, expires_in: int = 3600) -> str:
         """Get a short-lived URL — pre-signed unless ``public_url_base`` is set.
 
