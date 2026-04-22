@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `genblaze-core`: `ObjectLockConfig` dataclass + `ObjectStorageSink(manifest_lock=...)`
+  parameter. Applies B2 Object Lock retention (GOVERNANCE or COMPLIANCE) to
+  manifest uploads — turns genblaze's canonical-hash provenance into an
+  immutable, audit-grade on-disk artifact. GOVERNANCE is the default;
+  COMPLIANCE logs a prominent warning at construction because its retention
+  cannot be shortened, even by the account root. See
+  `docs/features/object-storage.md` for the full recipe.
 - `genblaze-s3`: multipart uploads via `upload_fileobj` + `TransferConfig` —
   assets >16 MB now split into 16 MB parts uploaded 4-way in parallel, each
   part individually retryable. Transforms multi-GB video uploads from a

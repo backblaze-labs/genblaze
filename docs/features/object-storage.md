@@ -147,10 +147,70 @@ result = Pipeline("full-pipeline").step(...).run(sink=storage)
 | `key_strategy` | `KeyStrategy` | `CONTENT_ADDRESSABLE` | Layout strategy |
 | `parquet_sink` | `ParquetSink` | `None` | Optional structured data sink |
 | `max_upload_workers` | `int` | `4` | Max parallel asset uploads per `write_run` call |
+| `manifest_lock` | `ObjectLockConfig \| None` | `None` | When set, applies Object Lock retention to manifests. See "Immutable provenance via Object Lock" below. |
 
 ## Backward compatibility
 
 Existing buckets using the previous HIERARCHICAL layout (assets at `{prefix}/assets/{tenant}/{date}/{run_id}/{asset_id}.ext`) continue to work — URLs stored in manifests remain valid regardless of layout changes. Only newly written data uses the updated paths.
+
+## Immutable provenance via Object Lock
+
+Genblaze's product promise is cryptographically verified provenance for
+every generated asset. **Object Lock** is the on-disk enforcement of that
+promise — once set, the manifest cannot be deleted or overwritten for the
+retention period, turning a hash-verified document into an audit-grade
+legal-hold artifact.
+
+Backblaze B2 supports Object Lock natively via the S3-compatible API.
+**Note:** the bucket must have Object Lock *enabled at creation time* — it
+cannot be toggled on later.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from genblaze_core import (
+    KeyStrategy,
+    ObjectLockConfig,
+    ObjectStorageSink,
+    Pipeline,
+)
+from genblaze_s3 import S3StorageBackend
+
+storage = ObjectStorageSink(
+    S3StorageBackend.for_backblaze("my-locked-bucket"),
+    key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+    # GOVERNANCE: authorized admins holding s3:BypassGovernanceRetention
+    # can still delete. Safe default for audit trails.
+    manifest_lock=ObjectLockConfig(
+        retain_until=datetime.now(timezone.utc) + timedelta(days=365),
+        mode="GOVERNANCE",
+    ),
+)
+
+result = Pipeline("locked-run").step(...).run(sink=storage)
+# Manifest at s3://my-locked-bucket/manifests/{run_id}.json is now
+# immutably retained until the retain_until date.
+```
+
+### GOVERNANCE vs. COMPLIANCE
+
+- **GOVERNANCE** (default, recommended) — authorized users holding
+  `s3:BypassGovernanceRetention` can still delete. Standard audit-trail
+  retention.
+- **COMPLIANCE** — *no one* can delete the object until retention expires,
+  including the account root. A bad retention date cannot be shortened.
+  Use only for strict regulatory scenarios (e.g. legal hold). The sink
+  logs a loud warning at construction when this mode is chosen.
+
+### Why B2 Object Lock fits genblaze's provenance story
+
+- Native S3-API support — no separate native API required.
+- Priced transparently at standard storage rates.
+- Pairs with B2's always-on bucket versioning: every manifest write
+  creates a new, independently-lockable version.
+- Combined with genblaze's `canonical_hash`: the hash *proves* the
+  manifest hasn't been tampered with; Object Lock *prevents* it from
+  being tampered with in the first place.
 
 ## Serving media at zero egress: B2 + Cloudflare
 

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import socket
 import threading
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import RunStatus, StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
-from genblaze_core.storage.base import KeyStrategy, StorageBackend
+from genblaze_core.storage.base import KeyStrategy, ObjectLockConfig, StorageBackend
 from genblaze_core.storage.sink import ObjectStorageSink
 
 # Fake DNS response — resolves to a public IP (bypasses SSRF check)
@@ -370,3 +372,103 @@ class TestCacheControlPolicy:
         date_str = run.created_at.strftime("%Y-%m-%d")
         manifest_key = f"p/runs/{date_str}/{run.run_id}/manifest.json"
         assert backend.put_extra_args[manifest_key]["CacheControl"] == "private, max-age=3600"
+
+
+class TestManifestObjectLock:
+    """Object Lock on manifests — the B2-native provenance retention story."""
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_governance_mode_passes_lock_to_backend(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        retain_until = datetime(2030, 1, 1, tzinfo=UTC)
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend,
+            prefix="p",
+            key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+            manifest_lock=ObjectLockConfig(retain_until=retain_until, mode="GOVERNANCE"),
+        )
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        manifest_key = f"p/manifests/{run.run_id}.json"
+        extra = backend.put_extra_args[manifest_key]
+        assert extra["ObjectLockMode"] == "GOVERNANCE"
+        assert extra["ObjectLockRetainUntilDate"] == retain_until
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_compliance_mode_logs_warning(self, mock_urlopen, _mock_dns, caplog):
+        """COMPLIANCE mode is a foot-gun — the sink should log loudly at init."""
+        import logging
+
+        mock_urlopen.return_value = _mock_urlopen()
+        retain_until = datetime(2030, 1, 1, tzinfo=UTC)
+        with caplog.at_level(logging.WARNING, logger="genblaze.storage.sink"):
+            ObjectStorageSink(
+                MemoryBackend(),
+                manifest_lock=ObjectLockConfig(retain_until=retain_until, mode="COMPLIANCE"),
+            )
+        assert any("COMPLIANCE" in rec.message for rec in caplog.records)
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_no_lock_by_default(self, mock_urlopen, _mock_dns):
+        """Without explicit manifest_lock, no ObjectLock keys are written."""
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        manifest_key = f"p/manifests/{run.run_id}.json"
+        extra = backend.put_extra_args[manifest_key]
+        assert "ObjectLockMode" not in extra
+        assert "ObjectLockRetainUntilDate" not in extra
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_lock_preserves_cache_control(self, mock_urlopen, _mock_dns):
+        """Object Lock and Cache-Control both end up on the same put call."""
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend,
+            prefix="p",
+            key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+            manifest_lock=ObjectLockConfig(
+                retain_until=datetime.now(UTC) + timedelta(days=365),
+            ),
+        )
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        manifest_key = f"p/manifests/{run.run_id}.json"
+        extra = backend.put_extra_args[manifest_key]
+        assert "ObjectLockMode" in extra
+        assert "CacheControl" in extra
+
+
+class TestObjectLockConfig:
+    """Direct tests of the ObjectLockConfig dataclass."""
+
+    def test_default_mode_is_governance(self):
+        cfg = ObjectLockConfig(retain_until=datetime(2030, 1, 1, tzinfo=UTC))
+        assert cfg.mode == "GOVERNANCE"
+
+    def test_to_extra_args_serializes_both_fields(self):
+        retain_until = datetime(2030, 1, 1, tzinfo=UTC)
+        cfg = ObjectLockConfig(retain_until=retain_until, mode="COMPLIANCE")
+        assert cfg.to_extra_args() == {
+            "ObjectLockMode": "COMPLIANCE",
+            "ObjectLockRetainUntilDate": retain_until,
+        }
+
+    def test_is_frozen(self):
+        """Frozen dataclass — configs shouldn't be mutated after construction."""
+        import dataclasses
+
+        cfg = ObjectLockConfig(retain_until=datetime(2030, 1, 1, tzinfo=UTC))
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            cfg.mode = "COMPLIANCE"  # type: ignore[misc]
