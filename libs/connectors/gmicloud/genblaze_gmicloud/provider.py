@@ -25,9 +25,15 @@ from ._errors import map_gmicloud_error
 
 # Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
 # Unknown models pass through to the API; cost_usd will be None.
+#
+# Note: Seedance identifiers are lowercase-hyphenated with date-stamped
+# snapshot suffixes (e.g. ``-250528`` = 2025-05-28), matching ByteDance's
+# naming as deployed on GMICloud. Other models follow their respective
+# vendor conventions. Seedance 2.0 is not yet generally available on
+# GMICloud (waitlist as of April 2026); update this table when it ships.
 _VIDEO_PRICING: dict[str, float] = {
-    "Seedance-2.0-Pro": 0.30,
-    "Seedance-2.0-Lite": 0.10,
+    "seedance-1-0-pro-250528": 0.30,
+    "seedance-1-0-pro-fast": 0.022,
     "Veo3": 0.40,
     "Veo3-Fast": 0.15,
     "Sora-2-Pro": 0.50,
