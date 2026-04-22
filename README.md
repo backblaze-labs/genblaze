@@ -28,7 +28,7 @@ genblaze ships with provider adapters for major generative AI platforms:
 
 | | Video | Image | Audio |
 |---|---|---|---|
-| **GMICloud** | Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
+| **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
 | **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS |
 | **Google** | Veo | Imagen | — |
 | **Runway** | Gen-4 Turbo | — | — |
@@ -133,9 +133,6 @@ from genblaze_core import Modality, ObjectStorageSink, KeyStrategy, Pipeline
 from genblaze_gmicloud import GMICloudVideoProvider
 from genblaze_s3 import S3StorageBackend
 
-# Recommended default: Backblaze B2 with run-grouped keys. Reads
-# B2_KEY_ID / B2_APP_KEY from env; auto-detects bucket region; applies
-# lifecycle rules to prevent orphan multipart uploads.
 storage = ObjectStorageSink(
     S3StorageBackend.for_backblaze("my-bucket"),
     key_strategy=KeyStrategy.HIERARCHICAL,
@@ -145,7 +142,7 @@ result = (
     Pipeline("my-first-pipeline")
     .step(
         GMICloudVideoProvider(),
-        model="Kling-Text2Video-V1.6-Pro",
+        model="Seedance-1.0-Pro",
         prompt="A drone shot soaring over a coastal city at golden hour",
         modality=Modality.VIDEO,
         duration=10,
