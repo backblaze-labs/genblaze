@@ -160,7 +160,7 @@ print(f"Verified:  {result.manifest.verify()}")
 
 The manifest captures the full provenance chain — provider, model, prompt, parameters, timestamps, and a canonical hash for integrity verification — and is uploaded alongside the asset. The asset URL is durable (credential-free, never expires), safe to store anywhere.
 
-> **No API key?** Try `examples/quickstart_local.py` — builds and verifies a manifest with zero external calls.
+> Runnable copy of this example: [`examples/quickstart.py`](examples/quickstart.py). No API key? Try [`examples/quickstart_local.py`](examples/quickstart_local.py) — builds and verifies a manifest with zero external calls.
 
 ## Storage
 
