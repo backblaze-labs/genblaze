@@ -316,6 +316,17 @@ def _find_genblaze_box(data: bytes) -> bytes | None:
         if box_type == b"uuid" and box_size > 24:
             box_uuid = data[pos + 8 : pos + 24]
             if box_uuid == GENBLAZE_UUID_BYTES:
+                # Cap BEFORE slicing — a malicious 499 MB MP4 with a
+                # 499 MB uuid box would otherwise allocate the full
+                # payload here AND parse it as JSON downstream. Streaming
+                # path has the same guard; in-memory needs it too because
+                # files <= MAX_FILE_BYTES (500 MB) are routed through here.
+                payload_size = box_size - 24
+                if payload_size > MAX_MANIFEST_BYTES:
+                    raise EmbeddingError(
+                        f"Embedded manifest exceeds size limit: "
+                        f"{payload_size} > {MAX_MANIFEST_BYTES} bytes"
+                    )
                 return data[pos + 24 : pos + box_size]
         pos += box_size
     return None

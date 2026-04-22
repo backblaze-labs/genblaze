@@ -120,15 +120,17 @@ def _find_info_tag(data: bytes, tag: bytes) -> str | None:
                 sub_size = struct.unpack("<I", chunk_data[info_pos + 4 : info_pos + 8])[0]
                 if info_pos + 8 + sub_size > len(chunk_data):
                     break  # Truncated sub-chunk
-                sub_data = chunk_data[info_pos + 8 : info_pos + 8 + sub_size]
                 if sub_id == tag:
-                    # Cap before decode — a hostile WAV can plant a multi-MB
-                    # INFO chunk that bloats the parsed manifest.
+                    # Cap BEFORE slicing — don't pay the bytes-allocation
+                    # cost for a sub-chunk we're about to reject. Slice
+                    # only inside the matching branch so non-matching
+                    # sub-chunks don't allocate either.
                     if sub_size > MAX_MANIFEST_BYTES:
                         raise EmbeddingError(
                             f"Embedded manifest exceeds size limit: "
                             f"{sub_size} > {MAX_MANIFEST_BYTES} bytes"
                         )
+                    sub_data = chunk_data[info_pos + 8 : info_pos + 8 + sub_size]
                     return sub_data.rstrip(b"\x00").decode("utf-8")
                 # Advance (sub-chunks are word-aligned)
                 info_pos += 8 + sub_size

@@ -208,3 +208,31 @@ def test_mp4_extract_streaming_rejects_oversized_payload(tmp_path: Path) -> None
     handler = Mp4Handler()
     with pytest.raises(EmbeddingError, match="exceeds size limit"):
         handler._extract_streaming(mp4, 1 << 30)  # claim a 1 GiB file
+
+
+def test_mp4_extract_inmemory_rejects_oversized_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-memory extract path also caps payload size before slicing.
+
+    Files <= MAX_FILE_BYTES (500 MB) route through `_find_genblaze_box` —
+    the more common attack vector since most malicious media fits under
+    that ceiling. Without the in-memory cap, a 499 MB MP4 with a 499 MB
+    uuid box would slice the payload AND parse it as JSON downstream.
+    Patches MAX_MANIFEST_BYTES low so the test file stays small.
+    """
+    from genblaze_core.media import mp4 as mp4_module
+
+    monkeypatch.setattr(mp4_module, "MAX_MANIFEST_BYTES", 100)
+
+    # 20-byte ftyp + uuid box with a 200-byte payload (> patched cap of 100)
+    ftyp = b"\x00\x00\x00\x14" + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"isom"
+    payload = b"x" * 200
+    box_size = 8 + 16 + len(payload)
+    uuid_box = box_size.to_bytes(4, "big") + b"uuid" + GENBLAZE_UUID_BYTES + payload
+
+    mp4 = tmp_path / "inmemory_oversized.mp4"
+    mp4.write_bytes(ftyp + uuid_box)
+
+    with pytest.raises(EmbeddingError, match="exceeds size limit"):
+        Mp4Handler().extract(mp4)
