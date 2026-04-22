@@ -118,18 +118,30 @@ the env var is just the default.
 
 ## Quickstart
 
-Generate a video with GMICloud — just one env var:
+End-to-end: generate a video, persist it + its provenance manifest to Backblaze B2, verify the hash.
 
 ```bash
-pip install genblaze-core genblaze-gmicloud
-export GMI_API_KEY=...
+pip install genblaze-core genblaze-gmicloud genblaze-s3
+
+export GMI_API_KEY="gmi-..."
+export B2_KEY_ID="..."
+export B2_APP_KEY="..."
 ```
 
 ```python
-from genblaze_core import Pipeline, Modality
+from genblaze_core import Modality, ObjectStorageSink, KeyStrategy, Pipeline
 from genblaze_gmicloud import GMICloudVideoProvider
+from genblaze_s3 import S3StorageBackend
 
-run, manifest = (
+# Recommended default: Backblaze B2 with run-grouped keys. Reads
+# B2_KEY_ID / B2_APP_KEY from env; auto-detects bucket region; applies
+# lifecycle rules to prevent orphan multipart uploads.
+storage = ObjectStorageSink(
+    S3StorageBackend.for_backblaze("my-bucket"),
+    key_strategy=KeyStrategy.HIERARCHICAL,
+)
+
+result = (
     Pipeline("my-first-pipeline")
     .step(
         GMICloudVideoProvider(),
@@ -139,47 +151,19 @@ run, manifest = (
         duration=10,
         aspect_ratio="16:9",
     )
-    .run(timeout=600)
+    .run(sink=storage, timeout=600)
 )
 
-print(f"Video:    {run.steps[0].assets[0].url}")
-print(f"Hash:     {manifest.canonical_hash}")
-print(f"Verified: {manifest.verify()}")
+print(f"Asset URL: {result.run.steps[0].assets[0].url}")    # B2 durable URL
+print(f"SHA-256:   {result.run.steps[0].assets[0].sha256}")
+print(f"Manifest:  {result.manifest.manifest_uri}")         # Provenance JSON in B2
+print(f"Hash:      {result.manifest.canonical_hash}")
+print(f"Verified:  {result.manifest.verify()}")
 ```
 
-The manifest captures the full provenance chain — provider, model, prompt, parameters, timestamps, and a canonical hash for integrity verification.
+The manifest captures the full provenance chain — provider, model, prompt, parameters, timestamps, and a canonical hash for integrity verification — and is uploaded alongside the asset. The asset URL is durable (credential-free, never expires), safe to store anywhere.
 
 > **No API key?** Try `examples/quickstart_local.py` — builds and verifies a manifest with zero external calls.
-
-**Persist to Backblaze B2** — add one sink to upload the asset + manifest to your bucket on every run:
-
-```bash
-pip install genblaze-s3
-export B2_KEY_ID=...
-export B2_APP_KEY=...
-```
-
-```python
-from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
-from genblaze_gmicloud import GMICloudVideoProvider
-from genblaze_s3 import S3StorageBackend
-
-storage = ObjectStorageSink(
-    S3StorageBackend.for_backblaze("my-bucket"),
-    key_strategy=KeyStrategy.HIERARCHICAL,
-)
-
-result = Pipeline("my-first-pipeline").step(
-    GMICloudVideoProvider(),
-    model="Kling-Text2Video-V1.6-Pro",
-    prompt="A drone shot soaring over a coastal city at golden hour",
-    modality=Modality.VIDEO,
-    duration=10,
-    aspect_ratio="16:9",
-).run(sink=storage, timeout=600)
-
-print(f"Asset URL: {result.run.steps[0].assets[0].url}")  # Points to your B2 bucket
-```
 
 ## Storage
 
