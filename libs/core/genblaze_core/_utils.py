@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import ipaddress
 import random
+import re
 import socket
 import tempfile
 import uuid
@@ -103,6 +104,32 @@ def check_ssrf(url: str, *, exc_type: type[Exception] = ValueError) -> None:
             continue
         if any(ip in net for net in BLOCKED_NETWORKS):
             raise exc_type(f"Private/loopback URLs are not allowed: {host}")
+
+
+# ---------------------------------------------------------------------------
+# Manifest size cap — bounds the JSON payload accepted from disk/media
+# ---------------------------------------------------------------------------
+# Real manifests are O(KB). 16 MiB is generous and bounds OOM blast from
+# malicious media or sidecars that declare absurd payload sizes.
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Credential pattern detection — used by error sanitization (providers/base.py)
+# AND by Pipeline.step build-time rejection of secret-shaped params values.
+# Centralized here so both call sites share one regex of record.
+# ---------------------------------------------------------------------------
+_SECRET_PATTERNS = re.compile(
+    r"(r8_[A-Za-z0-9]{20,})"  # Replicate tokens
+    r"|(sk-ant-[A-Za-z0-9\-]{20,})"  # Anthropic API keys (before generic sk-)
+    r"|(sk-[A-Za-z0-9]{20,})"  # OpenAI-style keys
+    r"|(AIza[A-Za-z0-9_\-]{30,})"  # Google API keys
+    r"|(AKIA[A-Z0-9]{16})"  # AWS access key IDs
+    r"|(Bearer\s+[A-Za-z0-9._\-]{20,})"  # Bearer tokens
+    r"|(Token\s+[A-Za-z0-9._\-]{20,})"  # Token auth headers
+    r"|(\bapi[_-]key[=:]\s*[A-Za-z0-9._\-]{20,})",  # api_key=... / api-key:...
+    re.IGNORECASE,
+)
 
 
 def jittered_backoff(attempt: int) -> float:

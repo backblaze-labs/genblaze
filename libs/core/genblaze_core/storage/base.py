@@ -128,7 +128,23 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def get_url(self, key: str, *, expires_in: int = 3600) -> str:
-        """Get a (possibly pre-signed) URL for the object."""
+        """Get a short-lived (possibly pre-signed) URL for the object.
+
+        Use this only for runtime fetches handed to clients. Never persist
+        the result — presigned URLs leak credentials (the access key ID is
+        embedded in ``X-Amz-Credential``) and break canonical-hash stability.
+        Persist :meth:`get_durable_url` instead.
+        """
+        ...
+
+    @abstractmethod
+    def get_durable_url(self, key: str) -> str:
+        """Return a credential-free, never-expiring URL safe to persist.
+
+        This is what gets written into ``asset.url`` after a transfer, then
+        into manifests, parquet sinks, and embedded media. Implementations
+        MUST NOT include any signature, expiry, or credential material.
+        """
         ...
 
     def close(self) -> None:  # noqa: B027

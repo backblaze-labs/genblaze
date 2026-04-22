@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from genblaze_core._utils import jittered_backoff, utc_now
+from genblaze_core._utils import _SECRET_PATTERNS, jittered_backoff, utc_now
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import (
     RETRYABLE_ERROR_CODES,
@@ -33,19 +32,6 @@ DEFAULT_TIMEOUT = 600.0  # 10 minutes
 
 # Max error message length stored in step.error (prevents bloated manifests)
 _MAX_ERROR_LENGTH = 500
-
-# Patterns that look like API tokens/secrets — redacted before storage
-_SECRET_PATTERNS = re.compile(
-    r"(r8_[A-Za-z0-9]{20,})"  # Replicate tokens
-    r"|(sk-ant-[A-Za-z0-9\-]{20,})"  # Anthropic API keys (before generic sk-)
-    r"|(sk-[A-Za-z0-9]{20,})"  # OpenAI-style keys
-    r"|(AIza[A-Za-z0-9_\-]{30,})"  # Google API keys
-    r"|(AKIA[A-Z0-9]{16})"  # AWS access key IDs
-    r"|(Bearer\s+[A-Za-z0-9._\-]{20,})"  # Bearer tokens
-    r"|(Token\s+[A-Za-z0-9._\-]{20,})"  # Token auth headers
-    r"|(\bapi[_-]key[=:]\s*[A-Za-z0-9._\-]{20,})",  # api_key=... / api-key:...
-    re.IGNORECASE,
-)
 
 
 @dataclass

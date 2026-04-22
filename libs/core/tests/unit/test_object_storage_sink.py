@@ -45,6 +45,11 @@ class MemoryBackend(StorageBackend):
         self.store.pop(key, None)
 
     def get_url(self, key, *, expires_in=3600):
+        # Mimic a presigned URL so tests can prove it never escapes to
+        # asset.url / manifest_uri after the durable-URL fix.
+        return f"https://mem/{key}?X-Amz-Signature=fake&X-Amz-Credential=AKIAFAKE"
+
+    def get_durable_url(self, key):
         return f"https://mem/{key}"
 
     def close(self):
@@ -193,6 +198,108 @@ class TestObjectStorageSink:
         assert run.steps[0].assets[0].url != original_url
         # Manifest hash should still verify (recomputed after mutation)
         assert manifest.verify()
+
+    def test_hash_unchanged_when_only_url_differs(self):
+        """canonical_hash must NOT change when only asset.url differs.
+
+        url is excluded from the hash payload (transport hint, not provenance).
+        Two manifests describing the same content but hosted at different URLs
+        — different CDN, different bucket, fresh presigning — must hash equal.
+        """
+        # Build two manifests with identical content (sha256/size/etc.) but
+        # different URLs. compute_hash() should agree.
+        step_a = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[
+                Asset(
+                    url="https://cdn-a.example.com/img.png",
+                    media_type="image/png",
+                    sha256="abc123",
+                    size_bytes=1024,
+                ),
+            ],
+        )
+        step_b = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[
+                Asset(
+                    url="https://cdn-b.example.com/img.png?X-Amz-Signature=fake",
+                    media_type="image/png",
+                    sha256="abc123",
+                    size_bytes=1024,
+                ),
+            ],
+        )
+        # Pin the asset_ids so that field doesn't introduce noise (it's
+        # already excluded from the hash, but match exactly to be unambiguous).
+        step_b.assets[0].asset_id = step_a.assets[0].asset_id
+        run_a = Run(name="r", status=RunStatus.COMPLETED, steps=[step_a])
+        run_b = Run(name="r", status=RunStatus.COMPLETED, steps=[step_b])
+        run_b.run_id = run_a.run_id
+        run_b.created_at = run_a.created_at
+        run_b.steps[0].step_id = run_a.steps[0].step_id
+
+        m_a = Manifest(run=run_a)
+        m_b = Manifest(run=run_b)
+        m_a.compute_hash()
+        m_b.compute_hash()
+
+        assert m_a.canonical_hash == m_b.canonical_hash, (
+            "Same content at different URLs must produce the same hash — "
+            "url should not be in the hash payload."
+        )
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer.urllib.request.urlopen")
+    def test_persisted_artifacts_carry_no_signature(self, mock_urlopen, _mock_dns):
+        """No persisted URL (asset.url, manifest_uri, manifest body) may
+        contain SigV4 signature/credential query parameters.
+
+        MemoryBackend.get_url() returns a fake-presigned URL; get_durable_url()
+        returns a clean one. After write_run, every persisted URL must have
+        come from get_durable_url.
+        """
+        import json
+
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"img data", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        forbidden = ("X-Amz-Signature", "X-Amz-Credential")
+
+        # 1. asset.url in the in-memory model
+        for token in forbidden:
+            assert token not in run.steps[0].assets[0].url, f"{token} leaked into asset.url"
+
+        # 2. manifest_uri (used by pointer-mode embeds)
+        assert manifest.manifest_uri is not None
+        for token in forbidden:
+            assert token not in manifest.manifest_uri, f"{token} leaked into manifest_uri"
+
+        # 3. manifest JSON persisted to storage
+        manifest_keys = [
+            k for k in backend.store if k.endswith("manifest.json") or "/manifests/" in k
+        ]
+        assert manifest_keys, "expected a manifest object in storage"
+        body = json.loads(backend.store[manifest_keys[0]])
+        for step in body["run"]["steps"]:
+            for asset in step["assets"]:
+                for token in forbidden:
+                    assert token not in asset["url"], (
+                        f"{token} leaked into persisted manifest asset.url"
+                    )
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer.urllib.request.urlopen")

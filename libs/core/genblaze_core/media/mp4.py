@@ -13,6 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import (
     MAX_FILE_BYTES,
@@ -206,6 +207,14 @@ class Mp4Handler(BaseMediaHandler):
                     uuid_bytes = f.read(16)
                     if uuid_bytes == GENBLAZE_UUID_BYTES:
                         payload_size = box_size - header_size - 16
+                        # Cap before reading — a hostile MP4 can declare a
+                        # ~2 GiB uuid box and OOM the consumer who allocates
+                        # bytes(payload_size) here.
+                        if payload_size > MAX_MANIFEST_BYTES:
+                            raise EmbeddingError(
+                                f"Embedded manifest exceeds size limit: "
+                                f"{payload_size} > {MAX_MANIFEST_BYTES} bytes"
+                            )
                         return f.read(payload_size)
 
                 pos += box_size

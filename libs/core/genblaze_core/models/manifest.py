@@ -48,7 +48,14 @@ _RUN_HASH_EXCLUDE = frozenset(
         "parent_run_id",
     }
 )
-_ASSET_HASH_EXCLUDE = frozenset({"asset_id"})  # Random UUID per execution
+_ASSET_HASH_EXCLUDE = frozenset(
+    {
+        "asset_id",  # Random UUID per execution — not provenance
+        "url",  # Transport hint; varies across re-uploads, presigning, and
+        # CDN→durable rewrites. Provenance identity is sha256 + media_type
+        # + size_bytes; URL is where the bytes happen to live.
+    }
+)
 
 # Schema versions that included random IDs in the canonical hash
 _LEGACY_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})

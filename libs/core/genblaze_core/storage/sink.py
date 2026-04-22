@@ -157,7 +157,10 @@ class ObjectStorageSink(BaseSink):
                     content_type="application/json",
                     extra_args=manifest_extra,
                 )
-                manifest.manifest_uri = self._backend.get_url(manifest_key)
+                # Durable URL — manifest_uri is itself persisted (in pointer-
+                # mode embeds and in the parquet sink), so it must not carry
+                # a SigV4 signature or expiry.
+                manifest.manifest_uri = self._backend.get_durable_url(manifest_key)
                 logger.info("Manifest uploaded: %s", manifest_key)
 
         # 5. Optionally write to ParquetSink

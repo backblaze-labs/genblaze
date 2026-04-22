@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from genblaze_core._utils import new_id, utc_now
+from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import GenblazeError, PipelineTimeoutError
 from genblaze_core.models.enums import (
@@ -33,6 +33,35 @@ from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
 logger = logging.getLogger("genblaze.pipeline")
+
+
+def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, model: str) -> None:
+    """Raise GenblazeError if any string value in params looks like an API token.
+
+    Walks nested dicts/lists. step.params lands in canonical_hash, embedded
+    media, and persisted manifests — credential material here leaks forever.
+    """
+
+    def _scan(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            if _SECRET_PATTERNS.search(value):
+                raise GenblazeError(
+                    f"step.params[{path}] for {provider_name}/{model} looks "
+                    "like an API credential. step.params is hashed, embedded "
+                    "into media, and persisted — never put secrets here. "
+                    "Pass credentials via the provider constructor or "
+                    "environment variables instead."
+                )
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                _scan(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(value, (list, tuple)):
+            for i, v in enumerate(value):
+                _scan(v, f"{path}[{i}]")
+
+    for k, v in params.items():
+        _scan(v, str(k))
+
 
 if TYPE_CHECKING:
     from genblaze_core.models.asset import Asset
@@ -240,6 +269,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             raise GenblazeError(msg)
 
         normalized = ps.provider.normalize_params(ps.params, ps.modality)
+        # Reject credential-shaped values up front. step.params is provenance:
+        # it is hashed, embedded into media, and persisted to manifests/parquet.
+        # If a token slips in here, it leaks permanently. Pass credentials via
+        # the provider constructor or environment variables instead.
+        _reject_credentials_in_params(normalized, ps.provider.name, ps.model)
         # Extract Step-level fields that callers pass via **params
         seed = normalized.pop("seed", None)
         negative_prompt = normalized.pop("negative_prompt", None)

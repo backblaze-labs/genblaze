@@ -109,6 +109,9 @@ def test_chain_pipeline_to_object_storage_sink() -> None:
     backend = MagicMock(spec=StorageBackend)
     backend.exists.return_value = False
     backend.get_url.return_value = "https://bucket.example.com/manifest.json"
+    # Sink persists the durable URL into manifest.manifest_uri; Pydantic
+    # rejects the raw MagicMock return without this stub.
+    backend.get_durable_url.return_value = "https://bucket.example.com/manifest.json"
 
     sink = ObjectStorageSink(backend, key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
 

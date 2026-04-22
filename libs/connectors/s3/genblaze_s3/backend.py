@@ -260,7 +260,14 @@ class S3StorageBackend(StorageBackend):
             raise StorageError(f"S3 delete failed for {key}: {exc}") from exc
 
     def get_url(self, key: str, *, expires_in: int = 3600) -> str:
-        """Get URL for an object. Uses public_url_base if configured, else pre-signed."""
+        """Get a short-lived URL — pre-signed unless ``public_url_base`` is set.
+
+        Do NOT persist the result. Presigned URLs leak the access key ID
+        (``X-Amz-Credential``) and grant a time-limited fetch capability;
+        they also break canonical-hash stability if hashed. For anything
+        landing in a manifest, parquet sink, or embedded media payload,
+        call :meth:`get_durable_url` instead.
+        """
         if self._public_url_base:
             from urllib.parse import quote
 
@@ -276,6 +283,27 @@ class S3StorageBackend(StorageBackend):
             raise
         except Exception as exc:
             raise StorageError(f"S3 get_url failed for {key}: {exc}") from exc
+
+    def get_durable_url(self, key: str) -> str:
+        """Return a credential-free, never-expiring URL safe to persist.
+
+        Uses ``public_url_base`` when set (e.g. B2 friendly URL).
+        Otherwise builds the canonical S3 path from the verified endpoint.
+        The URL alone does not grant access — consumers either rely on
+        public bucket read or call :meth:`get_url` later for a presigned
+        fetch. This is what gets written into ``asset.url`` so manifests
+        and embedded media never carry SigV4 signatures.
+        """
+        from urllib.parse import quote
+
+        encoded = quote(key, safe="/")
+        if self._public_url_base:
+            return f"{self._public_url_base}/{encoded}"
+        # Verify region first so endpoint_url is the correct one (B2 buckets
+        # may live in a different region than the constructor hint).
+        self._ensure_region_verified()
+        endpoint = (self._client.meta.endpoint_url or "").rstrip("/")
+        return f"{endpoint}/{self._bucket}/{encoded}"
 
     def _ensure_region_verified(self) -> None:
         """Lazy-verify the bucket region on first use; follow redirect if wrong.

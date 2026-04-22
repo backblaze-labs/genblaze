@@ -8,6 +8,7 @@ import struct
 import tempfile
 from pathlib import Path
 
+from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability, read_media_bytes
 from genblaze_core.models.manifest import Manifest
@@ -121,6 +122,13 @@ def _find_info_tag(data: bytes, tag: bytes) -> str | None:
                     break  # Truncated sub-chunk
                 sub_data = chunk_data[info_pos + 8 : info_pos + 8 + sub_size]
                 if sub_id == tag:
+                    # Cap before decode — a hostile WAV can plant a multi-MB
+                    # INFO chunk that bloats the parsed manifest.
+                    if sub_size > MAX_MANIFEST_BYTES:
+                        raise EmbeddingError(
+                            f"Embedded manifest exceeds size limit: "
+                            f"{sub_size} > {MAX_MANIFEST_BYTES} bytes"
+                        )
                     return sub_data.rstrip(b"\x00").decode("utf-8")
                 # Advance (sub-chunks are word-aligned)
                 info_pos += 8 + sub_size

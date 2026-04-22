@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError, ManifestError
 from genblaze_core.media.base import BaseMediaHandler
 from genblaze_core.models.manifest import Manifest
@@ -97,6 +98,13 @@ class SidecarHandler(BaseMediaHandler):
         sidecar = self._sidecar_path(source)
         if not sidecar.exists():
             raise EmbeddingError(f"No sidecar file found at {sidecar}")
+        # Cap sidecar size — attacker-controllable when the media file ships
+        # paired with its sidecar (zip-bomb-shaped JSON OOMs the consumer).
+        size = sidecar.stat().st_size
+        if size > MAX_MANIFEST_BYTES:
+            raise EmbeddingError(
+                f"Sidecar exceeds size limit: {size} > {MAX_MANIFEST_BYTES} bytes"
+            )
         try:
             data = json.loads(sidecar.read_text(encoding="utf-8"))
             # Detect pointer-mode sidecar: has manifest_uri but no run data

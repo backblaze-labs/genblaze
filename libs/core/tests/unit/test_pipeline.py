@@ -1466,3 +1466,52 @@ def test_build_step_extracts_seed_and_negative_prompt() -> None:
     assert step.negative_prompt == "blurry"
     assert "seed" not in step.params
     assert "negative_prompt" not in step.params
+
+
+def test_pipeline_rejects_credential_in_params() -> None:
+    """step.params holding a credential-shaped value must hard-fail.
+
+    step.params is hashed, embedded into media, and persisted — secrets here
+    leak permanently. Reject at build time so the user sees the mistake before
+    any storage write happens.
+    """
+    p = MockProvider()
+    pipe = Pipeline("cred-test").step(
+        p, model="m", prompt="p", params={"token": "sk-abcdefghijklmnopqrstuv"}
+    )
+    with pytest.raises(GenblazeError, match="looks like an API credential"):
+        pipe.run()
+
+
+def test_pipeline_rejects_credential_in_nested_params() -> None:
+    """Nested dict/list values are also scanned."""
+    p = MockProvider()
+    pipe = Pipeline("cred-nested").step(
+        p,
+        model="m",
+        prompt="p",
+        params={"options": {"auth": "Bearer abcdefghijklmnopqrstuv1234"}},
+    )
+    with pytest.raises(GenblazeError, match="looks like an API credential"):
+        pipe.run()
+
+
+def test_pipeline_allows_normal_params() -> None:
+    """Regular params (numbers, short strings, IDs) pass the credential check."""
+    p = MockProvider()
+    result = (
+        Pipeline("normal-params")
+        .step(
+            p,
+            model="m",
+            prompt="p",
+            params={
+                "temperature": 0.7,
+                "voice_id": "voice-abc-123",
+                "size": "1024x1024",
+                "quality": "hd",
+            },
+        )
+        .run()
+    )
+    assert result.run.status == RunStatus.COMPLETED

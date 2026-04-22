@@ -155,7 +155,6 @@ class AssetTransfer:
         *,
         prefix: str = "assets",
         key_strategy: KeyStrategy = KeyStrategy.CONTENT_ADDRESSABLE,
-        url_expires_in: int = 3600,
         allowed_roots: list[Path] | None = None,
         max_download_bytes: int = _DEFAULT_MAX_DOWNLOAD_BYTES,
         download_timeout: float = _DEFAULT_DOWNLOAD_TIMEOUT,
@@ -163,7 +162,6 @@ class AssetTransfer:
         self._backend = backend
         self._prefix = prefix
         self._strategy = key_strategy
-        self._url_expires_in = url_expires_in
         self._allowed_roots = allowed_roots
         self._max_download_bytes = max_download_bytes
         self._download_timeout = download_timeout
@@ -264,10 +262,14 @@ class AssetTransfer:
             except Exception as exc:
                 raise StorageError(f"Failed to download asset {asset.url}: {exc}") from exc
 
-        # Update asset metadata in place
+        # Update asset metadata in place. Use the durable (credential-free)
+        # URL — never a presigned URL. The result lands in manifests,
+        # parquet sinks, and embedded media; SigV4 signatures must not.
+        # Callers needing a fetchable short-lived URL call backend.get_url()
+        # directly.
         asset.sha256 = sha256
         asset.size_bytes = size
-        asset.url = self._backend.get_url(key, expires_in=self._url_expires_in)
+        asset.url = self._backend.get_durable_url(key)
 
         return key
 

@@ -45,6 +45,14 @@ class FakeBackend(StorageBackend):
         self.store.pop(key, None)
 
     def get_url(self, key, *, expires_in=3600):
+        # Mimic a presigned URL — what get_url returns when no public_url_base
+        # is configured. Tests assert this string never lands in asset.url
+        # after transfer (durable URL is used there).
+        return (
+            f"https://storage.example.com/{key}?X-Amz-Signature=fake-sig&X-Amz-Credential=AKIAFAKE"
+        )
+
+    def get_durable_url(self, key):
         return f"https://storage.example.com/{key}"
 
 

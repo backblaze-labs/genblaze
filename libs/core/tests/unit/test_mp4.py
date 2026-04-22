@@ -183,3 +183,28 @@ def test_mp4_embed_replace_keeps_prefix_stable(tmp_path: Path, sample_manifest: 
     )
     assert tail[4:8] == b"uuid"
     assert tail[8:24] == GENBLAZE_UUID_BYTES
+
+
+def test_mp4_extract_streaming_rejects_oversized_payload(tmp_path: Path) -> None:
+    """A uuid box declaring a payload larger than MAX_MANIFEST_BYTES must
+    raise EmbeddingError instead of allocating ~hundreds of MB.
+
+    Defense against a malicious MP4 that ships a uuid box header claiming
+    a multi-MB manifest payload (real manifests are O(KB)).
+    """
+    from genblaze_core._utils import MAX_MANIFEST_BYTES
+
+    # ftyp box (20 bytes total)
+    ftyp = b"\x00\x00\x00\x14" + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"isom"
+    # uuid box claiming size = 8 (header) + 16 (uuid) + (MAX+1) bytes of payload
+    declared_payload = MAX_MANIFEST_BYTES + 1
+    box_size = 8 + 16 + declared_payload
+    uuid_header = box_size.to_bytes(4, "big") + b"uuid" + GENBLAZE_UUID_BYTES
+    # We don't actually write the payload bytes — _extract_streaming should
+    # raise BEFORE attempting f.read(payload_size).
+    mp4 = tmp_path / "oversized.mp4"
+    mp4.write_bytes(ftyp + uuid_header + b"\x00" * 64)
+
+    handler = Mp4Handler()
+    with pytest.raises(EmbeddingError, match="exceeds size limit"):
+        handler._extract_streaming(mp4, 1 << 30)  # claim a 1 GiB file
