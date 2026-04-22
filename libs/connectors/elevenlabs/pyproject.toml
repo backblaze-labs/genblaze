@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-elevenlabs"
 version = "0.1.0"
 description = "ElevenLabs TTS and sound effects provider adapter for genblaze"
-readme = "../../../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [

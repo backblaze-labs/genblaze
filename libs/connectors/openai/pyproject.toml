@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-openai"
 version = "0.1.0"
 description = "OpenAI provider adapters for genblaze (Sora, DALL-E, TTS)"
-readme = "../../../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [

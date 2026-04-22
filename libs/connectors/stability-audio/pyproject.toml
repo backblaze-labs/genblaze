@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-stability-audio"
 version = "0.1.0"
 description = "Stability AI Stable Audio provider adapter for genblaze"
-readme = "../../../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [

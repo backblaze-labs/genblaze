@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-google"
 version = "0.1.0"
 description = "Google provider adapters for genblaze (Veo video, Imagen image)"
-readme = "../../../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
