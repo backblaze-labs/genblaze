@@ -26,11 +26,18 @@ logger = logging.getLogger("genblaze.storage.transfer")
 # 256KB read chunks — balances memory and throughput for large video files
 _CHUNK_SIZE = 256 * 1024
 
-# Files smaller than this stay in memory; larger ones spool to disk
-_SPOOL_THRESHOLD = 1_048_576  # 1MB
+# Files smaller than this stay in memory; larger ones spool to disk. Set to the
+# same threshold we use to decide between single-PUT and multipart uploads —
+# if a payload would upload in one shot, it fits in RAM too. Eliminates the
+# disk round-trip that 1 MB files otherwise paid (images, audio, short clips).
+# Peak memory per worker is bounded by this; 4 workers × 16 MB = 64 MB worst
+# case, which is fine for anything larger than a tight Lambda.
+_SPOOL_THRESHOLD = 16 * 1024 * 1024  # 16 MB — matches the multipart threshold
 
-# Default max download size (2 GB) — prevents resource exhaustion from oversized responses
-_DEFAULT_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+# Default max download size. Generous enough for long-form generated video
+# (multi-minute 1080p from Sora / Veo can approach 2 GB) while still
+# protecting against runaway payloads from a misbehaving provider.
+_DEFAULT_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
 
 # Default HTTP timeout for remote downloads (seconds)
 _DEFAULT_DOWNLOAD_TIMEOUT = 60

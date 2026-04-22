@@ -351,3 +351,40 @@ class TestReadLocalFile:
         missing = tmp_path / "nope.png"
         with pytest.raises(StorageError, match="Failed to read"):
             _read_local_file(f"file://{missing}")
+
+
+class TestPerformanceDefaults:
+    """Guardrails for the performance-tuning constants.
+
+    These thresholds govern memory vs disk tradeoffs on the hot path. A
+    silent regression here would show up as unexplained disk I/O on small-
+    asset workloads (images, audio) — hard to diagnose, expensive to fix
+    after the fact. Tests pin the relationships so future edits are
+    deliberate.
+    """
+
+    def test_spool_threshold_matches_multipart_threshold(self):
+        """Below the multipart cutoff the upload is single-PUT, so the full
+        body ends up in a single HTTP request regardless; there is no reason
+        to pay disk I/O for it. Keeping the two constants in lockstep means:
+        single-PUT → in-RAM; multipart → disk-spooled. Clean invariant."""
+        from genblaze_core.storage import transfer
+        from genblaze_s3.backend import _MULTIPART_THRESHOLD
+
+        assert transfer._SPOOL_THRESHOLD == _MULTIPART_THRESHOLD, (
+            "Spool and multipart thresholds should stay in lockstep. "
+            "Changing one without the other either wastes disk I/O (spool "
+            "< multipart) or blows memory on single-PUT payloads (spool > "
+            "multipart)."
+        )
+
+    def test_max_download_bytes_accommodates_long_form_video(self):
+        """Long-form 1080p video from Sora/Veo can approach 2 GB. The cap
+        must leave headroom above that so legitimate provider outputs don't
+        trip the limit."""
+        from genblaze_core.storage import transfer
+
+        two_gb = 2 * 1024 * 1024 * 1024
+        assert transfer._DEFAULT_MAX_DOWNLOAD_BYTES > two_gb, (
+            "Default max download must exceed 2 GB to cover long-form video."
+        )
