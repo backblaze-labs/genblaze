@@ -201,21 +201,6 @@ storage = ObjectStorageSink(
 )
 ```
 
-**Cloud + local embed** — upload to cloud, then embed provenance into the local copy:
-
-```python
-result = Pipeline("compose-demo").step(
-    SoraProvider(),
-    model="sora-2",
-    prompt="Aerial flyover of a mountain lake at sunrise",
-    modality=Modality.VIDEO,
-).run(sink=storage, timeout=300)
-
-# Embed the manifest into the local MP4
-local_path = f"output/{result.run.steps[0].assets[0].asset_id}.mp4"
-result.save(local_path)
-```
-
 **Cloud + Parquet analytics** — one sink does both:
 
 ```python
