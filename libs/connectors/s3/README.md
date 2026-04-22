@@ -1,7 +1,7 @@
 <!-- last_verified: 2026-04-22 -->
 # genblaze-s3
 
-S3-compatible storage backend for [genblaze](https://github.com/backblaze-labs/genblaze). Works with [Backblaze B2](https://www.backblaze.com/sign-up/ai-cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) (recommended default), Cloudflare R2, MinIO, and AWS S3.
+S3-compatible storage backend for [genblaze](https://github.com/backblaze-labs/genblaze). Works with [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) (recommended default), Cloudflare R2, MinIO, and AWS S3.
 
 ## Install
 

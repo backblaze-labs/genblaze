@@ -16,11 +16,11 @@
 
 </div>
 
-Genblaze is an AI pipeline SDK by [Backblaze](https://www.backblaze.com/sign-up/ai-cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for building and orchestrating generative media workflows across video, image, and audio providers.
+Genblaze is an AI pipeline SDK by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for building and orchestrating generative media workflows across video, image, and audio providers.
 
 It provides a unified interface to experiment with providers like Runway, Luma, ElevenLabs, Stability Audio, and Hume AI, along with models available through platforms such as GMI Cloud, without rewriting pipeline logic.
 
-Every output includes a SHA-256–verified provenance manifest capturing how the media was generated, with support for embedding metadata directly into files. Genblaze integrates with S3-compatible storage such as [Backblaze B2](https://www.backblaze.com/sign-up/ai-cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) to store and scale AI-generated media pipelines in production.
+Every output includes a SHA-256–verified provenance manifest capturing how the media was generated, with support for embedding metadata directly into files. Genblaze integrates with S3-compatible storage such as [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) to store and scale AI-generated media pipelines in production.
 
 ## Providers
 
@@ -166,7 +166,7 @@ The manifest captures the full provenance chain — provider, model, prompt, par
 
 Upload assets and manifests to any S3-compatible bucket with `sink=storage`. The sink handles asset transfer, manifest upload, and URL rewriting in a single operation.
 
-[Backblaze B2](https://www.backblaze.com/sign-up/ai-cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) is the recommended default, offering reliable, cost-efficient storage for large AI-generated media with strong data integrity and resilient multipart uploads.
+[Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) is the recommended default, offering reliable, cost-efficient storage for large AI-generated media with strong data integrity and resilient multipart uploads.
 
 **Backblaze B2 is the recommended default** — one-liner, reads credentials from
 `B2_KEY_ID` / `B2_APP_KEY`:
