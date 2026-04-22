@@ -72,6 +72,50 @@ pip install genblaze-s3          # S3-compatible storage (B2, AWS, R2)
 pip install genblaze-cli         # CLI tools
 ```
 
+## Configure API keys
+
+Every provider reads its credentials from an environment variable. You
+don't need all of them — just the ones whose providers you use.
+
+| Provider | Env var(s) | Where to get it |
+|---|---|---|
+| **Backblaze B2** (storage) | `B2_KEY_ID`, `B2_APP_KEY` | [B2 Application Keys](https://secure.backblaze.com/app_keys.htm) |
+| GMICloud | `GMI_API_KEY` | [console.gmicloud.ai](https://console.gmicloud.ai/) |
+| OpenAI (Sora, DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
+| Google (Veo, Imagen) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
+| Runway (Gen video) | `RUNWAYML_API_SECRET` | [dev.runwayml.com](https://dev.runwayml.com/) |
+| Luma (Dream Machine) | `LUMAAI_API_KEY` | [lumalabs.ai/dream-machine/api](https://lumalabs.ai/dream-machine/api) |
+| Decart (Lucy) | `DECART_API_KEY` | [platform.decart.ai](https://platform.decart.ai/) |
+| Replicate | `REPLICATE_API_TOKEN` | [replicate.com/account/api-tokens](https://replicate.com/account/api-tokens) |
+| ElevenLabs (TTS + SFX) | `ELEVENLABS_API_KEY` | [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) |
+| Stability AI (music) | `STABILITY_API_KEY` | [platform.stability.ai](https://platform.stability.ai/account/keys) |
+| LMNT (fast TTS) | `LMNT_API_KEY` | [app.lmnt.com](https://app.lmnt.com/account) |
+
+**Example — one provider + B2 storage:**
+
+```bash
+export GMI_API_KEY="gmi-..."
+export B2_KEY_ID="..."
+export B2_APP_KEY="..."
+```
+
+Or drop them into a `.env` file and source it:
+
+```bash
+# .env
+GMI_API_KEY=gmi-...
+B2_KEY_ID=...
+B2_APP_KEY=...
+```
+```bash
+set -a && source .env && set +a
+```
+
+You can also pass any key explicitly to the provider or backend
+constructor (e.g. `GMICloudVideoProvider(api_key=...)`,
+`S3StorageBackend.for_backblaze("my-bucket", key_id=..., app_key=...)`) —
+the env var is just the default.
+
 ## Quickstart
 
 Generate a video with GMICloud — just one env var:
@@ -140,6 +184,8 @@ print(f"Asset URL: {result.run.steps[0].assets[0].url}")  # Points to your B2 bu
 ## Storage
 
 Upload assets and manifests to any S3-compatible bucket with `sink=storage`. The sink handles asset transfer, manifest upload, and URL rewriting in a single operation.
+
+Backblaze B2 is the recommended default, offering reliable, cost-efficient storage for large AI-generated media with strong data integrity and resilient multipart uploads.
 
 **Backblaze B2 is the recommended default** — one-liner, reads credentials from
 `B2_KEY_ID` / `B2_APP_KEY`:
