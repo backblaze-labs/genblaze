@@ -158,6 +158,34 @@ def test_cost_none_unknown_model(provider):
     assert result.cost_usd is None
 
 
+def test_cost_per_second_pricing_seedance_2(provider):
+    """Seedance 2.0 is priced per-second ($0.052/sec) — cost must multiply
+    by the duration from step.params, not a flat per-generation rate."""
+    provider.poll("req-abc123")
+    step = Step(
+        provider="gmicloud",
+        model="seedance-2-0-260128",
+        prompt="a sunset",
+        params={"duration": 10},
+    )
+    result = provider.fetch_output("req-abc123", step)
+    assert result.cost_usd == pytest.approx(0.052 * 10)
+
+
+def test_cost_per_second_pricing_missing_duration_is_none(provider):
+    """Without a duration we can't compute per-second cost — leave it None
+    rather than guess. Users who need cost tracking must pass duration."""
+    provider.poll("req-abc123")
+    step = Step(
+        provider="gmicloud",
+        model="seedance-2-0-260128",
+        prompt="a sunset",
+        # no duration in params
+    )
+    result = provider.fetch_output("req-abc123", step)
+    assert result.cost_usd is None
+
+
 # --- Video metadata ---
 
 

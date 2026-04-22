@@ -26,11 +26,10 @@ from ._errors import map_gmicloud_error
 # Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
 # Unknown models pass through to the API; cost_usd will be None.
 #
-# Note: Seedance identifiers are lowercase-hyphenated with date-stamped
-# snapshot suffixes (e.g. ``-250528`` = 2025-05-28), matching ByteDance's
-# naming as deployed on GMICloud. Other models follow their respective
-# vendor conventions. Seedance 2.0 is not yet generally available on
-# GMICloud (waitlist as of April 2026); update this table when it ships.
+# Seedance identifiers are lowercase-hyphenated with date-stamped snapshot
+# suffixes (e.g. ``-250528`` = 2025-05-28, ``-260128`` = 2026-01-28),
+# matching ByteDance's naming as deployed on GMICloud. Other models follow
+# their respective vendor conventions.
 _VIDEO_PRICING: dict[str, float] = {
     "seedance-1-0-pro-250528": 0.30,
     "seedance-1-0-pro-fast": 0.022,
@@ -51,7 +50,18 @@ _VIDEO_PRICING: dict[str, float] = {
     "Vidu-Q1": 0.10,
 }
 
-# Models that produce audio alongside video (multi-track output)
+# Per-second video pricing (USD/sec) — for models that bill by output length
+# instead of per-generation. Cost = rate × duration × num_assets. The
+# provider reads ``duration`` from ``step.params`` (the same field that
+# gets serialized into the API payload); falls back to ``cost_usd = None``
+# if duration isn't provided, since we can't estimate without it.
+_VIDEO_PRICING_PER_SECOND: dict[str, float] = {
+    "seedance-2-0-260128": 0.052,  # $0.052/sec — GMICloud published pricing
+}
+
+# Models that produce audio alongside video (multi-track output).
+# Seedance 2.0 has opt-in audio via ``generate_audio`` param; we can't
+# know statically, so it's handled dynamically in fetch_output.
 _HAS_AUDIO_MODELS: set[str] = {"Veo3", "Veo3-Fast"}
 
 
@@ -75,7 +85,8 @@ class GMICloudVideoProvider(GMICloudBase):
             supported_modalities=[Modality.VIDEO],
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
-            models=sorted(_VIDEO_PRICING),
+            # Union of flat-rate and per-second priced models.
+            models=sorted({*_VIDEO_PRICING, *_VIDEO_PRICING_PER_SECOND}),
             output_formats=["video/mp4"],
         )
 
@@ -150,9 +161,17 @@ class GMICloudVideoProvider(GMICloudBase):
 
             step.assets.append(asset)
 
-            per_gen = _VIDEO_PRICING.get(step.model)
-            if per_gen is not None:
-                step.cost_usd = per_gen * len(step.assets)
+            per_sec = _VIDEO_PRICING_PER_SECOND.get(step.model)
+            if per_sec is not None:
+                # Length-based pricing — duration comes from the request
+                # params (same field the submit() path sends to the API).
+                duration = step.params.get("duration") if step.params else None
+                if duration:
+                    step.cost_usd = per_sec * float(duration) * len(step.assets)
+            else:
+                per_gen = _VIDEO_PRICING.get(step.model)
+                if per_gen is not None:
+                    step.cost_usd = per_gen * len(step.assets)
 
             return step
         except ProviderError:

@@ -2,10 +2,9 @@
 """Quickstart: Generate a video, persist to Backblaze B2, verify provenance.
 
 End-to-end example — mirrors the Quickstart in the repo README. Generates
-a video via GMICloud (Seedance 1.0 Pro — ByteDance's current
-benchmark-leading model on GMICloud), uploads the asset and its
-provenance manifest to Backblaze B2, and prints the durable URLs plus
-SHA-256 integrity verification.
+a video via GMICloud (Seedance 2.0 — ByteDance's latest multimodal video
+model), uploads the asset and its provenance manifest to Backblaze B2,
+and prints the durable URLs plus SHA-256 integrity verification.
 
 Usage:
     pip install genblaze-core genblaze-gmicloud genblaze-s3
@@ -37,7 +36,7 @@ def main() -> None:
         Pipeline("my-first-pipeline")
         .step(
             GMICloudVideoProvider(),
-            model="seedance-1-0-pro-250528",
+            model="seedance-2-0-260128",
             prompt="A drone shot soaring over a coastal city at golden hour",
             modality=Modality.VIDEO,
             duration=10,
