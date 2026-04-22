@@ -71,6 +71,17 @@ class ObjectStorageSink(BaseSink):
             return "/".join(parts)
         return f"{self._prefix}/manifests/{run.run_id}.json"
 
+    def _manifest_cache_control(self) -> str:
+        """Cache-Control for manifest uploads.
+
+        CAS manifests are keyed by run_id (immutable once a run finishes).
+        HIERARCHICAL manifests share a folder with potentially-rewritable
+        assets, so we use a shorter TTL.
+        """
+        if self._key_strategy == KeyStrategy.CONTENT_ADDRESSABLE:
+            return "public, max-age=31536000, immutable"
+        return "private, max-age=3600"
+
     def _write_run_impl(self, run: Run, manifest: Manifest) -> None:
         date_str = run.created_at.strftime("%Y-%m-%d")
 
@@ -118,7 +129,11 @@ class ObjectStorageSink(BaseSink):
         # 3. Recompute manifest hash after asset transfers mutated URLs/hashes
         manifest.compute_hash()
 
-        # 4. Upload manifest JSON (lock protects check-then-put atomicity)
+        # 4. Upload manifest JSON. We keep the existence check + lock because
+        # B2 buckets are always-versioned: re-putting the same manifest
+        # silently accrues versions (the per-run noncurrent-expire lifecycle
+        # rule ultimately cleans them up, but we'd rather not create churn in
+        # the first place). The manifest is treated as immutable once written.
         manifest_key = self._build_manifest_key(run)
         with self._manifest_lock:
             if not self._backend.exists(manifest_key):
@@ -127,6 +142,7 @@ class ObjectStorageSink(BaseSink):
                     manifest_key,
                     manifest_json.encode("utf-8"),
                     content_type="application/json",
+                    extra_args={"CacheControl": self._manifest_cache_control()},
                 )
                 manifest.manifest_uri = self._backend.get_url(manifest_key)
                 logger.info("Manifest uploaded: %s", manifest_key)

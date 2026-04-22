@@ -44,6 +44,19 @@ _LOCAL_SCHEMES = frozenset({"file"})
 # User agent for HTTP requests (asset downloads from B2/CDN)
 _USER_AGENT = f"b2ai-genblaze/{__version__}"
 
+# Cache-Control values. CAS keys are SHA-256-derived so content at that key
+# is immutable by construction — mark for long CDN caching. HIERARCHICAL
+# keys are UUID-based but per-run, so a shorter TTL is safer.
+_CAS_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_HIERARCHICAL_CACHE_CONTROL = "private, max-age=3600"
+
+
+def _cache_control_for(strategy: KeyStrategy) -> str:
+    """Pick the right Cache-Control value for an asset key strategy."""
+    if strategy == KeyStrategy.CONTENT_ADDRESSABLE:
+        return _CAS_CACHE_CONTROL
+    return _HIERARCHICAL_CACHE_CONTROL
+
 
 def _validate_url(url: str) -> None:
     """Reject non-HTTPS URLs and private/reserved IP ranges (SSRF protection)."""
@@ -179,7 +192,12 @@ class AssetTransfer:
             if self._strategy == KeyStrategy.CONTENT_ADDRESSABLE and self._backend.exists(key):
                 logger.debug("Asset already exists at %s, skipping upload", key)
             else:
-                self._backend.put(key, data, content_type=content_type)
+                self._backend.put(
+                    key,
+                    data,
+                    content_type=content_type,
+                    extra_args={"CacheControl": _cache_control_for(self._strategy)},
+                )
         else:
             # Remote URL → validate and stream to temp file (avoids holding large videos in RAM)
             _validate_url(asset.url)
@@ -226,7 +244,12 @@ class AssetTransfer:
                             logger.debug("Asset already exists at %s, skipping upload", key)
                         else:
                             tmp.seek(0)
-                            self._backend.put(key, cast(BinaryIO, tmp), content_type=content_type)
+                            self._backend.put(
+                                key,
+                                cast(BinaryIO, tmp),
+                                content_type=content_type,
+                                extra_args={"CacheControl": _cache_control_for(self._strategy)},
+                            )
                     finally:
                         tmp.close()
             except StorageError:
