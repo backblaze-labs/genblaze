@@ -379,6 +379,12 @@ examples/               # Usage examples
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [AGENTS.md](AGENTS.md) for repo conventions.
 
+**Adding a new provider?** Provider adapters are the highest-leverage
+contribution — each one expands what Genblaze pipelines can generate.
+The [new-provider guide](docs/guides/new-provider.md) walks through
+package setup, the `submit`/`poll`/`fetch_output` lifecycle, entry
+points, error mapping, and the compliance test harness.
+
 ## License
 
 [MIT](LICENSE)
