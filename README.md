@@ -370,17 +370,6 @@ examples/               # Usage examples
 | **Provider** | Adapter implementing submit/poll/fetch_output for a generation API |
 | **Sink** | Output destination for structured run data (Parquet, object storage) |
 
-## Development
-
-```bash
-make install-dev    # Install all packages in dev mode
-make test           # Run full test suite across all 13 packages
-make lint           # Run ruff linter
-make fmt            # Format code with ruff
-make typecheck      # Run mypy type checker
-make coverage       # Run tests with coverage
-```
-
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System layout, data flows, canonical files
