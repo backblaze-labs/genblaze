@@ -26,6 +26,8 @@ from ._errors import map_gmicloud_error
 # Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
 # Unknown models pass through to the API; cost_usd will be None.
 _VIDEO_PRICING: dict[str, float] = {
+    "Seedance-2.0-Pro": 0.30,
+    "Seedance-2.0-Lite": 0.10,
     "Veo3": 0.40,
     "Veo3-Fast": 0.15,
     "Sora-2-Pro": 0.50,
@@ -50,8 +52,9 @@ _HAS_AUDIO_MODELS: set[str] = {"Veo3", "Veo3-Fast"}
 class GMICloudVideoProvider(GMICloudBase):
     """Provider adapter for GMICloud video generation via the request queue.
 
-    Models: Kling, Veo, Sora, Wan, Minimax Hailuo, PixVerse, Luma Ray, Vidu,
-    and any new model added to GMICloud's queue (unknown models pass through).
+    Models: Seedance, Kling, Veo, Sora, Wan, Minimax Hailuo, PixVerse,
+    Luma Ray, Vidu, and any new model added to GMICloud's queue (unknown
+    models pass through).
 
     Args:
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.

@@ -142,7 +142,7 @@ result = (
     Pipeline("my-first-pipeline")
     .step(
         GMICloudVideoProvider(),
-        model="Seedance-1.0-Pro",
+        model="Seedance-2.0-Pro",
         prompt="A drone shot soaring over a coastal city at golden hour",
         modality=Modality.VIDEO,
         duration=10,
