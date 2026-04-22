@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `genblaze-s3`: credentials preserved across region auto-detection. Previously
+  `_reconfigure_for_region` tried to recover credentials from
+  `boto3.client.meta.config.__dict__`, which doesn't hold them — the
+  reconfigured client silently lost creds and failed mid-upload with
+  `NoCredentialsError`. Credentials are now persisted on the backend at
+  construction and threaded through the rebuild.
+- `genblaze-s3`: region preflight runs on `get`/`exists`/`delete`/`get_url`
+  (presigned), not just `put`. Previously the first `exists()` call —
+  routinely made by `ObjectStorageSink` before `put` — could skip
+  verification and hit the wrong region.
+- `genblaze-s3`: region-redirect endpoint rewrite now only fires for B2
+  endpoints. AWS S3 / R2 / MinIO users hitting a 301 are no longer
+  silently retargeted at `s3.{region}.backblazeb2.com`.
+- `genblaze-s3`: explicit `ChecksumSHA256` in `extra_args` now routes
+  through `put_object` (single-PUT). Whole-object SHA-256 is only valid
+  for single-part uploads; the previous path would have let
+  `upload_fileobj` take the multipart code path with an invalid header.
+- `genblaze-core`: `ObjectLockConfig` rejects naive datetimes with a
+  clear error. S3's handling of naive timestamps is ambiguous and we
+  refuse to silently accept multi-year retention with a wrong anchor.
+  Past retention still allowed but logs a loud warning.
+- Regression tests added for every item above.
+
 ### Added
 - `genblaze-core`: `ObjectLockConfig` dataclass + `ObjectStorageSink(manifest_lock=...)`
   parameter. Applies B2 Object Lock retention (GOVERNANCE or COMPLIANCE) to

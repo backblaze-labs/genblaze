@@ -68,6 +68,16 @@ class S3StorageBackend(StorageBackend):
         # Region may be updated later by auto-detection (see _ensure_region_verified).
         self._region = region
         self._region_verified = False
+        # Persist credentials + endpoint so _reconfigure_for_region can rebuild
+        # the client without losing them. boto3's Config object does NOT hold
+        # credentials (those live in the session's resolver), so we can't
+        # recover them from self._client after construction.
+        self._aws_access_key_id = aws_access_key_id
+        self._aws_secret_access_key = aws_secret_access_key
+        self._endpoint_url = endpoint_url
+        # True when the endpoint points at B2 — gates B2-specific behaviors
+        # like rewriting endpoint_url on region redirect.
+        self._is_b2 = bool(endpoint_url and "backblazeb2.com" in endpoint_url)
 
         # Lazy import boto3 (same pattern as replicate connector)
         try:
@@ -133,10 +143,19 @@ class S3StorageBackend(StorageBackend):
         automatically split into multipart uploads (16 MB parts, 4-way
         parallel) and each part is individually retryable. Per-part SHA-256
         checksums are negotiated server-side via ``ChecksumAlgorithm``.
+
+        If the caller pins an explicit ``ChecksumSHA256`` via ``extra_args``,
+        we route through ``put_object`` (single-PUT) instead — whole-object
+        SHA-256 checksums are only valid on single-part uploads. Callers
+        that need whole-object verification on large payloads should
+        compute and pass it with a ``bytes`` payload under the multipart
+        threshold, or omit and rely on the per-part default.
         """
         try:
             self._ensure_region_verified()
             merged = self._build_extra_args(content_type, metadata, extra_args)
+            if "ChecksumSHA256" in merged:
+                return self._put_single(key, data, merged)
             stream: BinaryIO = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
             self._client.upload_fileobj(
                 stream,
@@ -150,6 +169,20 @@ class S3StorageBackend(StorageBackend):
             raise
         except Exception as exc:
             raise StorageError(f"S3 put failed for {key}: {exc}") from exc
+
+    def _put_single(
+        self,
+        key: str,
+        data: bytes | BinaryIO,
+        extra_args: dict[str, Any],
+    ) -> str:
+        """Single-PUT path used when the caller pinned a whole-object checksum."""
+        body: Any = data if isinstance(data, (bytes, bytearray)) else data
+        kwargs: dict[str, Any] = {"Bucket": self._bucket, "Key": key, "Body": body}
+        # ExtraArgs keys map 1:1 to put_object params (PascalCase).
+        kwargs.update(extra_args)
+        self._client.put_object(**kwargs)
+        return self.get_url(key)
 
     @staticmethod
     def _build_extra_args(
@@ -174,8 +207,11 @@ class S3StorageBackend(StorageBackend):
     def get(self, key: str) -> bytes:
         """Download an object from S3."""
         try:
+            self._ensure_region_verified()
             resp = self._client.get_object(Bucket=self._bucket, Key=key)
             return resp["Body"].read()
+        except StorageError:
+            raise
         except Exception as exc:
             raise StorageError(f"S3 get failed for {key}: {exc}") from exc
 
@@ -184,17 +220,23 @@ class S3StorageBackend(StorageBackend):
         from botocore.exceptions import ClientError
 
         try:
+            self._ensure_region_verified()
             self._client.head_object(Bucket=self._bucket, Key=key)
             return True
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "404":
                 return False
             raise StorageError(f"S3 exists check failed for {key}: {exc}") from exc
+        except StorageError:
+            raise
 
     def delete(self, key: str) -> None:
         """Delete an object from S3."""
         try:
+            self._ensure_region_verified()
             self._client.delete_object(Bucket=self._bucket, Key=key)
+        except StorageError:
+            raise
         except Exception as exc:
             raise StorageError(f"S3 delete failed for {key}: {exc}") from exc
 
@@ -205,11 +247,14 @@ class S3StorageBackend(StorageBackend):
 
             return f"{self._public_url_base}/{quote(key, safe='/')}"
         try:
+            self._ensure_region_verified()
             return self._client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self._bucket, "Key": key},
                 ExpiresIn=expires_in,
             )
+        except StorageError:
+            raise
         except Exception as exc:
             raise StorageError(f"S3 get_url failed for {key}: {exc}") from exc
 
@@ -218,9 +263,11 @@ class S3StorageBackend(StorageBackend):
 
         B2 (and AWS) return 301 ``PermanentRedirect`` with an
         ``x-amz-bucket-region`` header when the client is pointed at the
-        wrong region. We catch that once and rebuild the client pointing at
-        the correct B2 endpoint — users stop needing to hand-pick the right
-        ``region=`` on ``for_backblaze``.
+        wrong region. For B2 endpoints we rewrite to the correct B2 regional
+        endpoint — users stop needing to hand-pick the right ``region=`` on
+        ``for_backblaze``. For other endpoints (AWS S3, R2, MinIO) we don't
+        attempt to rebuild the endpoint URL since we can't synthesize it;
+        we just surface the error with guidance.
         """
         if self._region_verified:
             return
@@ -229,6 +276,7 @@ class S3StorageBackend(StorageBackend):
         try:
             self._client.head_bucket(Bucket=self._bucket)
             self._region_verified = True
+            return
         except ClientError as exc:
             actual = (
                 exc.response.get("ResponseMetadata", {})
@@ -236,7 +284,8 @@ class S3StorageBackend(StorageBackend):
                 .get("x-amz-bucket-region")
             )
             code = exc.response.get("Error", {}).get("Code")
-            if actual and actual != self._region and code in {"301", "PermanentRedirect"}:
+            is_redirect = code in {"301", "PermanentRedirect"}
+            if self._is_b2 and is_redirect and actual and actual != self._region:
                 logger.info(
                     "Bucket %s lives in %s (client was pointed at %s); reconfiguring.",
                     self._bucket,
@@ -246,25 +295,33 @@ class S3StorageBackend(StorageBackend):
                 self._reconfigure_for_region(actual)
                 self._region_verified = True
                 return
+            # Mark verified even on non-redirect errors so we don't re-HEAD
+            # on every subsequent call. The error will recur on the real
+            # operation (get/put/etc.) and be surfaced consistently there.
+            self._region_verified = True
             raise StorageError(
                 f"Bucket {self._bucket!r} preflight failed: {exc}. "
                 "Check bucket name, region, and credentials."
             ) from exc
 
     def _reconfigure_for_region(self, region: str) -> None:
-        """Rebuild the boto3 client for a different B2 region."""
+        """Rebuild the boto3 client for a different B2 region.
+
+        Called only for B2 endpoints (see ``_is_b2``) — synthesizes the
+        correct B2 regional endpoint URL. Credentials come from the
+        instance (stored in ``__init__``) since ``boto3.client.meta.config``
+        does not hold them.
+        """
         import boto3
         from boto3.s3.transfer import TransferConfig
         from botocore.config import Config as BotoConfig
 
         self._region = region
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=f"https://s3.{region}.backblazeb2.com",
-            region_name=region,
-            aws_access_key_id=self._client.meta.config.__dict__.get("aws_access_key_id"),
-            aws_secret_access_key=self._client.meta.config.__dict__.get("aws_secret_access_key"),
-            config=BotoConfig(
+        self._endpoint_url = f"https://s3.{region}.backblazeb2.com"
+        kwargs: dict = {
+            "endpoint_url": self._endpoint_url,
+            "region_name": region,
+            "config": BotoConfig(
                 user_agent_extra=_USER_AGENT,
                 retries={"max_attempts": 3, "mode": "adaptive"},
                 connect_timeout=30,
@@ -273,7 +330,12 @@ class S3StorageBackend(StorageBackend):
                 request_checksum_calculation="when_required",
                 response_checksum_validation="when_required",
             ),
-        )
+        }
+        if self._aws_access_key_id:
+            kwargs["aws_access_key_id"] = self._aws_access_key_id
+        if self._aws_secret_access_key:
+            kwargs["aws_secret_access_key"] = self._aws_secret_access_key
+        self._client = boto3.client("s3", **kwargs)
         self._transfer_config = TransferConfig(
             multipart_threshold=_MULTIPART_THRESHOLD,
             multipart_chunksize=_MULTIPART_CHUNKSIZE,
@@ -329,8 +391,7 @@ class S3StorageBackend(StorageBackend):
             # still be able to upload. Log and continue.
             logger.warning("Failed to apply lifecycle defaults to %s: %s", self._bucket, exc)
 
-    # close() intentionally not overridden — base class no-op is correct.
-    # boto3 clients don't have a close() method; calling it would raise.
+    # close() intentionally not overridden — base class no-op is sufficient.
 
     @classmethod
     def for_backblaze(

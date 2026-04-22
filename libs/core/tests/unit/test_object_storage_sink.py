@@ -472,3 +472,19 @@ class TestObjectLockConfig:
         cfg = ObjectLockConfig(retain_until=datetime(2030, 1, 1, tzinfo=UTC))
         with pytest.raises(dataclasses.FrozenInstanceError):
             cfg.mode = "COMPLIANCE"  # type: ignore[misc]
+
+    def test_naive_datetime_rejected(self):
+        """Naive datetimes are rejected — S3 treats them ambiguously and we
+        refuse to silently accept multi-year retention with a wrong anchor."""
+        with pytest.raises(ValueError, match="timezone-aware"):
+            ObjectLockConfig(retain_until=datetime(2030, 1, 1))
+
+    def test_past_retention_warns_but_allows(self, caplog):
+        """A past retain_until uploads effectively-unlocked; we warn loudly
+        but don't block (allows migration / testing workflows)."""
+        import logging
+
+        past = datetime(2000, 1, 1, tzinfo=UTC)
+        with caplog.at_level(logging.WARNING, logger="genblaze.storage.object_lock"):
+            ObjectLockConfig(retain_until=past)
+        assert any("in the past" in rec.message for rec in caplog.records)

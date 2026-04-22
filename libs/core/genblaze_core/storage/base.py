@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, BinaryIO, Literal
+
+_lock_logger = logging.getLogger("genblaze.storage.object_lock")
 
 ObjectLockMode = Literal["GOVERNANCE", "COMPLIANCE"]
 
@@ -28,6 +31,11 @@ class ObjectLockConfig:
         regulatory scenarios (e.g. legal hold); a bad retention date
         cannot be shortened.
 
+    ``retain_until`` must be timezone-aware — naive datetimes are rejected
+    because S3's interpretation of naive timestamps is ambiguous and we
+    refuse to silently accept a 4-year retention with a potentially-wrong
+    anchor.
+
     Backblaze B2 supports Object Lock natively. The bucket must have
     Object Lock enabled at creation time — it cannot be toggled on an
     existing bucket.
@@ -35,6 +43,23 @@ class ObjectLockConfig:
 
     retain_until: datetime
     mode: ObjectLockMode = "GOVERNANCE"
+
+    def __post_init__(self) -> None:
+        if self.retain_until.tzinfo is None:
+            raise ValueError(
+                "ObjectLockConfig.retain_until must be timezone-aware. "
+                "Pass a datetime with tzinfo set (e.g. "
+                "datetime.now(timezone.utc) + timedelta(days=365))."
+            )
+        if self.retain_until <= datetime.now(UTC):
+            # Past retention uploads an effectively-unlocked object — surface
+            # loudly but don't block, in case the caller is intentionally
+            # testing or migrating.
+            _lock_logger.warning(
+                "ObjectLockConfig.retain_until is in the past (%s); "
+                "manifests will be uploaded without effective retention.",
+                self.retain_until.isoformat(),
+            )
 
     def to_extra_args(self) -> dict[str, Any]:
         """Serialize into boto3 ``ExtraArgs`` keys for a put/upload call."""

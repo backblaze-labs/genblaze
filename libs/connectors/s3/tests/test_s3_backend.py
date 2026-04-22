@@ -88,13 +88,21 @@ class TestS3StorageBackend:
         assert extra["CacheControl"] == "public, max-age=31536000, immutable"
 
     def test_put_caller_checksum_override(self, mock_boto3):
-        """Explicit ChecksumSHA256 in extra_args suppresses the default algorithm."""
+        """Explicit ChecksumSHA256 routes through put_object (single-PUT).
+
+        Whole-object SHA-256 checksums are only valid on single-part
+        uploads; upload_fileobj's multipart path would either ignore or
+        reject them. See TestPutExplicitChecksumRoutes below for the full
+        routing contract.
+        """
         backend, mock_client = self._make_backend(mock_boto3)
         backend.put("k", b"data", extra_args={"ChecksumSHA256": "base64hash=="})
-        extra = mock_client.upload_fileobj.call_args.kwargs["ExtraArgs"]
-        assert extra["ChecksumSHA256"] == "base64hash=="
+        mock_client.put_object.assert_called_once()
+        mock_client.upload_fileobj.assert_not_called()
+        kwargs = mock_client.put_object.call_args.kwargs
+        assert kwargs["ChecksumSHA256"] == "base64hash=="
         # When caller passes explicit checksum, don't also pin the algorithm.
-        assert "ChecksumAlgorithm" not in extra
+        assert "ChecksumAlgorithm" not in kwargs
 
     def test_put_binaryio_passes_through(self, mock_boto3):
         """Streaming inputs go straight to upload_fileobj without BytesIO wrapping."""
@@ -191,11 +199,131 @@ class TestRegionPreflight:
             bucket="b",
             endpoint_url="https://s3.us-west-004.backblazeb2.com",
             region="us-west-004",
+            aws_access_key_id="the-key",
+            aws_secret_access_key="the-secret",
         )
         backend.put("k", b"d")
         assert backend._region == "eu-central-003"
         # The reconfigured client is what ran upload_fileobj.
         mock_client_2.upload_fileobj.assert_called_once()
+        # Regression: credentials must survive the reconfigure. Before the
+        # fix, we tried to read creds from client.meta.config.__dict__
+        # (which doesn't hold them) and the reconfigured client silently
+        # dropped credentials, leading to NoCredentialsError mid-upload.
+        reconfigure_kwargs = mock_boto3.client.call_args_list[1].kwargs
+        assert reconfigure_kwargs["aws_access_key_id"] == "the-key"
+        assert reconfigure_kwargs["aws_secret_access_key"] == "the-secret"  # noqa: S105 — test fixture
+        assert reconfigure_kwargs["endpoint_url"] == "https://s3.eu-central-003.backblazeb2.com"
+
+    def test_non_b2_endpoint_does_not_rewrite_on_redirect(self, mock_boto3):
+        """AWS S3 / R2 / MinIO endpoints must not be rewritten as B2 URLs.
+
+        Regression: the initial implementation rewrote endpoint_url to
+        https://s3.{region}.backblazeb2.com on any 301 PermanentRedirect,
+        which would have silently retargeted AWS S3 users at B2.
+        """
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        mock_client.head_bucket.side_effect = _FakeClientError(
+            {
+                "Error": {"Code": "PermanentRedirect"},
+                "ResponseMetadata": {"HTTPHeaders": {"x-amz-bucket-region": "eu-west-1"}},
+            },
+            "HeadBucket",
+        )
+        # Plain AWS S3 — no endpoint_url.
+        backend = S3StorageBackend(bucket="b")
+        with pytest.raises(Exception):  # noqa: B017 — any exception shape is acceptable
+            backend.put("k", b"d")
+        # boto3.client must have been called exactly once (no reconfigure).
+        assert mock_boto3.client.call_count == 1
+
+
+class TestRegionPreflightOnAllMethods:
+    """get/exists/delete/get_url all preflight the region on first use."""
+
+    def _backend_with_unverified_region(self, mock_boto3_mod):
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        mock_boto3_mod.client.return_value = mock_client
+        backend = S3StorageBackend(
+            bucket="b",
+            endpoint_url="https://s3.us-west-004.backblazeb2.com",
+            region="us-west-004",
+        )
+        # Leave _region_verified=False so the preflight must fire.
+        return backend, mock_client
+
+    def test_exists_preflights(self, mock_boto3):
+        backend, mock_client = self._backend_with_unverified_region(mock_boto3)
+        backend.exists("k")
+        mock_client.head_bucket.assert_called_once()
+
+    def test_get_preflights(self, mock_boto3):
+        backend, mock_client = self._backend_with_unverified_region(mock_boto3)
+        mock_client.get_object.return_value = {"Body": MagicMock(read=MagicMock(return_value=b""))}
+        backend.get("k")
+        mock_client.head_bucket.assert_called_once()
+
+    def test_delete_preflights(self, mock_boto3):
+        backend, mock_client = self._backend_with_unverified_region(mock_boto3)
+        backend.delete("k")
+        mock_client.head_bucket.assert_called_once()
+
+    def test_get_url_presigned_preflights(self, mock_boto3):
+        backend, mock_client = self._backend_with_unverified_region(mock_boto3)
+        mock_client.generate_presigned_url.return_value = "https://s/k"
+        backend.get_url("k")
+        mock_client.head_bucket.assert_called_once()
+
+    def test_get_url_public_skips_preflight(self, mock_boto3):
+        """Public-URL mode doesn't hit the wire — no need to preflight."""
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        backend = S3StorageBackend(
+            bucket="b",
+            endpoint_url="https://s3.us-west-004.backblazeb2.com",
+            public_url_base="https://cdn.example.com",
+        )
+        backend.get_url("k")
+        mock_client.head_bucket.assert_not_called()
+
+
+class TestPutExplicitChecksumRoutes:
+    """Explicit ChecksumSHA256 must go through put_object (single-PUT)."""
+
+    def _make_backend(self, mock_boto3_mod):
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        mock_boto3_mod.client.return_value = mock_client
+        backend = S3StorageBackend(
+            bucket="b", endpoint_url="https://s3.us-west-004.backblazeb2.com"
+        )
+        backend._region_verified = True
+        return backend, mock_client
+
+    def test_explicit_checksum_uses_put_object(self, mock_boto3):
+        backend, mock_client = self._make_backend(mock_boto3)
+        backend.put("k", b"d", extra_args={"ChecksumSHA256": "abc123=="})
+        mock_client.put_object.assert_called_once()
+        mock_client.upload_fileobj.assert_not_called()
+        kwargs = mock_client.put_object.call_args.kwargs
+        assert kwargs["ChecksumSHA256"] == "abc123=="
+
+    def test_default_still_uses_upload_fileobj(self, mock_boto3):
+        """Regression guard — the default path must stay on multipart-capable
+        upload_fileobj. Only the explicit-whole-object-checksum escape hatch
+        falls through to put_object."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        backend.put("k", b"d")
+        mock_client.upload_fileobj.assert_called_once()
+        mock_client.put_object.assert_not_called()
 
 
 class TestLifecycleDefaults:
