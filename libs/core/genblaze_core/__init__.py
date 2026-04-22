@@ -73,6 +73,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ObjectStorageSink": ("genblaze_core.storage.sink", "ObjectStorageSink"),
     "AssetTransfer": ("genblaze_core.storage.transfer", "AssetTransfer"),
     "KeyStrategy": ("genblaze_core.storage.base", "KeyStrategy"),
+    "ObjectLockConfig": ("genblaze_core.storage.base", "ObjectLockConfig"),
     # testing
     "MockProvider": ("genblaze_core.testing", "MockProvider"),
     "MockVideoProvider": ("genblaze_core.testing", "MockVideoProvider"),

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from genblaze_core.models.manifest import Manifest
     from genblaze_core.models.run import Run
     from genblaze_core.sinks.parquet import ParquetSink
-    from genblaze_core.storage.base import StorageBackend
+    from genblaze_core.storage.base import ObjectLockConfig, StorageBackend
 
 logger = logging.getLogger("genblaze.storage.sink")
 
@@ -39,6 +39,7 @@ class ObjectStorageSink(BaseSink):
         key_strategy: KeyStrategy = KeyStrategy.CONTENT_ADDRESSABLE,
         parquet_sink: ParquetSink | None = None,
         max_upload_workers: int = _DEFAULT_UPLOAD_WORKERS,
+        manifest_lock: ObjectLockConfig | None = None,
     ):
         self._backend = backend
         self._prefix = prefix
@@ -48,6 +49,15 @@ class ObjectStorageSink(BaseSink):
         self._transfer = AssetTransfer(backend, prefix=asset_prefix, key_strategy=key_strategy)
         self._parquet_sink = parquet_sink
         self._max_upload_workers = max_upload_workers
+        self._manifest_object_lock = manifest_lock
+        if manifest_lock is not None and manifest_lock.mode == "COMPLIANCE":
+            logger.warning(
+                "ObjectStorageSink configured with COMPLIANCE-mode Object Lock "
+                "until %s. Manifests under this prefix cannot be deleted by "
+                "anyone — including the account root — until retention "
+                "expires. Bad retention dates cannot be shortened.",
+                manifest_lock.retain_until.isoformat(),
+            )
         # Lock protects only the manifest write (check-then-put must be atomic)
         self._manifest_lock = threading.Lock()
 
@@ -138,11 +148,14 @@ class ObjectStorageSink(BaseSink):
         with self._manifest_lock:
             if not self._backend.exists(manifest_key):
                 manifest_json = manifest.to_canonical_json()
+                manifest_extra: dict = {"CacheControl": self._manifest_cache_control()}
+                if self._manifest_object_lock is not None:
+                    manifest_extra.update(self._manifest_object_lock.to_extra_args())
                 self._backend.put(
                     manifest_key,
                     manifest_json.encode("utf-8"),
                     content_type="application/json",
-                    extra_args={"CacheControl": self._manifest_cache_control()},
+                    extra_args=manifest_extra,
                 )
                 manifest.manifest_uri = self._backend.get_url(manifest_key)
                 logger.info("Manifest uploaded: %s", manifest_key)
