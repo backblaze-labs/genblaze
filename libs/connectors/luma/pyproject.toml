@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-luma"
-version = "0.1.0"
+version = "0.2.0"
 description = "Luma Dream Machine video provider adapter for genblaze"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "genblaze-core>=0.1.0,<0.2",
+    "genblaze-core>=0.2.0,<0.3",
     "lumaai>=1.0",
 ]
 

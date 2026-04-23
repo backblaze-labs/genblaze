@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-23
+
+### Released package versions
+- `genblaze-core` 0.2.1, `genblaze-gmicloud` 0.2.1, `genblaze-s3` 0.2.2.
+- First-time PyPI releases at 0.2.0: `genblaze-decart`, `genblaze-elevenlabs`,
+  `genblaze-langsmith`, `genblaze-lmnt`, `genblaze-luma`, `genblaze-replicate`,
+  `genblaze-runway`, `genblaze-stability-audio`. All pin
+  `genblaze-core>=0.2.0,<0.3`.
+- `genblaze-openai` and `genblaze-google` remain at 0.2.0 — no code changes
+  since the 0.2.0 release.
+
 ### Added
 - `genblaze-core`: `ModelSpec.deprecated_aliases` — old model ids keep resolving
   but emit a `DeprecationWarning` pointing to the canonical slug. Drop the
