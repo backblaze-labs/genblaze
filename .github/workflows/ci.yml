@@ -24,6 +24,26 @@ jobs:
       - run: ruff check libs/ cli/ examples/
       - run: ruff format --check libs/ cli/ examples/
 
+  ts-types:
+    # Drift guard for libs/spec/ts/genblaze.d.ts. Fails if a schema changed
+    # without `make ts-types` being run. See libs/spec/README.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Regenerate TS types
+        run: make ts-types
+      - name: Verify no drift
+        run: |
+          if ! git diff --exit-code libs/spec/ts/; then
+            echo "::error::libs/spec/ts/ is out of date. Run 'make ts-types' locally and commit."
+            exit 1
+          fi
+      - name: Type-check generated .d.ts
+        run: npx --yes -p typescript@5.4 tsc --noEmit --strict --skipLibCheck libs/spec/ts/genblaze.d.ts
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

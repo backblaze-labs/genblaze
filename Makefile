@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint fmt typecheck coverage clean
+.PHONY: install install-dev test lint fmt typecheck coverage clean ts-types ts-types-check
 
 install:
 	pip install -e libs/core
@@ -67,3 +67,15 @@ clean:
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name htmlcov -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name ".coverage" -delete 2>/dev/null || true
+
+# Regenerate libs/spec/ts/genblaze.d.ts from the JSON Schemas.
+# Requires Node. See libs/spec/README.md for details.
+ts-types:
+	libs/spec/scripts/generate-types.sh
+
+# CI drift guard: fails if regenerated types would differ from committed.
+# Run this in CI after ts-types; any diff means someone changed a schema
+# without running `make ts-types`.
+ts-types-check: ts-types
+	@git diff --exit-code libs/spec/ts/ \
+		|| (echo "ERROR: libs/spec/ts/ is out of date. Run 'make ts-types' and commit." && exit 1)

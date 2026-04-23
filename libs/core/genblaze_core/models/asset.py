@@ -73,7 +73,16 @@ class Asset(BaseModel):
     """A generated media artifact with URL, MIME type, and optional hash."""
 
     asset_id: str = Field(default_factory=new_id, description="Unique asset identifier (UUID).")
-    url: str = Field(description="URL of the generated asset.")
+    url: str = Field(
+        description=(
+            "Durable, credential-free URL of the generated asset. After "
+            "ObjectStorageSink uploads, this is rewritten to the backend's "
+            "durable URL — never a presigned URL. There is no separate "
+            "storage-key field; parse the key from this URL if the sink "
+            "backend is known. For fetchable short-lived access, call "
+            "the backend's get_url() directly."
+        )
+    )
     media_type: str = Field(description="MIME type (e.g. 'image/png').")
     sha256: str | None = Field(default=None, description="SHA-256 hash of asset content.")
     size_bytes: int | None = Field(default=None, description="File size in bytes.")

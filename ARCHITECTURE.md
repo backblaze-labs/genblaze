@@ -18,7 +18,8 @@
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
-- **JSON Schemas** (`libs/spec/schemas/manifest/v1/`) — Language-neutral schema definitions
+- **JSON Schemas** (`libs/spec/schemas/manifest/v1/`) — Language-neutral schema definitions (authoritative wire contract, enforced against Pydantic models by `test_spec_conformance.py`)
+- **TypeScript types** (`libs/spec/ts/genblaze.d.ts`) — Auto-generated from the JSON Schemas via `make ts-types`. Consumed by TS frontends/Node backends that parse or render manifests. See `libs/spec/README.md`.
 
 ## Deployment
 

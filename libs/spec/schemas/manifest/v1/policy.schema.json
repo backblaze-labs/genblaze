@@ -7,9 +7,9 @@
   "properties": {
     "prompt_visibility": {
       "type": "string",
-      "enum": ["public", "private", "redacted"],
+      "enum": ["public", "private", "redacted", "encrypted"],
       "default": "public",
-      "description": "Controls whether prompts are included in embedded manifests."
+      "description": "Controls whether prompts are included in embedded manifests. Mirrors PromptVisibility."
     },
     "embed_mode": {
       "type": "string",

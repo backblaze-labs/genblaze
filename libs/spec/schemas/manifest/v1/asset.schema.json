@@ -14,7 +14,7 @@
     "url": {
       "type": "string",
       "format": "uri",
-      "description": "URL where the asset can be retrieved."
+      "description": "Durable, credential-free URL of the asset. After storage-sink upload, this is the backend's durable URL — never a presigned URL. There is no separate storage-key field; parse the key from this URL if needed."
     },
     "media_type": {
       "type": "string",

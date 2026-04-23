@@ -26,9 +26,10 @@ import logging
 import os
 import tempfile
 import urllib.request
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote, unquote, urlparse
 
 from genblaze_core._utils import check_ssrf
@@ -112,7 +113,9 @@ def _dalle_pricing(table: dict[tuple[str, str], float]):
             quality = "auto" if ("auto", size) in table else "standard"
         return (quality, size)
 
-    return tiered(table, key=_key)
+    # Mapping is invariant in its key type; cast widens dict[tuple[str, str], ...]
+    # to the tuple[Hashable, ...] shape `tiered` accepts.
+    return tiered(cast(Mapping[tuple[Hashable, ...], float], table), key=_key)
 
 
 _MODELS: dict[str, _ImageModelSpec] = {

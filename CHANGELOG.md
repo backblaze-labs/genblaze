@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `libs/spec/ts/genblaze.d.ts` — TypeScript type declarations generated
+  from the JSON Schemas. Eliminates hand-rolled type drift in downstream
+  TS consumers (studio UIs, Node backends). Regenerate via
+  `make ts-types`. Phase 1a: committed in-repo; phase 1b will publish
+  `@genblaze/spec` to npm. See `libs/spec/README.md`.
+- `libs/core/tests/unit/test_spec_conformance.py` — bidirectional
+  conformance tests between Pydantic models and `libs/spec/schemas/`.
+  Catches field-set drift, enum drift, missing descriptions. Runs under
+  `make test`.
+- CI `ts-types` job — drift guard that regenerates the TS types and
+  fails if the committed file would change.
+
+### Changed
+- `libs/spec/schemas/manifest/v1/policy.schema.json`:
+  `prompt_visibility` enum now includes `"encrypted"` to match the
+  Pydantic `PromptVisibility` enum. Schema-only fix; Pydantic
+  acceptance was already unchanged.
+- `Asset.url` field description now documents the durable-URL-is-the-
+  handle invariant (no separate storage-key field; parse key from URL
+  if needed) so the contract flows into JSON Schema and generated
+  TypeScript JSDoc.
+
 ## [0.2.2] - 2026-04-23
 
 ### Released package versions

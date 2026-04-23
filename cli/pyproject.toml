@@ -15,7 +15,7 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "genblaze-core>=0.1.0,<0.2",
+    "genblaze-core>=0.2.0,<0.3",
     "click>=8.0",
 ]
 
