@@ -2,6 +2,12 @@
 
 Synchronous API: returns audio bytes directly.
 
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+returned from ``create_registry()``. Users can override pricing or register
+new models via::
+
+    provider = ElevenLabsTTSProvider(models=my_registry)
+
 Docs: https://elevenlabs.io/docs/api-reference/text-to-speech
 """
 
@@ -17,7 +23,13 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, WordTiming
 from genblaze_core.models.enums import Modality
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import ProviderCapabilities, SyncProvider
+from genblaze_core.providers import (
+    ModelRegistry,
+    ModelSpec,
+    ProviderCapabilities,
+    SyncProvider,
+    per_input_chars,
+)
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_elevenlabs._errors import map_elevenlabs_error
@@ -43,13 +55,23 @@ _FORMAT_TO_EXT = {
     "audio/opus": ".opus",
 }
 
-# Per-1K character pricing by model tier (USD)
-_ELEVENLABS_PRICING: dict[str, float] = {
+# Per-1K character pricing by model tier (USD). Baked into ``per_input_chars``
+# strategies on the model specs.
+_ELEVENLABS_PER_1K_RATES: dict[str, float] = {
     "eleven_v3": 0.30,
     "eleven_multilingual_v2": 0.30,
     "eleven_flash_v2_5": 0.08,
     "eleven_turbo_v2_5": 0.15,
 }
+
+
+def _tts_spec(model_id: str, rate_per_1k: float) -> ModelSpec:
+    """Per-model spec — per-1K-character pricing on ``step.prompt``."""
+    return ModelSpec(
+        model_id=model_id,
+        modality=Modality.AUDIO,
+        pricing=per_input_chars(rate_per_1k, per=1000),
+    )
 
 
 def _parse_elevenlabs_alignment(
@@ -96,21 +118,22 @@ class ElevenLabsTTSProvider(SyncProvider):
     Args:
         api_key: ElevenLabs API key. Falls back to ELEVENLABS_API_KEY env var.
         output_dir: Directory for output audio files (default system temp).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "elevenlabs-tts"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        defaults = {mid: _tts_spec(mid, rate) for mid, rate in _ELEVENLABS_PER_1K_RATES.items()}
+        return ModelRegistry(defaults=defaults)
 
     def get_capabilities(self) -> ProviderCapabilities:
         """ElevenLabs TTS: audio speech generation from text."""
         return ProviderCapabilities(
             supported_modalities=[Modality.AUDIO],
             supported_inputs=["text"],
-            models=[
-                "eleven_v3",
-                "eleven_multilingual_v2",
-                "eleven_flash_v2_5",
-                "eleven_turbo_v2_5",
-            ],
+            models=self._models.known(),
             output_formats=["audio/mpeg", "audio/pcm", "audio/wav", "audio/opus"],
         )
 
@@ -118,8 +141,10 @@ class ElevenLabsTTSProvider(SyncProvider):
         self,
         api_key: str | None = None,
         output_dir: str | Path | None = None,
+        *,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self._api_key = api_key
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
@@ -142,36 +167,41 @@ class ElevenLabsTTSProvider(SyncProvider):
         """Generate speech audio via ElevenLabs TTS API."""
         client = self._get_client()
         try:
-            voice_id = step.params.get("voice_id", "JBFqnCBsd6RMkjVDRZzb")
-            output_format = step.params.get("output_format", "mp3_44100_128")
+            # Run the spec pipeline; result mostly mirrors step.params since
+            # the spec is permissive apart from pricing.
+            payload = self.prepare_payload(step)
+
+            voice_id = payload.get("voice_id", "JBFqnCBsd6RMkjVDRZzb")
+            output_format = payload.get("output_format", "mp3_44100_128")
             media_type = _FORMAT_TO_MIME.get(output_format, "audio/mpeg")
             ext = _FORMAT_TO_EXT.get(media_type, ".mp3")
 
             kwargs: dict = {
-                "text": step.prompt or "",
+                "text": payload.get("prompt", step.prompt or ""),
                 "voice_id": voice_id,
                 "model_id": step.model,
                 "output_format": output_format,
             }
 
             voice_settings: dict = {}
-            if "stability" in step.params:
-                voice_settings["stability"] = float(step.params["stability"])
-            if "similarity_boost" in step.params:
-                voice_settings["similarity_boost"] = float(step.params["similarity_boost"])
-            if "style" in step.params:
-                voice_settings["style"] = float(step.params["style"])
+            if "stability" in payload:
+                voice_settings["stability"] = float(payload["stability"])
+            if "similarity_boost" in payload:
+                voice_settings["similarity_boost"] = float(payload["similarity_boost"])
+            if "style" in payload:
+                voice_settings["style"] = float(payload["style"])
             if voice_settings:
                 kwargs["voice_settings"] = voice_settings
 
-            if "language_code" in step.params:
-                kwargs["language_code"] = step.params["language_code"]
+            if "language_code" in payload:
+                kwargs["language_code"] = payload["language_code"]
             if step.seed is not None:
                 kwargs["seed"] = step.seed
 
-            # Use timestamps endpoint when requested for word-level timing data
+            # Use timestamps endpoint when requested for word-level timing data.
+            # This dispatch stays in generate() — distinct response shape.
             word_timings: list[WordTiming] | None = None
-            if step.params.get("with_timestamps"):
+            if payload.get("with_timestamps"):
                 response = client.text_to_speech.convert_with_timestamps(**kwargs)
                 import base64
 
@@ -222,11 +252,7 @@ class ElevenLabsTTSProvider(SyncProvider):
 
             step.assets.append(asset)
 
-            price_per_1k = _ELEVENLABS_PRICING.get(step.model)
-            if price_per_1k is not None:
-                char_count = len(step.prompt or "")
-                step.cost_usd = (char_count / 1_000) * price_per_1k
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

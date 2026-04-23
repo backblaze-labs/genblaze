@@ -158,6 +158,7 @@
 - [Manifest Provenance](docs/features/manifest-provenance.md)
 - [Media Embedding](docs/features/media-embedding.md)
 - [Provider System](docs/features/provider-system.md)
+- [Model Registry](docs/features/model-registry.md)
 - [Embed Policy](docs/features/embed-policy.md)
 - [Iteration & Lineage](docs/features/iteration.md)
 - [Object Storage](docs/features/object-storage.md)

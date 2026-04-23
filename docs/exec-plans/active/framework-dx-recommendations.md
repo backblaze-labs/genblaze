@@ -13,11 +13,11 @@ Tracks open recommendations for developer experience and production hardening.
 | 4 | Resume test expansion (currently 2 tests; needs async, progress, error cases) | 1 day | **P1** |
 | 5 | Webhook retry jitter (match `_jittered_backoff()` pattern from providers/base.py) | 0.5 day | **P1** |
 | 6 | C2PA/JWS manifest signing (authenticity, not just integrity) | 3-4 days | **P1** |
-| 7 | Dynamic cost config (runtime override for hardcoded pricing dicts) | 2 days | **P2** |
 | 8 | Runnable ABC simplification (deprecate unused pipe composition) | 1 day | **P2** |
 
 ## Resolved Since Last Review
 
+- **Model registry** — `ModelSpec` / `ModelRegistry` / `PricingStrategy` unify per-model config across all 12 provider connectors. Users can register new models, override pricing, and customize parameter handling at runtime via `Provider(models=reg)` or `Provider.models_default().fork()`. Resolves item #7 (Dynamic cost config). See `docs/features/model-registry.md`.
 - **Moderation system** — Pre/post step content filtering with audit trail. 16 tests.
 - **PromptTemplate** — Parameterized prompts with batch rendering. 19 tests.
 - **Pipeline templates** — Serializable pipeline definitions with provider resolution. 17 tests.

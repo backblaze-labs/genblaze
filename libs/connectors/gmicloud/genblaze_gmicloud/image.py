@@ -3,6 +3,9 @@
 Auth: Set GMI_API_KEY env var or pass api_key= to the constructor.
 
 Docs: https://docs.gmicloud.ai
+
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+built in ``genblaze_gmicloud.models.image``.
 """
 
 from __future__ import annotations
@@ -18,25 +21,13 @@ from genblaze_core.models.step import Step
 from genblaze_core.providers.base import (
     ProviderCapabilities,
     validate_asset_url,
-    validate_chain_input_url,
 )
+from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._base import GMICloudBase
 from ._errors import map_gmicloud_error
-
-# Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
-# Unknown models pass through to the API; cost_usd will be None.
-_IMAGE_PRICING: dict[str, float] = {
-    "Seedream-5.0-Lite": 0.035,
-    "Gemini-2.5-Flash-Image": 0.039,
-    "Reve-Edit-Fast": 0.007,
-    "FLUX-Kontext-Pro": 0.05,
-    "Seededit": 0.03,
-    "Bria-Blending": 0.02,
-    "Bria-Relighting": 0.02,
-    "Bria-Restoration": 0.02,
-}
+from .models.image import build_image_registry
 
 
 class GMICloudImageProvider(GMICloudBase):
@@ -49,42 +40,28 @@ class GMICloudImageProvider(GMICloudBase):
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+        models: Optional custom ``ModelRegistry``.
     """
 
     name = "gmicloud-image"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return build_image_registry()
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             supported_modalities=[Modality.IMAGE],
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
-            models=sorted(_IMAGE_PRICING),
+            models=self._models.known(),
             output_formats=["image/png", "image/jpeg"],
         )
 
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         try:
-            payload: dict = {}
-            if step.prompt:
-                payload["prompt"] = step.prompt
-
-            for key in ("aspect_ratio", "number_of_images"):
-                if key in step.params:
-                    payload[key] = step.params[key]
-
-            # Pipeline hoists negative_prompt and seed out of params onto the
-            # top-level Step fields, so read them there (params won't have them).
-            if step.negative_prompt:
-                payload["negative_prompt"] = step.negative_prompt
-            if step.seed is not None:
-                payload["seed"] = step.seed
-
-            if step.inputs and len(step.inputs) > 0:
-                validate_chain_input_url(step.inputs[0].url)
-                payload["image"] = step.inputs[0].url
-
+            payload = self.prepare_payload(step)
             return self._submit_request(step.model, payload)
-
         except ProviderError:
             raise
         except Exception as exc:
@@ -119,11 +96,7 @@ class GMICloudImageProvider(GMICloudBase):
                 mime = "image/png"
 
             step.assets.append(Asset(url=str(image_url), media_type=mime))
-
-            per_gen = _IMAGE_PRICING.get(step.model)
-            if per_gen is not None:
-                step.cost_usd = per_gen * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

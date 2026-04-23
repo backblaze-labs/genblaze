@@ -3,6 +3,10 @@
 Uses the decart Python SDK with async queue-based workflow:
   client.queue.submit() → poll status → download result
 
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+returned from ``create_registry()``. Pricing is keyed off the ``resolution``
+param (480p vs 720p).
+
 Docs: https://docs.platform.decart.ai/
 """
 
@@ -19,17 +23,21 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import (
-    BaseProvider,
+from genblaze_core.providers import (
+    BoolSchema,
+    EnumSchema,
+    ModelRegistry,
+    ModelSpec,
     ProviderCapabilities,
-    validate_chain_input_url,
+    by_param,
 )
+from genblaze_core.providers.base import BaseProvider
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_decart_error
 
 # Supported video models
-_VIDEO_MODELS = {
+_VIDEO_MODELS = (
     "lucy-pro-t2v",
     "lucy-pro-i2v",
     "lucy-pro-v2v",
@@ -38,21 +46,37 @@ _VIDEO_MODELS = {
     "lucy-motion",
     "lucy-dev-i2v",
     "lucy-restyle-v2v",
-}
+)
 
-_VALID_RESOLUTIONS = {"480p", "720p"}
+_VALID_RESOLUTIONS = frozenset({"480p", "720p"})
 
-# Per-generation pricing by resolution (USD)
+# Per-generation pricing by resolution (USD). Default is the 480p tier —
+# matches the historical "fall through to 480p when resolution is missing"
+# behavior.
 _VIDEO_PRICING: dict[str, float] = {
     "480p": 0.04,
     "720p": 0.08,
 }
 
 
+def _video_spec(model_id: str) -> ModelSpec:
+    """Per-model spec — pricing keyed by the ``resolution`` param."""
+    return ModelSpec(
+        model_id=model_id,
+        modality=Modality.VIDEO,
+        pricing=by_param("resolution", _VIDEO_PRICING, default=_VIDEO_PRICING["480p"]),
+        param_coercers={"enhance_prompt": bool},
+        param_schemas={
+            "resolution": EnumSchema(values=_VALID_RESOLUTIONS),
+            "enhance_prompt": BoolSchema(),
+        },
+    )
+
+
 class DecartVideoProvider(BaseProvider):
     """Provider adapter for Decart Lucy video generation.
 
-    Models: ``lucy-pro-t2v``, ``lucy-pro-i2v``, ``lucy-dev-i2v``.
+    Models: ``lucy-pro-t2v``, ``lucy-pro-i2v``, ``lucy-dev-i2v``, etc.
 
     Auth: Set DECART_API_KEY env var or pass api_key.
 
@@ -60,9 +84,14 @@ class DecartVideoProvider(BaseProvider):
         api_key: Decart API key. Falls back to DECART_API_KEY env var.
         poll_interval: Seconds between job status polls (default 5).
         output_dir: Directory for output files (default system temp).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "decart"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return ModelRegistry(defaults={mid: _video_spec(mid) for mid in _VIDEO_MODELS})
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Decart Lucy: video generation from text and image prompts."""
@@ -72,7 +101,7 @@ class DecartVideoProvider(BaseProvider):
             accepts_chain_input=True,
             resolutions=["480p", "720p"],
             output_formats=["video/mp4"],
-            models=sorted(_VIDEO_MODELS),
+            models=sorted(self._models.known()),
         )
 
     def __init__(
@@ -80,8 +109,10 @@ class DecartVideoProvider(BaseProvider):
         api_key: str | None = None,
         poll_interval: float = 5.0,
         output_dir: str | Path | None = None,
+        *,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self.poll_interval = poll_interval
         self._api_key = api_key
         self._output_dir = Path(output_dir) if output_dir else None
@@ -107,21 +138,24 @@ class DecartVideoProvider(BaseProvider):
         try:
             from decart import models
 
+            # Registry pipeline validates resolution enum and SSRF-checks inputs.
+            payload = self.prepare_payload(step)
+
             params: dict = {
                 "model": models.video(step.model),  # type: ignore[arg-type]
-                "prompt": step.prompt or "",
+                "prompt": payload.get("prompt", step.prompt or ""),
             }
 
-            if "resolution" in step.params:
-                params["resolution"] = step.params["resolution"]
+            if "resolution" in payload:
+                params["resolution"] = payload["resolution"]
             if step.seed is not None:
                 params["seed"] = step.seed
-            if "enhance_prompt" in step.params:
-                params["enhance_prompt"] = bool(step.params["enhance_prompt"])
+            if "enhance_prompt" in payload:
+                params["enhance_prompt"] = payload["enhance_prompt"]
 
-            # Image-to-video: pass input image data
+            # Image-to-video: Decart's `data` field expects the first input URL.
+            # Chain-input SSRF validation already done by prepare_payload.
             if step.inputs and len(step.inputs) > 0:
-                validate_chain_input_url(step.inputs[0].url)
                 params["data"] = step.inputs[0].url
 
             job = _run_async(client.queue.submit(params))
@@ -193,12 +227,7 @@ class DecartVideoProvider(BaseProvider):
             asset.video = VideoMetadata(**vm_kwargs)
             step.assets.append(asset)
 
-            # Track cost by resolution
-            resolution = step.params.get("resolution", "480p")
-            per_gen = _VIDEO_PRICING.get(resolution)
-            if per_gen is not None:
-                step.cost_usd = per_gen * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

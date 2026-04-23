@@ -1,4 +1,13 @@
-"""ReplicateProvider — adapter for the Replicate API."""
+"""ReplicateProvider — adapter for the Replicate API.
+
+Models are free-form strings (any Replicate model slug). Default pricing is
+compute-time-based (``predict_time`` × rate). Override per-model or wildcard::
+
+    from genblaze_replicate import ReplicateProvider
+    reg = ReplicateProvider.models_default().fork()
+    reg.register_pricing("owner/my-model", per_response_metric(...))
+    provider = ReplicateProvider(models=reg)
+"""
 
 from __future__ import annotations
 
@@ -10,25 +19,54 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import (
+from genblaze_core.providers import (
     BaseProvider,
+    ModelRegistry,
+    ModelSpec,
+    PricingContext,
     ProviderCapabilities,
+    per_response_metric,
+    route_by_media_type,
     validate_asset_url,
-    validate_chain_input_url,
 )
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_replicate_error
 
-# Replicate per-second compute cost (USD) — varies by hardware but this
-# is a reasonable default for GPU predictions (Nvidia A40/T4 tier).
+# Default per-second GPU-compute rate (Nvidia A40/T4 tier).
 _COST_PER_SEC = 0.000225
+
+
+def _compute_time_cost(ctx: PricingContext) -> float | None:
+    payload = ctx.provider_payload.get("replicate") if ctx.provider_payload else None
+    if not isinstance(payload, dict):
+        return None
+    predict_time = payload.get("predict_time")
+    if predict_time is None:
+        return None
+    try:
+        return float(predict_time) * _COST_PER_SEC
+    except (TypeError, ValueError):
+        return None
+
+
+# Replicate has no enumerable model list; fallback spec applies to every model.
+_FALLBACK_SPEC = ModelSpec(
+    model_id="*",
+    pricing=per_response_metric(_compute_time_cost),
+    input_mapping=route_by_media_type({"image": "image", "video": "video", "audio": "audio"}),
+)
 
 
 class ReplicateProvider(BaseProvider):
     """Provider adapter for Replicate (replicate.com)."""
 
     name = "replicate"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        # No enumerable defaults — every model uses the fallback spec.
+        return ModelRegistry(defaults={}, fallback=_FALLBACK_SPEC)
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Replicate: multi-modal generation depending on selected model."""
@@ -43,8 +81,10 @@ class ReplicateProvider(BaseProvider):
         api_token: str | None = None,
         poll_interval: float = 1.0,
         http_timeout: float = 30.0,
+        *,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self.poll_interval = poll_interval
         self._client: Any = None
         self._api_token = api_token
@@ -73,24 +113,7 @@ class ReplicateProvider(BaseProvider):
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         client = self._get_client()
         try:
-            input_params = {**step.params}
-            if step.prompt:
-                input_params["prompt"] = step.prompt
-            if step.negative_prompt:
-                input_params["negative_prompt"] = step.negative_prompt
-
-            # Pass chain inputs as model-specific parameters by media type
-            if step.inputs:
-                for inp in step.inputs:
-                    validate_chain_input_url(inp.url)
-                    mt = inp.media_type or ""
-                    if mt.startswith("image/") and "image" not in input_params:
-                        input_params["image"] = inp.url
-                    elif mt.startswith("video/") and "video" not in input_params:
-                        input_params["video"] = inp.url
-                    elif mt.startswith("audio/") and "audio" not in input_params:
-                        input_params["audio"] = inp.url
-
+            input_params = self.prepare_payload(step)
             prediction = client.predictions.create(
                 model=step.model,
                 input=input_params,
@@ -123,7 +146,10 @@ class ReplicateProvider(BaseProvider):
             if prediction is None:
                 prediction = client.predictions.get(prediction_id)
 
-            # Store raw provider response
+            # Capture predict_time so registry pricing can read it.
+            metrics = getattr(prediction, "metrics", None)
+            predict_time = getattr(metrics, "predict_time", None) if metrics else None
+
             step.provider_payload = {
                 "replicate": {
                     "prediction_id": prediction.id,
@@ -133,6 +159,7 @@ class ReplicateProvider(BaseProvider):
                     "created_at": str(prediction.created_at)
                     if hasattr(prediction, "created_at")
                     else None,
+                    "predict_time": predict_time,
                 }
             }
 
@@ -158,20 +185,13 @@ class ReplicateProvider(BaseProvider):
             for url in output:
                 url_str = str(url)
                 validate_asset_url(url_str)
-                # Infer MIME from URL extension; fall back to modality default
                 path = urlparse(url_str).path
                 mime, _ = mimetypes.guess_type(path)
                 if mime is None:
                     mime = f"{step.modality.value}/octet-stream"
                 step.assets.append(Asset(url=url_str, media_type=mime))
 
-            # Track cost from prediction compute time
-            metrics = getattr(prediction, "metrics", None)
-            if metrics:
-                predict_time = getattr(metrics, "predict_time", None)
-                if predict_time is not None:
-                    step.cost_usd = float(predict_time) * _COST_PER_SEC
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

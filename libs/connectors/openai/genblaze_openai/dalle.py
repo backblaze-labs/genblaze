@@ -36,9 +36,12 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import (
+from genblaze_core.providers import (
+    ModelRegistry,
+    ModelSpec,
     ProviderCapabilities,
     SyncProvider,
+    tiered,
     validate_asset_url,
     validate_chain_input_url,
 )
@@ -95,6 +98,21 @@ _DEFAULT_SPEC = _ImageModelSpec(
     supports_input_fidelity=True,
     pricing=None,
 )
+
+
+def _dalle_pricing(table: dict[tuple[str, str], float]):
+    """Tiered pricing keyed by (quality, size) with sensible defaults."""
+
+    def _key(ctx):
+        params = ctx.step.params
+        quality = params.get("quality")
+        size = params.get("size", "1024x1024")
+        if quality is None:
+            # Default: prefer "auto" if present in the table, else "standard"
+            quality = "auto" if ("auto", size) in table else "standard"
+        return (quality, size)
+
+    return tiered(table, key=_key)
 
 
 _MODELS: dict[str, _ImageModelSpec] = {
@@ -191,6 +209,22 @@ _MODELS: dict[str, _ImageModelSpec] = {
         },
     ),
 }
+
+
+def _build_dalle_registry() -> ModelRegistry:
+    """Expose models + pricing to the registry for user overrides.
+
+    Parameter validation stays connector-side (free-form size rules for
+    gpt-image-2, advisory input_fidelity warnings) — see ``_validate_params``.
+    The registry surfaces:
+    - Which models the connector knows (for capability discovery).
+    - Per-model pricing as a ``tiered()`` strategy users can override.
+    """
+    defaults: dict[str, ModelSpec] = {}
+    for model_id, spec in _MODELS.items():
+        pricing = _dalle_pricing(spec.pricing) if spec.pricing else None
+        defaults[model_id] = ModelSpec(model_id=model_id, pricing=pricing)
+    return ModelRegistry(defaults=defaults)
 
 
 # --- Validation --------------------------------------------------------------
@@ -368,12 +402,16 @@ class DalleProvider(SyncProvider):
 
     name = "openai-dalle"
 
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return _build_dalle_registry()
+
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             supported_modalities=[Modality.IMAGE],
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
-            models=sorted(_MODELS),
+            models=self._models.known(),
             output_formats=["image/png", "image/jpeg", "image/webp"],
         )
 
@@ -382,8 +420,10 @@ class DalleProvider(SyncProvider):
         api_key: str | None = None,
         http_timeout: float = 60.0,
         output_dir: str | Path | None = None,
+        *,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self._api_key = api_key
         self._http_timeout = http_timeout
         self._output_dir = Path(output_dir) if output_dir else None
@@ -539,20 +579,5 @@ class DalleProvider(SyncProvider):
                 step.model,
             )
 
-        self._track_cost(step, spec)
+        self._apply_registry_pricing(step)
         return step
-
-    def _track_cost(self, step: Step, spec: _ImageModelSpec) -> None:
-        """Populate step.cost_usd from the spec's pricing table when possible."""
-        if spec.pricing is None:
-            return
-        n_images = len(step.assets)
-        if n_images == 0:
-            return
-        quality = step.params.get("quality")
-        if quality is None:
-            quality = "auto" if "auto" in spec.valid_qualities else "standard"
-        size = step.params.get("size", "1024x1024")
-        per_image = spec.pricing.get((quality, size))
-        if per_image is not None:
-            step.cost_usd = per_image * n_images

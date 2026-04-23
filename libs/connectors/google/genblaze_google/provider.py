@@ -3,6 +3,12 @@
 Uses the google-genai SDK with the async operation-based workflow:
   client.models.generate_videos() → poll operation → download video
 
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+returned from ``create_registry()``. Users can override pricing or register
+new models via::
+
+    provider = VeoProvider(models=my_registry)
+
 Docs: https://ai.google.dev/gemini-api/docs/video
 """
 
@@ -14,22 +20,98 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, Track, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import BaseProvider, ProviderCapabilities, validate_asset_url
+from genblaze_core.providers import (
+    BaseProvider,
+    ModelRegistry,
+    ModelSpec,
+    PricingContext,
+    PricingStrategy,
+    ProviderCapabilities,
+    validate_asset_url,
+)
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_google._errors import map_google_error
 
 # Valid Veo parameter values
-_VALID_ASPECT_RATIOS = {"16:9", "9:16"}
-_VALID_RESOLUTIONS = {"720p", "1080p", "4k"}
-_VALID_DURATIONS = {"4", "6", "8"}
+_VALID_ASPECT_RATIOS = frozenset({"16:9", "9:16"})
+_VALID_RESOLUTIONS = frozenset({"720p", "1080p", "4k"})
+_VALID_DURATIONS = frozenset({"4", "6", "8"})
 
-# Per-second pricing by model (USD)
-_VEO_PRICING: dict[str, float] = {
+# Per-second pricing by model (USD). Kept module-local so tests can monkey-patch
+# if needed; registry pricing strategies close over these values.
+_VEO_PER_SECOND_RATES: dict[str, float] = {
     "veo-2.0-generate-001": 0.35,
     "veo-3.0-generate-001": 0.50,
     "veo-3.0-fast-generate-001": 0.25,
 }
+
+
+def _check_aspect_ratio(params: dict[str, Any]) -> None:
+    """Validate aspect_ratio with Veo-specific error wording."""
+    ar = params.get("aspect_ratio")
+    if ar is not None and ar not in _VALID_ASPECT_RATIOS:
+        raise ProviderError(
+            f"Invalid aspect_ratio={ar!r}. Must be one of {set(_VALID_ASPECT_RATIOS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+def _check_resolution(params: dict[str, Any]) -> None:
+    """Validate resolution with Veo-specific error wording."""
+    res = params.get("resolution")
+    if res is not None and res not in _VALID_RESOLUTIONS:
+        raise ProviderError(
+            f"Invalid resolution={res!r}. Must be one of {set(_VALID_RESOLUTIONS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+def _check_duration(params: dict[str, Any]) -> None:
+    """Validate duration_seconds with Veo-specific error wording (must be "4"/"6"/"8")."""
+    if "duration_seconds" not in params:
+        return
+    dur = params["duration_seconds"]
+    if dur not in _VALID_DURATIONS:
+        raise ProviderError(
+            f"Invalid duration_seconds={dur!r}. Must be one of {set(_VALID_DURATIONS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+def _per_second_by_model(rate: float) -> PricingStrategy:
+    """Per-second of requested duration × number of videos, at ``rate``.
+
+    Reads ``duration_seconds`` from params (string form — Veo native), falling
+    back to 4s when unspecified, and multiplies by the emitted asset count.
+    """
+
+    def _strategy(ctx: PricingContext) -> float | None:
+        raw = ctx.step.params.get("duration_seconds") or ctx.step.params.get("duration")
+        try:
+            dur = int(raw) if raw is not None else 4
+        except (TypeError, ValueError):
+            dur = 4
+        count = ctx.output_count or 1
+        return rate * dur * count
+
+    return _strategy
+
+
+def _veo_spec(model_id: str) -> ModelSpec:
+    """Build per-model spec. ``duration`` (canonical) → ``duration_seconds`` (native)."""
+    rate = _VEO_PER_SECOND_RATES.get(model_id)
+    pricing = _per_second_by_model(rate) if rate is not None else None
+    return ModelSpec(
+        model_id=model_id,
+        modality=Modality.VIDEO,
+        pricing=pricing,
+        param_aliases={"duration": "duration_seconds"},
+        # Coerce numeric duration to string (Veo native expects "4"/"6"/"8").
+        param_coercers={"duration_seconds": str},
+        # Validation via constraint callables so bespoke error wording is preserved.
+        param_constraints=(_check_aspect_ratio, _check_resolution, _check_duration),
+    )
 
 
 class VeoProvider(BaseProvider):
@@ -45,9 +127,15 @@ class VeoProvider(BaseProvider):
         project: GCP project ID for Vertex AI auth (mutually exclusive with api_key).
         location: GCP region for Vertex AI (default "us-central1").
         poll_interval: Seconds between operation polls (default 10).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "google-veo"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        defaults = {mid: _veo_spec(mid) for mid in _VEO_PER_SECOND_RATES}
+        return ModelRegistry(defaults=defaults)
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Veo: video generation from text prompts with configurable resolution and duration."""
@@ -56,11 +144,7 @@ class VeoProvider(BaseProvider):
             supported_inputs=["text"],
             max_duration=8.0,
             resolutions=["720p", "1080p", "4k"],
-            models=[
-                "veo-2.0-generate-001",
-                "veo-3.0-generate-001",
-                "veo-3.0-fast-generate-001",
-            ],
+            models=self._models.known(),
             output_formats=["video/mp4"],
         )
 
@@ -71,8 +155,9 @@ class VeoProvider(BaseProvider):
         project: str | None = None,
         location: str = "us-central1",
         poll_interval: float = 10.0,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self.poll_interval = poll_interval
         self._api_key = api_key
         self._project = project
@@ -80,9 +165,12 @@ class VeoProvider(BaseProvider):
         self._client: Any = None
 
     def normalize_params(self, params: dict, modality: Any = None) -> dict:
-        """Map standard params to Veo-native names."""
+        """Map standard params to Veo-native names.
+
+        Kept for backward compatibility with direct callers; ``prepare_payload``
+        also performs the alias via the model spec.
+        """
         p = dict(params)
-        # duration → duration_seconds (Veo's native key)
         if "duration" in p and "duration_seconds" not in p:
             p["duration_seconds"] = p.pop("duration")
         return p
@@ -111,50 +199,24 @@ class VeoProvider(BaseProvider):
                 self._client = genai.Client(**kwargs)
         return self._client
 
-    def _build_config(self, step: Step) -> Any:
-        """Build a GenerateVideosConfig from step.params."""
+    def _build_config(self, payload: dict[str, Any], step: Step) -> Any:
+        """Build a GenerateVideosConfig from the prepared payload."""
         from google.genai import types
 
         config_kwargs: dict = {}
 
-        if "aspect_ratio" in step.params:
-            ar = step.params["aspect_ratio"]
-            if ar not in _VALID_ASPECT_RATIOS:
-                raise ProviderError(
-                    f"Invalid aspect_ratio={ar!r}. Must be one of {_VALID_ASPECT_RATIOS}",
-                    error_code=ProviderErrorCode.INVALID_INPUT,
-                )
-            config_kwargs["aspect_ratio"] = ar
-
-        if "resolution" in step.params:
-            res = step.params["resolution"]
-            if res not in _VALID_RESOLUTIONS:
-                raise ProviderError(
-                    f"Invalid resolution={res!r}. Must be one of {_VALID_RESOLUTIONS}",
-                    error_code=ProviderErrorCode.INVALID_INPUT,
-                )
-            config_kwargs["resolution"] = res
-
-        # Duration (normalize_params already mapped duration → duration_seconds)
-        raw_dur = step.params.get("duration_seconds")
-        if raw_dur is not None:
-            dur = str(raw_dur)
-            if dur not in _VALID_DURATIONS:
-                raise ProviderError(
-                    f"Invalid duration_seconds={dur!r}. Must be one of {_VALID_DURATIONS}",
-                    error_code=ProviderErrorCode.INVALID_INPUT,
-                )
-            config_kwargs["duration_seconds"] = dur
-
-        if "person_generation" in step.params:
-            config_kwargs["person_generation"] = step.params["person_generation"]
-
-        if "number_of_videos" in step.params:
-            config_kwargs["number_of_videos"] = int(step.params["number_of_videos"])
-
-        if "enhance_prompt" in step.params:
-            config_kwargs["enhance_prompt"] = bool(step.params["enhance_prompt"])
-
+        if "aspect_ratio" in payload:
+            config_kwargs["aspect_ratio"] = payload["aspect_ratio"]
+        if "resolution" in payload:
+            config_kwargs["resolution"] = payload["resolution"]
+        if "duration_seconds" in payload:
+            config_kwargs["duration_seconds"] = payload["duration_seconds"]
+        if "person_generation" in payload:
+            config_kwargs["person_generation"] = payload["person_generation"]
+        if "number_of_videos" in payload:
+            config_kwargs["number_of_videos"] = int(payload["number_of_videos"])
+        if "enhance_prompt" in payload:
+            config_kwargs["enhance_prompt"] = bool(payload["enhance_prompt"])
         if step.seed is not None:
             config_kwargs["seed"] = step.seed
 
@@ -164,10 +226,11 @@ class VeoProvider(BaseProvider):
         """Start a video generation operation."""
         client = self._get_client()
         try:
-            gen_config = self._build_config(step)
+            payload = self.prepare_payload(step)
+            gen_config = self._build_config(payload, step)
             kwargs: dict = {
                 "model": step.model,
-                "prompt": step.prompt or "",
+                "prompt": payload.get("prompt", step.prompt or ""),
             }
             if gen_config is not None:
                 kwargs["config"] = gen_config
@@ -259,13 +322,7 @@ class VeoProvider(BaseProvider):
                         "use client.files.download() to save locally"
                     )
 
-            # Track cost — accept both native and standard duration key
-            price_per_sec = _VEO_PRICING.get(step.model)
-            if price_per_sec is not None:
-                raw_dur = step.params.get("duration_seconds") or step.params.get("duration")
-                duration = int(raw_dur) if raw_dur is not None else 4
-                step.cost_usd = price_per_sec * duration * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

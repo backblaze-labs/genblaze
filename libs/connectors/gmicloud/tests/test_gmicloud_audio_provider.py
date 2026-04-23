@@ -201,19 +201,31 @@ def test_asset_url_rejects_non_https(provider):
         provider.fetch_output("req-aud-001", step)
 
 
-# --- Normalize params ---
+# --- Parameter pipeline (spec-driven via prepare_payload) ---
 
 
-def test_normalize_params_voice(provider):
-    result = provider.normalize_params({"voice": "alloy"})
+def test_voice_aliased_to_voice_id(provider):
+    step = Step(
+        provider="gmicloud-audio",
+        model="ElevenLabs-TTS-v3",
+        prompt="t",
+        params={"voice": "alloy"},
+    )
+    result = provider.prepare_payload(step)
     assert result["voice_id"] == "alloy"
     assert "voice" not in result
 
 
-def test_normalize_params_idempotent(provider):
-    params = {"voice": "alloy"}
-    once = provider.normalize_params(params)
-    assert provider.normalize_params(once) == once
+def test_prepare_payload_is_idempotent_for_normalized_params(provider):
+    step = Step(
+        provider="gmicloud-audio",
+        model="ElevenLabs-TTS-v3",
+        prompt="t",
+        params={"voice_id": "alloy"},
+    )
+    once = provider.prepare_payload(step)
+    step2 = Step(provider="gmicloud-audio", model=step.model, prompt="t", params=once)
+    assert provider.prepare_payload(step2) == once
 
 
 # --- Passthrough ---

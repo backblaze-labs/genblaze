@@ -3,6 +3,12 @@
 Uses the asynchronous job-based Videos API:
   POST /v1/videos → poll GET /v1/videos/{id} → download content
 
+Models, parameter handling, and (future) pricing are driven by the
+``ModelRegistry`` returned from ``create_registry()``. Pricing is
+intentionally disabled — the correct formula requires ``(model, size,
+seconds)`` per-second billing and a flat per-video dict would misreport
+cost by 10x+ on longer clips.
+
 Docs: https://platform.openai.com/docs/api-reference/videos
 """
 
@@ -19,11 +25,13 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import (
-    BaseProvider,
+from genblaze_core.providers import (
+    ModelRegistry,
+    ModelSpec,
     ProviderCapabilities,
-    validate_chain_input_url,
+    route_images,
 )
+from genblaze_core.providers.base import BaseProvider
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_openai._errors import map_openai_error
@@ -31,14 +39,95 @@ from genblaze_openai._errors import map_openai_error
 logger = logging.getLogger("genblaze.openai.sora")
 
 # Valid Sora sizes (width x height)
-_VALID_SIZES = {"720x1280", "1280x720", "1024x1792", "1792x1024"}
-_VALID_SECONDS = {4, 8, 12}
+_VALID_SIZES = frozenset({"720x1280", "1280x720", "1024x1792", "1792x1024"})
+_VALID_SECONDS = frozenset({4, 8, 12})
 
-# Per-video pricing by (model, resolution_bucket). Prices in USD.
-_SORA_PRICING: dict[str, float] = {
-    "sora-2": 0.10,
-    "sora-2-pro": 0.40,
+# Map standard resolution + aspect_ratio to Sora's size format.
+# This is the canonical many-to-one param transformer: (resolution, aspect_ratio)
+# collapse to a single `size` string.
+_RESOLUTION_TO_SIZE: dict[tuple[str, str], str] = {
+    ("1080p", "16:9"): "1280x720",
+    ("720p", "16:9"): "1280x720",
+    ("1080p", "9:16"): "720x1280",
+    ("720p", "9:16"): "720x1280",
 }
+
+
+def _sora_param_transformer(params: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite ``(resolution, aspect_ratio) → size`` and ``duration → seconds``.
+
+    Sora caps landscape at 720p — a 1080p request downgrades to 720p with a
+    warning (matches the historical ``normalize_params`` behavior).
+    """
+    out = dict(params)
+    # duration → seconds
+    if "duration" in out and "seconds" not in out:
+        out["seconds"] = out.pop("duration")
+    # resolution + aspect_ratio → size
+    if "resolution" in out and "size" not in out:
+        ar = out.get("aspect_ratio", "16:9")
+        requested = out["resolution"]
+        key = (requested, ar)
+        if key in _RESOLUTION_TO_SIZE:
+            mapped = _RESOLUTION_TO_SIZE[key]
+            if requested == "1080p" and mapped == "1280x720":
+                logger.warning(
+                    "Sora does not support 1080p for %s — downgrading to 720p (1280x720)",
+                    ar,
+                )
+            out["size"] = mapped
+        out.pop("resolution", None)
+        out.pop("aspect_ratio", None)
+    return out
+
+
+def _validate_seconds(params: dict[str, Any]) -> None:
+    """Preserve the bespoke ``Invalid seconds=...`` wording the tests assert."""
+    if "seconds" not in params:
+        return
+    try:
+        seconds = int(params["seconds"])
+    except (TypeError, ValueError) as exc:
+        raise ProviderError(
+            f"Invalid seconds={params['seconds']!r}. Must be one of {set(_VALID_SECONDS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        ) from exc
+    if seconds not in _VALID_SECONDS:
+        raise ProviderError(
+            f"Invalid seconds={seconds}. Must be one of {set(_VALID_SECONDS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+    params["seconds"] = seconds
+
+
+def _validate_size(params: dict[str, Any]) -> None:
+    """Preserve the bespoke ``Invalid size=...`` wording the tests assert."""
+    if "size" not in params:
+        return
+    size = params["size"]
+    if size not in _VALID_SIZES:
+        raise ProviderError(
+            f"Invalid size={size}. Must be one of {set(_VALID_SIZES)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+def _sora_spec(model_id: str) -> ModelSpec:
+    """Per-model spec for Sora.
+
+    Pricing is intentionally ``None`` — correct cost requires ``(model, size,
+    seconds)`` per-second billing; a flat dict misreports 10x+ on long clips.
+    Re-enable when the formula lands.
+    """
+    return ModelSpec(
+        model_id=model_id,
+        modality=Modality.VIDEO,
+        pricing=None,
+        param_transformer=_sora_param_transformer,
+        param_constraints=(_validate_seconds, _validate_size),
+        # Route the first image asset to the native `image` slot for image-to-video.
+        input_mapping=route_images(slots=("image",)),
+    )
 
 
 class SoraProvider(BaseProvider):
@@ -50,17 +139,19 @@ class SoraProvider(BaseProvider):
         api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
         poll_interval: Seconds between status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 60).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "openai-sora"
 
-    # Map standard resolution + aspect_ratio to Sora's size format
-    _RESOLUTION_TO_SIZE: dict[tuple[str, str], str] = {
-        ("1080p", "16:9"): "1280x720",
-        ("720p", "16:9"): "1280x720",
-        ("1080p", "9:16"): "720x1280",
-        ("720p", "9:16"): "720x1280",
-    }
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return ModelRegistry(
+            defaults={
+                "sora-2": _sora_spec("sora-2"),
+                "sora-2-pro": _sora_spec("sora-2-pro"),
+            }
+        )
 
     def __init__(
         self,
@@ -68,8 +159,10 @@ class SoraProvider(BaseProvider):
         poll_interval: float = 5.0,
         http_timeout: float = 60.0,
         output_dir: str | Path | None = None,
+        *,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self.poll_interval = poll_interval
         self._api_key = api_key
         self._http_timeout = http_timeout
@@ -82,33 +175,9 @@ class SoraProvider(BaseProvider):
             supported_modalities=[Modality.VIDEO],
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
-            models=["sora-2", "sora-2-pro"],
+            models=self._models.known(),
             output_formats=["video/mp4"],
         )
-
-    def normalize_params(self, params: dict, modality: Any = None) -> dict:
-        """Map standard params to Sora-native names."""
-        p = dict(params)
-        # duration → seconds
-        if "duration" in p and "seconds" not in p:
-            p["seconds"] = p.pop("duration")
-        # resolution + aspect_ratio → size
-        if "resolution" in p and "size" not in p:
-            ar = p.get("aspect_ratio", "16:9")
-            requested = p["resolution"]
-            key = (requested, ar)
-            if key in self._RESOLUTION_TO_SIZE:
-                mapped = self._RESOLUTION_TO_SIZE[key]
-                # Sora caps landscape at 720p — warn if user requested higher
-                if requested == "1080p" and mapped == "1280x720":
-                    logger.warning(
-                        "Sora does not support 1080p for %s — downgrading to 720p (1280x720)",
-                        ar,
-                    )
-                p["size"] = mapped
-            p.pop("resolution", None)
-            p.pop("aspect_ratio", None)
-        return p
 
     def _get_client(self):
         if self._client is None:
@@ -128,32 +197,17 @@ class SoraProvider(BaseProvider):
         """Create a video generation job via POST /v1/videos."""
         client = self._get_client()
         try:
-            params: dict = {"model": step.model, "prompt": step.prompt or ""}
+            # Registry pipeline validates seconds/size, applies resolution+aspect
+            # transformer, routes first image input, and SSRF-validates inputs.
+            payload = self.prepare_payload(step)
 
-            if "seconds" in step.params:
-                seconds = int(step.params["seconds"])
-                if seconds not in _VALID_SECONDS:
-                    raise ProviderError(
-                        f"Invalid seconds={seconds}. Must be one of {_VALID_SECONDS}",
-                        error_code=ProviderErrorCode.INVALID_INPUT,
-                    )
-                params["seconds"] = seconds
-            if "size" in step.params:
-                size = step.params["size"]
-                if size not in _VALID_SIZES:
-                    raise ProviderError(
-                        f"Invalid size={size}. Must be one of {_VALID_SIZES}",
-                        error_code=ProviderErrorCode.INVALID_INPUT,
-                    )
-                params["size"] = size
-
-            # Image-to-video: pass first input image URL if available
-            if step.inputs:
-                for inp in step.inputs:
-                    validate_chain_input_url(inp.url)
-                    if inp.media_type and inp.media_type.startswith("image/"):
-                        params["image"] = inp.url
-                        break
+            params: dict = {
+                "model": step.model,
+                "prompt": payload.get("prompt", step.prompt or ""),
+            }
+            for key in ("seconds", "size", "image"):
+                if key in payload:
+                    params[key] = payload[key]
 
             response = client.videos.create(**params)
             return response.id
@@ -220,13 +274,8 @@ class SoraProvider(BaseProvider):
             asset.video = VideoMetadata(has_audio=False, codec="h264")
             step.assets.append(asset)
 
-            # Cost attribution intentionally omitted — Sora pricing varies by
-            # model, resolution, and duration (per-second billing). A flat
-            # per-video dict misreports cost by 10x+ on longer clips. A correct
-            # formula requires (model, size, seconds) inputs; wire this up
-            # before re-enabling step.cost_usd. See tech-debt tracker.
-            _ = _SORA_PRICING  # keep reference so the dict isn't flagged as unused
-
+            # Pricing intentionally disabled on the spec — see _sora_spec().
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

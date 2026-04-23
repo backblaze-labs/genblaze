@@ -3,6 +3,9 @@
 Auth: Set GMI_API_KEY env var or pass api_key= to the constructor.
 
 Docs: https://docs.gmicloud.ai
+
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+built in ``genblaze_gmicloud.models.audio``.
 """
 
 from __future__ import annotations
@@ -18,30 +21,13 @@ from genblaze_core.models.step import Step
 from genblaze_core.providers.base import (
     ProviderCapabilities,
     validate_asset_url,
-    validate_chain_input_url,
 )
+from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._base import GMICloudBase
 from ._errors import map_gmicloud_error
-
-# Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
-# Unknown models pass through to the API; cost_usd will be None.
-_AUDIO_PRICING: dict[str, float] = {
-    "ElevenLabs-TTS-v3": 0.10,
-    "MiniMax-TTS-Speech-2.6-Turbo": 0.06,
-    "MiniMax-Voice-Clone-Speech-2.6-HD": 0.10,
-    "Inworld-TTS-1.5-Mini": 0.005,
-    "MiniMax-Music-2.5": 0.15,
-}
-
-# Music models produce stereo output; TTS models produce mono
-_MUSIC_MODELS: set[str] = {"MiniMax-Music-2.5"}
-
-# Voice cloning models accept a reference audio sample via step.inputs[0].
-# Payload field name follows MiniMax's native voice-clone convention; confirm
-# against the GMICloud request-queue schema on first live integration.
-_VOICE_CLONE_MODELS: set[str] = {"MiniMax-Voice-Clone-Speech-2.6-HD"}
+from .models.audio import build_audio_registry
 
 
 class GMICloudAudioProvider(GMICloudBase):
@@ -54,47 +40,28 @@ class GMICloudAudioProvider(GMICloudBase):
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+        models: Optional custom ``ModelRegistry``.
     """
 
     name = "gmicloud-audio"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return build_audio_registry()
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             supported_modalities=[Modality.AUDIO],
             supported_inputs=["text", "audio"],
             accepts_chain_input=True,
-            models=sorted(_AUDIO_PRICING),
+            models=self._models.known(),
             output_formats=["audio/mpeg", "audio/wav"],
         )
 
-    def normalize_params(self, params: dict, modality: Any = None) -> dict:
-        p = dict(params)
-        if "voice" in p and "voice_id" not in p:
-            p["voice_id"] = p.pop("voice")
-        return p
-
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         try:
-            payload: dict = {}
-            if step.prompt:
-                payload["prompt"] = step.prompt
-
-            for key in ("voice_id", "language", "duration", "output_format"):
-                if key in step.params:
-                    payload[key] = step.params[key]
-
-            if step.seed is not None:
-                payload["seed"] = step.seed
-
-            # Always SSRF-validate any chain input; forward to payload only for
-            # voice-clone models that actually consume a reference audio sample.
-            if step.inputs:
-                validate_chain_input_url(step.inputs[0].url)
-                if step.model in _VOICE_CLONE_MODELS:
-                    payload["reference_audio"] = step.inputs[0].url
-
+            payload = self.prepare_payload(step)
             return self._submit_request(step.model, payload)
-
         except ProviderError:
             raise
         except Exception as exc:
@@ -129,16 +96,14 @@ class GMICloudAudioProvider(GMICloudBase):
                 mime = "audio/mpeg"
 
             asset = Asset(url=str(audio_url), media_type=mime)
+            # Music models produce stereo; TTS mono. Spec's extras flags which.
+            is_music = bool(self._models.get(step.model).extras.get("is_music"))
             asset.audio = AudioMetadata(
-                channels=2 if step.model in _MUSIC_MODELS else 1,
+                channels=2 if is_music else 1,
                 codec="mp3",
             )
             step.assets.append(asset)
-
-            per_gen = _AUDIO_PRICING.get(step.model)
-            if per_gen is not None:
-                step.cost_usd = per_gen * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

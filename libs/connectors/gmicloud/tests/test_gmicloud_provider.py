@@ -311,23 +311,42 @@ def test_error_mapping_status_code_priority():
     assert result == ProviderErrorCode.RATE_LIMIT
 
 
-# --- Normalize params ---
+# --- Parameter pipeline (spec-driven via prepare_payload) ---
 
 
-def test_normalize_params_duration(provider):
-    assert provider.normalize_params({"duration": "10"})["duration"] == 10
+def test_duration_coerced_to_int(provider):
+    step = Step(
+        provider="gmicloud",
+        model="Kling-Text2Video-V1.6-Pro",
+        prompt="t",
+        params={"duration": "10"},
+    )
+    assert provider.prepare_payload(step)["duration"] == 10
 
 
-def test_normalize_params_guidance_scale(provider):
-    result = provider.normalize_params({"guidance_scale": 0.7})
+def test_guidance_scale_aliased_to_cfg_scale(provider):
+    step = Step(
+        provider="gmicloud",
+        model="Kling-Text2Video-V1.6-Pro",
+        prompt="t",
+        params={"guidance_scale": 0.7},
+    )
+    result = provider.prepare_payload(step)
     assert result["cfg_scale"] == 0.7
     assert "guidance_scale" not in result
 
 
-def test_normalize_params_idempotent(provider):
-    params = {"duration": 10, "guidance_scale": 0.7}
-    once = provider.normalize_params(params)
-    assert provider.normalize_params(once) == once
+def test_prepare_payload_is_idempotent_for_normalized_params(provider):
+    step = Step(
+        provider="gmicloud",
+        model="Kling-Text2Video-V1.6-Pro",
+        prompt="t",
+        params={"duration": 10, "cfg_scale": 0.7},
+    )
+    once = provider.prepare_payload(step)
+    # Re-running against already-normalized params produces the same dict.
+    step2 = Step(provider="gmicloud", model=step.model, prompt="t", params=once)
+    assert provider.prepare_payload(step2) == once
 
 
 # --- Passthrough ---

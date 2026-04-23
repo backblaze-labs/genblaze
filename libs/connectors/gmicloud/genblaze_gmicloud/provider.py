@@ -3,6 +3,12 @@
 Auth: Set GMI_API_KEY env var or pass api_key= to the constructor.
 
 Docs: https://docs.gmicloud.ai
+
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+built in ``genblaze_gmicloud.models.video``. Users can register new models or
+override pricing via::
+
+    provider = GMICloudVideoProvider(models=my_registry)
 """
 
 from __future__ import annotations
@@ -16,53 +22,16 @@ from genblaze_core.models.step import Step
 from genblaze_core.providers.base import (
     ProviderCapabilities,
     validate_asset_url,
-    validate_chain_input_url,
 )
+from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._base import GMICloudBase
 from ._errors import map_gmicloud_error
-
-# Per-generation pricing by model (USD) — approximate, based on GMICloud tiers.
-# Unknown models pass through to the API; cost_usd will be None.
-#
-# Seedance identifiers are lowercase-hyphenated with date-stamped snapshot
-# suffixes (e.g. ``-250528`` = 2025-05-28, ``-260128`` = 2026-01-28),
-# matching ByteDance's naming as deployed on GMICloud. Other models follow
-# their respective vendor conventions.
-_VIDEO_PRICING: dict[str, float] = {
-    "seedance-1-0-pro-250528": 0.30,
-    "seedance-1-0-pro-fast": 0.022,
-    "Veo3": 0.40,
-    "Veo3-Fast": 0.15,
-    "Sora-2-Pro": 0.50,
-    "Kling-Image2Video-V2.1-Master": 0.28,
-    "Kling-Text2Video-V2.1-Master": 0.28,
-    "Kling-Image2Video-V1.6-Pro": 0.098,
-    "Kling-Text2Video-V1.6-Pro": 0.098,
-    "Kling-Image2Video-V1.5-Pro": 0.098,
-    "Kling-Text2Video-V1.5-Pro": 0.098,
-    "Minimax-Hailuo-2.3-Fast": 0.032,
-    "PixVerse-v5.6": 0.03,
-    "Wan-2.6-T2V": 0.15,
-    "Wan-2.6-I2V": 0.15,
-    "Luma-Ray-2": 0.20,
-    "Vidu-Q1": 0.10,
-}
-
-# Per-second video pricing (USD/sec) — for models that bill by output length
-# instead of per-generation. Cost = rate × duration × num_assets. The
-# provider reads ``duration`` from ``step.params`` (the same field that
-# gets serialized into the API payload); falls back to ``cost_usd = None``
-# if duration isn't provided, since we can't estimate without it.
-_VIDEO_PRICING_PER_SECOND: dict[str, float] = {
-    "seedance-2-0-260128": 0.052,  # $0.052/sec — GMICloud published pricing
-}
+from .models.video import build_video_registry
 
 # Models that produce audio alongside video (multi-track output).
-# Seedance 2.0 has opt-in audio via ``generate_audio`` param; we can't
-# know statically, so it's handled dynamically in fetch_output.
-_HAS_AUDIO_MODELS: set[str] = {"Veo3", "Veo3-Fast"}
+_HAS_AUDIO_MODELS: frozenset[str] = frozenset({"Veo3", "Veo3-Fast"})
 
 
 class GMICloudVideoProvider(GMICloudBase):
@@ -76,51 +45,28 @@ class GMICloudVideoProvider(GMICloudBase):
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "gmicloud"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return build_video_registry()
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             supported_modalities=[Modality.VIDEO],
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
-            # Union of flat-rate and per-second priced models.
-            models=sorted({*_VIDEO_PRICING, *_VIDEO_PRICING_PER_SECOND}),
+            models=self._models.known(),
             output_formats=["video/mp4"],
         )
 
-    def normalize_params(self, params: dict, modality: Any = None) -> dict:
-        p = dict(params)
-        if "duration" in p:
-            p["duration"] = int(p["duration"])
-        if "cfg_scale" not in p and "guidance_scale" in p:
-            p["cfg_scale"] = p.pop("guidance_scale")
-        return p
-
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         try:
-            payload: dict = {}
-            if step.prompt:
-                payload["prompt"] = step.prompt
-
-            for key in ("duration", "cfg_scale", "aspect_ratio"):
-                if key in step.params:
-                    payload[key] = step.params[key]
-
-            # Pipeline hoists negative_prompt and seed out of params onto the
-            # top-level Step fields, so read them there (params won't have them).
-            if step.negative_prompt:
-                payload["negative_prompt"] = step.negative_prompt
-            if step.seed is not None:
-                payload["seed"] = step.seed
-
-            if step.inputs and len(step.inputs) > 0:
-                validate_chain_input_url(step.inputs[0].url)
-                payload["image"] = step.inputs[0].url
-
+            payload = self.prepare_payload(step)
             return self._submit_request(step.model, payload)
-
         except ProviderError:
             raise
         except Exception as exc:
@@ -160,19 +106,7 @@ class GMICloudVideoProvider(GMICloudBase):
                 asset.audio = AudioMetadata(codec="aac")
 
             step.assets.append(asset)
-
-            per_sec = _VIDEO_PRICING_PER_SECOND.get(step.model)
-            if per_sec is not None:
-                # Length-based pricing — duration comes from the request
-                # params (same field the submit() path sends to the API).
-                duration = step.params.get("duration") if step.params else None
-                if duration:
-                    step.cost_usd = per_sec * float(duration) * len(step.assets)
-            else:
-                per_gen = _VIDEO_PRICING.get(step.model)
-                if per_gen is not None:
-                    step.cost_usd = per_gen * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

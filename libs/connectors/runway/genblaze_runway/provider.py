@@ -3,6 +3,12 @@
 Uses the runwayml Python SDK with async task-based workflow:
   client.image_to_video.create() → poll task → get output URL
 
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+returned from ``create_registry()``. Users can override pricing or register
+new models via::
+
+    provider = RunwayProvider(models=my_registry)
+
 Docs: https://docs.runwayml.com/
 """
 
@@ -14,26 +20,78 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import (
+from genblaze_core.providers import (
     BaseProvider,
+    ModelRegistry,
+    ModelSpec,
     ProviderCapabilities,
+    by_model_and_param,
+    route_images,
     validate_asset_url,
-    validate_chain_input_url,
 )
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_runway_error
 
-_VALID_DURATIONS = {5, 10}
-_VALID_RATIOS = {"16:9", "9:16"}
+_VALID_DURATIONS = frozenset({5, 10})
+_VALID_RATIOS = frozenset({"16:9", "9:16"})
 
-# Per-generation pricing by (model, duration) in USD
-_PRICING: dict[tuple[str, int], float] = {
+# Per-generation pricing keyed by (model, duration) in USD.
+_RUNWAY_PRICING: dict[tuple[str, Any], float] = {
     ("gen4_turbo", 5): 0.50,
     ("gen4_turbo", 10): 1.00,
     ("gen3a_turbo", 5): 0.25,
     ("gen3a_turbo", 10): 0.50,
 }
+
+
+def _check_ratio(params: dict[str, Any]) -> None:
+    """Validate the (post-alias) Runway-native ``ratio`` value."""
+    ratio = params.get("ratio")
+    if ratio is not None and ratio not in _VALID_RATIOS:
+        raise ProviderError(
+            f"Invalid ratio={ratio!r}. Must be one of {set(_VALID_RATIOS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+def _check_duration(params: dict[str, Any]) -> None:
+    """Validate ``duration`` with Runway-specific error wording."""
+    if "duration" not in params:
+        return
+    try:
+        dur = int(params["duration"])
+    except (TypeError, ValueError) as exc:
+        raise ProviderError(
+            f"Invalid duration={params['duration']!r}. Must be one of {set(_VALID_DURATIONS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        ) from exc
+    if dur not in _VALID_DURATIONS:
+        raise ProviderError(
+            f"Invalid duration={dur}. Must be one of {set(_VALID_DURATIONS)}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+    params["duration"] = dur
+
+
+def _runway_spec(model_id: str) -> ModelSpec:
+    """Build the per-model spec.
+
+    All Runway models share the same shape: ``aspect_ratio`` aliases to
+    ``ratio``, ``duration`` must be 5 or 10, the first chained image becomes
+    ``prompt_image``, and pricing is keyed on ``(model, duration)``.
+    """
+    # Validation lives in ``param_constraints`` rather than ``param_schemas``
+    # so the connector can keep its bespoke "Invalid duration=…" wording the
+    # public tests assert on.
+    return ModelSpec(
+        model_id=model_id,
+        modality=Modality.VIDEO,
+        pricing=by_model_and_param("duration", _RUNWAY_PRICING),
+        param_aliases={"aspect_ratio": "ratio"},
+        param_constraints=(_check_duration, _check_ratio),
+        input_mapping=route_images(slots=("prompt_image",)),
+    )
 
 
 class RunwayProvider(BaseProvider):
@@ -46,9 +104,15 @@ class RunwayProvider(BaseProvider):
     Args:
         api_secret: Runway API secret. Falls back to RUNWAYML_API_SECRET env var.
         poll_interval: Seconds between task status polls (default 5).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "runway"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        defaults = {mid: _runway_spec(mid) for mid in ("gen4_turbo", "gen3a_turbo")}
+        return ModelRegistry(defaults=defaults)
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Runway: video generation from text and/or image inputs."""
@@ -57,20 +121,29 @@ class RunwayProvider(BaseProvider):
             supported_inputs=["text", "image"],
             accepts_chain_input=True,
             max_duration=10.0,
-            models=["gen4_turbo", "gen3a_turbo"],
+            models=self._models.known(),
             output_formats=["video/mp4"],
         )
 
-    def __init__(self, api_secret: str | None = None, poll_interval: float = 5.0):
-        super().__init__()
+    def __init__(
+        self,
+        api_secret: str | None = None,
+        poll_interval: float = 5.0,
+        *,
+        models: ModelRegistry | None = None,
+    ):
+        super().__init__(models=models)
         self.poll_interval = poll_interval
         self._api_secret = api_secret
         self._client: Any = None
 
     def normalize_params(self, params: dict, modality: Any = None) -> dict:
-        """Map standard params to Runway-native names."""
+        """Map standard params to Runway-native names.
+
+        Kept for backward compatibility with callers that invoke it directly;
+        ``prepare_payload`` also performs the alias via the model spec.
+        """
         p = dict(params)
-        # aspect_ratio → ratio (Runway's native key)
         if "aspect_ratio" in p and "ratio" not in p:
             p["ratio"] = p.pop("aspect_ratio")
         return p
@@ -93,42 +166,21 @@ class RunwayProvider(BaseProvider):
         """Create a video generation task."""
         client = self._get_client()
         try:
-            params: dict = {
+            payload = self.prepare_payload(step)
+
+            # Translate canonical 'prompt' to Runway's 'prompt_text'; only the
+            # SDK-recognized keys are forwarded to image_to_video.create.
+            request: dict = {
                 "model": step.model,
-                "prompt_text": step.prompt or "",
+                "prompt_text": payload.get("prompt", step.prompt or ""),
             }
+            for key in ("duration", "ratio", "seed", "watermark", "prompt_image"):
+                if key in payload:
+                    request[key] = payload[key]
+            if "watermark" in request:
+                request["watermark"] = bool(request["watermark"])
 
-            if "duration" in step.params:
-                dur = int(step.params["duration"])
-                if dur not in _VALID_DURATIONS:
-                    raise ProviderError(
-                        f"Invalid duration={dur}. Must be one of {_VALID_DURATIONS}",
-                        error_code=ProviderErrorCode.INVALID_INPUT,
-                    )
-                params["duration"] = dur
-
-            # normalize_params already mapped aspect_ratio → ratio
-            ratio = step.params.get("ratio")
-            if ratio:
-                if ratio not in _VALID_RATIOS:
-                    raise ProviderError(
-                        f"Invalid ratio={ratio!r}. Must be one of {_VALID_RATIOS}",
-                        error_code=ProviderErrorCode.INVALID_INPUT,
-                    )
-                params["ratio"] = ratio
-
-            if step.seed is not None:
-                params["seed"] = step.seed
-
-            if "watermark" in step.params:
-                params["watermark"] = bool(step.params["watermark"])
-
-            # Image-to-video: pass image URL as prompt_image
-            if step.inputs and len(step.inputs) > 0:
-                validate_chain_input_url(step.inputs[0].url)
-                params["prompt_image"] = step.inputs[0].url
-
-            task = client.image_to_video.create(**params)
+            task = client.image_to_video.create(**request)
             return task.id
         except ProviderError:
             raise
@@ -187,15 +239,17 @@ class RunwayProvider(BaseProvider):
             else:
                 raise ProviderError("Runway task completed but no output URL found")
 
+            # Pricing is keyed on (model, duration); default duration is 5s
+            # when the user didn't specify one. Mutate step.params so the
+            # registry strategy sees the effective value, matching the legacy
+            # behavior where 5s was assumed for cost.
             duration = int(step.params.get("duration", 5))
+            step.params.setdefault("duration", duration)
             for a in step.assets:
                 a.video = VideoMetadata(has_audio=False)
                 a.duration = a.duration or float(duration)
 
-            per_gen = _PRICING.get((step.model, duration))
-            if per_gen is not None:
-                step.cost_usd = per_gen * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise

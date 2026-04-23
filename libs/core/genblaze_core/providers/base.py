@@ -20,6 +20,7 @@ from genblaze_core.models.enums import (
 )
 from genblaze_core.models.step import Step
 from genblaze_core.observability.span import StepSpan
+from genblaze_core.providers.model_registry import EMPTY_REGISTRY, ModelRegistry, compute_cost
 from genblaze_core.providers.progress import ProgressEvent
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
@@ -145,16 +146,54 @@ class BaseProvider(Runnable[Step, Step]):
     1. submit — send the generation request
     2. poll — check for completion
     3. fetch_output — retrieve results and attach assets
+
+    Subclasses may override ``create_registry()`` to declare per-model specs
+    (pricing, parameter aliases, input routing, validation). The registry is
+    consulted in two places:
+
+    - ``prepare_payload(step)`` — run the full parameter pipeline (aliases →
+      transformer → chain inputs → coercers → defaults → schemas → required →
+      constraints → allowlist) before submit.
+    - After ``fetch_output()`` — if a spec defines ``pricing`` and
+      ``step.cost_usd`` is not already set, compute it automatically.
+
+    Users customize the registry via the ``models=`` init kwarg or by mutating
+    the class-level default returned from ``models_default()``.
     """
 
     name: str = "base"
     poll_interval: float = DEFAULT_POLL_INTERVAL
 
-    def __init__(self) -> None:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Ensure each subclass has its own cache slot — avoids inheriting a
+        # sibling class's registry.
+        super().__init_subclass__(**kwargs)
+        cls._models_cache = None  # type: ignore[attr-defined]
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        """Return the package-default ModelRegistry for this provider.
+
+        Override in subclasses to declare specs. Default is the empty,
+        permissive registry — matches historical "pass everything, no pricing"
+        behavior.
+        """
+        return EMPTY_REGISTRY
+
+    @classmethod
+    def models_default(cls) -> ModelRegistry:
+        """Class-level registry, built lazily once per subclass."""
+        # Check __dict__ so we don't read a parent class's cache
+        if cls.__dict__.get("_models_cache") is None:
+            cls._models_cache = cls.create_registry()  # type: ignore[attr-defined]
+        return cls._models_cache  # type: ignore[attr-defined,return-value]
+
+    def __init__(self, *, models: ModelRegistry | None = None) -> None:
         # Poll result cache — avoids redundant API calls between poll() and fetch_output()
         self._poll_cache: dict[str, Any] = {}
         self._poll_cache_times: dict[str, float] = {}
         self._poll_cache_max_age: float = 3600.0  # 1 hour TTL
+        self._models: ModelRegistry = models or type(self).models_default()
 
     def _cache_poll_result(self, prediction_id: Any, result: Any) -> None:
         """Cache a poll result for reuse in fetch_output()."""
@@ -178,6 +217,11 @@ class BaseProvider(Runnable[Step, Step]):
             self._poll_cache.pop(k, None)
             self._poll_cache_times.pop(k, None)
 
+    @property
+    def models(self) -> ModelRegistry:
+        """The per-instance ``ModelRegistry`` (class default unless overridden)."""
+        return self._models
+
     def get_capabilities(self) -> ProviderCapabilities | None:
         """Return provider capabilities for discovery and validation.
 
@@ -194,8 +238,47 @@ class BaseProvider(Runnable[Step, Step]):
         Override in subclasses to map standard params (duration, resolution,
         aspect_ratio) to provider-native names. Default returns params unchanged.
         Native params always take precedence over standard ones.
+
+        Runs *before* the ``ModelSpec``-driven pipeline in ``prepare_payload``.
         """
         return params
+
+    def prepare_payload(
+        self,
+        step: Step,
+        *,
+        base_params: dict[str, Any] | None = None,
+        validate_inputs: bool = True,
+    ) -> dict[str, Any]:
+        """Run the registered ``ModelSpec`` pipeline for ``step.model``.
+
+        Returns the dict to forward to the provider SDK. SSRF-validates every
+        ``step.inputs`` URL before the spec's ``input_mapping`` reads them,
+        unless ``validate_inputs=False`` (connectors that do their own
+        validation can opt out).
+        """
+        if validate_inputs:
+            for asset in step.inputs:
+                validate_chain_input_url(asset.url)
+        if base_params is None:
+            base_params = {}
+            if step.prompt is not None:
+                base_params["prompt"] = step.prompt
+            if step.negative_prompt is not None:
+                base_params["negative_prompt"] = step.negative_prompt
+            if step.seed is not None:
+                base_params["seed"] = step.seed
+            base_params.update(step.params)
+        base_params = self.normalize_params(base_params, step.modality)
+        return self._models.prepare_payload(step, base_params=base_params)
+
+    def _apply_registry_pricing(self, step: Step) -> None:
+        """If spec pricing is defined and cost not already set, compute and attach."""
+        if step.cost_usd is not None:
+            return
+        cost = compute_cost(self._models, step)
+        if cost is not None:
+            step.cost_usd = cost
 
     def _fire_progress(
         self,
@@ -283,6 +366,7 @@ class BaseProvider(Runnable[Step, Step]):
             time.sleep(interval)
 
         step = self.fetch_output(prediction_id, step)
+        self._apply_registry_pricing(step)
         # Only mark succeeded if fetch_output didn't signal failure
         if step.status != StepStatus.FAILED:
             step.status = StepStatus.SUCCEEDED
@@ -359,6 +443,7 @@ class BaseProvider(Runnable[Step, Step]):
                 time.sleep(interval)
 
             step = self.fetch_output(prediction_id, step)
+            self._apply_registry_pricing(step)
             return self._finalize_resume_step(step, config, start_time)
         except Exception as exc:
             return self._handle_resume_error(step, exc, config, start_time)
@@ -393,6 +478,7 @@ class BaseProvider(Runnable[Step, Step]):
                 await asyncio.sleep(interval)
 
             step = await asyncio.to_thread(self.fetch_output, prediction_id, step)
+            self._apply_registry_pricing(step)
             return self._finalize_resume_step(step, config, start_time)
         except Exception as exc:
             return self._handle_resume_error(step, exc, config, start_time)
@@ -513,6 +599,7 @@ class BaseProvider(Runnable[Step, Step]):
             await asyncio.sleep(interval)
 
         step = await asyncio.to_thread(self.fetch_output, prediction_id, step)
+        self._apply_registry_pricing(step)
         if step.status != StepStatus.FAILED:
             step.status = StepStatus.SUCCEEDED
             step.completed_at = utc_now()
@@ -610,8 +697,8 @@ class SyncProvider(BaseProvider):
                 return step
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *, models: ModelRegistry | None = None) -> None:
+        super().__init__(models=models)
         # Results keyed by step_id — avoids monkey-patching Pydantic models
         self._sync_results: dict[str, Step] = {}
 

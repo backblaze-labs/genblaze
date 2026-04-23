@@ -2,6 +2,12 @@
 
 Synchronous API: client.models.generate_images() returns images directly.
 
+Models, pricing, and parameter handling are driven by the ``ModelRegistry``
+returned from ``create_registry()``. Users can override pricing or register
+new models via::
+
+    provider = ImagenProvider(models=my_registry)
+
 Docs: https://ai.google.dev/gemini-api/docs/image-generation
 """
 
@@ -17,18 +23,46 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import ProviderCapabilities, SyncProvider
+from genblaze_core.providers import (
+    ModelRegistry,
+    ModelSpec,
+    ProviderCapabilities,
+    SyncProvider,
+    per_unit,
+)
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_google._errors import map_google_error
 
-_VALID_ASPECT_RATIOS = {"1:1", "3:4", "4:3", "9:16", "16:9"}
+_VALID_ASPECT_RATIOS = frozenset({"1:1", "3:4", "4:3", "9:16", "16:9"})
 
-# Per-image pricing by model (USD)
-_IMAGEN_PRICING: dict[str, float] = {
+# Per-image pricing by model (USD). Captured here once; the specs wrap these
+# in ``per_unit`` pricing strategies.
+_IMAGEN_PER_IMAGE_RATES: dict[str, float] = {
     "imagen-3.0-generate-002": 0.04,
     "imagen-3.0-fast-generate-001": 0.02,
 }
+
+
+def _check_aspect_ratio(params: dict[str, Any]) -> None:
+    """Validate aspect_ratio with Imagen-specific error wording."""
+    ar = params.get("aspect_ratio")
+    if ar is not None and ar not in _VALID_ASPECT_RATIOS:
+        raise ProviderError(
+            f"Invalid aspect_ratio={ar!r}. Must be one of {_VALID_ASPECT_RATIOS}",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+def _imagen_spec(model_id: str) -> ModelSpec:
+    """Per-model spec — flat per-image pricing, aspect_ratio validation."""
+    rate = _IMAGEN_PER_IMAGE_RATES.get(model_id)
+    return ModelSpec(
+        model_id=model_id,
+        modality=Modality.IMAGE,
+        pricing=per_unit(rate) if rate is not None else None,
+        param_constraints=(_check_aspect_ratio,),
+    )
 
 
 class ImagenProvider(SyncProvider):
@@ -44,16 +78,22 @@ class ImagenProvider(SyncProvider):
         project: GCP project ID for Vertex AI auth.
         location: GCP region for Vertex AI (default "us-central1").
         output_dir: Directory for output image files (default system temp).
+        models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 
     name = "google-imagen"
+
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        defaults = {mid: _imagen_spec(mid) for mid in _IMAGEN_PER_IMAGE_RATES}
+        return ModelRegistry(defaults=defaults)
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Imagen: image generation from text prompts."""
         return ProviderCapabilities(
             supported_modalities=[Modality.IMAGE],
             supported_inputs=["text"],
-            models=["imagen-3.0-generate-002", "imagen-3.0-fast-generate-001"],
+            models=self._models.known(),
             output_formats=["image/png", "image/jpeg"],
         )
 
@@ -64,8 +104,9 @@ class ImagenProvider(SyncProvider):
         project: str | None = None,
         location: str = "us-central1",
         output_dir: str | Path | None = None,
+        models: ModelRegistry | None = None,
     ):
-        super().__init__()
+        super().__init__(models=models)
         self._api_key = api_key
         self._project = project
         self._location = location
@@ -97,28 +138,28 @@ class ImagenProvider(SyncProvider):
         try:
             from google.genai import types
 
-            config_kwargs: dict = {}
+            # Run the registry pipeline — enforces aspect_ratio constraint with
+            # the legacy error wording before we touch the SDK.
+            payload = self.prepare_payload(step)
 
-            if "number_of_images" in step.params:
-                config_kwargs["number_of_images"] = int(step.params["number_of_images"])
-            if "aspect_ratio" in step.params:
-                ar = step.params["aspect_ratio"]
-                if ar not in _VALID_ASPECT_RATIOS:
-                    raise ProviderError(
-                        f"Invalid aspect_ratio={ar!r}. Must be one of {_VALID_ASPECT_RATIOS}",
-                        error_code=ProviderErrorCode.INVALID_INPUT,
-                    )
-                config_kwargs["aspect_ratio"] = ar
-            if "person_generation" in step.params:
-                config_kwargs["person_generation"] = step.params["person_generation"]
-            if "safety_filter_level" in step.params:
-                config_kwargs["safety_filter_level"] = step.params["safety_filter_level"]
-            if "output_mime_type" in step.params:
-                config_kwargs["output_mime_type"] = step.params["output_mime_type"]
+            config_kwargs: dict = {}
+            if "number_of_images" in payload:
+                config_kwargs["number_of_images"] = int(payload["number_of_images"])
+            if "aspect_ratio" in payload:
+                config_kwargs["aspect_ratio"] = payload["aspect_ratio"]
+            if "person_generation" in payload:
+                config_kwargs["person_generation"] = payload["person_generation"]
+            if "safety_filter_level" in payload:
+                config_kwargs["safety_filter_level"] = payload["safety_filter_level"]
+            if "output_mime_type" in payload:
+                config_kwargs["output_mime_type"] = payload["output_mime_type"]
 
             gen_config = types.GenerateImagesConfig(**config_kwargs) if config_kwargs else None
 
-            kwargs: dict = {"model": step.model, "prompt": step.prompt or ""}
+            kwargs: dict = {
+                "model": step.model,
+                "prompt": payload.get("prompt", step.prompt or ""),
+            }
             if gen_config is not None:
                 kwargs["config"] = gen_config
 
@@ -147,11 +188,7 @@ class ImagenProvider(SyncProvider):
                 file_url = f"file://{quote(str(out_path.resolve()))}"
                 step.assets.append(Asset(url=file_url, media_type=mime_type))
 
-            # Track cost
-            price = _IMAGEN_PRICING.get(step.model)
-            if price is not None:
-                step.cost_usd = price * len(step.assets)
-
+            self._apply_registry_pricing(step)
             return step
         except ProviderError:
             raise
