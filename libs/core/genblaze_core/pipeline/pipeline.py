@@ -28,6 +28,7 @@ from genblaze_core.observability.tracer import LoggingTracer, NoOpTracer, Tracer
 from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
 from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
+from genblaze_core.progress_display import Spinner, should_auto_enable
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
@@ -802,6 +803,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         timeout: float | None = None,
         max_retries: int | None = None,
         on_progress: Any = None,
+        progress: bool | None = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
         _config_override: RunnableConfig | None = None,
@@ -814,6 +816,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             timeout: Per-step timeout in seconds (builds RunnableConfig internally).
             max_retries: Per-step max retries (builds RunnableConfig internally).
             on_progress: Optional callback fired during provider poll loops.
+            progress: Show an interactive terminal spinner. ``None`` (default)
+                auto-enables when stderr is a TTY and ``on_progress`` is unset;
+                ``True`` forces on; ``False`` forces off. User-supplied
+                ``on_progress`` always wins — no spinner is layered on top.
             pipeline_timeout: End-to-end timeout in seconds for the entire pipeline.
             on_step_complete: Optional callback fired after each step completes.
                 Receives a StepCompleteEvent.
@@ -841,6 +847,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             config = self._config
 
         run_id = new_id()
+        spinner: Spinner | None = None
+        if should_auto_enable(on_progress, progress):
+            spinner = Spinner()
+            spinner.start()
+            on_progress = spinner
         config = self._install_progress_tracer(config, on_progress, run_id)
 
         started_at_ts = time.time()
@@ -875,7 +886,17 @@ class Pipeline(Runnable[None, PipelineResult]):
                 )
                 ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                 self._emit_step_start(ctx, step, ps)
+                if spinner is not None:
+                    spinner.step_starting(
+                        ps.provider.name,
+                        ps.model,
+                        prompt=step.prompt,
+                        step_index=i - 1,
+                        total=total_steps,
+                    )
                 result = self._execute_step(ps, step, config, ctx)
+                if spinner is not None:
+                    spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                 completed_steps.append(result)
 
                 # Give the sink a chance to eagerly start asset transfers
@@ -918,6 +939,8 @@ class Pipeline(Runnable[None, PipelineResult]):
                 pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
                 run_id,
             )
+            if spinner is not None:
+                spinner.stop()
 
     async def arun(
         self,
@@ -928,6 +951,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         max_retries: int | None = None,
         max_concurrency: int | None = None,
         on_progress: Any = None,
+        progress: bool | None = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
         _config_override: RunnableConfig | None = None,
@@ -943,6 +967,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             timeout: Per-step timeout in seconds (builds RunnableConfig internally).
             max_retries: Per-step max retries (builds RunnableConfig internally).
             on_progress: Optional callback fired during provider poll loops.
+            progress: Show an interactive terminal spinner during sequential
+                execution. ``None`` (default) auto-enables when stderr is a
+                TTY and ``on_progress`` is unset. The spinner is skipped in
+                concurrent mode (chain=False, no input_from) since multiple
+                steps run in parallel and can't be represented on one line.
             pipeline_timeout: End-to-end timeout in seconds for the entire pipeline.
             on_step_complete: Optional callback fired after each step completes.
                 Receives a StepCompleteEvent.
@@ -977,6 +1006,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             config = self._config
 
         run_id = new_id()
+        # input_from requires sequential execution (needs prior step results)
+        has_input_from = any(ps.input_from is not None for ps in self._steps)
+        sequential = self._chain or has_input_from
+        spinner: Spinner | None = None
+        if sequential and should_auto_enable(on_progress, progress):
+            spinner = Spinner()
+            spinner.start()
+            on_progress = spinner
         config = self._install_progress_tracer(config, on_progress, run_id)
 
         started_at_ts = time.time()
@@ -988,13 +1025,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             total_steps,
         )
         self._emit_run_start(run_id, total_steps)
-
-        # input_from requires sequential execution (needs prior step results)
-        has_input_from = any(ps.input_from is not None for ps in self._steps)
         completed_steps: list[Step] = []
         pipeline_result: PipelineResult | None = None
         try:
-            if self._chain or has_input_from:
+            if sequential:
                 # Sequential: each step's outputs feed the next step's inputs
                 prev_assets: list[Asset] = []
                 for i, ps in enumerate(self._steps, 1):
@@ -1018,7 +1052,17 @@ class Pipeline(Runnable[None, PipelineResult]):
                     )
                     ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                     self._emit_step_start(ctx, step, ps)
+                    if spinner is not None:
+                        spinner.step_starting(
+                            ps.provider.name,
+                            ps.model,
+                            prompt=step.prompt,
+                            step_index=i - 1,
+                            total=total_steps,
+                        )
                     result = await self._execute_step_async(ps, step, config, ctx)
+                    if spinner is not None:
+                        spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                     completed_steps.append(result)
 
                     # Eager-transfer hook (sinks opt in).
@@ -1143,6 +1187,8 @@ class Pipeline(Runnable[None, PipelineResult]):
                 pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
                 run_id,
             )
+            if spinner is not None:
+                spinner.stop()
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
         """Create a FAILED step from an unhandled exception."""

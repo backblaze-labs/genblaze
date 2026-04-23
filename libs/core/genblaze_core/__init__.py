@@ -28,6 +28,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "FFmpegCompositor": ("genblaze_core.providers.compositor", "FFmpegCompositor"),
     "FFmpegTransform": ("genblaze_core.providers.transform", "FFmpegTransform"),
     "ProgressEvent": ("genblaze_core.providers.progress", "ProgressEvent"),
+    "Spinner": ("genblaze_core.progress_display", "Spinner"),
     # observability
     "StreamEvent": ("genblaze_core.observability.events", "StreamEvent"),
     "Tracer": ("genblaze_core.observability.tracer", "Tracer"),

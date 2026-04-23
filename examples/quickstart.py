@@ -24,14 +24,13 @@ it explicitly to skip the redirect round-trip.
 For a simpler demo without any API keys, see quickstart_local.py.
 """
 
-import logging
-
 from genblaze_core import KeyStrategy, Modality, ObjectStorageSink, Pipeline
 from genblaze_gmicloud import GMICloudVideoProvider
 from genblaze_s3 import S3StorageBackend
 
-# Surface genblaze progress events (uploads, API polling, etc.) while running.
-logging.getLogger("genblaze").setLevel(logging.DEBUG)
+# Progress is shown automatically by Pipeline.run() when stderr is a TTY —
+# a compact spinner with provider:model and elapsed time. Opt out with
+# ``.run(progress=False)``, or pass your own ``on_progress=`` callback.
 
 
 def main() -> None:
