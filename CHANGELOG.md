@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-23
+
+### Changed
+- `genblaze-s3`: dependency pin widened to `genblaze-core>=0.1.0,<0.3` so the
+  S3 backend is installable alongside core 0.2.x (ModelRegistry release).
+  No code changes; s3 is compatible with both 0.1.x and 0.2.x core.
+
 ## [0.2.0] - 2026-04-23
 
 ### Added
