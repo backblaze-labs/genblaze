@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-23
+
+### Added
+- `genblaze-core`: `ModelRegistry` + `ModelSpec` — declarative, user-extensible
+  per-model configuration across every provider connector. New public surface
+  at `genblaze_core.providers`: `ModelSpec`, `ModelRegistry`, `PricingContext`,
+  `PricingStrategy`, pricing helpers (`per_unit`, `per_input_chars`,
+  `per_output_second`, `per_response_metric`, `tiered`, `bucketed_by_duration`,
+  `by_param`, `by_model_and_param`, `first_match`), input routers
+  (`route_images`, `route_audio`, `route_by_media_type`, `route_keyframes`,
+  `chain_routers`), constraints (`requires_together`, `mutually_exclusive`,
+  `required_one_of`, `implies`), and param schemas (`IntSchema`, `EnumSchema`,
+  `StringSchema`, `BoolSchema`, `FloatSchema`, `ArraySchema`).
+- `genblaze-core`: `BaseProvider.create_registry()`, `models_default()`,
+  `prepare_payload(step)`, and `models=` ctor kwarg. Registry pricing is
+  applied automatically after `fetch_output()` when `step.cost_usd` is unset.
+- All 12 provider connectors (`gmicloud` video/image/audio, `openai`
+  dalle/tts/sora, `google` imagen/veo, `elevenlabs` tts/sfx, `replicate`,
+  `runway`, `luma`, `stability-audio`, `lmnt`, `decart` image/video) migrated
+  to `ModelRegistry`. Inline `_PRICING` / `_MODELS` / `forward_keys` dicts
+  removed; data now lives in spec-building functions.
+- Docs: `docs/features/model-registry.md`, README quickstart for custom
+  pricing/models, runnable `examples/custom_model_registry.py` (no API keys
+  needed).
+
 ### Fixed
 - `genblaze-s3`: credentials preserved across region auto-detection. Previously
   `_reconfigure_for_region` tried to recover credentials from
