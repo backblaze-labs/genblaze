@@ -373,12 +373,19 @@ genblaze index manifest.json -o ./  # Index into Parquet
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full system layout and data flows.
 
 ```
-libs/spec/              # Language-neutral JSON Schemas (v1/)
+libs/spec/              # Language-neutral contract: JSON Schemas + generated TS types
 libs/core/              # genblaze-core Python SDK
 libs/connectors/        # Provider adapters (openai, google, runway, luma, ...)
 cli/                    # CLI tool
 examples/               # Usage examples
 ```
+
+### Consuming from TypeScript
+
+Manifests are typed for TS consumers via `libs/spec/ts/genblaze.d.ts` —
+generated from the JSON Schemas so the types track the Python models
+exactly (`run.run_id`, `step.step_id`, `asset.url` as the durable
+handle — no hand-rolled drift). See [`libs/spec/README.md`](libs/spec/README.md).
 
 ### Key concepts
 

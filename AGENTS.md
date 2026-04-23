@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-16 -->
+<!-- last_verified: 2026-04-23 -->
 # Agents
 
 ## Repo Purpose
@@ -10,7 +10,7 @@ Orchestration framework for generative media pipelines with manifest-based prove
 - `libs/core/` — Core SDK; no external API dependencies
 - `libs/connectors/replicate/` — Replicate-specific; depends on core
 - `cli/` — CLI commands; depends on core
-- `libs/spec/` — Language-neutral JSON schemas; no Python dependencies
+- `libs/spec/` — Language-neutral wire contract: JSON Schemas + generated TypeScript types (`ts/genblaze.d.ts`). Schemas are authoritative; any Pydantic model change must regenerate types via `make ts-types` and pass `test_spec_conformance.py`. No Python dependencies.
 - Providers never store API tokens in manifests
 - See [ARCHITECTURE.md](ARCHITECTURE.md) for full detail
 

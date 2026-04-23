@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-16 -->
+<!-- last_verified: 2026-04-23 -->
 # Dev Workflows
 
 ## Setup
@@ -15,6 +15,7 @@
 - [ ] Create feature doc in `docs/features/<feature>.md`
 - [ ] Update `ARCHITECTURE.md` if system layout changed
 - [ ] Update `docs/app-workflows.md` if user journeys changed
+- [ ] If a Pydantic wire model changed: update `libs/spec/schemas/manifest/v1/` and run `make ts-types`
 - [ ] Run `make test` and `make lint`
 - [ ] Move plan to `docs/exec-plans/completed/`
 

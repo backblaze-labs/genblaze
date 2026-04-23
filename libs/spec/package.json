@@ -1,0 +1,33 @@
+{
+  "name": "@genblaze/spec",
+  "version": "0.2.0",
+  "description": "TypeScript types and JSON Schemas for genblaze manifests",
+  "types": "ts/genblaze.d.ts",
+  "files": [
+    "ts/genblaze.d.ts",
+    "schemas/**/*.json",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/backblaze-labs/genblaze.git",
+    "directory": "libs/spec"
+  },
+  "homepage": "https://github.com/backblaze-labs/genblaze/tree/main/libs/spec#readme",
+  "bugs": {
+    "url": "https://github.com/backblaze-labs/genblaze/issues"
+  },
+  "keywords": [
+    "genblaze",
+    "ai",
+    "media",
+    "manifest",
+    "types",
+    "typescript",
+    "json-schema"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

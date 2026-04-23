@@ -41,7 +41,12 @@ make lint       # Ruff linter + format check
 make fmt        # Auto-format code
 make typecheck  # mypy type checking
 make coverage   # Tests with coverage report (70% minimum)
+make ts-types   # Regenerate libs/spec/ts/genblaze.d.ts from JSON Schemas
 ```
+
+If you change a Pydantic model in `libs/core/genblaze_core/models/`,
+update the matching schema in `libs/spec/schemas/manifest/v1/` and run
+`make ts-types`. CI's `ts-types` job will fail the PR otherwise.
 
 ## Pull request process
 
