@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `genblaze-core`: `ModelSpec.deprecated_aliases` — old model ids keep resolving
   but emit a `DeprecationWarning` pointing to the canonical slug. Drop the
   alias after one minor version.
+- `genblaze-core`: `ModelRegistry.resolve_canonical(model_id)` — returns the
+  canonical slug the upstream API expects (or passes caller input through when
+  only the fallback spec matches). Use in connectors with case-sensitive
+  upstream APIs instead of poking at `spec.model_id`.
 - `genblaze-gmicloud`: `extract_media_url()` envelope parser covering both the
   live `outcome.media_urls[0].url` shape and the legacy flat `*_url` keys.
   Image modality also falls back to `outcome.thumbnail_image_url`.

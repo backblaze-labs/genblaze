@@ -134,6 +134,20 @@ class ModelRegistry:
                 return spec
         return self._fallback
 
+    def resolve_canonical(self, model_id: str) -> str:
+        """Return the canonical id the upstream API expects.
+
+        Equivalent to ``get(model_id).model_id`` except the caller-supplied id
+        is passed through verbatim when the lookup only matched the fallback
+        spec. Emits ``DeprecationWarning`` for deprecated aliases (delegated
+        to ``get``). Connectors whose upstream is case-sensitive should call
+        this before putting the slug on the wire.
+        """
+        spec = self.get(model_id)
+        if spec is self._fallback:
+            return model_id
+        return spec.model_id
+
     def known(self) -> list[str]:
         """All registered model IDs (user ∪ defaults), sorted."""
         seen = set(self._defaults) | set(self._user)

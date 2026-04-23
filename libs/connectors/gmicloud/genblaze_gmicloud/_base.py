@@ -121,26 +121,13 @@ class GMICloudBase(BaseProvider):
             self._http_client.close()
             self._http_client = None
 
-    def _resolve_model(self, model: str) -> str:
-        """Resolve caller-supplied id to the canonical API slug.
-
-        Deprecated aliases resolve to the new slug (with a DeprecationWarning
-        emitted inside ``registry.get``). Unknown models pass through as-is so
-        newly-launched models still submit without a registry update.
-        """
-        spec = self._models.get(model)
-        # Fallback specs use "*" as the sentinel id — pass caller input through.
-        if spec.model_id == "*":
-            return model
-        return spec.model_id
-
     def _submit_request(self, model: str, payload: dict) -> SubmitResult:
         """POST a generation request and return a SubmitResult.
 
         ``model`` is the caller-supplied id; it gets resolved to the canonical
         (case-correct) GMICloud slug before being sent on the wire.
         """
-        canonical = self._resolve_model(model)
+        canonical = self._models.resolve_canonical(model)
         client = self._get_http_client()
         resp = client.post("/requests", json={"model": canonical, "payload": payload})
         if resp.status_code >= 400:

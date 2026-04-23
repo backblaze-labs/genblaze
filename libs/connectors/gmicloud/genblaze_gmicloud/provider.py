@@ -97,7 +97,7 @@ class GMICloudVideoProvider(GMICloudBase):
             validate_asset_url(str(video_url))
             asset = Asset(url=str(video_url), media_type="video/mp4")
 
-            has_audio = self._resolve_model(step.model) in _HAS_AUDIO_MODELS
+            has_audio = self._models.resolve_canonical(step.model) in _HAS_AUDIO_MODELS
             asset.video = VideoMetadata(has_audio=has_audio)
             if has_audio:
                 asset.tracks = [

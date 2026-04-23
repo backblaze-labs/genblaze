@@ -365,6 +365,38 @@ class TestModelRegistry:
         dep_warnings = [w for w in captured if issubclass(w.category, DeprecationWarning)]
         assert len(dep_warnings) == 1
 
+    def test_resolve_canonical_known(self):
+        reg = ModelRegistry(
+            defaults={"seedream-5.0-lite": ModelSpec(model_id="seedream-5.0-lite")}
+        )
+        assert reg.resolve_canonical("seedream-5.0-lite") == "seedream-5.0-lite"
+
+    def test_resolve_canonical_deprecated_alias(self):
+        reg = ModelRegistry(
+            defaults={
+                "seedream-5.0-lite": ModelSpec(
+                    model_id="seedream-5.0-lite",
+                    deprecated_aliases=frozenset({"Seedream-5.0-Lite"}),
+                )
+            }
+        )
+        with pytest.warns(DeprecationWarning):
+            assert reg.resolve_canonical("Seedream-5.0-Lite") == "seedream-5.0-lite"
+
+    def test_resolve_canonical_unknown_passes_through(self):
+        """Unknown ids match only the fallback; caller input is returned verbatim."""
+        reg = ModelRegistry(defaults={"known": ModelSpec(model_id="known")})
+        assert reg.resolve_canonical("brand-new-model-v99") == "brand-new-model-v99"
+
+    def test_resolve_canonical_custom_fallback_does_not_substitute(self):
+        """A user-defined fallback with a real model_id must not silently replace
+        the caller's slug on the wire — fallback is identity-checked, not sentinel."""
+        reg = ModelRegistry(
+            defaults={"known": ModelSpec(model_id="known")},
+            fallback=ModelSpec(model_id="my-default"),
+        )
+        assert reg.resolve_canonical("unknown") == "unknown"
+
     def test_has_recognizes_deprecated_alias(self):
         reg = ModelRegistry(
             defaults={
