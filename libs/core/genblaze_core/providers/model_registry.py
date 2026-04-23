@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -50,6 +51,11 @@ class ModelRegistry:
         self._defaults: dict[str, ModelSpec] = dict(defaults or {})
         self._user: dict[str, ModelSpec] = {}
         self._alias_index: dict[str, str] = {}
+        self._deprecated_alias_index: dict[str, str] = {}
+        # Tracks deprecated slugs already warned about — one warning per slug
+        # per registry lifetime, regardless of how many internal callers
+        # (submit, prepare_payload, compute_cost) resolve the same model.
+        self._warned_deprecated: set[str] = set()
         self._fallback = fallback
         self._strict = strict_params
         self._lock = threading.RLock()
@@ -102,7 +108,8 @@ class ModelRegistry:
     def get(self, model_id: str) -> ModelSpec:
         """Return the matching spec; falls back to alias then ``fallback``.
 
-        Never returns None.
+        Emits ``DeprecationWarning`` when the lookup resolves via a
+        ``deprecated_aliases`` entry. Never returns None.
         """
         spec = self._user.get(model_id) or self._defaults.get(model_id)
         if spec is not None:
@@ -111,6 +118,19 @@ class ModelRegistry:
         if canonical is not None:
             spec = self._user.get(canonical) or self._defaults.get(canonical)
             if spec is not None:
+                return spec
+        deprecated_canonical = self._deprecated_alias_index.get(model_id)
+        if deprecated_canonical is not None:
+            spec = self._user.get(deprecated_canonical) or self._defaults.get(deprecated_canonical)
+            if spec is not None:
+                if model_id not in self._warned_deprecated:
+                    self._warned_deprecated.add(model_id)
+                    warnings.warn(
+                        f"Model id {model_id!r} is deprecated; "
+                        f"use {deprecated_canonical!r} instead.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
                 return spec
         return self._fallback
 
@@ -122,7 +142,10 @@ class ModelRegistry:
     def has(self, model_id: str) -> bool:
         """True if the model_id (or alias) maps to a non-fallback spec."""
         return (
-            model_id in self._user or model_id in self._defaults or model_id in self._alias_index
+            model_id in self._user
+            or model_id in self._defaults
+            or model_id in self._alias_index
+            or model_id in self._deprecated_alias_index
         )
 
     # --- pipeline -----------------------------------------------------------
@@ -246,11 +269,15 @@ class ModelRegistry:
 
     def _rebuild_alias_index(self) -> None:
         idx: dict[str, str] = {}
+        dep_idx: dict[str, str] = {}
         for layer in (self._defaults, self._user):
             for model_id, spec in layer.items():
                 for alias in spec.aliases:
                     idx[alias] = model_id
+                for alias in spec.deprecated_aliases:
+                    dep_idx[alias] = model_id
         self._alias_index = idx
+        self._deprecated_alias_index = dep_idx
 
 
 # Small helper: dataclasses.replace but we control imports tightly here.

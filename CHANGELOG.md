@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `genblaze-core`: `ModelSpec.deprecated_aliases` — old model ids keep resolving
+  but emit a `DeprecationWarning` pointing to the canonical slug. Drop the
+  alias after one minor version.
+- `genblaze-gmicloud`: `extract_media_url()` envelope parser covering both the
+  live `outcome.media_urls[0].url` shape and the legacy flat `*_url` keys.
+  Image modality also falls back to `outcome.thumbnail_image_url`.
+- `genblaze-gmicloud`: legacy-slug and error-unwrap test coverage.
+
+### Changed
+- `genblaze-gmicloud`: all image and video model ids rewritten to the live
+  lowercase slugs the request-queue API actually accepts (`seedream-5.0-lite`,
+  `veo3`, `wan2.6-i2v`, `kling-text2video-v1.6-pro`, etc.). Old PascalCase ids
+  (`Seedream-5.0-Lite`, `Veo3`, `Wan-2.6-I2V`, …) still resolve via
+  `deprecated_aliases` and will be removed in 0.4.
+- `genblaze-gmicloud`: submits now send the canonical slug on the wire, not the
+  caller-supplied string — matters because the GMICloud request queue is
+  case-sensitive.
+- `genblaze-gmicloud`: JSON error bodies (`{"error": "..."}`) are unwrapped
+  before being surfaced, replacing the confusing double-encoded
+  `GMICloud submit failed (500): {"error":"Backend error (400)..."}` message.
+- `genblaze-gmicloud`: new model families registered — reve-create/edit/remix
+  (+ fast variants), bria-fibo-* (blend/relight/restore/genfill/eraser),
+  pixverse-v5.6 i2v/t2v/transition, wan2.6/2.7 t2v/i2v/r2v.
+
+### Fixed
+- `genblaze-gmicloud`: `fetch_output` parsed the wrong envelope path; live API
+  returns `outcome.media_urls[0].url` but the connector read `outcome.*_url`
+  keys only. Mock fixtures were aligned with the real shape in the same change.
+
 ## [0.2.1] - 2026-04-23
 
 ### Changed

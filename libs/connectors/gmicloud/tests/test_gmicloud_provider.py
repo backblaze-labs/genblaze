@@ -21,7 +21,6 @@ def provider():
 
     p = GMICloudVideoProvider(api_key="test-api-key-123")
     p._http_client = make_mock_http_client(
-        outcome_key="video_url",
         outcome_url="https://gmicloud-output.com/video.mp4",
     )
     return p
@@ -31,7 +30,7 @@ def provider():
 
 
 def test_submit_returns_submit_result(provider):
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="a sunset")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="a sunset")
     result = provider.submit(step)
     assert isinstance(result, SubmitResult)
     assert result.prediction_id == "req-abc123"
@@ -40,7 +39,7 @@ def test_submit_returns_submit_result(provider):
 def test_submit_forwards_params(provider):
     step = Step(
         provider="gmicloud",
-        model="Kling-Text2Video-V1.6-Pro",
+        model="kling-text2video-v1.6-pro",
         prompt="test",
         params={"duration": 10, "cfg_scale": 0.5},
     )
@@ -54,7 +53,7 @@ def test_submit_forwards_negative_prompt_from_step_field(provider):
     """Pipeline hoists negative_prompt out of params onto the Step field."""
     step = Step(
         provider="gmicloud",
-        model="Kling-Text2Video-V1.6-Pro",
+        model="kling-text2video-v1.6-pro",
         prompt="a sunset",
         negative_prompt="blurry, low-res",
     )
@@ -68,7 +67,7 @@ def test_submit_image_to_video(provider):
 
     step = Step(
         provider="gmicloud",
-        model="Kling-Image2Video-V1.6-Pro",
+        model="kling-image2video-v1.6-pro",
         prompt="animate this",
         inputs=[Asset(url="https://example.com/image.png", media_type="image/png")],
     )
@@ -105,7 +104,7 @@ def test_poll_returns_true_on_failed(provider):
 
 def test_fetch_output_attaches_asset(provider):
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="a sunset")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="a sunset")
     result = provider.fetch_output("req-abc123", step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "video/mp4"
@@ -118,7 +117,7 @@ def test_poll_then_fetch_failed(provider):
     failed_resp.json.return_value = {"status": "failed", "error": "Content policy violation"}
     provider._http_client.get.return_value = failed_resp
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="bad")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="bad")
     with pytest.raises(ProviderError, match="Content policy violation"):
         provider.fetch_output("req-abc123", step)
 
@@ -129,13 +128,13 @@ def test_fetch_output_cancelled_raises(provider):
     resp.json.return_value = {"status": "cancelled"}
     provider._http_client.get.return_value = resp
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test")
     with pytest.raises(ProviderError, match="cancelled"):
         provider.fetch_output("req-abc123", step)
 
 
 def test_invoke_full_lifecycle(provider):
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="a sunset")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="a sunset")
     result = provider.invoke(step)
     assert result.status == StepStatus.SUCCEEDED
     assert len(result.assets) == 1
@@ -146,7 +145,7 @@ def test_invoke_full_lifecycle(provider):
 
 def test_cost_tracked(provider):
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="a sunset")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="a sunset")
     result = provider.fetch_output("req-abc123", step)
     assert result.cost_usd == pytest.approx(0.098)
 
@@ -191,7 +190,7 @@ def test_cost_per_second_pricing_missing_duration_is_none(provider):
 
 def test_video_metadata_no_audio(provider):
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test")
     result = provider.fetch_output("req-abc123", step)
     assert result.assets[0].video is not None
     assert result.assets[0].video.has_audio is False
@@ -199,7 +198,7 @@ def test_video_metadata_no_audio(provider):
 
 def test_veo3_model_has_audio_metadata(provider):
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Veo3", prompt="test")
+    step = Step(provider="gmicloud", model="veo3", prompt="test")
     result = provider.fetch_output("req-abc123", step)
     asset = result.assets[0]
     assert asset.video.has_audio is True
@@ -208,12 +207,21 @@ def test_veo3_model_has_audio_metadata(provider):
     assert len(asset.tracks) == 2
 
 
+def test_veo3_legacy_slug_still_marks_audio(provider):
+    """The deprecated ``Veo3`` id must still flag has_audio=True for one minor."""
+    provider.poll("req-abc123")
+    step = Step(provider="gmicloud", model="Veo3", prompt="test")
+    with pytest.warns(DeprecationWarning):
+        result = provider.fetch_output("req-abc123", step)
+    assert result.assets[0].video.has_audio is True
+
+
 # --- Provider payload ---
 
 
 def test_provider_payload_populated(provider):
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test")
     result = provider.fetch_output("req-abc123", step)
     assert result.provider_payload["gmicloud"]["request_id"] == "req-abc123"
     assert result.provider_payload["gmicloud"]["status"] == "success"
@@ -221,7 +229,7 @@ def test_provider_payload_populated(provider):
 
 def test_credentials_not_in_provider_payload(provider):
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test")
     result = provider.fetch_output("req-abc123", step)
     assert "test-api-key-123" not in json.dumps(result.provider_payload)
 
@@ -232,10 +240,13 @@ def test_credentials_not_in_provider_payload(provider):
 def test_asset_url_rejects_non_https(provider):
     resp = MagicMock()
     resp.status_code = 200
-    resp.json.return_value = {"status": "success", "outcome": {"video_url": "file:///etc/passwd"}}
+    resp.json.return_value = {
+        "status": "success",
+        "outcome": {"media_urls": [{"url": "file:///etc/passwd"}]},
+    }
     provider._http_client.get.return_value = resp
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test")
     with pytest.raises(ProviderError, match="Unsafe asset URL"):
         provider.fetch_output("req-abc123", step)
 
@@ -245,11 +256,11 @@ def test_asset_url_rejects_http(provider):
     resp.status_code = 200
     resp.json.return_value = {
         "status": "success",
-        "outcome": {"video_url": "http://169.254.169.254/latest/meta-data/"},
+        "outcome": {"media_urls": [{"url": "http://169.254.169.254/latest/meta-data/"}]},
     }
     provider._http_client.get.return_value = resp
     provider.poll("req-abc123")
-    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test")
     with pytest.raises(ProviderError, match="Unsafe asset URL"):
         provider.fetch_output("req-abc123", step)
 
@@ -259,7 +270,7 @@ def test_chain_input_rejects_http_url(provider):
 
     step = Step(
         provider="gmicloud",
-        model="Kling-Image2Video-V1.6-Pro",
+        model="kling-image2video-v1.6-pro",
         prompt="animate",
         inputs=[Asset(url="http://evil.com/payload.bin", media_type="image/png")],
     )
@@ -304,6 +315,45 @@ def test_error_mapping_invalid_input():
     assert map_gmicloud_error(Exception("bad"), status_code=400) == ProviderErrorCode.INVALID_INPUT
 
 
+def test_submit_unwraps_json_error_body(provider):
+    """A JSON ``{"error": "..."}`` body is surfaced without double-wrapping."""
+    err_resp = MagicMock()
+    err_resp.status_code = 500
+    err_resp.text = '{"error":"Backend error (400). Please try again."}'
+    err_resp.json.return_value = {"error": "Backend error (400). Please try again."}
+    provider._http_client.post.return_value = err_resp
+
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="x")
+    with pytest.raises(ProviderError) as exc_info:
+        provider.submit(step)
+    msg = str(exc_info.value)
+    assert "Backend error (400). Please try again." in msg
+    # Must not be double-encoded: the raw JSON body should not appear.
+    assert '{"error"' not in msg
+
+
+def test_submit_sends_canonical_slug_when_legacy_id_supplied(provider):
+    """Legacy PascalCase id is silently rewritten to the canonical lowercase slug
+    before hitting the wire — the live API is case-sensitive."""
+    step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="x")
+    with pytest.warns(DeprecationWarning):
+        provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert body["model"] == "kling-text2video-v1.6-pro"
+
+
+def test_submit_passes_non_json_body_through(provider):
+    """Plain-text error bodies pass through unchanged."""
+    err_resp = MagicMock()
+    err_resp.status_code = 500
+    err_resp.text = "upstream gateway timeout"
+    provider._http_client.post.return_value = err_resp
+
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="x")
+    with pytest.raises(ProviderError, match="upstream gateway timeout"):
+        provider.submit(step)
+
+
 def test_error_mapping_status_code_priority():
     from genblaze_gmicloud._errors import map_gmicloud_error
 
@@ -317,7 +367,7 @@ def test_error_mapping_status_code_priority():
 def test_duration_coerced_to_int(provider):
     step = Step(
         provider="gmicloud",
-        model="Kling-Text2Video-V1.6-Pro",
+        model="kling-text2video-v1.6-pro",
         prompt="t",
         params={"duration": "10"},
     )
@@ -327,7 +377,7 @@ def test_duration_coerced_to_int(provider):
 def test_guidance_scale_aliased_to_cfg_scale(provider):
     step = Step(
         provider="gmicloud",
-        model="Kling-Text2Video-V1.6-Pro",
+        model="kling-text2video-v1.6-pro",
         prompt="t",
         params={"guidance_scale": 0.7},
     )
@@ -339,7 +389,7 @@ def test_guidance_scale_aliased_to_cfg_scale(provider):
 def test_prepare_payload_is_idempotent_for_normalized_params(provider):
     step = Step(
         provider="gmicloud",
-        model="Kling-Text2Video-V1.6-Pro",
+        model="kling-text2video-v1.6-pro",
         prompt="t",
         params={"duration": 10, "cfg_scale": 0.7},
     )
@@ -367,7 +417,6 @@ class TestGMICloudCompliance(ProviderComplianceTests):
 
         p = GMICloudVideoProvider(api_key="test-compliance-key")
         p._http_client = make_mock_http_client(
-            outcome_key="video_url",
             outcome_url="https://gmicloud-output.com/video.mp4",
         )
         p.poll_interval = 0.0
@@ -384,4 +433,4 @@ class TestGMICloudCompliance(ProviderComplianceTests):
         return p
 
     def make_step(self):
-        return Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="test prompt")
+        return Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="test prompt")

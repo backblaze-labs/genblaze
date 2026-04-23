@@ -319,6 +319,62 @@ class TestModelRegistry:
         )
         assert reg.get("chatgpt-image-latest").model_id == "gpt-image-2"
 
+    def test_deprecated_alias_resolves_with_warning(self):
+        reg = ModelRegistry(
+            defaults={
+                "reve-edit-fast-20251030": ModelSpec(
+                    model_id="reve-edit-fast-20251030",
+                    deprecated_aliases=frozenset({"Reve-Edit-Fast"}),
+                )
+            }
+        )
+        with pytest.warns(DeprecationWarning, match="Reve-Edit-Fast"):
+            spec = reg.get("Reve-Edit-Fast")
+        assert spec.model_id == "reve-edit-fast-20251030"
+
+    def test_deprecated_alias_canonical_lookup_does_not_warn(self):
+        reg = ModelRegistry(
+            defaults={
+                "reve-edit-fast-20251030": ModelSpec(
+                    model_id="reve-edit-fast-20251030",
+                    deprecated_aliases=frozenset({"Reve-Edit-Fast"}),
+                )
+            }
+        )
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning = fail
+            spec = reg.get("reve-edit-fast-20251030")
+        assert spec.model_id == "reve-edit-fast-20251030"
+
+    def test_deprecated_alias_warning_fires_once_per_slug(self):
+        """First lookup warns; subsequent lookups of the same slug stay silent."""
+        reg = ModelRegistry(
+            defaults={
+                "new": ModelSpec(model_id="new", deprecated_aliases=frozenset({"old"})),
+            }
+        )
+        import warnings
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            reg.get("old")
+            reg.get("old")
+            reg.get("old")
+        dep_warnings = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+        assert len(dep_warnings) == 1
+
+    def test_has_recognizes_deprecated_alias(self):
+        reg = ModelRegistry(
+            defaults={
+                "new": ModelSpec(model_id="new", deprecated_aliases=frozenset({"old"})),
+            }
+        )
+        assert reg.has("new") is True
+        assert reg.has("old") is True
+        assert reg.has("missing") is False
+
     def test_fork_isolation(self):
         reg = ModelRegistry(defaults={"m1": ModelSpec(model_id="m1")})
         forked = reg.fork()

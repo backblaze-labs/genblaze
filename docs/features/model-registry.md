@@ -161,7 +161,7 @@ A pipeline written with canonical names is portable across providers that alias 
 
 ```python
 # Works on any video provider whose spec aliases aspect_ratio appropriately
-run.step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro",
+run.step(provider="gmicloud", model="kling-text2video-v1.6-pro",
          aspect_ratio="16:9", duration=10)
 run.step(provider="runway", model="gen4_turbo",
          aspect_ratio="16:9", duration=10)
@@ -178,7 +178,7 @@ from genblaze_gmicloud.models.video import build_video_registry
 
 # Level 2 — per-instance fork (recommended default — no leakage)
 reg = GMICloudVideoProvider.models_default().fork()
-reg.register_pricing("Kling-Text2Video-V1.6-Pro", per_unit(0.05))
+reg.register_pricing("kling-text2video-v1.6-pro", per_unit(0.05))
 provider = GMICloudVideoProvider(models=reg)
 
 # Level 3 — custom registry from scratch

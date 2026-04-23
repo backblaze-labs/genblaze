@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-04-23 -->
 # genblaze-gmicloud
 
 **[GMICloud](https://gmicloud.ai) multi-provider video / image / audio adapters for [genblaze](https://github.com/backblaze-labs/genblaze) — access Seedance, Kling, Veo, Sora, Wan, Seedream, FLUX, Gemini image, ElevenLabs, MiniMax and more through one API with SHA-256 provenance manifests.**
@@ -18,11 +18,13 @@
 
 | Provider class | Modality | Example models |
 |---|---|---|
-| `GMICloudVideoProvider` | video | `Kling-Text2Video-V1.6-Pro`, `Kling-Image2Video-V2.1-Master`, `Veo3`, `Wan-2.6-T2V`, Seedance, Sora |
-| `GMICloudImageProvider` | image | `Seedream-5.0-Lite`, `Gemini-2.5-Flash-Image`, `Reve-Edit-Fast`, `FLUX-Kontext-Pro` |
+| `GMICloudVideoProvider` | video | `kling-text2video-v1.6-pro`, `kling-image2video-v2.1-master`, `veo3`, `wan2.6-t2v`, `seedance-1-0-pro-250528`, `sora-2-pro` |
+| `GMICloudImageProvider` | image | `seedream-5.0-lite`, `gemini-2.5-flash-image`, `reve-edit-fast-20251030`, `flux-kontext-pro` |
 | `GMICloudAudioProvider` | audio | `ElevenLabs-TTS-v3`, `MiniMax-TTS-Speech-2.6-Turbo`, `MiniMax-Music-2.5` |
 
 Registered via entry points as `gmicloud`, `gmicloud-image`, and `gmicloud-audio`. Any model on GMICloud's queue is supported — pass the exact model slug.
+
+> **Slug casing** — GMICloud's request queue is case-sensitive. Model ids are the lowercase slugs shown above. Pre-0.3 PascalCase ids (e.g. `Seedream-5.0-Lite`, `Veo3`, `Wan-2.6-I2V`) still resolve via `ModelSpec.deprecated_aliases` but emit a `DeprecationWarning` and will be removed in 0.4 — migrate early.
 
 ## Install
 
@@ -43,7 +45,7 @@ from genblaze_gmicloud import GMICloudVideoProvider
 
 run, manifest = (
     Pipeline("gmicloud-video-demo")
-    .step(GMICloudVideoProvider(), model="Kling-Text2Video-V1.6-Pro",
+    .step(GMICloudVideoProvider(), model="kling-text2video-v1.6-pro",
           prompt="A drone shot flying over a misty mountain valley at sunrise, cinematic",
           modality=Modality.VIDEO, duration=10, aspect_ratio="16:9")
     .run(timeout=600)
@@ -58,7 +60,7 @@ from genblaze_gmicloud import GMICloudImageProvider
 
 run, manifest = (
     Pipeline("gmicloud-image-demo")
-    .step(GMICloudImageProvider(), model="Seedream-5.0-Lite",
+    .step(GMICloudImageProvider(), model="seedream-5.0-lite",
           prompt="A photorealistic macro shot of morning dew on a spider web, soft bokeh",
           modality=Modality.IMAGE, aspect_ratio="16:9")
     .run(timeout=120)

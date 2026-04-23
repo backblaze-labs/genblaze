@@ -25,7 +25,7 @@ from genblaze_core.providers.base import (
 from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
-from ._base import GMICloudBase
+from ._base import GMICloudBase, extract_media_url
 from ._errors import map_gmicloud_error
 from .models.audio import build_audio_registry
 
@@ -84,7 +84,7 @@ class GMICloudAudioProvider(GMICloudBase):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            audio_url = outcome.get("audio_url") or outcome.get("url")
+            audio_url = extract_media_url(outcome)
             if not audio_url:
                 raise ProviderError("GMICloud request completed but no audio URL found")
 

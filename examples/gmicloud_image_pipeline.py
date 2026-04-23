@@ -5,10 +5,10 @@ Generates an image using GMICloud's request queue and captures full provenance
 in a manifest.
 
 Models (subset — any image model on GMICloud's queue is supported):
-    - Seedream-5.0-Lite: Fast text-to-image
-    - Gemini-2.5-Flash-Image: Google Gemini image generation
-    - Reve-Edit-Fast: Image editing
-    - FLUX-Kontext-Pro: High-quality text-to-image
+    - seedream-5.0-lite: Fast text-to-image
+    - gemini-2.5-flash-image: Google Gemini image generation
+    - reve-edit-fast-20251030: Image editing
+    - flux-kontext-pro: High-quality text-to-image
 
 Auth options (in priority order):
     - API key: Set GMI_API_KEY env var (recommended)
@@ -31,7 +31,7 @@ def main() -> None:
         Pipeline("gmicloud-image-demo", project_id="examples")
         .step(
             provider,
-            model="Seedream-5.0-Lite",
+            model="seedream-5.0-lite",
             prompt=(
                 "A photorealistic macro shot of morning dew on a spider web, "
                 "soft bokeh background, warm golden hour lighting"

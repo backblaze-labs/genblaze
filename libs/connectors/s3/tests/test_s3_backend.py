@@ -550,6 +550,66 @@ class TestForBackblaze:
         with pytest.raises(ValueError, match="B2_KEY_ID"):
             S3StorageBackend.for_backblaze("my-bucket")
 
+    def test_bucket_and_region_from_env(self, mock_boto3, monkeypatch):
+        """All B2 config resolvable from env — no positional/keyword args needed."""
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_BUCKET", "env-bucket")
+        monkeypatch.setenv("B2_REGION", "us-east-005")
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_boto3.client.return_value = MagicMock()
+
+        backend = S3StorageBackend.for_backblaze(auto_lifecycle=False)
+
+        assert backend._bucket == "env-bucket"
+        kwargs = mock_boto3.client.call_args.kwargs
+        assert kwargs["endpoint_url"] == "https://s3.us-east-005.backblazeb2.com"
+        assert kwargs["region_name"] == "us-east-005"
+
+    def test_explicit_args_override_bucket_and_region_env(self, mock_boto3, monkeypatch):
+        """Explicit bucket= / region= win over B2_BUCKET / B2_REGION."""
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_BUCKET", "env-bucket")
+        monkeypatch.setenv("B2_REGION", "us-west-004")
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_boto3.client.return_value = MagicMock()
+
+        backend = S3StorageBackend.for_backblaze(
+            "explicit-bucket", region="eu-central-003", auto_lifecycle=False
+        )
+
+        assert backend._bucket == "explicit-bucket"
+        kwargs = mock_boto3.client.call_args.kwargs
+        assert kwargs["endpoint_url"] == "https://s3.eu-central-003.backblazeb2.com"
+
+    def test_region_defaults_when_unset_anywhere(self, mock_boto3, monkeypatch):
+        """With no arg and no B2_REGION env, fall back to us-west-004."""
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.delenv("B2_REGION", raising=False)
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_boto3.client.return_value = MagicMock()
+
+        S3StorageBackend.for_backblaze("my-bucket", auto_lifecycle=False)
+
+        kwargs = mock_boto3.client.call_args.kwargs
+        assert kwargs["endpoint_url"] == "https://s3.us-west-004.backblazeb2.com"
+
+    def test_missing_bucket_raises_clear_error(self, mock_boto3, monkeypatch):
+        """No bucket arg and no B2_BUCKET → fail fast with guidance."""
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.delenv("B2_BUCKET", raising=False)
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+
+        with pytest.raises(ValueError, match="B2_BUCKET"):
+            S3StorageBackend.for_backblaze()
+
     def test_auto_lifecycle_applies_defaults(self, mock_boto3, monkeypatch):
         """auto_lifecycle=True (default) calls put_bucket_lifecycle_configuration."""
         from genblaze_s3.backend import S3StorageBackend

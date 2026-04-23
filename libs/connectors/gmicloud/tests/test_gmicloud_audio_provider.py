@@ -22,7 +22,6 @@ def provider():
     p = GMICloudAudioProvider(api_key="test-api-key-123")
     p._http_client = make_mock_http_client(
         request_id="req-aud-001",
-        outcome_key="audio_url",
         outcome_url="https://gmicloud-output.com/speech.mp3",
     )
     return p
@@ -193,7 +192,10 @@ def test_credentials_not_in_provider_payload(provider):
 def test_asset_url_rejects_non_https(provider):
     resp = MagicMock()
     resp.status_code = 200
-    resp.json.return_value = {"status": "success", "outcome": {"audio_url": "file:///etc/passwd"}}
+    resp.json.return_value = {
+        "status": "success",
+        "outcome": {"media_urls": [{"url": "file:///etc/passwd"}]},
+    }
     provider._http_client.get.return_value = resp
     provider.poll("req-aud-001")
     step = Step(provider="gmicloud-audio", model="ElevenLabs-TTS-v3", prompt="test")
@@ -236,6 +238,21 @@ def test_unknown_model_passthrough(provider):
     assert isinstance(provider.submit(step), SubmitResult)
 
 
+def test_fetch_output_legacy_audio_url_fallback(provider):
+    """GMI legacy flat `audio_url` shape still parses — defensive compat."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "status": "success",
+        "outcome": {"audio_url": "https://gmicloud-output.com/legacy.mp3"},
+    }
+    provider._http_client.get.return_value = resp
+    provider.poll("req-aud-001")
+    step = Step(provider="gmicloud-audio", model="ElevenLabs-TTS-v3", prompt="hi")
+    result = provider.fetch_output("req-aud-001", step)
+    assert result.assets[0].url == "https://gmicloud-output.com/legacy.mp3"
+
+
 # --- Compliance ---
 
 
@@ -246,7 +263,6 @@ class TestGMICloudAudioCompliance(ProviderComplianceTests):
         p = GMICloudAudioProvider(api_key="test-compliance-key")
         p._http_client = make_mock_http_client(
             request_id="req-aud-001",
-            outcome_key="audio_url",
             outcome_url="https://gmicloud-output.com/speech.mp3",
         )
         p.poll_interval = 0.0

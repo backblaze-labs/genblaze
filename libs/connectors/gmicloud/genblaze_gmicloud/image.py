@@ -25,7 +25,7 @@ from genblaze_core.providers.base import (
 from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
-from ._base import GMICloudBase
+from ._base import GMICloudBase, extract_media_url
 from ._errors import map_gmicloud_error
 from .models.image import build_image_registry
 
@@ -84,7 +84,7 @@ class GMICloudImageProvider(GMICloudBase):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            image_url = outcome.get("image_url") or outcome.get("url")
+            image_url = extract_media_url(outcome, image_fallback=True)
             if not image_url:
                 raise ProviderError("GMICloud request completed but no image URL found")
 

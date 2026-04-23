@@ -100,7 +100,7 @@ don't need all of them — just the ones whose providers you use.
 
 | Provider | Env var(s) | Where to get it |
 |---|---|---|
-| **Backblaze B2** (storage) | `B2_KEY_ID`, `B2_APP_KEY` | [B2 Application Keys](https://secure.backblaze.com/app_keys.htm) |
+| **Backblaze B2** (storage) | `B2_KEY_ID`, `B2_APP_KEY` (optional: `B2_BUCKET`, `B2_REGION`) | [B2 Application Keys](https://secure.backblaze.com/app_keys.htm) |
 | GMICloud | `GMI_API_KEY` | [console.gmicloud.ai](https://console.gmicloud.ai/) |
 | OpenAI (Sora, DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
 | Google (Veo, Imagen) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
@@ -190,7 +190,8 @@ Upload assets and manifests to any S3-compatible bucket with `sink=storage`. The
 [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) is the recommended default, offering reliable, cost-efficient storage for large AI-generated media with strong data integrity and resilient multipart uploads.
 
 **Backblaze B2 is the recommended default** — one-liner, reads credentials from
-`B2_KEY_ID` / `B2_APP_KEY`:
+`B2_KEY_ID` / `B2_APP_KEY`. Bucket and region can also come from
+`B2_BUCKET` / `B2_REGION` so everything lives in `.env`:
 
 ```python
 from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
@@ -297,8 +298,8 @@ from genblaze_gmicloud import GMICloudImageProvider, GMICloudVideoProvider
 
 run, manifest = (
     Pipeline("image-to-video", chain=True)
-    .step(GMICloudImageProvider(), model="Seedream-5.0-Lite", prompt="cyberpunk cityscape", modality=Modality.IMAGE)
-    .step(GMICloudVideoProvider(), model="Kling-Image2Video-V2.1-Master", prompt="camera slowly pans right", modality=Modality.VIDEO)
+    .step(GMICloudImageProvider(), model="seedream-5.0-lite", prompt="cyberpunk cityscape", modality=Modality.IMAGE)
+    .step(GMICloudVideoProvider(), model="kling-image2video-v2.1-master", prompt="camera slowly pans right", modality=Modality.VIDEO)
     .run(sink=storage, timeout=600)
 )
 

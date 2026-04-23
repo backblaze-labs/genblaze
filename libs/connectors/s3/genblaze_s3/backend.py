@@ -461,9 +461,9 @@ class S3StorageBackend(StorageBackend):
     @classmethod
     def for_backblaze(
         cls,
-        bucket: str,
+        bucket: str | None = None,
         *,
-        region: str = "us-west-004",
+        region: str | None = None,
         key_id: str | None = None,
         app_key: str | None = None,
         public_url_base: str | None = None,
@@ -472,21 +472,25 @@ class S3StorageBackend(StorageBackend):
         """Construct an S3StorageBackend preconfigured for Backblaze B2.
 
         Derives B2's S3 endpoint from ``region`` and falls back to the
-        ``B2_KEY_ID`` / ``B2_APP_KEY`` environment variables when
-        credentials are not passed explicitly. Raises ``ValueError`` if
-        credentials are missing entirely — prefer a clear error at
-        construction over a cryptic ``NoCredentialsError`` mid-upload.
+        ``B2_BUCKET`` / ``B2_REGION`` / ``B2_KEY_ID`` / ``B2_APP_KEY``
+        environment variables when arguments are not passed explicitly.
+        Raises ``ValueError`` if bucket or credentials are missing entirely
+        — prefer a clear error at construction over a cryptic
+        ``NoCredentialsError`` mid-upload.
 
         The first ``put()`` / ``exists()`` call auto-detects the bucket's
-        actual region; passing ``region=`` is an optimization hint, not a
-        requirement. If the bucket lives elsewhere the backend transparently
-        reconfigures itself.
+        actual region when B2 returns a redirect; passing ``region=`` (or
+        setting ``$B2_REGION``) is an optimization hint. Regions that reject
+        cross-region requests with 403 instead of 301 (e.g. ``us-east-005``)
+        must still be specified — auto-detect can't read a header that isn't
+        sent.
 
         Args:
-            bucket: B2 bucket name.
-            region: B2 region slug hint (e.g. "us-west-004", "eu-central-003").
-                Auto-corrected on first use if the bucket lives in a different
-                region.
+            bucket: B2 bucket name. Defaults to ``$B2_BUCKET``.
+            region: B2 region slug (e.g. "us-west-004", "us-east-005",
+                "eu-central-003"). Defaults to ``$B2_REGION``, then
+                ``"us-west-004"``. Auto-corrected on first use if B2
+                returns a redirect.
             key_id: B2 application key ID. Defaults to ``$B2_KEY_ID``.
             app_key: B2 application key. Defaults to ``$B2_APP_KEY``.
             public_url_base: Optional B2 friendly-URL base for public buckets,
@@ -500,9 +504,19 @@ class S3StorageBackend(StorageBackend):
 
         Example::
 
-            backend = S3StorageBackend.for_backblaze("my-bucket")
+            # All config from environment (B2_BUCKET, B2_REGION, B2_KEY_ID, B2_APP_KEY)
+            backend = S3StorageBackend.for_backblaze()
+            # Or pass explicitly
+            backend = S3StorageBackend.for_backblaze("my-bucket", region="us-east-005")
             sink = ObjectStorageSink(backend, key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
         """
+        resolved_bucket = bucket or os.environ.get("B2_BUCKET")
+        if not resolved_bucket:
+            raise ValueError(
+                "Backblaze B2 bucket missing. Set B2_BUCKET environment "
+                "variable, or pass bucket= explicitly to for_backblaze()."
+            )
+        resolved_region = region or os.environ.get("B2_REGION") or "us-west-004"
         resolved_key = key_id or os.environ.get("B2_KEY_ID")
         resolved_secret = app_key or os.environ.get("B2_APP_KEY")
         if not resolved_key or not resolved_secret:
@@ -512,9 +526,9 @@ class S3StorageBackend(StorageBackend):
                 "explicitly to for_backblaze()."
             )
         backend = cls(
-            bucket=bucket,
-            endpoint_url=f"https://s3.{region}.backblazeb2.com",
-            region=region,
+            bucket=resolved_bucket,
+            endpoint_url=f"https://s3.{resolved_region}.backblazeb2.com",
+            region=resolved_region,
             public_url_base=public_url_base,
             aws_access_key_id=resolved_key,
             aws_secret_access_key=resolved_secret,

@@ -5,10 +5,10 @@ Generates a video using GMICloud's request queue and captures full provenance
 in a manifest.
 
 Models (subset — any model on GMICloud's queue is supported):
-    - Kling-Text2Video-V1.6-Pro: Fast text-to-video
-    - Kling-Image2Video-V2.1-Master: High-quality image-to-video
-    - Veo3: Google Veo 3 with audio
-    - Wan-2.6-T2V: Wan text-to-video
+    - kling-text2video-v1.6-pro: Fast text-to-video
+    - kling-image2video-v2.1-master: High-quality image-to-video
+    - veo3: Google Veo 3 with audio
+    - wan2.6-t2v: Wan text-to-video
 
 Auth options (in priority order):
     - API key: Set GMI_API_KEY env var (recommended)
@@ -35,7 +35,7 @@ def main() -> None:
         Pipeline("gmicloud-video-demo", project_id="examples")
         .step(
             provider,
-            model="Kling-Text2Video-V1.6-Pro",
+            model="kling-text2video-v1.6-pro",
             prompt=(
                 "A drone shot flying over a misty mountain valley at sunrise, "
                 "golden light filtering through clouds, cinematic"

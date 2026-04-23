@@ -26,12 +26,13 @@ from genblaze_core.providers.base import (
 from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
-from ._base import GMICloudBase
+from ._base import GMICloudBase, extract_media_url
 from ._errors import map_gmicloud_error
 from .models.video import build_video_registry
 
-# Models that produce audio alongside video (multi-track output).
-_HAS_AUDIO_MODELS: frozenset[str] = frozenset({"Veo3", "Veo3-Fast"})
+# Canonical slugs for models that produce audio alongside video (multi-track).
+# Legacy ids resolve through ``_resolve_model`` before this check.
+_HAS_AUDIO_MODELS: frozenset[str] = frozenset({"veo3", "veo3-fast"})
 
 
 class GMICloudVideoProvider(GMICloudBase):
@@ -89,14 +90,14 @@ class GMICloudVideoProvider(GMICloudBase):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            video_url = outcome.get("video_url") or outcome.get("url")
+            video_url = extract_media_url(outcome)
             if not video_url:
                 raise ProviderError("GMICloud request completed but no video URL found")
 
             validate_asset_url(str(video_url))
             asset = Asset(url=str(video_url), media_type="video/mp4")
 
-            has_audio = step.model in _HAS_AUDIO_MODELS
+            has_audio = self._resolve_model(step.model) in _HAS_AUDIO_MODELS
             asset.video = VideoMetadata(has_audio=has_audio)
             if has_audio:
                 asset.tracks = [

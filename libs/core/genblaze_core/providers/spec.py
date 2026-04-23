@@ -151,6 +151,9 @@ class ModelSpec:
     Args:
         model_id: Provider-native identifier. Used as the registry key.
         aliases: Extra names that resolve to this spec (e.g. dated snapshots).
+        deprecated_aliases: Old ids that still resolve but emit DeprecationWarning
+            pointing callers to ``model_id``. Use when a provider renames a slug;
+            keep the old name here for one minor version before removal.
         modality: Primary output modality — informational, drives capability
             discovery and pipeline compatibility checks.
         pricing: Callable taking ``PricingContext`` and returning USD cost
@@ -176,6 +179,7 @@ class ModelSpec:
 
     model_id: str
     aliases: frozenset[str] = field(default_factory=frozenset)
+    deprecated_aliases: frozenset[str] = field(default_factory=frozenset)
     modality: Modality | None = None
     pricing: PricingStrategy | None = None
     param_aliases: Mapping[str, str] = field(default_factory=dict)

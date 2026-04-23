@@ -1,8 +1,9 @@
 """GMICloud video-model specs.
 
-All models share a POST envelope ``{"model": id, "payload": {...}}`` — expressed
-via ``extras={"envelope_key": "payload"}`` at the registry level (connector
-reads this before HTTP submit).
+Slugs match the live request-queue API (case-sensitive lowercase). All models
+share a POST envelope ``{"model": id, "payload": {...}}`` expressed via
+``extras={"envelope_key": "payload"}``. Legacy PascalCase ids used before v0.3
+are kept as ``deprecated_aliases``; drop in v0.4.
 """
 
 from __future__ import annotations
@@ -16,31 +17,36 @@ from genblaze_core.providers import (
     route_images,
 )
 
-# Flat per-generation pricing (USD per asset).
-_VIDEO_FLAT: dict[str, float] = {
-    "seedance-1-0-pro-250528": 0.30,
-    "seedance-1-0-pro-fast": 0.022,
-    "Veo3": 0.40,
-    "Veo3-Fast": 0.15,
-    "Sora-2-Pro": 0.50,
-    "Kling-Image2Video-V2.1-Master": 0.28,
-    "Kling-Text2Video-V2.1-Master": 0.28,
-    "Kling-Image2Video-V1.6-Pro": 0.098,
-    "Kling-Text2Video-V1.6-Pro": 0.098,
-    "Kling-Image2Video-V1.5-Pro": 0.098,
-    "Kling-Text2Video-V1.5-Pro": 0.098,
-    "Minimax-Hailuo-2.3-Fast": 0.032,
-    "PixVerse-v5.6": 0.03,
-    "Wan-2.6-T2V": 0.15,
-    "Wan-2.6-I2V": 0.15,
-    "Luma-Ray-2": 0.20,
-    "Vidu-Q1": 0.10,
-}
+# (canonical_slug, flat_usd_per_asset, {deprecated_legacy_ids})
+_VIDEO_FLAT: tuple[tuple[str, float, frozenset[str]], ...] = (
+    ("seedance-1-0-pro-250528", 0.30, frozenset()),
+    ("seedance-1-0-pro-fast", 0.022, frozenset()),
+    ("veo3", 0.40, frozenset({"Veo3"})),
+    ("veo3-fast", 0.15, frozenset({"Veo3-Fast"})),
+    ("sora-2-pro", 0.50, frozenset({"Sora-2-Pro"})),
+    ("kling-image2video-v2.1-master", 0.28, frozenset({"Kling-Image2Video-V2.1-Master"})),
+    ("kling-text2video-v2.1-master", 0.28, frozenset({"Kling-Text2Video-V2.1-Master"})),
+    ("kling-image2video-v1.6-pro", 0.098, frozenset({"Kling-Image2Video-V1.6-Pro"})),
+    ("kling-text2video-v1.6-pro", 0.098, frozenset({"Kling-Text2Video-V1.6-Pro"})),
+    ("kling-image2video-v1.5-pro", 0.098, frozenset({"Kling-Image2Video-V1.5-Pro"})),
+    ("kling-text2video-v1.5-pro", 0.098, frozenset({"Kling-Text2Video-V1.5-Pro"})),
+    ("minimax-hailuo-2.3-fast", 0.032, frozenset({"Minimax-Hailuo-2.3-Fast"})),
+    ("pixverse-v5.6-t2v", 0.03, frozenset({"PixVerse-v5.6"})),
+    ("pixverse-v5.6-i2v", 0.03, frozenset()),
+    ("pixverse-v5.6-transition", 0.03, frozenset()),
+    ("wan2.6-t2v", 0.15, frozenset({"Wan-2.6-T2V"})),
+    ("wan2.6-i2v", 0.15, frozenset({"Wan-2.6-I2V"})),
+    ("wan2.6-r2v", 0.15, frozenset()),
+    ("wan2.7-t2v", 0.15, frozenset()),
+    ("wan2.7-i2v", 0.15, frozenset()),
+    ("luma-ray-2", 0.20, frozenset({"Luma-Ray-2"})),
+    ("vidu-q1", 0.10, frozenset({"Vidu-Q1"})),
+)
 
 # Per-second pricing (USD/sec of requested duration, × output count).
-_VIDEO_PER_SECOND: dict[str, float] = {
-    "seedance-2-0-260128": 0.052,
-}
+_VIDEO_PER_SECOND: tuple[tuple[str, float, frozenset[str]], ...] = (
+    ("seedance-2-0-260128", 0.052, frozenset()),
+)
 
 
 def _per_duration_rate(rate: float):
@@ -79,10 +85,11 @@ _COMMON_INPUT = route_images(slots=("image",))
 _ENVELOPE = {"envelope_key": "payload"}
 
 
-def _video_spec(model_id: str, flat_rate: float) -> ModelSpec:
+def _video_spec(model_id: str, flat_rate: float, deprecated: frozenset[str]) -> ModelSpec:
     return ModelSpec(
         model_id=model_id,
         modality=Modality.VIDEO,
+        deprecated_aliases=deprecated,
         pricing=per_unit(flat_rate),
         param_aliases=_COMMON_ALIASES,
         param_coercers=_COMMON_COERCERS,
@@ -92,10 +99,11 @@ def _video_spec(model_id: str, flat_rate: float) -> ModelSpec:
     )
 
 
-def _video_spec_per_second(model_id: str, rate: float) -> ModelSpec:
+def _video_spec_per_second(model_id: str, rate: float, deprecated: frozenset[str]) -> ModelSpec:
     return ModelSpec(
         model_id=model_id,
         modality=Modality.VIDEO,
+        deprecated_aliases=deprecated,
         pricing=_per_duration_rate(rate),
         param_aliases=_COMMON_ALIASES,
         param_coercers=_COMMON_COERCERS,
@@ -118,7 +126,7 @@ _FALLBACK = ModelSpec(
 
 def build_video_registry() -> ModelRegistry:
     defaults = {
-        **{mid: _video_spec(mid, rate) for mid, rate in _VIDEO_FLAT.items()},
-        **{mid: _video_spec_per_second(mid, rate) for mid, rate in _VIDEO_PER_SECOND.items()},
+        **{mid: _video_spec(mid, rate, dep) for mid, rate, dep in _VIDEO_FLAT},
+        **{mid: _video_spec_per_second(mid, rate, dep) for mid, rate, dep in _VIDEO_PER_SECOND},
     }
     return ModelRegistry(defaults=defaults, fallback=_FALLBACK)
