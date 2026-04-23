@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-04-23 -->
 <h1 align="center" style="border-bottom: none">
     Genblaze
 </h1>
@@ -39,10 +39,31 @@ genblaze ships with provider adapters for major generative AI platforms:
 | **Stability AI** | — | — | Stable Audio (music) |
 | **LMNT** | — | — | TTS |
 
+## Custom models & pricing
+
+Every provider exposes a `ModelRegistry` you can extend at runtime. Use any model the provider supports — even ones genblaze hasn't shipped defaults for — and plug in your own pricing.
+
+```python
+from genblaze_core.providers import ModelSpec, per_unit
+from genblaze_openai import DalleProvider
+
+# Override pricing on a known model (e.g. your volume-discount rate)
+reg = DalleProvider.models_default().fork()
+reg.register_pricing("dall-e-3", per_unit(0.050))
+
+# Register a brand-new model the library hasn't seen yet
+reg.register(ModelSpec(model_id="gpt-image-3-preview", pricing=per_unit(0.20)))
+
+provider = DalleProvider(models=reg)
+```
+
+Unknown models pass through by default (`cost_usd=None` until registered). No release required to adopt a newly-released model. See [`docs/features/model-registry.md`](docs/features/model-registry.md) for param aliases, schemas, and input routing.
+
 ## Features
 
 - **Pipeline API** — Fluent, composable multi-step generation pipelines with fan-in (`input_from`) and AV compositing
 - **10 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud
+- **Extensible model registry** — Add new models and override pricing at runtime without forking the library
 - **Manifest provenance** — Every run produces a canonical, SHA-256-verified manifest
 - **Media embedding** — Embed manifests into PNG, JPEG, WebP, MP4, MP3, WAV
 - **S3-compatible storage** — Upload assets to Backblaze B2, AWS S3, Cloudflare R2, MinIO
@@ -368,11 +389,13 @@ examples/               # Usage examples
 | **Asset** | A generated media artifact with URL, MIME type, and optional hash |
 | **Manifest** | Hash-verified canonical JSON document capturing full provenance |
 | **Provider** | Adapter implementing submit/poll/fetch_output for a generation API |
+| **ModelRegistry** | Per-provider store of model specs (pricing, param rules, input routing). Extensible at runtime. |
 | **Sink** | Output destination for structured run data (Parquet, object storage) |
 
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System layout, data flows, canonical files
+- [docs/features/model-registry.md](docs/features/model-registry.md) — Register models, override pricing, customize parameters
 - [docs/features/](docs/features/) — Feature docs (pipeline, providers, media, policy, sinks)
 
 ## Contributing

@@ -295,18 +295,45 @@ asset.video = VideoMetadata(has_audio=False, codec="h264")
 
 ## 11. Cost tracking
 
-Populate `step.cost_usd` using a static pricing dict. This enables cost reporting without external API calls.
+Pricing is declared **per model** on `ModelSpec.pricing`. The base class runs the strategy after `fetch_output()` and sets `step.cost_usd` — your connector doesn't compute cost itself. Expose your specs via `create_registry()`:
 
 ```python
-_PRICING = {"my-model-v1": 0.10, "my-model-v2": 0.25}
+from genblaze_core.providers import (
+    BaseProvider, ModelRegistry, ModelSpec, per_unit,
+)
 
-# In generate() or fetch_output():
-price = _PRICING.get(step.model)
-if price is not None:
-    step.cost_usd = price * len(step.assets)
+def _build_registry() -> ModelRegistry:
+    return ModelRegistry(
+        defaults={
+            "my-model-v1": ModelSpec(model_id="my-model-v1", pricing=per_unit(0.10)),
+            "my-model-v2": ModelSpec(model_id="my-model-v2", pricing=per_unit(0.25)),
+        },
+    )
+
+class MyProvider(BaseProvider):
+    @classmethod
+    def create_registry(cls) -> ModelRegistry:
+        return _build_registry()
 ```
 
-Common patterns: flat per-generation, per-second of output, per-character of input.
+Packaged pricing helpers cover the common shapes:
+
+| Shape | Helper |
+|---|---|
+| Flat per output asset | `per_unit(rate)` |
+| Per second of output | `per_output_second(rate)` |
+| Per N characters of prompt | `per_input_chars(rate, per=1000)` |
+| Table lookup `(quality, size) → price` | `tiered(table, key=lambda ctx: ...)` |
+| Bucketed by output duration | `bucketed_by_duration([((lo, hi), price), ...])` |
+| Single-param lookup | `by_param("resolution", {"480p": 0.04, "720p": 0.08})` |
+| `(model, param) → price` | `by_model_and_param("duration", {...})` |
+| Pull from response | `per_response_metric(lambda ctx: ctx.provider_payload[...])` |
+
+For anything else, write a `PricingStrategy` callable — `Callable[[PricingContext], float | None]`. Keep it pure and synchronous (no I/O).
+
+**Unknown models** (newly-released, snapshots, aliases) fall back to the permissive default spec — the request goes through, `cost_usd=None`. Users can add pricing at runtime via `MyProvider.models_default().fork().register_pricing(...)` — no provider release required.
+
+See [`docs/features/model-registry.md`](../features/model-registry.md) for the full `ModelSpec` surface (param aliases, schemas, input routing).
 
 ## 12. Poll result caching (BaseProvider only)
 
@@ -427,7 +454,7 @@ pip install -e ".[dev]"
 - [ ] `_errors.py` module with `map_*_error(exc) -> ProviderErrorCode`
 - [ ] Errors raised as `ProviderError` with explicit `error_code`
 - [ ] `AudioMetadata`/`VideoMetadata` populated on assets
-- [ ] `step.cost_usd` populated from pricing table
+- [ ] `create_registry()` returns a `ModelRegistry` with per-model `pricing` strategies
 - [ ] Poll result cached in `poll()`, consumed in `fetch_output()` (BaseProvider only)
 - [ ] No API tokens in `provider_payload`
 - [ ] Compliance tests pass (`ProviderComplianceTests` subclass)

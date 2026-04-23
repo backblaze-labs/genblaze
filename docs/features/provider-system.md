@@ -60,14 +60,22 @@ Providers should always raise `ProviderError` with an explicit `error_code`. The
 - Unknown error → `ProviderErrorCode.UNKNOWN`
 
 ## Cost Tracking
-Providers populate `step.cost_usd` using static per-model pricing tables:
-- DALL-E / gpt-image: per-model `_ImageModelSpec.pricing` dict, keyed by (quality, size). `gpt-image-2` pricing is undisclosed — `cost_usd=None`. Unknown models (aliases, snapshots) pass through with `cost_usd=None`.
-- Sora: flat per-video price by model
-- TTS (OpenAI, ElevenLabs): per-character pricing by model
-- Imagen: per-image pricing by model
-- Veo: per-second pricing by model
 
-Pricing tables are static dicts in each provider file — easy to update without external calls.
+Pricing is declared per-model on `ModelSpec.pricing` (a `PricingStrategy` callable) and resolved automatically by the base class after `fetch_output()`. Each connector exposes its rates via `create_registry()`:
+
+- DALL-E / gpt-image: `tiered` pricing keyed by `(quality, size)`; `gpt-image-2` disclosed as `pricing=None`
+- Sora, Luma: `pricing=None` until per-second formulas are disclosed
+- TTS (OpenAI, ElevenLabs, LMNT): `per_input_chars(rate, per=...)`
+- ElevenLabs SFX: `bucketed_by_duration([((lo, hi), price), ...])`
+- Imagen, Decart image: `per_unit(rate)`
+- Decart video: `by_param("resolution", ...)` (per-resolution flat rate)
+- Google Veo, Stability Audio, GMI Seedance 2.0: per-output-second
+- Runway: `by_model_and_param("duration", ...)` tuple-keyed
+- Replicate: `per_response_metric` reading `predict_time` from the Replicate response
+
+Users can override any model's pricing at runtime via `Provider.models_default().fork().register_pricing(model_id, strategy)` — no provider release required. Unknown models (newly-released, dated snapshots, aliases) fall back to a permissive spec and submit successfully with `cost_usd=None`.
+
+See [model-registry.md](model-registry.md) for the full `ModelSpec` surface (pricing strategies, param aliases, input routing, schemas, constraints).
 
 ## Error Deduplication
 Each connector family shares a single error mapper module:
