@@ -33,26 +33,7 @@ pip install "genblaze[video]"         # + curated video bundle
 pip install "genblaze[all]"           # + every provider
 ```
 
-### Package → import mapping
-
-PyPI install names use hyphens; Python import names use underscores. This is a Python packaging convention, not a genblaze choice.
-
-| Install with pip | Import in Python |
-|---|---|
-| `pip install genblaze` | `import genblaze_core` |
-| `pip install genblaze-core` | `import genblaze_core` |
-| `pip install genblaze-s3` | `import genblaze_s3` |
-| `pip install genblaze-gmicloud` | `import genblaze_gmicloud` |
-| `pip install genblaze-openai` | `import genblaze_openai` |
-| `pip install genblaze-google` | `import genblaze_google` |
-| `pip install genblaze-replicate` | `import genblaze_replicate` |
-| `pip install genblaze-runway` | `import genblaze_runway` |
-| `pip install genblaze-luma` | `import genblaze_luma` |
-| `pip install genblaze-decart` | `import genblaze_decart` |
-| `pip install genblaze-elevenlabs` | `import genblaze_elevenlabs` |
-| `pip install genblaze-stability-audio` | `import genblaze_stability_audio` |
-| `pip install genblaze-lmnt` | `import genblaze_lmnt` |
-| `pip install genblaze-langsmith` | `import genblaze_langsmith` |
+Install names use hyphens and Python imports use underscores — every package follows `pip install genblaze-<name>` → `import genblaze_<name>`. The provider matrix below lists every `<name>` genblaze ships.
 
 TypeScript types for the manifest schema are published on npm:
 

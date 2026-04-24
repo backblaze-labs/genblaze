@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-google"
-version = "0.2.1"
+version = "0.2.2"
 description = "Google provider adapters for genblaze (Veo video, Imagen image)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"

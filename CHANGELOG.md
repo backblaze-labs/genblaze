@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-04-24
+
+### Released package versions
+- Code-change bumps: `genblaze-core` 0.2.3, `genblaze-gmicloud` 0.2.3,
+  `genblaze-google` 0.2.2, `genblaze-openai` 0.2.2.
+- `@genblaze/spec` (npm) 0.3.1 — minor schema + TS-type touch-up.
+- Untouched since last wave (no republish): `genblaze-s3` 0.2.3,
+  `genblaze-replicate` 0.2.1, `genblaze-decart` 0.2.1, `genblaze-elevenlabs`
+  0.2.1, `genblaze-langsmith` 0.2.1, `genblaze-lmnt` 0.2.1, `genblaze-luma`
+  0.2.1, `genblaze-runway` 0.2.1, `genblaze-stability-audio` 0.2.1,
+  `genblaze` (umbrella) 0.2.3 — its dep ranges already satisfy the new
+  versions.
+
+### Added
+- `genblaze-gmicloud`: HTTP client injection in `GMICloudBase` — providers
+  accept an optional `client=` for deterministic tests and custom transport
+  (proxies, retries, observability). New `test_base_client_injection.py`
+  covers the contract. Part of the gmi-hardening exec plan.
+- `genblaze-google`: `_errors.py` module with explicit `ProviderErrorCode`
+  mapping for Gemini SDK exceptions. New `test_error_mapping.py`.
+- `genblaze-openai`: `test_chat.py` covers the `chat()` / `achat()` wrapper
+  paths end-to-end.
+- `genblaze-core`: new `Modality` enum member.
+
+### Fixed
+- `genblaze-core`: OTel tracer event-type check no longer misclassifies a
+  subset of events; poll-cache cleanup test hardened.
+- `genblaze-gmicloud`: media URL extraction handles a previously-missed
+  envelope shape; chat client initialization condition corrected.
+
 ### Added
 - `genblaze-core`: `ChatMessage`, `ToolCall`, `ChatResponse` in
   `genblaze_core.models.chat` — uniform return shape for the standalone
