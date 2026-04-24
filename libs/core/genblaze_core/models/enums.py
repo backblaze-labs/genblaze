@@ -50,6 +50,9 @@ class ProviderErrorCode(StrEnum):
     INVALID_INPUT = "invalid_input"
     MODEL_ERROR = "model_error"
     SERVER_ERROR = "server_error"
+    # Provider refused the request on safety / content-policy grounds.
+    # Deterministic given the same prompt — never retryable.
+    CONTENT_POLICY = "content_policy"
     UNKNOWN = "unknown"
 
 

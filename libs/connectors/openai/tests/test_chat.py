@@ -145,6 +145,53 @@ def test_extra_kwargs_passed(mock_client):
     assert payload["top_p"] == 0.9
 
 
+def test_content_policy_classified(mock_client):
+    """A content-policy refusal must map to CONTENT_POLICY, not INVALID_INPUT."""
+    mock_client.chat.completions.create.side_effect = Exception(
+        "400 content_policy_violation: your prompt was rejected by safety"
+    )
+    with pytest.raises(ProviderError) as exc:
+        chat("gpt-4o", prompt="hi", client=mock_client)
+    assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
+
+
+def test_external_client_not_closed(mock_client):
+    """Caller-supplied clients outlive chat() calls."""
+    chat("gpt-4o", prompt="hi", client=mock_client)
+    mock_client.close.assert_not_called()
+
+
+def test_internally_created_client_is_closed(monkeypatch):
+    """When we create the client ourselves, we must close it to avoid transport leaks."""
+    fake_openai = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.chat.completions.create.return_value = _mock_completion()
+        created_clients.append(c)
+        return c
+
+    fake_openai.OpenAI.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+    chat("gpt-4o", prompt="hi", api_key="sk-test")
+
+    assert len(created_clients) == 1
+    created_clients[0].close.assert_called_once()
+
+
+def test_base_url_forwarded_to_sdk(monkeypatch):
+    fake_openai = MagicMock()
+    fake_openai.OpenAI.return_value.chat.completions.create.return_value = _mock_completion()
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+    chat("gpt-4o", prompt="hi", api_key="sk-test", base_url="https://proxy.example/v1")
+
+    fake_openai.OpenAI.assert_called_once()
+    assert fake_openai.OpenAI.call_args.kwargs["base_url"] == "https://proxy.example/v1"
+
+
 def test_api_error_wrapped(mock_client):
     mock_client.chat.completions.create.side_effect = Exception("rate limit exceeded 429")
     with pytest.raises(ProviderError) as exc:

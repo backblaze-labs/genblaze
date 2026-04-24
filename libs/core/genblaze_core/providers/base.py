@@ -99,6 +99,21 @@ def classify_api_error(exc: Exception | str) -> ProviderErrorCode:
         return ProviderErrorCode.TIMEOUT
     if "rate limit" in msg or "rate_limit" in msg or "429" in msg:
         return ProviderErrorCode.RATE_LIMIT
+    # Content policy / safety refusal — deterministic, never retryable.
+    # Check before auth/invalid because a refusal often reads as 400 and
+    # carries "policy" / "safety" in the message.
+    policy_terms = (
+        "content_policy",
+        "content policy",
+        "safety_filter",
+        "safety filter",
+        "content filter",
+        "policy violation",
+        "blocked by safety",
+        "responsibleai",
+    )
+    if any(t in msg for t in policy_terms):
+        return ProviderErrorCode.CONTENT_POLICY
     auth_terms = ("auth", "unauthorized", "forbidden", "401", "403", "api_key")
     if any(t in msg for t in auth_terms):
         return ProviderErrorCode.AUTH_FAILURE

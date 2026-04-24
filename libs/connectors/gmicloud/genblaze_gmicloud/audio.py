@@ -31,15 +31,23 @@ from .models.audio import build_audio_registry
 
 
 class GMICloudAudioProvider(GMICloudBase):
-    """Provider adapter for GMICloud audio/TTS generation via the request queue.
+    """Provider adapter for GMICloud audio / TTS generation via the request queue.
 
-    Models: ElevenLabs TTS, MiniMax TTS/Music, Inworld TTS, and any new audio
+    Models: ElevenLabs TTS, MiniMax TTS / Music, Inworld TTS, and any new audio
     model added to GMICloud's queue (unknown models pass through).
+
+    **This is a generation-only provider.** ``supported_inputs=["text", "audio"]``
+    reports that the API accepts text and (optionally) audio. The audio input
+    is a *reference voice for cloning* — not a source for speech-to-text. STT
+    (audio → text) is out of scope for this class; a separate STT provider may
+    ship later.
 
     Args:
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+        base_url: Override the request-queue base URL. See ``GMICloudBase``.
+        http_client: Pre-built ``httpx.Client``. See ``GMICloudBase``.
         models: Optional custom ``ModelRegistry``.
     """
 

@@ -315,6 +315,20 @@ def test_error_mapping_invalid_input():
     assert map_gmicloud_error(Exception("bad"), status_code=400) == ProviderErrorCode.INVALID_INPUT
 
 
+def test_error_mapping_content_policy_wins_over_400():
+    """A 400 that carries a safety / policy message is CONTENT_POLICY, not INVALID_INPUT."""
+    from genblaze_gmicloud._errors import map_gmicloud_error
+
+    assert (
+        map_gmicloud_error(Exception("prompt rejected by safety filter"), status_code=400)
+        == ProviderErrorCode.CONTENT_POLICY
+    )
+    assert (
+        map_gmicloud_error(Exception("content policy violation"), status_code=400)
+        == ProviderErrorCode.CONTENT_POLICY
+    )
+
+
 def test_submit_unwraps_json_error_body(provider):
     """A JSON ``{"error": "..."}`` body is surfaced without double-wrapping."""
     err_resp = MagicMock()

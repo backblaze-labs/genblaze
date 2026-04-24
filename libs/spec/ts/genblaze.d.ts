@@ -159,6 +159,7 @@ export interface Step {
     | "invalid_input"
     | "model_error"
     | "server_error"
+    | "content_policy"
     | "unknown"
     | null;
   started_at?: string | null;

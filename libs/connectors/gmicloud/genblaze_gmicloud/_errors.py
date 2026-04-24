@@ -11,6 +11,17 @@ def map_gmicloud_error(exc: Exception, status_code: int | None = None) -> Provid
         exc: The exception that occurred.
         status_code: HTTP status code if available (httpx API path).
     """
+    msg = str(exc).lower()
+    # Content-policy / safety refusal wins over status-code triage — GMICloud
+    # returns a 400 for policy rejections, which would otherwise be
+    # misclassified as a generic INVALID_INPUT retry candidate.
+    if (
+        "content_policy" in msg
+        or "content policy" in msg
+        or "safety" in msg
+        or "policy violation" in msg
+    ):
+        return ProviderErrorCode.CONTENT_POLICY
     # HTTP status codes take priority (httpx / REST API path)
     if status_code == 429:
         return ProviderErrorCode.RATE_LIMIT
@@ -21,7 +32,6 @@ def map_gmicloud_error(exc: Exception, status_code: int | None = None) -> Provid
     if status_code and status_code >= 500:
         return ProviderErrorCode.SERVER_ERROR
     # String-based fallback for SDK exceptions
-    msg = str(exc).lower()
     if "unauthorized" in msg or "invalid credentials" in msg or "401" in msg:
         return ProviderErrorCode.AUTH_FAILURE
     if "forbidden" in msg or "403" in msg:

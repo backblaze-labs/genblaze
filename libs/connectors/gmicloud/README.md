@@ -8,9 +8,9 @@
 ## Why genblaze-gmicloud
 
 - **One API, dozens of models** — text-to-video (Seedance, Kling, Veo, Sora, Wan), text-to-image (Seedream, FLUX, Gemini, Reve), audio (ElevenLabs, MiniMax TTS/Music).
+- **LLM access too** — standalone `chat()` wrapper for Llama, DeepSeek, Qwen over GMICloud's OpenAI-compatible inference endpoint (see below).
 - **Provenance by default** — SHA-256-verified manifest with provider, model, prompt, params, cost.
 - **Cost tracking** — `step.cost_usd` is populated from GMICloud's response.
-- **Two auth modes** — API key (`GMI_API_KEY`) or SDK email/password.
 - **Production-ready** — retries, timeouts, progress streaming, step caching.
 - **Durable storage** — plug `genblaze-s3` in for Backblaze B2 / AWS S3 / R2 / MinIO persistence.
 
@@ -96,12 +96,66 @@ storage = ObjectStorageSink(
 
 [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) is the recommended default sink — cost-efficient, S3-compatible, Object Lock for immutable manifests.
 
+## LLM access — standalone `chat()`
+
+For callers driving a media pipeline from an LLM — caption expansion, prompt rewriting, scene description — `genblaze-gmicloud` ships a `chat()` callable over GMICloud's OpenAI-compatible inference endpoint. It sits **outside** the `Pipeline` / `Step` machinery (text generation doesn't benefit from the polling / manifest / asset machinery built for media).
+
+```python
+from genblaze_gmicloud import chat
+
+resp = chat("deepseek-ai/DeepSeek-V3", prompt="A cinematic sunset over Tokyo")
+print(resp.text, resp.tokens_out)
+```
+
+Full signature and `ChatResponse` shape: [`docs/features/llm-calls.md`](../../../docs/features/llm-calls.md).
+
 ## Credentials
 
-| Auth mode | Env var |
+Only API-key auth is supported. Set `GMI_API_KEY` (obtain from https://console.gmicloud.ai/) or pass `api_key=` to any provider ctor or to `chat()`.
+
+## Configuring the endpoint (staging, proxies, VPC)
+
+All three provider classes and `chat()` accept a `base_url=` ctor kwarg (or `GMI_BASE_URL` env var) to override the default endpoint, and an `http_client=` kwarg for injecting a pre-built `httpx.Client` — useful for shared connection pools across multi-modality pipelines or for mocking in tests.
+
+```python
+import httpx
+from genblaze_gmicloud import GMICloudVideoProvider, GMICloudImageProvider
+
+shared = httpx.Client(
+    base_url="https://my-vpc-proxy.example/gmi",
+    headers={"Authorization": f"Bearer {key}"},
+    timeout=120,
+)
+video = GMICloudVideoProvider(http_client=shared)
+image = GMICloudImageProvider(http_client=shared)
+# Caller owns `shared` — providers never close externally-supplied clients.
+```
+
+## Naming reference
+
+GMICloud surfaces five related names; they look interchangeable but come from different namespaces:
+
+| Surface | Value |
 |---|---|
-| API key (recommended) | `GMI_API_KEY` — https://console.gmicloud.ai/ |
-| SDK email/password | `GMI_CLOUD_EMAIL` + `GMI_CLOUD_PASSWORD` |
+| PyPI package | `genblaze-gmicloud` |
+| Python import | `import genblaze_gmicloud` |
+| Provider class prefix | `GMICloud*` (e.g. `GMICloudVideoProvider`) |
+| Entry-point slug | `gmicloud`, `gmicloud-image`, `gmicloud-audio` |
+| Env vars | `GMI_API_KEY`, `GMI_BASE_URL` |
+
+The `GMI_` env prefix is short on purpose; the class / import / PyPI names use the full `gmicloud` for precision and to leave room for future `genblaze-gmi*` packages if needed.
+
+## Reading outputs safely
+
+`step.assets[0]` is only valid when the step succeeded. Always check `step.status` first — especially in fan-out runs where one step may fail and others succeed:
+
+```python
+for step in run.steps:
+    if step.status == "succeeded" and step.assets:
+        print(step.assets[0].url)
+    elif step.status == "failed":
+        print(f"failed ({step.error_code}): {step.error}")
+```
 
 ## Documentation
 

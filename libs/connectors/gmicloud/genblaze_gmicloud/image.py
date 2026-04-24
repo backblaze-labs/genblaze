@@ -25,7 +25,7 @@ from genblaze_core.providers.base import (
 from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.runnable.config import RunnableConfig
 
-from ._base import GMICloudBase, extract_media_url
+from ._base import GMICloudBase, extract_media_urls
 from ._errors import map_gmicloud_error
 from .models.image import build_image_registry
 
@@ -40,6 +40,8 @@ class GMICloudImageProvider(GMICloudBase):
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+        base_url: Override the request-queue base URL. See ``GMICloudBase``.
+        http_client: Pre-built ``httpx.Client``. See ``GMICloudBase``.
         models: Optional custom ``ModelRegistry``.
     """
 
@@ -84,18 +86,23 @@ class GMICloudImageProvider(GMICloudBase):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            image_url = extract_media_url(outcome, image_fallback=True)
-            if not image_url:
+            image_urls = extract_media_urls(outcome, image_fallback=True)
+            if not image_urls:
                 raise ProviderError("GMICloud request completed but no image URL found")
 
-            validate_asset_url(str(image_url))
+            # Build the asset list atomically — either all URLs validate and
+            # land on the step, or none do. Prevents partial state on a late
+            # validation failure mid-batch.
+            new_assets: list[Asset] = []
+            for image_url in image_urls:
+                validate_asset_url(image_url)
+                path = urlparse(image_url).path
+                mime, _ = mimetypes.guess_type(path)
+                if mime is None or not mime.startswith("image/"):
+                    mime = "image/png"
+                new_assets.append(Asset(url=image_url, media_type=mime))
+            step.assets.extend(new_assets)
 
-            path = urlparse(str(image_url)).path
-            mime, _ = mimetypes.guess_type(path)
-            if mime is None or not mime.startswith("image/"):
-                mime = "image/png"
-
-            step.assets.append(Asset(url=str(image_url), media_type=mime))
             self._apply_registry_pricing(step)
             return step
         except ProviderError:

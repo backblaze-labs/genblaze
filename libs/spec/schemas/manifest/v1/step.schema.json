@@ -108,7 +108,7 @@
     },
     "error_code": {
       "type": ["string", "null"],
-      "enum": ["timeout", "rate_limit", "auth_failure", "invalid_input", "model_error", "server_error", "unknown", null],
+      "enum": ["timeout", "rate_limit", "auth_failure", "invalid_input", "model_error", "server_error", "content_policy", "unknown", null],
       "default": null,
       "description": "Normalized error code."
     },

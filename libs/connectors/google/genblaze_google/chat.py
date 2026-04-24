@@ -164,7 +164,8 @@ def chat(
     Raises:
         ProviderError: With a classified `error_code` for any SDK exception.
     """
-    if client is None:
+    own_client = client is None
+    if own_client:
         try:
             from google import genai
         except ImportError as exc:
@@ -205,6 +206,13 @@ def chat(
             f"Gemini chat failed: {exc}",
             error_code=map_google_error(exc),
         ) from exc
+    finally:
+        if own_client:
+            # Best-effort close — not all google-genai versions expose close(),
+            # so probe via hasattr to stay compatible.
+            close_fn = getattr(client, "close", None)
+            if callable(close_fn):
+                close_fn()
 
     return _parse_response(model, raw)
 

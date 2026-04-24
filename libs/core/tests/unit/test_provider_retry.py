@@ -324,6 +324,24 @@ class TestClassifyError:
         err = classify_api_error(RuntimeError("something weird happened"))
         assert err == ProviderErrorCode.UNKNOWN
 
+    def test_content_policy_literal(self):
+        err = classify_api_error(RuntimeError("content_policy_violation detected"))
+        assert err == ProviderErrorCode.CONTENT_POLICY
+
+    def test_content_policy_safety_filter(self):
+        err = classify_api_error(RuntimeError("output blocked by safety_filter"))
+        assert err == ProviderErrorCode.CONTENT_POLICY
+
+    def test_content_policy_wins_over_invalid_input(self):
+        """A 400 that also carries 'policy violation' is NOT INVALID_INPUT."""
+        err = classify_api_error(RuntimeError("400 policy violation on prompt"))
+        assert err == ProviderErrorCode.CONTENT_POLICY
+
+    def test_content_policy_not_retryable(self):
+        from genblaze_core.models.enums import RETRYABLE_ERROR_CODES
+
+        assert ProviderErrorCode.CONTENT_POLICY not in RETRYABLE_ERROR_CODES
+
 
 # --- Intra-poll transient-retry budget tests ---
 

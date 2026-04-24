@@ -62,20 +62,22 @@ npm install @genblaze/spec
 
 ## Providers
 
-genblaze ships with provider adapters for major generative AI platforms:
+genblaze ships with provider adapters for major generative AI platforms. The matrix below is the single reference for **what each connector can do**. "Pipeline" columns mean a Provider class integrated with `Pipeline` / `Step` / manifest; the "Chat (LLM)" column is a standalone `chat()` callable outside the Pipeline machinery — a convenience for driving media steps from an LLM, not a Pipeline citizen (see [`docs/features/llm-calls.md`](docs/features/llm-calls.md)).
 
-| | Video | Image | Audio |
-|---|---|---|---|
-| **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS/Music |
-| **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS |
-| **Google** | Veo | Imagen | — |
-| **Runway** | Gen-4 Turbo | — | — |
-| **Luma** | Dream Machine | — | — |
-| **Decart** | Lucy | Lucy | — |
-| **Replicate** | — | Flux, SDXL, etc. | — |
-| **ElevenLabs** | — | — | TTS + Sound Effects |
-| **Stability AI** | — | — | Stable Audio (music) |
-| **LMNT** | — | — | TTS |
+<!-- Update when adding a provider, new modality, or shipping chat() for a connector. -->
+
+|  | Video | Image | Audio | Chat (LLM) |
+|---|---|---|---|---|
+| **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS / Music | `chat()` — Llama, DeepSeek, Qwen |
+| **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS | `chat()` — GPT-4o / GPT-4.1 / o-series |
+| **Google** | Veo | Imagen | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
+| **Runway** | Gen-4 Turbo | — | — | — |
+| **Luma** | Dream Machine | — | — | — |
+| **Decart** | Lucy | Lucy | — | — |
+| **Replicate** | — | Flux, SDXL, etc. | — | — |
+| **ElevenLabs** | — | — | TTS + Sound Effects | — |
+| **Stability AI** | — | — | Stable Audio (music) | — |
+| **LMNT** | — | — | TTS | — |
 
 ## Custom models & pricing
 

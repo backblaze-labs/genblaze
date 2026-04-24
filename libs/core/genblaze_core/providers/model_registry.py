@@ -258,7 +258,10 @@ class ModelRegistry:
                         f"Unknown parameters for {step.model}: {sorted(extras)}",
                         error_code=ProviderErrorCode.INVALID_INPUT,
                     )
-                logger.debug(
+                # INFO (not DEBUG) so silently-dropped params surface in
+                # production logs — users routinely miss DEBUG-level drops.
+                # Bump to WARNING if this becomes load-bearing; start quieter.
+                logger.info(
                     "Dropping non-allowlisted params for %s: %s", step.model, sorted(extras)
                 )
             params = {k: v for k, v in params.items() if k in spec.param_allowlist}

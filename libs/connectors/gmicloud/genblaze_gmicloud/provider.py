@@ -46,6 +46,8 @@ class GMICloudVideoProvider(GMICloudBase):
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+        base_url: Override the request-queue base URL. See ``GMICloudBase``.
+        http_client: Pre-built ``httpx.Client``. See ``GMICloudBase``.
         models: Optional custom ``ModelRegistry`` — overrides the class default.
     """
 

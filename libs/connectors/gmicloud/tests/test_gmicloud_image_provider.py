@@ -246,6 +246,53 @@ def test_legacy_slug_resolves_with_deprecation_warning(provider):
     assert result.cost_usd == pytest.approx(0.035)
 
 
+# --- Multi-image output ---
+
+
+def test_fetch_output_emits_asset_per_media_url(provider):
+    """Model returning N URLs in the envelope must produce N assets (not 1)."""
+    provider._http_client = make_mock_http_client(
+        request_id="req-img-001",
+        outcome_urls=[
+            "https://gmicloud-output.com/img-0.png",
+            "https://gmicloud-output.com/img-1.png",
+            "https://gmicloud-output.com/img-2.png",
+        ],
+    )
+    step = Step(
+        provider="gmicloud-image",
+        model="seedream-5.0-lite",
+        prompt="a cat",
+        params={"number_of_images": 3},
+    )
+    provider.poll("req-img-001")
+    result = provider.fetch_output("req-img-001", step)
+    assert len(result.assets) == 3
+    assert [a.url for a in result.assets] == [
+        "https://gmicloud-output.com/img-0.png",
+        "https://gmicloud-output.com/img-1.png",
+        "https://gmicloud-output.com/img-2.png",
+    ]
+
+
+def test_fetch_output_is_atomic_on_validation_failure(provider):
+    """If one URL fails validation, no partial assets land on the step."""
+    provider._http_client = make_mock_http_client(
+        request_id="req-img-001",
+        outcome_urls=[
+            "https://gmicloud-output.com/img-0.png",
+            "http://insecure.example/img-1.png",  # HTTPS required — will reject
+            "https://gmicloud-output.com/img-2.png",
+        ],
+    )
+    step = Step(provider="gmicloud-image", model="seedream-5.0-lite", prompt="a cat")
+    provider.poll("req-img-001")
+    with pytest.raises(ProviderError):
+        provider.fetch_output("req-img-001", step)
+    # The valid first URL must NOT have landed on the step — atomic failure.
+    assert step.assets == []
+
+
 # --- Compliance ---
 
 

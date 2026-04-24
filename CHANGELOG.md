@@ -16,6 +16,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint. Sit outside the Pipeline / Step machinery — convenience for
   callers driving media steps from an LLM. See
   `docs/features/llm-calls.md`.
+- `genblaze-core`: `ProviderErrorCode.CONTENT_POLICY` — new normalized
+  code for safety / content-policy refusals. Deterministic, never
+  retryable. Wire schema (`step.schema.json`) and TS types regenerated.
+  Shared `classify_api_error()` detects the common keywords; per-provider
+  mappers (Google, GMICloud) prioritize policy detection over status-code
+  classification so a 400 policy refusal isn't misclassified as
+  `INVALID_INPUT`.
+- `genblaze-gmicloud`: `base_url=` ctor kwarg (+ `GMI_BASE_URL` env) and
+  `http_client=` kwarg on all three provider classes. Enables staging /
+  proxy / VPC deployments and lets multi-modality pipelines share one
+  `httpx.Client` across video / image / audio providers. Externally
+  supplied clients are never closed by `close()`.
+- Root README: provider × modality capability matrix now includes a
+  "Chat (LLM)" column — single-page answer to "which connector does
+  what?".
+
+### Fixed
+- `genblaze-gmicloud`: `GMICloudImageProvider.fetch_output` now emits one
+  `Asset` per URL in the `media_urls` envelope. Previously discarded all
+  but the first when `number_of_images > 1`, silently returning one asset
+  for an N-asset bill. The new `extract_media_urls()` helper exposes the
+  full list; `extract_media_url()` remains as a single-output thin
+  wrapper for the video and audio paths.
+
+### Changed
+- `genblaze-core`: `ModelRegistry` now logs dropped non-allowlisted
+  params at `INFO` (was `DEBUG`). Silent allowlist drops now surface in
+  typical production logs without WARNING-level noise.
+- `genblaze-gmicloud` README: removed the SDK email/password auth claim
+  (only API-key auth is implemented). Added a naming-reference table,
+  the `base_url` / `http_client` injection pattern, LLM-access surface,
+  and the canonical status-check idiom for reading `step.assets` safely.
+- `GMICloudAudioProvider` docstring now documents that audio input is a
+  reference voice for cloning, not a source for speech-to-text. STT is
+  out of scope for this class.
 
 ## [0.2.3] - 2026-04-23
 

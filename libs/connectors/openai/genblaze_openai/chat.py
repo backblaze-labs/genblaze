@@ -145,6 +145,7 @@ def chat(
     temperature: float | None = None,
     max_tokens: int | None = None,
     api_key: str | None = None,
+    base_url: str | None = None,
     timeout: float = 60.0,
     client: Any = None,
     **kwargs: Any,
@@ -159,15 +160,25 @@ def chat(
         tools: Tool/function definitions in OpenAI's native shape.
         temperature, max_tokens: Standard sampling controls (passed through if set).
         api_key: API key override; otherwise OPENAI_API_KEY env var.
+        base_url: Override the OpenAI API base URL — use for Azure OpenAI or
+            OpenAI-compatible endpoints. Ignored when ``client`` is supplied.
         timeout: HTTP timeout in seconds.
         client: Pre-built `openai.OpenAI` instance — escape hatch for tests
-            and custom clients (e.g. Azure OpenAI).
+            and custom clients. When supplied, its lifecycle is the caller's
+            (we won't close it).
         **kwargs: Forwarded to `client.chat.completions.create`.
 
     Raises:
         ProviderError: With a classified `error_code` for any SDK exception.
+
+    Performance note:
+        For high-throughput callers (many chat calls in a tight loop), pass a
+        reusable ``client=openai.OpenAI(...)`` to amortize HTTP connection setup.
+        Internally-created clients are closed after each call to avoid
+        resource leaks.
     """
-    if client is None:
+    own_client = client is None
+    if own_client:
         try:
             import openai
         except ImportError as exc:
@@ -175,6 +186,8 @@ def chat(
         ckwargs: dict[str, Any] = {"timeout": timeout}
         if api_key:
             ckwargs["api_key"] = api_key
+        if base_url:
+            ckwargs["base_url"] = base_url
         client = openai.OpenAI(**ckwargs)
 
     payload: dict[str, Any] = {
@@ -198,6 +211,13 @@ def chat(
             f"OpenAI chat failed: {exc}",
             error_code=map_openai_error(exc),
         ) from exc
+    finally:
+        if own_client:
+            # Best-effort close — matches the GMI chat pattern and prevents
+            # httpx transport leaks on high-throughput callers.
+            close_fn = getattr(client, "close", None)
+            if callable(close_fn):
+                close_fn()
 
     return _parse_response(model, raw)
 

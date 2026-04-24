@@ -18,7 +18,7 @@ from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_gmicloud_error
 
-_BASE_URL = "https://console.gmicloud.ai/api/v1/ie/requestqueue/apikey"
+_DEFAULT_BASE_URL = "https://console.gmicloud.ai/api/v1/ie/requestqueue/apikey"
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "cancelled"})
 
@@ -27,30 +27,44 @@ _TERMINAL_STATUSES = frozenset({"success", "failed", "cancelled"})
 _LEGACY_URL_KEYS = ("video_url", "image_url", "audio_url", "url")
 
 
-def extract_media_url(outcome: dict, *, image_fallback: bool = False) -> str | None:
-    """Pull the primary asset URL from a GMICloud request outcome.
+def extract_media_urls(outcome: dict, *, image_fallback: bool = False) -> list[str]:
+    """Pull all asset URLs from a GMICloud request outcome.
 
-    Priority: ``media_urls[0].url`` (current shape) → flat ``*_url`` keys
-    (legacy shape) → ``thumbnail_image_url`` for image modality only.
+    Priority: ``media_urls[*].url`` (current shape) → flat ``*_url`` keys
+    (legacy shape, single-item list) → ``thumbnail_image_url`` for image
+    modality only. Returns an empty list when nothing is available.
     """
+    urls: list[str] = []
     media_urls = outcome.get("media_urls")
-    if isinstance(media_urls, list) and media_urls:
-        first = media_urls[0]
-        if isinstance(first, dict):
-            url = first.get("url")
-            if url:
-                return str(url)
-        elif isinstance(first, str):
-            return first
+    if isinstance(media_urls, list):
+        for entry in media_urls:
+            if isinstance(entry, dict):
+                url = entry.get("url")
+                if url:
+                    urls.append(str(url))
+            elif isinstance(entry, str) and entry:
+                urls.append(entry)
+    if urls:
+        return urls
+    # Legacy fallbacks only kick in when the primary envelope is empty.
     for key in _LEGACY_URL_KEYS:
         v = outcome.get(key)
         if v:
-            return str(v)
+            return [str(v)]
     if image_fallback:
         thumb = outcome.get("thumbnail_image_url")
         if thumb:
-            return str(thumb)
-    return None
+            return [str(thumb)]
+    return []
+
+
+def extract_media_url(outcome: dict, *, image_fallback: bool = False) -> str | None:
+    """Return the first asset URL from a GMICloud outcome (video / audio path).
+
+    Thin wrapper over ``extract_media_urls`` for single-output modalities.
+    """
+    urls = extract_media_urls(outcome, image_fallback=image_fallback)
+    return urls[0] if urls else None
 
 
 def unwrap_error_body(text: str) -> str:
@@ -83,8 +97,18 @@ class GMICloudBase(BaseProvider):
 
     Args:
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
+            Ignored when ``http_client`` is supplied.
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
+            Ignored when ``http_client`` is supplied.
+        base_url: Override the request-queue base URL. Falls back to the
+            GMI_BASE_URL env var, then the canonical production URL.
+            Ignored when ``http_client`` is supplied.
+        http_client: Pre-built ``httpx.Client`` to inject. Must have auth
+            headers and base URL already configured. Enables sharing one
+            client across multiple provider instances (video + image +
+            audio) in multi-modality pipelines. When supplied, the base
+            class will never close it — lifecycle is the caller's.
     """
 
     def __init__(
@@ -93,12 +117,16 @@ class GMICloudBase(BaseProvider):
         *,
         poll_interval: float = 5.0,
         http_timeout: float = 120.0,
+        base_url: str | None = None,
+        http_client: httpx.Client | None = None,
     ):
         super().__init__()
         self.poll_interval = poll_interval
         self._api_key: str | None = api_key or os.environ.get("GMI_API_KEY")
         self._http_timeout = http_timeout
-        self._http_client: httpx.Client | None = None
+        self._base_url: str = base_url or os.environ.get("GMI_BASE_URL") or _DEFAULT_BASE_URL
+        self._http_client: httpx.Client | None = http_client
+        self._owns_client: bool = http_client is None
 
     def _get_http_client(self) -> httpx.Client:
         """Lazy-create httpx client with API key Bearer auth."""
@@ -109,15 +137,20 @@ class GMICloudBase(BaseProvider):
                     error_code=ProviderErrorCode.AUTH_FAILURE,
                 )
             self._http_client = httpx.Client(
-                base_url=_BASE_URL,
+                base_url=self._base_url,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=self._http_timeout,
             )
+            self._owns_client = True
         return self._http_client
 
     def close(self) -> None:
-        """Close the HTTP client and release connection pool resources."""
-        if self._http_client is not None:
+        """Release connection-pool resources for internally-created clients.
+
+        No-op when an external ``http_client`` was injected — the caller owns
+        that client's lifecycle.
+        """
+        if self._http_client is not None and self._owns_client:
             self._http_client.close()
             self._http_client = None
 
