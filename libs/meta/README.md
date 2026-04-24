@@ -26,12 +26,19 @@ pip install "genblaze[all]"
 
 ## Import
 
-The Python import name is `genblaze_core` (underscore, not hyphen):
+`pip install genblaze` gives you both import paths:
 
 ```python
-from genblaze_core import Pipeline
-from genblaze_core.storage import ObjectStorageSink
+from genblaze import Pipeline                        # umbrella re-export
+from genblaze_core import Pipeline                   # canonical (used throughout docs)
+from genblaze_core.storage import ObjectStorageSink  # submodules -> genblaze_core
 ```
+
+Both forms resolve to the same object. The top-level `genblaze` module mirrors
+`genblaze_core.__all__` lazily, so only the symbols you actually use get
+loaded. For nested submodules (`genblaze_core.media`, `genblaze_core.canonical`)
+and provider adapters (`genblaze_openai`, `genblaze_google`, …) keep using
+their own names — adapters install as extras (`pip install "genblaze[openai]"`).
 
 See the [main repo README](https://github.com/backblaze-labs/genblaze#readme) for a complete package-to-import mapping and quickstart.
 

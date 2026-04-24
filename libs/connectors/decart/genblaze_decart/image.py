@@ -28,6 +28,7 @@ from genblaze_core.providers import (
     SyncProvider,
     per_unit,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_decart_error
@@ -139,4 +140,5 @@ class DecartImageProvider(SyncProvider):
             raise ProviderError(
                 f"Decart image generation failed: {exc}",
                 error_code=map_decart_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc

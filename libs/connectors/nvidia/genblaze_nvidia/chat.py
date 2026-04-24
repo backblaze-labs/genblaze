@@ -20,6 +20,7 @@ from typing import Any
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall
 from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers.retry import retry_after_from_response
 
 from ._base import DEFAULT_CHAT_BASE_URL, resolve_api_key
 from ._errors import map_nvidia_error
@@ -192,6 +193,7 @@ def chat(
         raise ProviderError(
             f"NVIDIA chat failed: {exc}",
             error_code=map_nvidia_error(exc),
+            retry_after=retry_after_from_response(exc),
         ) from exc
     finally:
         if own_client:

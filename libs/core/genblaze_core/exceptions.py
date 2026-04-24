@@ -13,11 +13,27 @@ class GenblazeError(Exception):
 
 
 class ProviderError(GenblazeError):
-    """Raised when a provider operation fails."""
+    """Raised when a provider operation fails.
 
-    def __init__(self, message: str, *, error_code: ProviderErrorCode | None = None):
+    ``retry_after`` carries the server's ``Retry-After`` hint (seconds) when the
+    connector parsed it from an HTTP response; the retry helper honors it over
+    computed backoff, clamped to ``MAX_RETRY_AFTER_SEC``. ``attempts`` reflects
+    how many tries were made before the terminal failure; populated by the
+    retry helper when it exhausts its budget.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: ProviderErrorCode | None = None,
+        retry_after: float | None = None,
+        attempts: int = 1,
+    ):
         super().__init__(message)
         self.error_code = error_code
+        self.retry_after = retry_after
+        self.attempts = attempts
 
 
 class ManifestError(GenblazeError):

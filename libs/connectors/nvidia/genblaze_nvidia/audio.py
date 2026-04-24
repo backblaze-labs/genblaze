@@ -22,6 +22,7 @@ from genblaze_core.providers.base import (
     validate_asset_url,
 )
 from genblaze_core.providers.model_registry import ModelRegistry
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._base import (
@@ -116,6 +117,7 @@ class NvidiaAudioProvider(SyncProvider):
             raise ProviderError(
                 f"NVIDIA audio generate failed ({status}): {detail}",
                 error_code=map_nvidia_error(Exception(detail), status),
+                retry_after=retry_after_from_response(headers),
             )
 
         step.provider_payload = {"nvidia": {"status": "succeeded"}}

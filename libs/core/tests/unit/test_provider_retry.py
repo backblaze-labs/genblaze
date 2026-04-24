@@ -139,15 +139,12 @@ def test_non_retryable_error_not_retried() -> None:
 
 @patch("genblaze_core.providers.base.time.sleep")
 def test_retry_backoff_capped_at_30(mock_sleep) -> None:
-    """Backoff base is capped at 30 seconds (plus up to 25% jitter)."""
+    """Backoff is full jitter in [0, min(2**attempt, 30)) — cap stays at 30."""
     provider = _RetryProvider(fail_count=6)
-    _make_step()
     provider.invoke(_make_step(), {"max_retries": 6, "timeout": 600})
     calls = [c.args[0] for c in mock_sleep.call_args_list]
-    # Max jitter: 30 * 1.25 = 37.5
-    assert all(c <= 37.5 for c in calls)
-    # Should still be > 0 (jitter adds at least base * 1.0)
-    assert all(c >= 1.0 for c in calls)
+    # Full jitter — every sample in [0, 30); cap stays at 30 for attempts ≥ 5.
+    assert all(0.0 <= c < 30.0 for c in calls)
 
 
 @patch("genblaze_core.providers.base.time.sleep")
@@ -444,3 +441,231 @@ class TestAdaptivePollInterval:
 
     def test_custom_max_interval(self):
         assert _adaptive_poll_interval(300, base=1.0, max_interval=10.0) == 10.0
+
+
+# --- Full-jitter backoff distribution ---
+
+
+def test_jittered_backoff_is_full_jitter() -> None:
+    """Full jitter draws uniformly in [0, cap) — never negative, never exceeds cap."""
+    from genblaze_core._utils import jittered_backoff
+
+    samples = [jittered_backoff(3) for _ in range(500)]  # cap = min(8, 30) = 8
+    assert all(0.0 <= s < 8.0 for s in samples)
+    # Mean should land near cap/2 — loose bound to stay non-flaky
+    mean = sum(samples) / len(samples)
+    assert 2.0 <= mean <= 6.0
+
+
+def test_jittered_backoff_cap() -> None:
+    """Beyond attempt=5, the cap holds at 30."""
+    from genblaze_core._utils import jittered_backoff
+
+    samples = [jittered_backoff(10) for _ in range(100)]
+    assert all(0.0 <= s < 30.0 for s in samples)
+
+
+# --- Retry-After honoring ---
+
+
+class _RetryAfterProvider(BaseProvider):
+    """poll() raises a ProviderError with retry_after set, then succeeds."""
+
+    name = "retry-after-test"
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__()
+        self._retry_after = retry_after
+        self.poll_calls = 0
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        from genblaze_core.exceptions import ProviderError
+
+        self.poll_calls += 1
+        if self.poll_calls == 1:
+            raise ProviderError(
+                "503 service unavailable",
+                error_code=ProviderErrorCode.SERVER_ERROR,
+                retry_after=self._retry_after,
+            )
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_retry_after_honored_over_jitter(mock_sleep) -> None:
+    """A ProviderError.retry_after overrides computed backoff."""
+    provider = _RetryAfterProvider(retry_after=3.0)
+    result = provider.invoke(_make_step(), {"timeout": 60})
+    assert result.status == StepStatus.SUCCEEDED
+    delays = [c.args[0] for c in mock_sleep.call_args_list]
+    assert 3.0 in delays
+
+
+def test_retry_after_parser_clamped() -> None:
+    """retry_after_from_response clamps pathological hints to MAX_RETRY_AFTER_SEC."""
+    from genblaze_core.providers.retry import (
+        MAX_RETRY_AFTER_SEC,
+        retry_after_from_response,
+    )
+
+    class _FakeResp:
+        headers = {"Retry-After": "9999"}
+
+    assert retry_after_from_response(_FakeResp()) == MAX_RETRY_AFTER_SEC
+
+
+def test_retry_after_parser_handles_missing_header() -> None:
+    from genblaze_core.providers.retry import retry_after_from_response
+
+    class _FakeResp:
+        headers: dict = {}
+
+    assert retry_after_from_response(_FakeResp()) is None
+    assert retry_after_from_response(None) is None
+
+
+def test_retry_after_parser_invalid_value() -> None:
+    """Malformed Retry-After values return None, not a crash."""
+    from genblaze_core.providers.retry import retry_after_from_response
+
+    class _FakeResp:
+        headers = {"Retry-After": "not-a-number"}
+
+    assert retry_after_from_response(_FakeResp()) is None
+
+
+# --- StepRetriedEvent emission ---
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_step_retried_event_emitted_on_poll_retry(mock_sleep) -> None:
+    """Every poll retry emits a StepRetriedEvent via on_retry callback."""
+    provider = _FlakyPollProvider(fail_count=2)
+    events: list = []
+    result = provider.invoke(
+        _make_step(),
+        {"timeout": 60, "on_retry": events.append},
+    )
+    assert result.status == StepStatus.SUCCEEDED
+    assert len(events) == 2
+    assert all(e.type == "step.retried" for e in events)
+    assert [e.phase for e in events] == ["poll", "poll"]
+    assert [e.attempt for e in events] == [1, 2]
+    assert all(e.error_code == "server_error" for e in events)
+
+
+# --- Submit-phase retry — pre-response only ---
+
+
+class _FlakySubmitProvider(BaseProvider):
+    """submit() raises the given exception type N times, then succeeds."""
+
+    name = "flaky-submit"
+
+    def __init__(self, *, exc_factory, fail_count: int) -> None:
+        super().__init__()
+        self._exc_factory = exc_factory
+        self._fail_count = fail_count
+        self.submit_calls = 0
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.submit_calls += 1
+        if self.submit_calls <= self._fail_count:
+            raise self._exc_factory()
+        return "pred"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_submit_pre_response_error_retries(mock_sleep) -> None:
+    """httpx.ConnectError on submit retries transparently."""
+    import httpx
+
+    provider = _FlakySubmitProvider(
+        exc_factory=lambda: httpx.ConnectError("no route"),
+        fail_count=2,
+    )
+    result = provider.invoke(_make_step(), {"timeout": 60})
+    assert result.status == StepStatus.SUCCEEDED
+    assert provider.submit_calls == 3
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_submit_post_response_error_does_not_retry_by_default(mock_sleep) -> None:
+    """A ProviderError(SERVER_ERROR) on submit does NOT trigger an intra-submit retry.
+
+    Post-response errors may indicate the request was already processed server-side;
+    retrying without an idempotency key could double-bill. The outer invoke() loop
+    still handles these when the caller opts in via max_retries.
+    """
+    from genblaze_core.exceptions import ProviderError
+
+    def _fail():
+        raise ProviderError("500 server", error_code=ProviderErrorCode.SERVER_ERROR)
+
+    provider = _FlakySubmitProvider(exc_factory=_fail, fail_count=99)
+    result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 0})
+    assert result.status == StepStatus.FAILED
+    assert provider.submit_calls == 1
+
+
+# --- Fetch-phase retry ---
+
+
+class _FlakyFetchProvider(BaseProvider):
+    """fetch_output() raises a transient error N times then succeeds."""
+
+    name = "flaky-fetch"
+
+    def __init__(self, fail_count: int) -> None:
+        super().__init__()
+        self._fail_count = fail_count
+        self.fetch_calls = 0
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        from genblaze_core.exceptions import ProviderError
+
+        self.fetch_calls += 1
+        if self.fetch_calls <= self._fail_count:
+            raise ProviderError("503 gateway", error_code=ProviderErrorCode.SERVER_ERROR)
+        return step
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_fetch_transient_retry_recovers(mock_sleep) -> None:
+    """A transient 5xx during fetch_output retries up to the phase budget."""
+    provider = _FlakyFetchProvider(fail_count=2)
+    result = provider.invoke(_make_step(), {"timeout": 60})
+    assert result.status == StepStatus.SUCCEEDED
+    assert provider.fetch_calls == 3
+
+
+# --- ProviderError.attempts populated on exhaustion ---
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_provider_error_carries_attempts_on_exhaustion(mock_sleep) -> None:
+    """When the retry budget is exhausted, the surfaced ProviderError.attempts reflects it."""
+    provider = _FlakyPollProvider(fail_count=99)
+    provider.poll_transient_retries = 2
+    result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 0})
+    assert result.status == StepStatus.FAILED
+    # 1 initial + 2 retries = 3 attempts total
+    assert provider.poll_calls == 3

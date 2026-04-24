@@ -7,7 +7,7 @@ import logging
 import time
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from genblaze_core._utils import _SECRET_PATTERNS, jittered_backoff, utc_now
@@ -22,6 +22,7 @@ from genblaze_core.models.step import Step
 from genblaze_core.observability.span import StepSpan
 from genblaze_core.providers.model_registry import EMPTY_REGISTRY, ModelRegistry, compute_cost
 from genblaze_core.providers.progress import ProgressEvent
+from genblaze_core.providers.retry import PRE_RESPONSE_EXCEPTIONS
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
@@ -184,9 +185,9 @@ class BaseProvider(Runnable[Step, Step]):
 
     name: str = "base"
     poll_interval: float = DEFAULT_POLL_INTERVAL
-    # Max consecutive transient poll failures tolerated before escalating.
-    # Counter resets on any successful poll, so this is a consecutive-failure
-    # budget, not a total. Set to 0 to disable intra-poll retries.
+    # Max transient failures tolerated per phase (submit/poll/fetch) before escalating.
+    # Counter is phase-local — a successful poll does not refund submit's budget.
+    # Set to 0 to disable intra-phase retries.
     poll_transient_retries: int = _DEFAULT_POLL_TRANSIENT_RETRIES
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -362,6 +363,137 @@ class BaseProvider(Runnable[Step, Step]):
             return exc.error_code
         return classify_api_error(exc)
 
+    @staticmethod
+    def _is_retryable(exc: Exception, retry_on: tuple[type[BaseException], ...] | None) -> bool:
+        """Retry rule for one phase.
+
+        When ``retry_on`` is supplied (submit phase), only those exception
+        classes are eligible — this is how we constrain submit retries to
+        pre-response network failures where replay is safe without an
+        idempotency key. Otherwise (poll/fetch) we fall back to the normalized
+        error code.
+        """
+        if retry_on is not None:
+            return isinstance(exc, retry_on)
+        return BaseProvider._classify_poll_exc(exc) in RETRYABLE_ERROR_CODES
+
+    @staticmethod
+    def _retry_delay(exc: Exception, attempt: int) -> float:
+        """Delay before the next attempt — server hint wins over computed backoff."""
+        if isinstance(exc, ProviderError) and exc.retry_after is not None:
+            return exc.retry_after
+        return jittered_backoff(attempt)
+
+    def _emit_retry(
+        self,
+        step: Step,
+        config: RunnableConfig | None,
+        phase: Literal["submit", "poll", "fetch"],
+        exc: Exception,
+        attempt: int,
+        delay: float,
+    ) -> None:
+        """Log + fire ``on_retry`` so pipeline streams can surface the retry."""
+        code = self._classify_poll_exc(exc)
+        logger.warning(
+            "%s %s retry %d/%d in %.1fs (code=%s)",
+            self.name,
+            phase,
+            attempt,
+            self.poll_transient_retries,
+            delay,
+            code,
+        )
+        callback = (config or {}).get("on_retry")
+        if callback is None:
+            return
+        # Local import to avoid a circular reference at module import time.
+        from genblaze_core.observability.events import StepRetriedEvent
+
+        callback(
+            StepRetriedEvent(
+                run_id=(config or {}).get("run_id"),
+                step_id=step.step_id,
+                provider=self.name,
+                model=step.model,
+                phase=phase,
+                attempt=attempt,
+                max_attempts=self.poll_transient_retries + 1,
+                delay_sec=delay,
+                error_code=str(code) if code else None,
+                error=_sanitize_error(str(exc)),
+            )
+        )
+
+    def _retry_phase(
+        self,
+        fn: Any,
+        *,
+        phase: Literal["submit", "poll", "fetch"],
+        step: Step,
+        config: RunnableConfig | None,
+        start_time: float,
+        timeout: float,
+        retry_on: tuple[type[BaseException], ...] | None = None,
+    ) -> Any:
+        """Run ``fn()`` with retries; unified across submit / poll / fetch.
+
+        ``retry_on=PRE_RESPONSE_EXCEPTIONS`` narrows submit retries to network
+        errors that cannot have triggered a side effect. Everywhere else the
+        retryable set is driven by the normalized error code.
+        """
+        max_budget = self.poll_transient_retries
+        attempt = 1
+        while True:
+            try:
+                return fn()
+            except Exception as exc:
+                if not self._is_retryable(exc, retry_on) or attempt > max_budget:
+                    if isinstance(exc, ProviderError):
+                        exc.attempts = attempt
+                    raise
+                delay = self._retry_delay(exc, attempt)
+                elapsed = time.monotonic() - start_time
+                if elapsed + delay >= timeout:
+                    if isinstance(exc, ProviderError):
+                        exc.attempts = attempt
+                    raise
+                self._emit_retry(step, config, phase, exc, attempt, delay)
+                time.sleep(delay)
+                attempt += 1
+
+    async def _aretry_phase(
+        self,
+        fn: Any,
+        *,
+        phase: Literal["submit", "poll", "fetch"],
+        step: Step,
+        config: RunnableConfig | None,
+        start_time: float,
+        timeout: float,
+        retry_on: tuple[type[BaseException], ...] | None = None,
+    ) -> Any:
+        """Async twin of ``_retry_phase`` — ``fn`` is an awaitable factory."""
+        max_budget = self.poll_transient_retries
+        attempt = 1
+        while True:
+            try:
+                return await fn()
+            except Exception as exc:
+                if not self._is_retryable(exc, retry_on) or attempt > max_budget:
+                    if isinstance(exc, ProviderError):
+                        exc.attempts = attempt
+                    raise
+                delay = self._retry_delay(exc, attempt)
+                elapsed = time.monotonic() - start_time
+                if elapsed + delay >= timeout:
+                    if isinstance(exc, ProviderError):
+                        exc.attempts = attempt
+                    raise
+                self._emit_retry(step, config, phase, exc, attempt, delay)
+                await asyncio.sleep(delay)
+                attempt += 1
+
     def _attempt_once(
         self, step: Step, config: RunnableConfig | None, timeout: float, start_time: float
     ) -> Step:
@@ -372,7 +504,15 @@ class BaseProvider(Runnable[Step, Step]):
         self._fire_progress(step, config, "submitted", start_time)
 
         logger.debug("Submitting to %s: model=%s", self.name, step.model)
-        raw = self.submit(step, config)
+        raw = self._retry_phase(
+            lambda: self.submit(step, config),
+            phase="submit",
+            step=step,
+            config=config,
+            start_time=start_time,
+            timeout=timeout,
+            retry_on=PRE_RESPONSE_EXCEPTIONS,
+        )
 
         # Support SubmitResult for timing hints (backward compatible with plain IDs)
         if isinstance(raw, SubmitResult):
@@ -398,31 +538,15 @@ class BaseProvider(Runnable[Step, Step]):
             if initial_delay > 0:
                 time.sleep(initial_delay)
 
-        transient_retries = 0
         while True:
-            try:
-                done = self.poll(prediction_id, config)
-            except Exception as exc:
-                code = self._classify_poll_exc(exc)
-                elapsed = time.monotonic() - start_time
-                if (
-                    code in RETRYABLE_ERROR_CODES
-                    and transient_retries < self.poll_transient_retries
-                    and elapsed < timeout
-                ):
-                    transient_retries += 1
-                    backoff = jittered_backoff(transient_retries)
-                    logger.debug(
-                        "Poll transient error (%s), retry %d/%d in %.1fs",
-                        code,
-                        transient_retries,
-                        self.poll_transient_retries,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    continue
-                raise
-            transient_retries = 0  # reset on any successful poll
+            done = self._retry_phase(
+                lambda: self.poll(prediction_id, config),
+                phase="poll",
+                step=step,
+                config=config,
+                start_time=start_time,
+                timeout=timeout,
+            )
             if done:
                 break
             elapsed = time.monotonic() - start_time
@@ -432,7 +556,14 @@ class BaseProvider(Runnable[Step, Step]):
             interval = _adaptive_poll_interval(elapsed, self.poll_interval)
             time.sleep(interval)
 
-        step = self.fetch_output(prediction_id, step)
+        step = self._retry_phase(
+            lambda: self.fetch_output(prediction_id, step),
+            phase="fetch",
+            step=step,
+            config=config,
+            start_time=start_time,
+            timeout=timeout,
+        )
         self._apply_registry_pricing(step)
         # Only mark succeeded if fetch_output didn't signal failure
         if step.status != StepStatus.FAILED:
@@ -500,23 +631,15 @@ class BaseProvider(Runnable[Step, Step]):
         self._fire_progress(step, config, "resumed", start_time)
 
         try:
-            transient_retries = 0
             while True:
-                try:
-                    done = self.poll(prediction_id, config)
-                except Exception as exc:
-                    code = self._classify_poll_exc(exc)
-                    elapsed = time.monotonic() - start_time
-                    if (
-                        code in RETRYABLE_ERROR_CODES
-                        and transient_retries < self.poll_transient_retries
-                        and elapsed < timeout
-                    ):
-                        transient_retries += 1
-                        time.sleep(jittered_backoff(transient_retries))
-                        continue
-                    raise
-                transient_retries = 0
+                done = self._retry_phase(
+                    lambda: self.poll(prediction_id, config),
+                    phase="poll",
+                    step=step,
+                    config=config,
+                    start_time=start_time,
+                    timeout=timeout,
+                )
                 if done:
                     break
                 elapsed = time.monotonic() - start_time
@@ -527,7 +650,14 @@ class BaseProvider(Runnable[Step, Step]):
                 interval = _adaptive_poll_interval(elapsed, self.poll_interval)
                 time.sleep(interval)
 
-            step = self.fetch_output(prediction_id, step)
+            step = self._retry_phase(
+                lambda: self.fetch_output(prediction_id, step),
+                phase="fetch",
+                step=step,
+                config=config,
+                start_time=start_time,
+                timeout=timeout,
+            )
             self._apply_registry_pricing(step)
             return self._finalize_resume_step(step, config, start_time)
         except Exception as exc:
@@ -553,23 +683,15 @@ class BaseProvider(Runnable[Step, Step]):
         self._fire_progress(step, config, "resumed", start_time)
 
         try:
-            transient_retries = 0
             while True:
-                try:
-                    done = await asyncio.to_thread(self.poll, prediction_id, config)
-                except Exception as exc:
-                    code = self._classify_poll_exc(exc)
-                    elapsed = time.monotonic() - start_time
-                    if (
-                        code in RETRYABLE_ERROR_CODES
-                        and transient_retries < self.poll_transient_retries
-                        and elapsed < timeout
-                    ):
-                        transient_retries += 1
-                        await asyncio.sleep(jittered_backoff(transient_retries))
-                        continue
-                    raise
-                transient_retries = 0
+                done = await self._aretry_phase(
+                    lambda: asyncio.to_thread(self.poll, prediction_id, config),
+                    phase="poll",
+                    step=step,
+                    config=config,
+                    start_time=start_time,
+                    timeout=timeout,
+                )
                 if done:
                     break
                 elapsed = time.monotonic() - start_time
@@ -580,7 +702,14 @@ class BaseProvider(Runnable[Step, Step]):
                 interval = _adaptive_poll_interval(elapsed, self.poll_interval)
                 await asyncio.sleep(interval)
 
-            step = await asyncio.to_thread(self.fetch_output, prediction_id, step)
+            step = await self._aretry_phase(
+                lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),
+                phase="fetch",
+                step=step,
+                config=config,
+                start_time=start_time,
+                timeout=timeout,
+            )
             self._apply_registry_pricing(step)
             return self._finalize_resume_step(step, config, start_time)
         except Exception as exc:
@@ -667,7 +796,15 @@ class BaseProvider(Runnable[Step, Step]):
         self._fire_progress(step, config, "submitted", start_time)
 
         logger.debug("Submitting to %s: model=%s", self.name, step.model)
-        raw = await asyncio.to_thread(self.submit, step, config)
+        raw = await self._aretry_phase(
+            lambda: asyncio.to_thread(self.submit, step, config),
+            phase="submit",
+            step=step,
+            config=config,
+            start_time=start_time,
+            timeout=timeout,
+            retry_on=PRE_RESPONSE_EXCEPTIONS,
+        )
 
         # Support SubmitResult for timing hints (backward compatible with plain IDs)
         if isinstance(raw, SubmitResult):
@@ -693,31 +830,15 @@ class BaseProvider(Runnable[Step, Step]):
             if initial_delay > 0:
                 await asyncio.sleep(initial_delay)
 
-        transient_retries = 0
         while True:
-            try:
-                done = await asyncio.to_thread(self.poll, prediction_id, config)
-            except Exception as exc:
-                code = self._classify_poll_exc(exc)
-                elapsed = time.monotonic() - start_time
-                if (
-                    code in RETRYABLE_ERROR_CODES
-                    and transient_retries < self.poll_transient_retries
-                    and elapsed < timeout
-                ):
-                    transient_retries += 1
-                    backoff = jittered_backoff(transient_retries)
-                    logger.debug(
-                        "Poll transient error (%s), retry %d/%d in %.1fs",
-                        code,
-                        transient_retries,
-                        self.poll_transient_retries,
-                        backoff,
-                    )
-                    await asyncio.sleep(backoff)
-                    continue
-                raise
-            transient_retries = 0
+            done = await self._aretry_phase(
+                lambda: asyncio.to_thread(self.poll, prediction_id, config),
+                phase="poll",
+                step=step,
+                config=config,
+                start_time=start_time,
+                timeout=timeout,
+            )
             if done:
                 break
             elapsed = time.monotonic() - start_time
@@ -727,7 +848,14 @@ class BaseProvider(Runnable[Step, Step]):
             interval = _adaptive_poll_interval(elapsed, self.poll_interval)
             await asyncio.sleep(interval)
 
-        step = await asyncio.to_thread(self.fetch_output, prediction_id, step)
+        step = await self._aretry_phase(
+            lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),
+            phase="fetch",
+            step=step,
+            config=config,
+            start_time=start_time,
+            timeout=timeout,
+        )
         self._apply_registry_pricing(step)
         if step.status != StepStatus.FAILED:
             step.status = StepStatus.SUCCEEDED

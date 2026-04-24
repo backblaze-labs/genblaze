@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze"
-version = "0.2.3"
-description = "Umbrella metapackage for genblaze — installs genblaze-core + genblaze-s3 by default; use extras for provider bundles"
+version = "0.3.0"
+description = "Umbrella package for genblaze — installs genblaze-core + genblaze-s3 and re-exports the core API; use extras for provider bundles"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -83,7 +83,10 @@ all = [
     "genblaze-langsmith>=0.2.1,<0.3",
     "genblaze-nvidia>=0.1.0,<0.2",
 ]
+dev = ["pytest>=7.0"]
 
 [tool.hatch.build.targets.wheel]
-# Metapackage has no Python code — ship an empty wheel.
-bypass-selection = true
+packages = ["genblaze"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

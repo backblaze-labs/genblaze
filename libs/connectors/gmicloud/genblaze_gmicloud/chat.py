@@ -14,6 +14,7 @@ import httpx
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall
 from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers.retry import retry_after_from_response
 
 from genblaze_gmicloud._base import unwrap_error_body
 from genblaze_gmicloud._errors import map_gmicloud_error
@@ -171,6 +172,7 @@ def chat(
             raise ProviderError(
                 f"GMICloud chat failed ({resp.status_code}): {inner}",
                 error_code=map_gmicloud_error(Exception(inner), resp.status_code),
+                retry_after=retry_after_from_response(resp),
             )
         body = resp.json()
     except ProviderError:

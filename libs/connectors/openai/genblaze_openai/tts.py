@@ -30,6 +30,7 @@ from genblaze_core.providers import (
     SyncProvider,
     per_input_chars,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_openai._errors import map_openai_error
@@ -201,4 +202,5 @@ class OpenAITTSProvider(SyncProvider):
             raise ProviderError(
                 f"TTS generation failed: {exc}",
                 error_code=map_openai_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc

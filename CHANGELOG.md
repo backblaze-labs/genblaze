@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `genblaze` (umbrella) 0.3.0: now ships a real Python package (was an empty
+  metapackage). Re-exports the top-level public surface of `genblaze_core`
+  lazily, so `from genblaze import Pipeline` works after
+  `pip install genblaze`. `genblaze_core` remains the canonical import path
+  used in docs and examples. Submodules (`genblaze_core.media`,
+  `genblaze_core.canonical`) and provider adapters (`genblaze_openai`,
+  `genblaze_google`, …) are not re-exported — import those from their own
+  packages. Ships `py.typed` for static type-checker support.
+
 ## [0.2.4] - 2026-04-24
 
 ### Released package versions

@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers.retry import retry_after_from_response
 
 from ._errors import map_nvidia_error
 
@@ -343,12 +344,13 @@ class NvidiaClient:
         body = self._parse_json_body(resp)
         return resp.status_code, body, headers
 
-    def poll_nvcf(self, request_id: str) -> tuple[int, dict]:
-        """Poll NVCF for an async job. Returns ``(status_code, body)``.
+    def poll_nvcf(self, request_id: str) -> tuple[int, dict, dict]:
+        """Poll NVCF for an async job. Returns ``(status_code, body, headers)``.
 
         A 200 means the job is complete; a 202 means still running. Any other
         status is an error and surfaces via the returned body for the caller
-        to classify.
+        to classify. Headers are lowercase-keyed so callers can read
+        ``retry-after`` case-insensitively.
         """
         if not request_id:
             raise ProviderError(
@@ -366,7 +368,8 @@ class NvidiaClient:
                 f"NVIDIA poll failed (transport): {exc}",
                 error_code=map_nvidia_error(exc),
             ) from exc
-        return resp.status_code, self._parse_json_body(resp)
+        headers = {k.lower(): v for k, v in resp.headers.items()}
+        return resp.status_code, self._parse_json_body(resp), headers
 
     def _parse_json_body(self, resp: httpx.Response) -> dict:
         """Parse JSON; fall back to a dict wrapping raw text for non-JSON bodies."""
@@ -395,7 +398,7 @@ class NvidiaClient:
         """
         start = time.monotonic()
         while True:
-            status, body = self.poll_nvcf(request_id)
+            status, body, headers = self.poll_nvcf(request_id)
             if status == 200:
                 return body
             if status in _NVCF_PENDING_STATUSES:
@@ -413,4 +416,5 @@ class NvidiaClient:
             raise ProviderError(
                 f"NVIDIA NVCF status {status}: {detail}",
                 error_code=map_nvidia_error(Exception(detail), status),
+                retry_after=retry_after_from_response(headers),
             )

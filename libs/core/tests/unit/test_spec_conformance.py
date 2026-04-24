@@ -42,6 +42,7 @@ from genblaze_core.observability.events import (
     StepCompletedEvent,
     StepFailedEvent,
     StepProgressEvent,
+    StepRetriedEvent,
     StepStartedEvent,
     StreamEventAdapter,
 )
@@ -214,6 +215,7 @@ EVENT_MODEL_SCHEMA_PAIRS = [
     ("PipelineFailedEvent", PipelineFailedEvent, "pipeline-failed.schema.json"),
     ("StepStartedEvent", StepStartedEvent, "step-started.schema.json"),
     ("StepProgressEvent", StepProgressEvent, "step-progress.schema.json"),
+    ("StepRetriedEvent", StepRetriedEvent, "step-retried.schema.json"),
     ("StepCompletedEvent", StepCompletedEvent, "step-completed.schema.json"),
     ("StepFailedEvent", StepFailedEvent, "step-failed.schema.json"),
     (
@@ -393,6 +395,21 @@ _VARIANT_FIXTURES = [
         dict(step_id="s1", provider="p", model="m", progress_pct=0.5),
     ),
     (
+        "step.retried",
+        StepRetriedEvent,
+        dict(
+            step_id="s1",
+            provider="p",
+            model="m",
+            phase="poll",
+            attempt=1,
+            max_attempts=6,
+            delay_sec=1.5,
+            error_code="server_error",
+            error="503",
+        ),
+    ),
+    (
         "step.completed",
         StepCompletedEvent,
         dict(
@@ -485,6 +502,7 @@ def test_stream_event_schema_covers_every_variant():
         "pipeline-failed.schema.json",
         "step-started.schema.json",
         "step-progress.schema.json",
+        "step-retried.schema.json",
         "step-completed.schema.json",
         "step-failed.schema.json",
         "agent-iteration-started.schema.json",

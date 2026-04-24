@@ -14,6 +14,7 @@ import httpx
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers.base import BaseProvider, SubmitResult
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_gmicloud_error
@@ -168,6 +169,7 @@ class GMICloudBase(BaseProvider):
             raise ProviderError(
                 f"GMICloud submit failed ({resp.status_code}): {inner}",
                 error_code=map_gmicloud_error(Exception(inner), resp.status_code),
+                retry_after=retry_after_from_response(resp),
             )
         data = resp.json()
         request_id = data.get("request_id") or data.get("id")
@@ -183,6 +185,7 @@ class GMICloudBase(BaseProvider):
                 raise ProviderError(
                     f"GMICloud poll failed ({resp.status_code}): {inner}",
                     error_code=map_gmicloud_error(Exception(inner), resp.status_code),
+                    retry_after=retry_after_from_response(resp),
                 )
             detail = resp.json()
             if detail.get("status", "") in _TERMINAL_STATUSES:
@@ -209,5 +212,6 @@ class GMICloudBase(BaseProvider):
             raise ProviderError(
                 f"GMICloud fetch failed ({resp.status_code}): {inner}",
                 error_code=map_gmicloud_error(Exception(inner), resp.status_code),
+                retry_after=retry_after_from_response(resp),
             )
         return resp.json()

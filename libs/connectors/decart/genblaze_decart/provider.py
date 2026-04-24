@@ -32,6 +32,7 @@ from genblaze_core.providers import (
     by_param,
 )
 from genblaze_core.providers.base import BaseProvider
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_decart_error
@@ -167,6 +168,7 @@ class DecartVideoProvider(BaseProvider):
             raise ProviderError(
                 f"Decart submit failed: {exc}",
                 error_code=map_decart_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
@@ -182,6 +184,7 @@ class DecartVideoProvider(BaseProvider):
             raise ProviderError(
                 f"Decart poll failed: {exc}",
                 error_code=map_decart_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
@@ -235,4 +238,5 @@ class DecartVideoProvider(BaseProvider):
             raise ProviderError(
                 f"Decart fetch_output failed: {exc}",
                 error_code=map_decart_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc

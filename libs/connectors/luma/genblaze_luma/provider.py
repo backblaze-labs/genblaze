@@ -28,6 +28,7 @@ from genblaze_core.providers import (
     route_keyframes,
     validate_asset_url,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_luma_error
@@ -144,6 +145,7 @@ class LumaProvider(BaseProvider):
             raise ProviderError(
                 f"Luma submit failed: {exc}",
                 error_code=map_luma_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
@@ -159,6 +161,7 @@ class LumaProvider(BaseProvider):
             raise ProviderError(
                 f"Luma poll failed: {exc}",
                 error_code=map_luma_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
@@ -203,4 +206,5 @@ class LumaProvider(BaseProvider):
             raise ProviderError(
                 f"Luma fetch_output failed: {exc}",
                 error_code=map_luma_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc

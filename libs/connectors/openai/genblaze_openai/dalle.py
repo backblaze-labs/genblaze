@@ -46,6 +46,7 @@ from genblaze_core.providers import (
     validate_asset_url,
     validate_chain_input_url,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_openai._errors import map_openai_error
@@ -552,6 +553,7 @@ class DalleProvider(SyncProvider):
             raise ProviderError(
                 f"OpenAI image {'edit' if is_edit else 'generation'} failed: {exc}",
                 error_code=map_openai_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
         finally:
             for fh in open_files:

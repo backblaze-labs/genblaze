@@ -33,6 +33,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     SyncProvider,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_stability_audio_error
@@ -206,6 +207,7 @@ class StabilityAudioProvider(SyncProvider):
                 raise ProviderError(
                     f"Stability Audio API error {response.status_code}: {response.text[:200]}",
                     error_code=map_stability_audio_error(Exception(), response.status_code),
+                    retry_after=retry_after_from_response(response),
                 )
 
             ext = f".{output_format}"
@@ -244,4 +246,5 @@ class StabilityAudioProvider(SyncProvider):
             raise ProviderError(
                 f"Stability Audio generation failed: {exc}",
                 error_code=map_stability_audio_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc

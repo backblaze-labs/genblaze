@@ -11,6 +11,7 @@ from typing import Any
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall
 from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers.retry import retry_after_from_response
 
 from genblaze_google._errors import map_google_error
 
@@ -205,6 +206,7 @@ def chat(
         raise ProviderError(
             f"Gemini chat failed: {exc}",
             error_code=map_google_error(exc),
+            retry_after=retry_after_from_response(exc),
         ) from exc
     finally:
         if own_client:

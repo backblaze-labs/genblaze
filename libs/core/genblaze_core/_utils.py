@@ -133,12 +133,14 @@ _SECRET_PATTERNS = re.compile(
 
 
 def jittered_backoff(attempt: int) -> float:
-    """Compute exponential backoff with jitter to avoid thundering herd.
+    """Exponential backoff with AWS-style full jitter — decorrelates parallel clients.
 
-    Starts at 1s, doubles per attempt, capped at 30s base with up to 25% jitter.
+    Returns a value in [0, min(2**attempt, 30)). Full jitter (vs. additive jitter)
+    is what actually de-syncs a thundering herd: 50 clients hitting a shared
+    hiccup land uniformly across the window instead of bunching near the top.
     """
-    base = min(2**attempt, 30)
-    return base * (1 + random.uniform(0, 0.25))  # noqa: S311 — jitter, not crypto
+    cap = min(2**attempt, 30)
+    return random.uniform(0, cap)  # noqa: S311 — jitter, not crypto
 
 
 def probe_audio_duration(path: str | Any) -> float | None:

@@ -30,6 +30,7 @@ from genblaze_core.providers import (
     SyncProvider,
     bucketed_by_duration,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_elevenlabs._errors import map_elevenlabs_error
@@ -179,4 +180,5 @@ class ElevenLabsSFXProvider(SyncProvider):
             raise ProviderError(
                 f"ElevenLabs SFX failed: {exc}",
                 error_code=map_elevenlabs_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc

@@ -16,6 +16,7 @@ install:
 	pip install -e libs/connectors/langsmith
 	pip install -e libs/connectors/nvidia
 	pip install -e cli
+	pip install -e libs/meta
 
 install-dev:
 	pip install -e "libs/core[dev]"
@@ -33,6 +34,7 @@ install-dev:
 	pip install -e "libs/connectors/langsmith[dev]"
 	pip install -e "libs/connectors/nvidia[dev]"
 	pip install -e "cli[dev]"
+	pip install -e "libs/meta[dev]"
 
 test:
 	cd libs/core && pytest tests/ -v
@@ -50,6 +52,7 @@ test:
 	cd libs/connectors/langsmith && pytest -v
 	cd libs/connectors/nvidia && pytest -v
 	cd cli && pytest tests/ -v
+	cd libs/meta && pytest tests/ -v
 
 lint:
 	ruff check libs/ cli/ examples/

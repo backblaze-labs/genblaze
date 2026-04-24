@@ -18,7 +18,7 @@
 
 Genblaze is an AI pipeline SDK by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for building and orchestrating generative media workflows across video, image, and audio providers.
 
-It provides a unified interface to experiment with providers like Runway, Luma, ElevenLabs, Stability Audio, and Hume AI, along with models available through platforms such as GMI Cloud, without rewriting pipeline logic.
+It provides a unified interface to experiment with providers like Runway, Luma, ElevenLabs, Stability Audio, and Hume AI, along with models available through platforms such as GMI Cloud and NVIDIA NIM (`build.nvidia.com`), without rewriting pipeline logic.
 
 Every output includes a SHA-256–verified provenance manifest capturing how the media was generated, with support for embedding metadata directly into files. Genblaze integrates with S3-compatible storage such as [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) to store and scale AI-generated media pipelines in production.
 
@@ -50,6 +50,7 @@ genblaze ships with provider adapters for major generative AI platforms. The mat
 |  | Video | Image | Audio | Chat (LLM) |
 |---|---|---|---|---|
 | **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS / Music | `chat()` — Llama, DeepSeek, Qwen |
+| **NVIDIA NIM** | Cosmos 1.0 / 2.0 (diffusion, text2world / video2world) | SDXL, SD 3.5, FLUX.1, FLUX.2 | Fugatto, Riva TTS, Maxine | `chat()` — Nemotron, Llama, Mistral, Qwen, Phi |
 | **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS | `chat()` — GPT-4o / GPT-4.1 / o-series |
 | **Google** | Veo | Imagen | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
 | **Runway** | Gen-4 Turbo | — | — | — |
@@ -124,6 +125,7 @@ don't need all of them — just the ones whose providers you use.
 |---|---|---|
 | **Backblaze B2** (storage) | `B2_KEY_ID`, `B2_APP_KEY` (optional: `B2_BUCKET`, `B2_REGION`) | [B2 Application Keys](https://secure.backblaze.com/app_keys.htm) |
 | GMICloud | `GMI_API_KEY` | [console.gmicloud.ai](https://console.gmicloud.ai/) |
+| NVIDIA NIM (Cosmos, SDXL/FLUX, Fugatto, chat) | `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/) |
 | OpenAI (Sora, DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
 | Google (Veo, Imagen) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | Runway (Gen video) | `RUNWAYML_API_SECRET` | [dev.runwayml.com](https://dev.runwayml.com/) |

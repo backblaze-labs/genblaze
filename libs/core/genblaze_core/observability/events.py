@@ -35,6 +35,7 @@ StreamEventType = Literal[
     "pipeline.failed",
     "step.started",
     "step.progress",
+    "step.retried",
     "step.completed",
     "step.failed",
     "agent.iteration.started",
@@ -156,6 +157,34 @@ class StepProgressEvent(StreamEvent):
     )
 
 
+class StepRetriedEvent(StreamEvent):
+    """Emitted when a transient phase failure triggers a retry.
+
+    Fires once per retry attempt (not per final failure). ``phase`` lets UIs
+    distinguish an expensive submit retry from a cheap poll retry; ``delay_sec``
+    is the actual sleep scheduled before the next attempt (post-jitter,
+    post-``Retry-After``-clamp).
+    """
+
+    type: Literal["step.retried"] = "step.retried"
+    run_id: str | None = Field(default=None, description="Run identifier if available.")
+    step_id: str = Field(description="Step identifier (UUID).")
+    provider: str = Field(description="Provider name.")
+    model: str = Field(description="Model slug.")
+    phase: Literal["submit", "poll", "fetch"] = Field(
+        description="Which lifecycle phase is being retried."
+    )
+    attempt: int = Field(description="1-based attempt counter that just failed.", ge=1)
+    max_attempts: int = Field(description="Total attempts permitted for this phase.", ge=1)
+    delay_sec: float = Field(
+        description="Seconds the retry helper will sleep before the next attempt.", ge=0
+    )
+    error_code: str | None = Field(
+        default=None, description="Normalized ProviderErrorCode that triggered the retry."
+    )
+    error: str | None = Field(default=None, description="Sanitized failure message, if available.")
+
+
 class StepCompletedEvent(StreamEvent):
     """Emitted when a step finishes successfully."""
 
@@ -255,6 +284,7 @@ AnyStreamEvent = Annotated[
     | PipelineFailedEvent
     | StepStartedEvent
     | StepProgressEvent
+    | StepRetriedEvent
     | StepCompletedEvent
     | StepFailedEvent
     | AgentIterationStartedEvent
@@ -279,6 +309,7 @@ __all__ = [
     "StepCompletedEvent",
     "StepFailedEvent",
     "StepProgressEvent",
+    "StepRetriedEvent",
     "StepStartedEvent",
     "StreamEvent",
     "StreamEventAdapter",

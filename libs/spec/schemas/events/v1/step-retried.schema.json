@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/step-retried.schema.json",
+  "title": "StepRetriedEvent",
+  "description": "Emitted when a transient phase failure triggers a retry. Fires once per retry attempt (not per final failure).",
+  "type": "object",
+  "required": [
+    "type",
+    "timestamp",
+    "step_id",
+    "provider",
+    "model",
+    "phase",
+    "attempt",
+    "max_attempts",
+    "delay_sec"
+  ],
+  "properties": {
+    "type": {
+      "const": "step.retried",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Run identifier if available."
+    },
+    "step_id": {
+      "type": "string",
+      "description": "Step identifier (UUID)."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Provider name."
+    },
+    "model": {
+      "type": "string",
+      "description": "Model slug."
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["submit", "poll", "fetch"],
+      "description": "Which lifecycle phase is being retried."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1-based attempt counter that just failed."
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total attempts permitted for this phase."
+    },
+    "delay_sec": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Seconds the retry helper will sleep before the next attempt."
+    },
+    "error_code": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Normalized ProviderErrorCode that triggered the retry."
+    },
+    "error": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Sanitized failure message, if available."
+    }
+  },
+  "additionalProperties": false
+}

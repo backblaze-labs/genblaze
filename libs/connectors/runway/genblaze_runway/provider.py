@@ -29,6 +29,7 @@ from genblaze_core.providers import (
     route_images,
     validate_asset_url,
 )
+from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_runway_error
@@ -188,6 +189,7 @@ class RunwayProvider(BaseProvider):
             raise ProviderError(
                 f"Runway submit failed: {exc}",
                 error_code=map_runway_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
@@ -203,6 +205,7 @@ class RunwayProvider(BaseProvider):
             raise ProviderError(
                 f"Runway poll failed: {exc}",
                 error_code=map_runway_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
@@ -257,4 +260,5 @@ class RunwayProvider(BaseProvider):
             raise ProviderError(
                 f"Runway fetch_output failed: {exc}",
                 error_code=map_runway_error(exc),
+                retry_after=retry_after_from_response(exc),
             ) from exc
