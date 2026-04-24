@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-nvidia"
-version = "0.1.0"
+version = "0.2.0"
 description = "NVIDIA NIM / build.nvidia.com media provider adapters for genblaze (video, image, audio, chat)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -24,6 +24,7 @@ dependencies = [
 Homepage = "https://github.com/backblaze-labs/genblaze"
 Documentation = "https://github.com/backblaze-labs/genblaze"
 Repository = "https://github.com/backblaze-labs/genblaze"
+Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]

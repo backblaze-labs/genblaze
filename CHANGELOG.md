@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-24
+
+### Released package versions
+- **New on PyPI (first publish):** `genblaze-nvidia` 0.2.0 (NIM /
+  build.nvidia.com adapters for video, image, audio, chat — aligned with
+  release train), `genblaze-cli` 0.2.0 (`genblaze` CLI script for
+  `extract` / `verify` / `replay` / `index`).
+- **New minor on PyPI:** `genblaze` (umbrella) 0.3.0 — now ships real code
+  that lazily re-exports `genblaze_core`'s public API, so
+  `from genblaze import Pipeline` works. `genblaze_core` stays the canonical
+  import path in docs. Also exposes the `nvidia` extra and adds NVIDIA to the
+  `video` / `image` / `audio` / `all` curated bundles.
+- Code-change bumps from retry-policy unification: `genblaze-core` 0.2.4,
+  `genblaze-gmicloud` 0.2.4, `genblaze-google` 0.2.3, `genblaze-openai` 0.2.3,
+  `genblaze-replicate` 0.2.2, `genblaze-runway` 0.2.2, `genblaze-decart` 0.2.2,
+  `genblaze-elevenlabs` 0.2.2, `genblaze-lmnt` 0.2.2, `genblaze-luma` 0.2.2,
+  `genblaze-stability-audio` 0.2.2.
+- `@genblaze/spec` (npm) 0.3.2 — adds `events/v1/step-retried.schema.json`
+  and updates the `stream-event` union for the new event.
+- Untouched (no republish): `genblaze-s3` 0.2.3, `genblaze-langsmith` 0.2.1.
+
 ### Added
+- `genblaze-core`: `genblaze_core.providers.retry` — unified retry policy
+  module. Every provider adapter now delegates transient-error classification
+  + exponential backoff to this shared surface instead of rolling its own.
+  Consistent behavior across GMICloud, OpenAI, Google, Replicate, Runway,
+  Luma, Decart, ElevenLabs, LMNT, Stability Audio, NVIDIA. Exposes a
+  `RetryPolicy` the caller can override per-provider.
+- `genblaze-core`: `BaseProvider` retry plumbing baked into `invoke` /
+  `ainvoke` / `resume` / `aresume`. Also surfaces retry attempts as new
+  `StepRetried` stream events for observability.
+- `genblaze-nvidia` (new package): video (Cosmos), image (Flux, SDXL, etc.),
+  audio (TTS, Parakeet ASR), and chat (OpenAI-compatible NIM endpoints)
+  providers for NVIDIA's NIM / build.nvidia.com platform. Ships with 1146
+  lines of tests.
+- `genblaze-cli` (first public publish): the `genblaze` command-line tool
+  with `extract`, `verify`, `replay`, and `index` subcommands for manifest
+  operations. Script entry point: `genblaze`.
 - `genblaze` (umbrella) 0.3.0: now ships a real Python package (was an empty
   metapackage). Re-exports the top-level public surface of `genblaze_core`
   lazily, so `from genblaze import Pipeline` works after
@@ -16,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `genblaze_core.canonical`) and provider adapters (`genblaze_openai`,
   `genblaze_google`, …) are not re-exported — import those from their own
   packages. Ships `py.typed` for static type-checker support.
+- `@genblaze/spec`: new `events/v1/step-retried.schema.json` schema + TS type
+  for the retry event.
 
 ## [0.2.4] - 2026-04-24
 

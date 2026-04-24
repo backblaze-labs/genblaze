@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI for genblaze manifest operations"
+authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -20,7 +21,9 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
 Repository = "https://github.com/backblaze-labs/genblaze"
+Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]

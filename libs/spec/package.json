@@ -1,6 +1,6 @@
 {
   "name": "@genblaze/spec",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "TypeScript types and JSON Schemas for genblaze manifests",
   "types": "ts/genblaze.d.ts",
   "files": [
