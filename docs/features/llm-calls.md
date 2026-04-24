@@ -69,6 +69,10 @@ pipe = Pipeline("hero").step(SoraProvider(), model="sora-2", prompt=description)
 - Pricing tables: OpenAI (gpt-4o family, gpt-4.1, gpt-4-turbo, o-series,
   gpt-3.5), Gemini (1.5 / 2.0 / 2.5 families). GMICloud returns
   `cost_usd=None` — fleet shifts faster than a table tracks.
+- Model ids pass through verbatim — unknown models aren't blocked
+  client-side, they just get `cost_usd=None` until registered. Matches
+  the "unknown models pass through" convention used by the media
+  provider classes.
 - Errors are wrapped in `ProviderError` with a classified `error_code`.
 
 ## Verification

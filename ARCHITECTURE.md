@@ -15,6 +15,7 @@
   - `genblaze-stability-audio` — Stability AI (Stable Audio music)
   - `genblaze-lmnt` — LMNT (fast TTS)
   - `genblaze-gmicloud` — GMICloud (video, image, audio via request queue)
+  - `genblaze-nvidia` — NVIDIA NIM / build.nvidia.com (video, image, audio, chat)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index

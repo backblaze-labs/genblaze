@@ -45,6 +45,7 @@ elevenlabs = ["genblaze-elevenlabs>=0.2.1,<0.3"]
 stability-audio = ["genblaze-stability-audio>=0.2.1,<0.3"]
 lmnt = ["genblaze-lmnt>=0.2.1,<0.3"]
 langsmith = ["genblaze-langsmith>=0.2.1,<0.3"]
+nvidia = ["genblaze-nvidia>=0.1.0,<0.2"]
 
 # Curated bundles
 video = [
@@ -53,17 +54,20 @@ video = [
     "genblaze-runway>=0.2.1,<0.3",
     "genblaze-luma>=0.2.1,<0.3",
     "genblaze-decart>=0.2.1,<0.3",
+    "genblaze-nvidia>=0.1.0,<0.2",
 ]
 image = [
     "genblaze-gmicloud>=0.2.2,<0.3",
     "genblaze-openai>=0.2.1,<0.3",
     "genblaze-google>=0.2.1,<0.3",
+    "genblaze-nvidia>=0.1.0,<0.2",
 ]
 audio = [
     "genblaze-elevenlabs>=0.2.1,<0.3",
     "genblaze-lmnt>=0.2.1,<0.3",
     "genblaze-stability-audio>=0.2.1,<0.3",
     "genblaze-gmicloud>=0.2.2,<0.3",
+    "genblaze-nvidia>=0.1.0,<0.2",
 ]
 all = [
     "genblaze-gmicloud>=0.2.2,<0.3",
@@ -77,6 +81,7 @@ all = [
     "genblaze-stability-audio>=0.2.1,<0.3",
     "genblaze-lmnt>=0.2.1,<0.3",
     "genblaze-langsmith>=0.2.1,<0.3",
+    "genblaze-nvidia>=0.1.0,<0.2",
 ]
 
 [tool.hatch.build.targets.wheel]

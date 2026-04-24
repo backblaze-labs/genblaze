@@ -1,5 +1,10 @@
 <!-- created: 2026-03-16 -->
+<!-- completed: 2026-04-24 -->
 # P0 + P1 Production Quality Push
+
+> **Shipped.** 14 of 16 items landed. Residuals moved to `tech-debt-tracker.md`:
+> - Wave 1 item 5 — `VeoProvider._operations` TTL cleanup (no `_operations` map found in current Veo implementation; may have been superseded by the SDK migration — verify and close).
+> - Wave 1 item 4 — `LumaProvider.get_capabilities()` "image" inclusion is ambiguous: `supported_inputs=["text","image"]` is set but `supported_modalities` stays VIDEO-only. Intent needs a one-line confirm-or-fix.
 
 ## Goal
 Close all P0 and P1 gaps identified in the video production readiness review.

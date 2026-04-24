@@ -1,5 +1,7 @@
-<!-- last_verified: 2026-04-24 -->
+<!-- completed: 2026-04-24 -->
 # Text modality — standalone callable across providers
+
+> **Shipped in 0.2.4.** `ChatMessage` / `ToolCall` / `ChatResponse` models, `chat()` / `achat()` wrappers for `genblaze-openai`, `genblaze-google`, and `genblaze-gmicloud`, plus `docs/features/llm-calls.md` all landed. See CHANGELOG [0.2.4] "Added" section. Media-generation core untouched as designed.
 
 ## Goal
 

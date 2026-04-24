@@ -1,9 +1,9 @@
-<!-- last_verified: 2026-04-24 -->
+<!-- completed: 2026-04-24 -->
 # Agent Loop, Streaming, and Observability
 
 Close three gaps called out by the framework review: no reasoning loop, no push-style streaming, and minimal tracing.
 
-> **Update (0.2.3):** The `StreamEvent` design described below ("tagged union dataclass") shipped in its original form, then migrated to a Pydantic **discriminated union** with per-variant subclasses. Current authoritative references: [`docs/features/streaming.md`](../../features/streaming.md), `libs/core/genblaze_core/observability/events.py`, and the JSON Schemas at `libs/spec/schemas/events/v1/`. Historical field names below may differ from the current contract — notably: agent events are now flat (no `data` dict), and `step.failed` carries `error` instead of `message`.
+> **Shipped across 0.2.x.** All four deliverables landed: `Pipeline.stream()`/`astream()` (`libs/core/genblaze_core/pipeline/pipeline.py:741,790`), `AgentLoop` + `Evaluator` (`libs/core/genblaze_core/agents/loop.py`), `Tracer` ABC with NoOp/Logging/OTel/Composite backends (`libs/core/genblaze_core/observability/tracer.py`), and `LangSmithTracer` (`libs/connectors/langsmith/`). `StreamEvent` migrated to a Pydantic **discriminated union** in 0.2.3 — authoritative references: [`docs/features/streaming.md`](../../features/streaming.md), `libs/core/genblaze_core/observability/events.py`, JSON Schemas at `libs/spec/schemas/events/v1/`. Historical field names below may differ from the current contract — notably: agent events are flat (no `data` dict), and `step.failed` carries `error` instead of `message`.
 
 ## Motivation
 

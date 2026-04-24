@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-nvidia"
+version = "0.1.0"
+description = "NVIDIA NIM / build.nvidia.com media provider adapters for genblaze (video, image, audio, chat)"
+authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+]
+dependencies = [
+    "genblaze-core>=0.2.0,<0.3",
+    "httpx>=0.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
+Documentation = "https://github.com/backblaze-labs/genblaze"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+chat = [
+    "openai>=1.0",
+]
+
+[project.entry-points."genblaze.providers"]
+nvidia-video = "genblaze_nvidia:NvidiaVideoProvider"
+nvidia-image = "genblaze_nvidia:NvidiaImageProvider"
+nvidia-audio = "genblaze_nvidia:NvidiaAudioProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_nvidia"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

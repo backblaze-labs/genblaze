@@ -1,5 +1,7 @@
-<!-- last_verified: 2026-04-23 -->
+<!-- completed: 2026-04-24 -->
 # Plan: TypeScript Types for the Language-Neutral Spec
+
+> **Shipped.** Phase 1a (committed `.d.ts` at `libs/spec/ts/genblaze.d.ts`, `make ts-types` target, bidirectional conformance test at `libs/core/tests/unit/test_spec_conformance.py`, CI drift guard) landed in 0.2.3. Phase 1b (npm publish) shipped as `@genblaze/spec` 0.3.0 in 0.2.3 and 0.3.1 in 0.2.4. Phases 2 (`@genblaze/spec/zod`) and 3 (`@genblaze/manifest` with cross-language canonical hash) remain explicit follow-ups — track under a new plan when demand materializes.
 
 ## Motivation
 

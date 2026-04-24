@@ -1,5 +1,7 @@
-<!-- last_verified: 2026-04-24 -->
+<!-- completed: 2026-04-24 -->
 # GMI hardening + SDK-wide content-policy classification
+
+> **Shipped in 0.2.4.** All PR-1a items (multi-image fetch, `base_url=` / `http_client=` injection, audio docstring, README corrections) and all PR-1b items (`ProviderErrorCode.CONTENT_POLICY` + TS regen, dropped-params INFO logging, provider × modality matrix in root README) landed. See CHANGELOG [0.2.4] "genblaze-gmicloud" and "genblaze-core" entries.
 
 ## Goal
 

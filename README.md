@@ -83,7 +83,7 @@ Unknown models pass through by default (`cost_usd=None` until registered). No re
 ## Features
 
 - **Pipeline API** — Fluent, composable multi-step generation pipelines with fan-in (`input_from`) and AV compositing
-- **10 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud
+- **11 provider adapters** — OpenAI, Google, Runway, Luma, Decart, Replicate, ElevenLabs, Stability Audio, LMNT, GMICloud, NVIDIA NIM
 - **Extensible model registry** — Add new models and override pricing at runtime without forking the library
 - **Manifest provenance** — Every run produces a canonical, SHA-256-verified manifest
 - **Media embedding** — Embed manifests into PNG, JPEG, WebP, MP4, MP3, WAV
@@ -108,6 +108,7 @@ pip install genblaze-elevenlabs  # ElevenLabs TTS + sound effects
 pip install genblaze-stability-audio  # Stability AI Stable Audio
 pip install genblaze-lmnt        # LMNT fast TTS
 pip install genblaze-gmicloud    # GMICloud (video, image, audio via request queue)
+pip install genblaze-nvidia      # NVIDIA NIM (Cosmos video, SDXL/FLUX image, Fugatto/Riva audio, chat)
 
 # Add storage + CLI
 pip install genblaze-s3          # S3-compatible storage (B2, AWS, R2)

@@ -3,7 +3,7 @@
 
 ## Repo Purpose
 
-Orchestration framework for generative media pipelines with manifest-based provenance tracking. Produces 13 pip-installable packages: `genblaze-core`, 10 provider adapter packages (`genblaze-openai`, `genblaze-google`, `genblaze-runway`, `genblaze-luma`, `genblaze-decart`, `genblaze-replicate`, `genblaze-elevenlabs`, `genblaze-stability-audio`, `genblaze-lmnt`, `genblaze-gmicloud`), `genblaze-s3`, and `genblaze-cli`.
+Orchestration framework for generative media pipelines with manifest-based provenance tracking. Produces 14 pip-installable packages: `genblaze-core`, 11 provider adapter packages (`genblaze-openai`, `genblaze-google`, `genblaze-runway`, `genblaze-luma`, `genblaze-decart`, `genblaze-replicate`, `genblaze-elevenlabs`, `genblaze-stability-audio`, `genblaze-lmnt`, `genblaze-gmicloud`, `genblaze-nvidia`), `genblaze-s3`, and `genblaze-cli`.
 
 ## Architecture Boundaries
 

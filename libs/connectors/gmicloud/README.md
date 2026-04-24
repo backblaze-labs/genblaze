@@ -107,6 +107,8 @@ resp = chat("deepseek-ai/DeepSeek-V3", prompt="A cinematic sunset over Tokyo")
 print(resp.text, resp.tokens_out)
 ```
 
+Any GMICloud-hosted chat model is accepted — model ids pass through to the inference endpoint verbatim, so you can use models the connector hasn't been updated for. `cost_usd` is always `None` for this connector; compute cost from `tokens_in` / `tokens_out` yourself if needed.
+
 Full signature and `ChatResponse` shape: [`docs/features/llm-calls.md`](../../../docs/features/llm-calls.md).
 
 ## Credentials

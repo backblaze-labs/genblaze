@@ -1,5 +1,7 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- completed: 2026-04-24 -->
 # OpenAI Image Model Expansion (`gpt-image-2` family + edits)
+
+> **Shipped.** Full model lineup and `/v1/images/edits` live in `libs/connectors/openai/genblaze_openai/dalle.py`. `_ImageModelSpec` registry at `dalle.py:79-203`; edit endpoint routing at `dalle.py:546`. See CHANGELOG [0.1.0] "genblaze-openai" entries.
 
 ## Summary
 
