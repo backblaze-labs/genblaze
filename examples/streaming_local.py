@@ -32,7 +32,12 @@ for event in pipe.stream():
 async def main() -> None:
     print("\n=== Async stream ===")
     async for event in pipe.astream():
-        print(f"  [{event.type}] {event.message or ''}")
+        # `message` only lives on variants that actually carry a human-readable
+        # note (pipeline.started/failed, step.progress, agent.iteration.started).
+        # getattr keeps this compact — narrow with isinstance/type if you want
+        # to avoid the default-None fallback.
+        msg = getattr(event, "message", None) or ""
+        print(f"  [{event.type}] {msg}")
 
 
 asyncio.run(main())

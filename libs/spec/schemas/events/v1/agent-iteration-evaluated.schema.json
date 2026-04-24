@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/agent-iteration-evaluated.schema.json",
+  "title": "AgentIterationEvaluatedEvent",
+  "description": "Emitted after an iteration's result has been evaluated.",
+  "type": "object",
+  "required": ["type", "timestamp", "iteration", "passed"],
+  "properties": {
+    "type": {
+      "const": "agent.iteration.evaluated",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based iteration counter this evaluation covers."
+    },
+    "passed": {
+      "type": "boolean",
+      "description": "Whether the evaluation's pass criterion was met."
+    },
+    "score": {
+      "type": ["number", "null"],
+      "default": null,
+      "description": "Evaluator score (usually in [0, 1] — evaluator-defined). May be absent when the evaluator only returns pass/fail."
+    },
+    "feedback": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Free-text evaluator feedback."
+    }
+  },
+  "additionalProperties": false
+}

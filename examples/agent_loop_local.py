@@ -63,22 +63,21 @@ loop = AgentLoop(
 
 print("=== Streaming agent events ===")
 for event in loop.stream():
+    # Per-variant narrowing — the discriminated union gives each branch
+    # a precise type, so the fields accessed below are statically known.
     if event.type == "agent.iteration.started":
-        print(f"→ iter {event.data['iteration']}: {event.message or '(no feedback)'}")
+        print(f"→ iter {event.iteration}: {event.message or '(no feedback)'}")
     elif event.type == "step.completed":
         print(f"  step ok: {event.provider}/{event.model}")
     elif event.type == "agent.iteration.evaluated":
-        print(
-            f"  evaluated: score={event.data['score']:.2f}"
-            f" passed={event.data['passed']}"
-            f" feedback={event.data.get('feedback')!r}"
-        )
+        score_str = f"{event.score:.2f}" if event.score is not None else "n/a"
+        print(f"  evaluated: score={score_str} passed={event.passed} feedback={event.feedback!r}")
     elif event.type == "agent.completed":
-        d = event.data
+        total_cost = event.total_cost_usd or 0.0
         print(
-            f"\n=== Done: passed={d['passed']}"
-            f" iterations={d['iterations']}"
-            f" total_cost=${d['total_cost_usd']:.2f} ==="
+            f"\n=== Done: passed={event.passed}"
+            f" iterations={event.iterations}"
+            f" total_cost=${total_cost:.2f} ==="
         )
         print(f"Final manifest hash: {event.result.manifest.canonical_hash[:16]}...")
 

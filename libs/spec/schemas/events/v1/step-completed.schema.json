@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/step-completed.schema.json",
+  "title": "StepCompletedEvent",
+  "description": "Emitted when a step finishes successfully.",
+  "type": "object",
+  "required": [
+    "type",
+    "timestamp",
+    "step_id",
+    "step_index",
+    "total_steps",
+    "provider",
+    "model",
+    "elapsed_sec"
+  ],
+  "properties": {
+    "type": {
+      "const": "step.completed",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Run identifier if available."
+    },
+    "step_id": {
+      "type": "string",
+      "description": "Step identifier (UUID)."
+    },
+    "step_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based step position in the pipeline."
+    },
+    "total_steps": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of steps in the pipeline."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Provider name."
+    },
+    "model": {
+      "type": "string",
+      "description": "Model slug."
+    },
+    "elapsed_sec": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Wall-clock seconds from step start to completion."
+    },
+    "step_status": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Terminal status string (usually `succeeded`)."
+    }
+  },
+  "additionalProperties": false
+}

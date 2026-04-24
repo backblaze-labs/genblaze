@@ -23,7 +23,13 @@ from genblaze_core.models.enums import (
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.prompt_template import PromptTemplate
 from genblaze_core.models.step import Step
-from genblaze_core.observability.events import StreamEvent
+from genblaze_core.observability.events import (
+    PipelineCompletedEvent,
+    PipelineFailedEvent,
+    PipelineStartedEvent,
+    StepStartedEvent,
+    StreamEvent,
+)
 from genblaze_core.observability.tracer import LoggingTracer, NoOpTracer, Tracer, safe_call
 from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
@@ -645,8 +651,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             total_steps=total_steps,
         )
         self._emit_event(
-            StreamEvent(
-                type="pipeline.started",
+            PipelineStartedEvent(
                 run_id=run_id,
                 total_steps=total_steps,
                 message=self._name,
@@ -655,8 +660,7 @@ class Pipeline(Runnable[None, PipelineResult]):
 
     def _emit_step_start(self, ctx: _StepContext, step: Step, ps: _PipelineStep) -> None:
         self._emit_event(
-            StreamEvent(
-                type="step.started",
+            StepStartedEvent(
                 run_id=ctx.run_id,
                 step_id=step.step_id,
                 step_index=ctx.step_index,
@@ -707,14 +711,27 @@ class Pipeline(Runnable[None, PipelineResult]):
 
     def _emit_pipeline_end(self, result: PipelineResult, run_id: str) -> None:
         failed = result.run.status == RunStatus.FAILED
-        self._emit_event(
-            StreamEvent(
-                type="pipeline.failed" if failed else "pipeline.completed",
+        # Pre-compute wire-safe fields so consumers of to_dict() / JSON Schema
+        # still see terminal status + manifest hash when the in-process
+        # PipelineResult is excluded from serialization.
+        run_status = str(result.run.status)
+        manifest_hash = result.manifest.canonical_hash
+        if failed:
+            event: StreamEvent = PipelineFailedEvent(
                 run_id=run_id,
                 result=result,
-                message=result.error_summary() if failed else None,
+                message=result.error_summary(),
+                run_status=run_status,
+                manifest_hash=manifest_hash,
             )
-        )
+        else:
+            event = PipelineCompletedEvent(
+                run_id=run_id,
+                result=result,
+                run_status=run_status,
+                manifest_hash=manifest_hash,
+            )
+        self._emit_event(event)
         safe_call(self._tracer, "on_run_end", run_id, result)
 
     # ------------------------------------------------------------------

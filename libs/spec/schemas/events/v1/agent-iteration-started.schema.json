@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/agent-iteration-started.schema.json",
+  "title": "AgentIterationStartedEvent",
+  "description": "Emitted at the start of each agent-loop iteration.",
+  "type": "object",
+  "required": ["type", "timestamp", "iteration", "total"],
+  "properties": {
+    "type": {
+      "const": "agent.iteration.started",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based iteration counter."
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum iterations configured for this loop."
+    },
+    "message": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Feedback from the previous iteration, if any."
+    }
+  },
+  "additionalProperties": false
+}

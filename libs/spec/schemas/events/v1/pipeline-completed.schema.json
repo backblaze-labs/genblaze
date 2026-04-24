@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/pipeline-completed.schema.json",
+  "title": "PipelineCompletedEvent",
+  "description": "Emitted once at the end of a successful pipeline run.",
+  "type": "object",
+  "required": ["type", "timestamp", "run_id"],
+  "properties": {
+    "type": {
+      "const": "pipeline.completed",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Run identifier this event belongs to."
+    },
+    "run_status": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Terminal run status (e.g. `completed`)."
+    },
+    "manifest_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "default": null,
+      "description": "Canonical SHA-256 hash of the run's manifest."
+    }
+  },
+  "additionalProperties": false
+}

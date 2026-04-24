@@ -19,6 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `make test`.
 - CI `ts-types` job — drift guard that regenerates the TS types and
   fails if the committed file would change.
+- `genblaze-core`: `StreamEvent` is now a Pydantic discriminated union —
+  ten per-variant classes (`PipelineStartedEvent`, `PipelineCompletedEvent`,
+  `PipelineFailedEvent`, `StepStartedEvent`, `StepProgressEvent`,
+  `StepCompletedEvent`, `StepFailedEvent`, `AgentIterationStartedEvent`,
+  `AgentIterationEvaluatedEvent`, `AgentCompletedEvent`) under a common
+  `StreamEvent` base. `AnyStreamEvent` + `StreamEventAdapter` (a
+  `TypeAdapter`) parse inbound event dicts into the correct variant via
+  the `type` discriminator.
+- `libs/spec/schemas/events/v1/*.schema.json` — Draft 2020-12 JSON Schemas
+  for all ten variants plus a parent `stream-event.schema.json` with
+  `oneOf` + `discriminator`. Generated TypeScript types now include the
+  full discriminated-union `StreamEvent` surface.
+- Conformance coverage extended to event variants (field-set parity,
+  description required, `additionalProperties: false`, `type` const
+  matches Pydantic `Literal`, round-trip validation, discriminator
+  completeness).
 
 ### Changed
 - `libs/spec/schemas/manifest/v1/policy.schema.json`:
@@ -29,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handle invariant (no separate storage-key field; parse key from URL
   if needed) so the contract flows into JSON Schema and generated
   TypeScript JSDoc.
+- **Breaking (pre-1.0)**: `StreamEvent(type=..., ...)` with a raw
+  discriminator string no longer validates — construct the specific
+  variant class (`StepStartedEvent(...)`, etc.). `isinstance(ev,
+  StreamEvent)` still narrows all variants; per-variant narrowing via
+  `isinstance(ev, StepFailedEvent)` or `ev.type == "step.failed"` is now
+  supported and produces precise field types under pyright/mypy. Agent
+  events flatten their former `data` dict into proper fields — e.g.
+  `event.data["iteration"]` is now `event.iteration`.
+- **Breaking wire format for `step.failed`**: the serialized event no
+  longer carries a `message` key — the failure reason lives on a
+  dedicated `error` field. Previously the failure string was duplicated
+  into both `message` and `error`. Webhook / log / SSE consumers that
+  key on `message` for failed steps should switch to `error`.
+- `StreamEvent.to_dict()` now delegates to `model_dump(mode="json",
+  exclude_none=True)` and always emits `type`+`timestamp` plus the
+  variant's declared fields. In-process-only fields (`step`, `result`)
+  remain on the Python object but are excluded from the wire shape;
+  derived `step_status`/`manifest_hash`/`run_status`/`error` fields are
+  pre-populated at construction so consumers don't lose context.
 
 ## [0.2.2] - 2026-04-23
 

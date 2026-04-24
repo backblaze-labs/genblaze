@@ -6,7 +6,7 @@ from typing import Any
 
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
-from genblaze_core.observability.events import StreamEvent
+from genblaze_core.observability.events import StepProgressEvent
 from genblaze_core.observability.tracer import (
     CompositeTracer,
     LoggingTracer,
@@ -80,7 +80,7 @@ def test_noop_tracer_is_safe_default() -> None:
     """NoOpTracer accepts every hook with no effect."""
     t = NoOpTracer()
     t.on_run_start("r", "n")
-    t.on_event(StreamEvent(type="step.progress"))
+    t.on_event(StepProgressEvent(step_id="s1", provider="p", model="m"))
     t.on_run_end("r", None)  # type: ignore[arg-type]
 
 

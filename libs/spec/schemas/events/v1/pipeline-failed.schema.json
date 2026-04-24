@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/pipeline-failed.schema.json",
+  "title": "PipelineFailedEvent",
+  "description": "Emitted once when a pipeline run terminates in failure.",
+  "type": "object",
+  "required": ["type", "timestamp", "run_id"],
+  "properties": {
+    "type": {
+      "const": "pipeline.failed",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Run identifier this event belongs to."
+    },
+    "message": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Short human-readable failure summary."
+    },
+    "run_status": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Terminal run status (`failed` or similar)."
+    },
+    "manifest_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "default": null,
+      "description": "Canonical hash of the partial manifest, if one was produced."
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/step-started.schema.json",
+  "title": "StepStartedEvent",
+  "description": "Emitted when a step transitions from queued to running.",
+  "type": "object",
+  "required": [
+    "type",
+    "timestamp",
+    "run_id",
+    "step_id",
+    "step_index",
+    "total_steps",
+    "provider",
+    "model"
+  ],
+  "properties": {
+    "type": {
+      "const": "step.started",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Run identifier this event belongs to."
+    },
+    "step_id": {
+      "type": "string",
+      "description": "Step identifier (UUID)."
+    },
+    "step_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based step position in the pipeline."
+    },
+    "total_steps": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of steps in the pipeline."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Provider name (e.g. `gmicloud`)."
+    },
+    "model": {
+      "type": "string",
+      "description": "Model slug passed to the provider."
+    }
+  },
+  "additionalProperties": false
+}

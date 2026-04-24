@@ -1,7 +1,7 @@
-<!-- last_verified: 2026-04-23 -->
+<!-- last_verified: 2026-04-24 -->
 # genblaze-spec
 
-Language-neutral contract for genblaze manifests.
+Language-neutral contract for genblaze manifests and streaming events.
 
 Ships:
 
@@ -11,9 +11,18 @@ Ships:
   Pydantic's `model_json_schema()` auto-generates (closed objects,
   uuid/uri formats, sha256 patterns, required fields that reflect
   serialization behavior rather than input validity).
+- **`schemas/events/v1/`** — Draft 2020-12 JSON Schemas for the
+  `StreamEvent` discriminated union emitted by `Pipeline.stream()` /
+  `Pipeline.astream()` and the agent loop. One file per variant
+  (`pipeline.started`, `step.failed`, `agent.iteration.evaluated`, …)
+  plus a parent `stream-event.schema.json` with `oneOf` + `discriminator`.
+  In-process Python objects (`step`, `result`) are deliberately absent
+  from the wire contract — derived `step_status` / `manifest_hash` /
+  `run_status` / `error` fields carry the equivalent information.
 - **`ts/genblaze.d.ts`** — TypeScript type declarations generated from
   the schemas. Drop this into a frontend/Node project and import the
-  types directly.
+  types directly. Includes the `StreamEvent` discriminated union so
+  `if (ev.type === "step.failed") { ev.error }` narrows correctly.
 
 ## Why
 
@@ -22,7 +31,11 @@ hand-writing interfaces against the Python Pydantic models and drifting
 — inventing fields that don't exist (`b2_key`, `videoRun`) and omitting
 fields that do (`asset_id`, `metadata`, `width`/`height`/`video`/`audio`).
 The schemas + generated types eliminate that drift by making the
-contract a single source of truth that both languages consume.
+contract a single source of truth that both languages consume. The
+`events/v1/` schemas extend the same pattern to runtime streaming —
+dashboards, SSE relays, and webhook backends stop hand-rolling
+`StreamEvent` shapes and branch on the discriminator with precise
+per-variant narrowing.
 
 ## Consuming the TypeScript types (phase 1a)
 
@@ -52,6 +65,22 @@ function render(m: Manifest) {
 Types follow the serialized JSON shape exactly: `run.run_id` (not `.id`),
 `step.step_id` (not `.id`), `asset.url` (no separate `b2_key` —
 `url` is the durable handle).
+
+For streaming consumers (SSE, WebSocket), the same file exports
+`StreamEvent` plus one interface per variant. Discrimination on `type`
+narrows to the right variant automatically:
+
+```ts
+import type { StreamEvent } from "./types/genblaze";
+
+function handle(ev: StreamEvent) {
+  if (ev.type === "step.failed") {
+    // ev.error, ev.step_id, ev.elapsed_sec — all typed
+  } else if (ev.type === "pipeline.completed") {
+    // ev.manifest_hash, ev.run_status — all typed
+  }
+}
+```
 
 ## Regenerating
 

@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING, Any
 
 from genblaze_core.agents.evaluator import EvaluationResult, Evaluator
 from genblaze_core.exceptions import GenblazeError
-from genblaze_core.observability.events import StreamEvent
+from genblaze_core.observability.events import (
+    AgentCompletedEvent,
+    AgentIterationEvaluatedEvent,
+    AgentIterationStartedEvent,
+    StreamEvent,
+)
 from genblaze_core.observability.tracer import NoOpTracer, Tracer, safe_call
 from genblaze_core.pipeline.streaming import QueueEmitter
 
@@ -254,9 +259,9 @@ class AgentLoop:
         return False
 
     def _emit_iteration_start(self, ctx: AgentContext) -> None:
-        event = StreamEvent(
-            type="agent.iteration.started",
-            data={"iteration": ctx.iteration, "total": self._max_iterations},
+        event = AgentIterationStartedEvent(
+            iteration=ctx.iteration,
+            total=self._max_iterations,
             message=ctx.last_evaluation.feedback if ctx.last_evaluation else None,
         )
         safe_call(self._tracer, "on_event", event)
@@ -269,29 +274,23 @@ class AgentLoop:
         result: PipelineResult,
         evaluation: EvaluationResult,
     ) -> None:
-        event = StreamEvent(
-            type="agent.iteration.evaluated",
+        event = AgentIterationEvaluatedEvent(
+            iteration=iteration,
+            passed=evaluation.passed,
+            score=evaluation.score,
+            feedback=evaluation.feedback,
             result=result,
-            data={
-                "iteration": iteration,
-                "passed": evaluation.passed,
-                "score": evaluation.score,
-                "feedback": evaluation.feedback,
-            },
         )
         safe_call(self._tracer, "on_event", event)
         if self._emitter is not None:
             self._emitter.put(event)
 
     def _agent_completed_event(self, final: AgentResult) -> StreamEvent:
-        return StreamEvent(
-            type="agent.completed",
+        return AgentCompletedEvent(
+            passed=final.passed,
+            iterations=len(final.iterations),
+            total_cost_usd=final.total_cost_usd,
             result=final.final,
-            data={
-                "passed": final.passed,
-                "iterations": len(final.iterations),
-                "total_cost_usd": final.total_cost_usd,
-            },
         )
 
     def _finalize(self, iterations: list[AgentIteration]) -> AgentResult:

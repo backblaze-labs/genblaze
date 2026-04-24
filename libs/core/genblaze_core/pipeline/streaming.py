@@ -12,7 +12,12 @@ import asyncio
 import queue
 from typing import TYPE_CHECKING
 
-from genblaze_core.observability.events import StreamEvent
+from genblaze_core.observability.events import (
+    StepCompletedEvent,
+    StepFailedEvent,
+    StepProgressEvent,
+    StreamEvent,
+)
 
 if TYPE_CHECKING:
     from genblaze_core.pipeline.result import StepCompleteEvent
@@ -22,14 +27,13 @@ if TYPE_CHECKING:
 _SENTINEL = object()
 
 
-def progress_to_stream_event(ev: ProgressEvent, run_id: str | None = None) -> StreamEvent:
-    """Map a provider ProgressEvent to a StreamEvent(type=step.progress).
+def progress_to_stream_event(ev: ProgressEvent, run_id: str | None = None) -> StepProgressEvent:
+    """Map a provider ProgressEvent to a StepProgressEvent.
 
     Single source of truth for this translation — used by both the
     queue-backed emitter and Pipeline's in-process progress fan-out.
     """
-    return StreamEvent(
-        type="step.progress",
+    return StepProgressEvent(
         run_id=run_id,
         step_id=ev.step_id,
         provider=ev.provider,
@@ -43,12 +47,25 @@ def progress_to_stream_event(ev: ProgressEvent, run_id: str | None = None) -> St
 
 
 def step_complete_to_stream_event(ev: StepCompleteEvent, run_id: str | None = None) -> StreamEvent:
-    """Map a pipeline StepCompleteEvent to a StreamEvent."""
+    """Map a pipeline StepCompleteEvent to the matching variant."""
     from genblaze_core.models.enums import StepStatus
 
     failed = ev.step.status == StepStatus.FAILED
-    return StreamEvent(
-        type="step.failed" if failed else "step.completed",
+    step_status = str(ev.step.status)
+    if failed:
+        return StepFailedEvent(
+            run_id=run_id,
+            step_id=ev.step.step_id,
+            step_index=ev.step_index,
+            total_steps=ev.total_steps,
+            provider=ev.step.provider,
+            model=ev.step.model,
+            elapsed_sec=ev.elapsed_sec,
+            step=ev.step,
+            step_status=step_status,
+            error=ev.step.error,
+        )
+    return StepCompletedEvent(
         run_id=run_id,
         step_id=ev.step.step_id,
         step_index=ev.step_index,
@@ -57,7 +74,7 @@ def step_complete_to_stream_event(ev: StepCompleteEvent, run_id: str | None = No
         model=ev.step.model,
         elapsed_sec=ev.elapsed_sec,
         step=ev.step,
-        message=ev.step.error if failed else None,
+        step_status=step_status,
     )
 
 

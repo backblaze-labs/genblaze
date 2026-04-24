@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/stream-event.schema.json",
+  "title": "StreamEvent",
+  "description": "A discriminated union of every pipeline or agent-loop streaming event. The `type` field selects the variant. In-process Python objects (step, result) are not part of the wire contract — derived fields (step_status, manifest_hash, run_status) carry the equivalent information.",
+  "oneOf": [
+    { "$ref": "pipeline-started.schema.json" },
+    { "$ref": "pipeline-completed.schema.json" },
+    { "$ref": "pipeline-failed.schema.json" },
+    { "$ref": "step-started.schema.json" },
+    { "$ref": "step-progress.schema.json" },
+    { "$ref": "step-completed.schema.json" },
+    { "$ref": "step-failed.schema.json" },
+    { "$ref": "agent-iteration-started.schema.json" },
+    { "$ref": "agent-iteration-evaluated.schema.json" },
+    { "$ref": "agent-completed.schema.json" }
+  ],
+  "discriminator": {
+    "propertyName": "type",
+    "mapping": {
+      "pipeline.started": "pipeline-started.schema.json",
+      "pipeline.completed": "pipeline-completed.schema.json",
+      "pipeline.failed": "pipeline-failed.schema.json",
+      "step.started": "step-started.schema.json",
+      "step.progress": "step-progress.schema.json",
+      "step.completed": "step-completed.schema.json",
+      "step.failed": "step-failed.schema.json",
+      "agent.iteration.started": "agent-iteration-started.schema.json",
+      "agent.iteration.evaluated": "agent-iteration-evaluated.schema.json",
+      "agent.completed": "agent-completed.schema.json"
+    }
+  }
+}

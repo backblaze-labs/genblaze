@@ -7,7 +7,12 @@ from typing import Any
 import pytest
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
-from genblaze_core.observability.events import StreamEvent
+from genblaze_core.observability.events import (
+    StepCompletedEvent,
+    StepProgressEvent,
+    StepStartedEvent,
+    StreamEvent,
+)
 from genblaze_core.pipeline import Pipeline
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.providers.progress import ProgressEvent
@@ -48,15 +53,27 @@ def _event_types(events: list[StreamEvent]) -> list[str]:
 
 
 def test_stream_event_to_dict_trims_nulls() -> None:
-    ev = StreamEvent(type="step.started", run_id="r1", step_id="s1")
+    ev = StepStartedEvent(
+        run_id="r1",
+        step_id="s1",
+        step_index=0,
+        total_steps=1,
+        provider="p",
+        model="m",
+    )
     d = ev.to_dict()
     assert d["type"] == "step.started"
     assert d["run_id"] == "r1"
-    assert "progress_pct" not in d  # None fields dropped
+    assert "progress_pct" not in d  # None-valued variant-specific fields don't leak
 
 
 def test_stream_event_preview_url_field_populates() -> None:
-    ev = StreamEvent(type="step.progress", preview_url="https://preview.test/frame.jpg")
+    ev = StepProgressEvent(
+        step_id="s1",
+        provider="p",
+        model="m",
+        preview_url="https://preview.test/frame.jpg",
+    )
     assert ev.preview_url == "https://preview.test/frame.jpg"
     assert ev.to_dict()["preview_url"] == "https://preview.test/frame.jpg"
 
@@ -271,7 +288,19 @@ def test_queue_emitter_put_after_close_is_noop() -> None:
 
     q: _queue.Queue = _queue.Queue()
     emitter = QueueEmitter(q)
-    emitter.put(StreamEvent(type="step.started"))
+    started = StepStartedEvent(
+        run_id="r1", step_id="s1", step_index=0, total_steps=1, provider="p", model="m"
+    )
+    completed = StepCompletedEvent(
+        run_id="r1",
+        step_id="s1",
+        step_index=0,
+        total_steps=1,
+        provider="p",
+        model="m",
+        elapsed_sec=0.0,
+    )
+    emitter.put(started)
     emitter.close()
 
     # Drain one real event + sentinel — nothing else should be enqueued.
@@ -283,7 +312,7 @@ def test_queue_emitter_put_after_close_is_noop() -> None:
     assert q.empty()
 
     # Post-close puts must not raise and must not land on the queue.
-    emitter.put(StreamEvent(type="step.completed"))
+    emitter.put(completed)
     emitter.close()  # idempotent
     assert q.empty()
 

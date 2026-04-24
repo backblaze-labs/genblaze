@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/step-progress.schema.json",
+  "title": "StepProgressEvent",
+  "description": "Emitted on provider progress ticks (may fire many times per step).",
+  "type": "object",
+  "required": ["type", "timestamp", "step_id", "provider", "model"],
+  "properties": {
+    "type": {
+      "const": "step.progress",
+      "description": "Discriminator tag identifying the event variant."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this event was created (UTC)."
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Run identifier if available."
+    },
+    "step_id": {
+      "type": "string",
+      "description": "Step identifier (UUID)."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Provider name."
+    },
+    "model": {
+      "type": "string",
+      "description": "Model slug."
+    },
+    "progress_pct": {
+      "type": ["number", "null"],
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "default": null,
+      "description": "Progress ratio in [0.0, 1.0], if the provider reports one."
+    },
+    "elapsed_sec": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "default": null,
+      "description": "Wall-clock seconds since step submission."
+    },
+    "preview_url": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Ephemeral preview URL, if the provider emits one."
+    },
+    "message": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional provider-supplied note."
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Provider-specific extra fields (e.g. polling status)."
+    }
+  },
+  "additionalProperties": false
+}
