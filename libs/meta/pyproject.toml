@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze"
+version = "0.2.3"
+description = "Umbrella metapackage for genblaze — installs genblaze-core + genblaze-s3 by default; use extras for provider bundles"
+authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "genblaze-core>=0.2.2,<0.3",
+    "genblaze-s3>=0.2.3,<0.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
+Documentation = "https://github.com/backblaze-labs/genblaze"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
+
+[project.optional-dependencies]
+# Individual connectors
+gmicloud = ["genblaze-gmicloud>=0.2.2,<0.3"]
+openai = ["genblaze-openai>=0.2.1,<0.3"]
+google = ["genblaze-google>=0.2.1,<0.3"]
+replicate = ["genblaze-replicate>=0.2.1,<0.3"]
+runway = ["genblaze-runway>=0.2.1,<0.3"]
+luma = ["genblaze-luma>=0.2.1,<0.3"]
+decart = ["genblaze-decart>=0.2.1,<0.3"]
+elevenlabs = ["genblaze-elevenlabs>=0.2.1,<0.3"]
+stability-audio = ["genblaze-stability-audio>=0.2.1,<0.3"]
+lmnt = ["genblaze-lmnt>=0.2.1,<0.3"]
+langsmith = ["genblaze-langsmith>=0.2.1,<0.3"]
+
+# Curated bundles
+video = [
+    "genblaze-gmicloud>=0.2.2,<0.3",
+    "genblaze-google>=0.2.1,<0.3",
+    "genblaze-runway>=0.2.1,<0.3",
+    "genblaze-luma>=0.2.1,<0.3",
+    "genblaze-decart>=0.2.1,<0.3",
+]
+image = [
+    "genblaze-gmicloud>=0.2.2,<0.3",
+    "genblaze-openai>=0.2.1,<0.3",
+    "genblaze-google>=0.2.1,<0.3",
+]
+audio = [
+    "genblaze-elevenlabs>=0.2.1,<0.3",
+    "genblaze-lmnt>=0.2.1,<0.3",
+    "genblaze-stability-audio>=0.2.1,<0.3",
+    "genblaze-gmicloud>=0.2.2,<0.3",
+]
+all = [
+    "genblaze-gmicloud>=0.2.2,<0.3",
+    "genblaze-openai>=0.2.1,<0.3",
+    "genblaze-google>=0.2.1,<0.3",
+    "genblaze-replicate>=0.2.1,<0.3",
+    "genblaze-runway>=0.2.1,<0.3",
+    "genblaze-luma>=0.2.1,<0.3",
+    "genblaze-decart>=0.2.1,<0.3",
+    "genblaze-elevenlabs>=0.2.1,<0.3",
+    "genblaze-stability-audio>=0.2.1,<0.3",
+    "genblaze-lmnt>=0.2.1,<0.3",
+    "genblaze-langsmith>=0.2.1,<0.3",
+]
+
+[tool.hatch.build.targets.wheel]
+# Metapackage has no Python code — ship an empty wheel.
+bypass-selection = true

@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "genblaze-core"
 dynamic = ["version"]
 description = "Core SDK for genblaze media generation orchestration"
+authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -26,6 +27,7 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
 Documentation = "https://github.com/backblaze-labs/genblaze"
 Repository = "https://github.com/backblaze-labs/genblaze"
 Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"

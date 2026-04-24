@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-luma"
-version = "0.2.0"
+version = "0.2.1"
 description = "Luma Dream Machine video provider adapter for genblaze"
+authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -20,6 +21,7 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
 Documentation = "https://github.com/backblaze-labs/genblaze"
 Repository = "https://github.com/backblaze-labs/genblaze"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"

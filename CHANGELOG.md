@@ -20,13 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.3] - 2026-04-23
 
 ### Released package versions
-- `genblaze-core` 0.2.2, `genblaze-replicate` 0.2.1, `genblaze-s3` 0.2.3.
+- **New:** `genblaze` 0.2.3 — umbrella metapackage. `pip install genblaze`
+  installs `genblaze-core` + `genblaze-s3` by default; provider adapters are
+  opt-in extras (e.g. `pip install "genblaze[gmicloud,video]"`). Curated
+  bundles: `[video]`, `[image]`, `[audio]`, `[all]`.
+- Code-change bumps: `genblaze-core` 0.2.2, `genblaze-replicate` 0.2.1,
+  `genblaze-s3` 0.2.3.
+- Metadata-only force-bumps (author + Homepage fill-in, no code changes):
+  `genblaze-gmicloud` 0.2.2, `genblaze-openai` 0.2.1, `genblaze-google` 0.2.1,
+  `genblaze-decart` 0.2.1, `genblaze-elevenlabs` 0.2.1, `genblaze-langsmith`
+  0.2.1, `genblaze-lmnt` 0.2.1, `genblaze-luma` 0.2.1, `genblaze-runway` 0.2.1,
+  `genblaze-stability-audio` 0.2.1.
 - `@genblaze/spec` (npm) 0.3.0 — minor bump for new events schema namespace.
-- Untouched since last wave (no republish): `genblaze-gmicloud` 0.2.1,
-  `genblaze-openai` 0.2.0, `genblaze-google` 0.2.0, `genblaze-decart` 0.2.0,
-  `genblaze-elevenlabs` 0.2.0, `genblaze-langsmith` 0.2.0, `genblaze-lmnt` 0.2.0,
-  `genblaze-luma` 0.2.0, `genblaze-runway` 0.2.0, `genblaze-stability-audio`
-  0.2.0.
+
+### Added
+- `genblaze` metapackage for discoverable `pip install genblaze` UX.
+- Every published Python package now has `authors` and `Homepage` URL
+  populated, so `pip show` and the PyPI project page render correctly.
+- Root README: "Install" section with package-to-import mapping table
+  (resolves hyphen/underscore confusion for new users).
 
 ### Added
 - `genblaze-core`: `genblaze_core.pipeline` package now uses PEP 562

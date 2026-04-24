@@ -22,6 +22,44 @@ It provides a unified interface to experiment with providers like Runway, Luma, 
 
 Every output includes a SHA-256–verified provenance manifest capturing how the media was generated, with support for embedding metadata directly into files. Genblaze integrates with S3-compatible storage such as [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) to store and scale AI-generated media pipelines in production.
 
+## Install
+
+`pip install genblaze` is the umbrella — it pulls in `genblaze-core` (pipeline + models) and `genblaze-s3` (Backblaze B2 / S3 storage) so you have a working provenance pipeline out of the box. Provider adapters are opt-in extras.
+
+```bash
+pip install genblaze                  # core + B2/S3 storage
+pip install "genblaze[gmicloud]"      # + GMICloud provider
+pip install "genblaze[video]"         # + curated video bundle
+pip install "genblaze[all]"           # + every provider
+```
+
+### Package → import mapping
+
+PyPI install names use hyphens; Python import names use underscores. This is a Python packaging convention, not a genblaze choice.
+
+| Install with pip | Import in Python |
+|---|---|
+| `pip install genblaze` | `import genblaze_core` |
+| `pip install genblaze-core` | `import genblaze_core` |
+| `pip install genblaze-s3` | `import genblaze_s3` |
+| `pip install genblaze-gmicloud` | `import genblaze_gmicloud` |
+| `pip install genblaze-openai` | `import genblaze_openai` |
+| `pip install genblaze-google` | `import genblaze_google` |
+| `pip install genblaze-replicate` | `import genblaze_replicate` |
+| `pip install genblaze-runway` | `import genblaze_runway` |
+| `pip install genblaze-luma` | `import genblaze_luma` |
+| `pip install genblaze-decart` | `import genblaze_decart` |
+| `pip install genblaze-elevenlabs` | `import genblaze_elevenlabs` |
+| `pip install genblaze-stability-audio` | `import genblaze_stability_audio` |
+| `pip install genblaze-lmnt` | `import genblaze_lmnt` |
+| `pip install genblaze-langsmith` | `import genblaze_langsmith` |
+
+TypeScript types for the manifest schema are published on npm:
+
+```bash
+npm install @genblaze/spec
+```
+
 ## Providers
 
 genblaze ships with provider adapters for major generative AI platforms:
