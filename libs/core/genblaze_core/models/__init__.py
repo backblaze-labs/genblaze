@@ -1,6 +1,7 @@
 """Pydantic v2 data models."""
 
 from genblaze_core.models.asset import Asset, AudioMetadata, Track, VideoMetadata, WordTiming
+from genblaze_core.models.chat import ChatMessage, ChatResponse, ChatRole, ToolCall
 from genblaze_core.models.enums import (
     Modality,
     PromptVisibility,
@@ -21,6 +22,10 @@ __all__ = [
     "Track",
     "VideoMetadata",
     "WordTiming",
+    "ChatMessage",
+    "ChatResponse",
+    "ChatRole",
+    "ToolCall",
     "EmbedPolicy",
     "Manifest",
     "PromptTemplate",

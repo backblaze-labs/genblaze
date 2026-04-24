@@ -55,6 +55,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Track": ("genblaze_core.models.asset", "Track"),
     "VideoMetadata": ("genblaze_core.models.asset", "VideoMetadata"),
     "WordTiming": ("genblaze_core.models.asset", "WordTiming"),
+    "ChatMessage": ("genblaze_core.models.chat", "ChatMessage"),
+    "ChatResponse": ("genblaze_core.models.chat", "ChatResponse"),
+    "ToolCall": ("genblaze_core.models.chat", "ToolCall"),
     # enums
     "Modality": ("genblaze_core.models.enums", "Modality"),
     "StepType": ("genblaze_core.models.enums", "StepType"),

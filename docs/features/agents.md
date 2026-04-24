@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-17 -->
+<!-- last_verified: 2026-04-24 -->
 # Agents — Evaluate & Retry Loops
 
 Generate → evaluate → refine until an output meets a quality bar. Every iteration is linked via `parent_run_id`, so the full reasoning trail is captured in the manifest lineage.
@@ -100,12 +100,14 @@ The loop stops when **any** of these is true:
 
 ## Streaming agent events
 
+Agent events are per-variant classes in the [StreamEvent discriminated union](streaming.md). Previously-bagged `data` fields are now proper attributes (`iteration`, `passed`, `score`, `feedback`, `total_cost_usd`) that narrow correctly when you branch on `event.type`.
+
 ```python
 for event in loop.stream():
     if event.type == "agent.iteration.started":
-        print(f"→ iter {event.data['iteration']}")
+        print(f"→ iter {event.iteration}")
     elif event.type == "agent.iteration.evaluated":
-        print(f"  score={event.data['score']} passed={event.data['passed']}")
+        print(f"  score={event.score} passed={event.passed}")
     elif event.type == "agent.completed":
         print(f"✓ final hash: {event.result.manifest.canonical_hash[:12]}")
 ```

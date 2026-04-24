@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-23 -->
+<!-- last_verified: 2026-04-24 -->
 # Model Registry
 
 Unified, declarative surface for per-model configuration across every genblaze provider connector. Users can add new models, override pricing, and customize parameter handling at runtime without editing connector code.
@@ -71,6 +71,7 @@ Frozen, slotted dataclass. Every field except `model_id` is optional — an empt
 |---|---|
 | `model_id` | Native model identifier (the registry key) |
 | `aliases` | Alternate names that resolve to this spec (e.g. `chatgpt-image-latest` → `gpt-image-2`) |
+| `deprecated_aliases` | Old ids that still resolve but emit a `DeprecationWarning` pointing to `model_id`. Use when a provider renames a slug; keep for one minor version before removal. |
 | `modality` | `Modality.IMAGE` / `VIDEO` / `AUDIO` — informational |
 | `pricing` | `PricingStrategy` callable returning USD cost |
 | `param_aliases` | 1:1 rename (canonical → native), e.g. `{"aspect_ratio": "ratio"}` |
@@ -94,7 +95,9 @@ Layered store. Lookup order: user overrides → package defaults → fallback sp
 | `register_pricing(model_id, strategy)` | Override only pricing (keeps other fields) |
 | `extend(specs)` | Bulk register |
 | `fork()` | Copy-on-write clone — per-instance overrides without mutating the parent |
-| `get(model_id)` | Never returns None; falls back to alias then to fallback spec |
+| `get(model_id)` | Never returns None; falls back to alias then to fallback spec. Emits `DeprecationWarning` (once per slug per registry) when resolved via `deprecated_aliases`. |
+| `resolve_canonical(model_id)` | Returns the canonical slug the upstream API expects; passes caller input through when only the fallback matched. Connectors with case-sensitive upstream APIs should call this before sending the slug on the wire. |
+| `has(model_id)` | True if the id (including regular or deprecated aliases) maps to a non-fallback spec. |
 | `known()` | All registered model IDs |
 | `prepare_payload(step)` | Run the 9-stage pipeline (see below) |
 
@@ -187,6 +190,23 @@ my_registry = ModelRegistry(
 )
 provider = GMICloudVideoProvider(models=my_registry)
 ```
+
+## Renaming a model slug safely
+
+When an upstream provider renames a model (common when vendor APIs move from PascalCase docs to lowercase live slugs), don't break existing callers:
+
+```python
+ModelSpec(
+    model_id="seedream-5.0-lite",                         # new canonical slug
+    deprecated_aliases=frozenset({"Seedream-5.0-Lite"}),  # old id, kept for 1 minor
+    pricing=per_unit(0.035),
+    ...
+)
+```
+
+Existing `step.model="Seedream-5.0-Lite"` calls resolve to the new spec, a single `DeprecationWarning` fires (once per slug per registry), and `resolve_canonical()` sends `seedream-5.0-lite` on the wire. Drop the alias after one minor version bump.
+
+See `libs/connectors/gmicloud/genblaze_gmicloud/models/{image,video}.py` for the reference use.
 
 ## Performance
 

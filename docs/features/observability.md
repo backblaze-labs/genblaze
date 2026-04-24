@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-17 -->
+<!-- last_verified: 2026-04-24 -->
 # Observability
 
 Pluggable tracers surface pipeline lifecycle events to logs, OpenTelemetry, LangSmith, or any custom backend.
@@ -28,7 +28,7 @@ Implement any subset of these hooks — defaults are no-ops:
 |------|------|
 | `on_run_start(run_id, name, *, tenant_id, total_steps, metadata)` | Pipeline begins |
 | `on_step_start(run_id, step, *, step_index, total_steps)` | Before provider.invoke |
-| `on_event(event: StreamEvent)` | Every StreamEvent (including progress ticks) |
+| `on_event(event: StreamEvent)` | Every StreamEvent (including progress ticks). `event` is a discriminated union — branch on `event.type` or `isinstance(event, StepFailedEvent)` to narrow. See [streaming.md](streaming.md). |
 | `on_step_end(run_id, step, *, duration_ms, step_index)` | After provider.invoke |
 | `on_run_end(run_id, result: PipelineResult)` | Pipeline finishes |
 
@@ -88,5 +88,6 @@ class PrometheusTracer(Tracer):
 ## Internals
 
 - `libs/core/genblaze_core/observability/tracer.py` — ABC + built-ins
-- `libs/core/genblaze_core/observability/events.py` — StreamEvent model
+- `libs/core/genblaze_core/observability/events.py` — `StreamEvent` base + 10 per-variant classes (Pydantic discriminated union)
+- `libs/spec/schemas/events/v1/` — authoritative JSON Schemas for every variant; drives `libs/spec/ts/genblaze.d.ts`
 - `libs/connectors/langsmith/` — LangSmith backend (separate package)

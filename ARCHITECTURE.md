@@ -111,7 +111,7 @@
 - SSRF protection: shared `check_ssrf()` in `_utils.py` blocks private/loopback IPs; used by both `AssetTransfer` and `WebhookNotifier`
 - OTel bridging: `StepSpan` optionally starts real OpenTelemetry spans when the SDK is installed
 - Tracer abstraction: pluggable `Tracer` ABC with NoOp/Logging/OTel/Composite backends; routes run+step lifecycle hooks + StreamEvents
-- Streaming: `Pipeline.stream()` / `astream()` yield `StreamEvent` iterators; events also forwarded to the attached tracer
+- Streaming: `Pipeline.stream()` / `astream()` yield `StreamEvent` iterators; events also forwarded to the attached tracer. `StreamEvent` is a Pydantic discriminated union with 10 per-variant classes (`PipelineStartedEvent`, `StepFailedEvent`, `AgentCompletedEvent`, …) — narrow via `event.type` or `isinstance(event, ...)`. Wire schemas live in `libs/spec/schemas/events/v1/`; generated TS types in `libs/spec/ts/genblaze.d.ts`.
 - Agent loop: `AgentLoop` composes a `Pipeline` factory with an `Evaluator`; each iteration linked via `parent_run_id` for lineage-preserving retry
 
 ## Canonical Files
@@ -138,7 +138,9 @@
 - WAV handler: `libs/core/genblaze_core/media/wav.py`
 - EmbedPolicy: `libs/core/genblaze_core/models/policy.py`
 - Data models: `libs/core/genblaze_core/models/`
-- StreamEvent: `libs/core/genblaze_core/observability/events.py`
+- StreamEvent variants + discriminated union: `libs/core/genblaze_core/observability/events.py`
+- Event JSON Schemas: `libs/spec/schemas/events/v1/` (plus parent `stream-event.schema.json`)
+- Generated TS types: `libs/spec/ts/genblaze.d.ts` (regenerate via `make ts-types`)
 - Tracer ABC + backends: `libs/core/genblaze_core/observability/tracer.py`
 - Streaming helpers: `libs/core/genblaze_core/pipeline/streaming.py`
 - Agent loop: `libs/core/genblaze_core/agents/loop.py`
@@ -162,6 +164,7 @@
 - [Model Registry](docs/features/model-registry.md)
 - [Embed Policy](docs/features/embed-policy.md)
 - [Iteration & Lineage](docs/features/iteration.md)
+- [LLM Calls (Standalone Chat)](docs/features/llm-calls.md)
 - [Object Storage](docs/features/object-storage.md)
 - [Parquet Sink](docs/features/parquet-sink.md)
 - [Queue Integration](docs/features/queue-integration.md)
