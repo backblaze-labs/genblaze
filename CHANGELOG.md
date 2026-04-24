@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5.post1] - 2026-04-24
+
+### Fixed
+- `genblaze` 0.3.1: corrects the `genblaze-nvidia` pin in the `nvidia` extra
+  and the `video`/`image`/`audio`/`all` bundles. 0.3.0 pinned
+  `genblaze-nvidia>=0.1.0,<0.2` but nvidia actually shipped at 0.2.0, which
+  made `pip install "genblaze[nvidia]"` unresolvable. Widened to
+  `>=0.2.0,<0.3`.
+
 ## [0.2.5] - 2026-04-24
 
 ### Released package versions
