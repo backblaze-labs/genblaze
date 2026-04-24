@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from genblaze_core.observability.events import StepProgressEvent
 from genblaze_core.observability.logger import StructuredLogger
 
 if TYPE_CHECKING:
@@ -210,7 +211,7 @@ class OTelTracer(Tracer):
 
     def on_event(self, event: StreamEvent) -> None:
         # Attach progress ticks to the current step span as events.
-        if event.type != "step.progress" or event.step_id is None:
+        if not isinstance(event, StepProgressEvent):
             return
         span = self._step_spans.get(event.step_id)
         if span is None:

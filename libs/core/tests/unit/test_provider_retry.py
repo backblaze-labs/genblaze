@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 from unittest.mock import patch
 
@@ -395,10 +396,13 @@ def test_apoll_transient_retry_recovers(mock_sleep) -> None:
 def test_cleanup_poll_cache_snapshot_safe() -> None:
     """_cleanup_poll_cache must not raise if dict mutates during iteration."""
     provider = _RetryProvider(fail_count=0)
-    # Populate stale entries so cleanup has work to do
+    # Populate stale entries so cleanup has work to do. Use a timestamp
+    # older than max_age relative to monotonic() — on fresh CI runners
+    # monotonic() can be under the 3600s TTL, so a literal 0.0 isn't stale.
+    stale_ts = time.monotonic() - provider._poll_cache_max_age - 1
     for i in range(50):
         provider._poll_cache[f"k{i}"] = "v"
-        provider._poll_cache_times[f"k{i}"] = 0.0  # very old
+        provider._poll_cache_times[f"k{i}"] = stale_ts
     # Should drain all without "dictionary changed size during iteration"
     provider._cleanup_poll_cache()
     assert provider._poll_cache == {}
