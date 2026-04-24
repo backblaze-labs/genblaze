@@ -37,4 +37,4 @@ def extract(file: Path, fmt: str) -> None:
             click.echo(f"Hash:      {manifest.canonical_hash}")
             click.echo(f"Verified:  {manifest.verify()}")
     except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc

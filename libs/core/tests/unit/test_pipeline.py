@@ -1591,3 +1591,59 @@ def test_sink_on_step_complete_not_required() -> None:
     result = Pipeline("legacy").step(p, model="m", prompt="p").run(sink=sink)
     assert result.run.status == RunStatus.COMPLETED
     assert sink.write_run_called
+
+
+# --- User-callback safety: buggy callbacks must not kill the run ---
+
+
+def _boom(_event: Any) -> None:
+    raise RuntimeError("user callback is buggy")
+
+
+def test_on_step_complete_callback_exception_does_not_kill_run() -> None:
+    """A raising on_step_complete callback is logged, not propagated."""
+    provider = MockProvider()
+    result = (
+        Pipeline("cb-safe")
+        .step(provider, model="m1", prompt="a")
+        .step(provider, model="m2", prompt="b")
+        .run(on_step_complete=_boom)
+    )
+    # Both steps completed, manifest was built, run succeeded.
+    assert result.run.status == RunStatus.COMPLETED
+    assert len(result.run.steps) == 2
+    assert result.manifest.canonical_hash
+
+
+def test_on_progress_callback_exception_does_not_kill_run() -> None:
+    """A raising on_progress callback is logged, not propagated."""
+    provider = MockProvider()
+    result = Pipeline("prog-safe").step(provider, model="m", prompt="p").run(on_progress=_boom)
+    assert result.run.status == RunStatus.COMPLETED
+    assert len(result.run.steps) == 1
+
+
+@pytest.mark.asyncio
+async def test_arun_on_step_complete_callback_exception_safe() -> None:
+    """Async path: buggy on_step_complete doesn't kill arun."""
+    provider = MockProvider()
+    # chain=True forces the sequential async path that calls the callback per-step
+    result = await (
+        Pipeline("async-cb-safe", chain=True)
+        .step(provider, model="m1", prompt="a")
+        .step(provider, model="m2", prompt="b")
+        .arun(on_step_complete=_boom)
+    )
+    assert result.run.status == RunStatus.COMPLETED
+    assert len(result.run.steps) == 2
+
+
+# --- Credential scan now catches bytes tokens ---
+
+
+def test_bytes_credential_in_params_rejected() -> None:
+    """Bytes-typed token slipping into step.params is still rejected."""
+    provider = MockProvider()
+    token_bytes = b"r8_" + b"A" * 25  # matches the Replicate pattern
+    with pytest.raises(GenblazeError, match="looks like an API credential"):
+        Pipeline("bytes-creds").step(provider, model="m", prompt="p", api_token=token_bytes).run()

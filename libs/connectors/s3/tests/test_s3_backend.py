@@ -159,6 +159,44 @@ class TestS3StorageBackend:
         backend.close()  # Should not raise
         mock_client.close.assert_not_called()
 
+    def test_exists_true_on_head_success(self, mock_boto3):
+        backend, mock_client = self._make_backend(mock_boto3)
+        assert backend.exists("some/key") is True
+
+    def test_exists_false_on_404(self, mock_boto3):
+        backend, mock_client = self._make_backend(mock_boto3)
+        mock_client.head_object.side_effect = _FakeClientError(
+            {"Error": {"Code": "404"}}, "HeadObject"
+        )
+        assert backend.exists("some/key") is False
+
+    def test_exists_false_on_403_for_scoped_keys(self, mock_boto3):
+        """Scoped B2/AWS keys (ReadFiles without ListFiles) see 403 on HEAD
+        for non-existent keys. Treating 403 as 'raise' breaks CAS dedup for
+        least-privilege credentials — should return False just like 404."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        mock_client.head_object.side_effect = _FakeClientError(
+            {"Error": {"Code": "403"}}, "HeadObject"
+        )
+        assert backend.exists("some/key") is False
+
+    def test_exists_false_on_access_denied(self, mock_boto3):
+        """AWS canonical form for 403 is 'AccessDenied'."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        mock_client.head_object.side_effect = _FakeClientError(
+            {"Error": {"Code": "AccessDenied"}}, "HeadObject"
+        )
+        assert backend.exists("some/key") is False
+
+    def test_exists_raises_on_other_errors(self, mock_boto3):
+        """500 and other codes should still surface as StorageError."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        mock_client.head_object.side_effect = _FakeClientError(
+            {"Error": {"Code": "500"}}, "HeadObject"
+        )
+        with pytest.raises(StorageError, match="exists check failed"):
+            backend.exists("some/key")
+
     def test_copy_uses_server_side_copy_object(self, mock_boto3):
         """copy() must go through S3 CopyObject — NOT the ABC's default
         download-and-reupload fallback. Server-side copy keeps the bytes

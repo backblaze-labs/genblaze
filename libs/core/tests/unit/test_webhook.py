@@ -209,6 +209,21 @@ class TestWebhookNotifier:
         assert body["event"] == "step.started"
         assert body["step_id"] == "s1"
 
+    def test_bounded_queue_drops_and_counts(self):
+        """A full queue drops oldest and increments dropped_count rather than blocking."""
+        # Small maxsize + don't start the worker so enqueues pile up.
+        notifier = WebhookNotifier(WebhookConfig(url="https://example.com"), queue_maxsize=2)
+        notifier.close(timeout=0.1)  # stop the worker so it stops draining
+
+        # Worker may still pull one item off before it sees the sentinel;
+        # enqueue enough extras that we're guaranteed to hit capacity.
+        for i in range(20):
+            notifier.enqueue({"event": "step.completed", "n": i})
+
+        # Queue itself is bounded; dropped_count must be strictly positive
+        # and no exception escaped to the caller.
+        assert notifier.dropped_count > 0
+
 
 # ---------------------------------------------------------------------------
 # WebhookSink tests

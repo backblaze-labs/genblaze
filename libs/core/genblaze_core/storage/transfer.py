@@ -419,7 +419,11 @@ class AssetTransfer:
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"Failed to download asset {asset.url}: {exc}") from exc
+            # Could be download, hashing, spooling, or upload — include the
+            # exception type so users can triage without diving into logs.
+            raise StorageError(
+                f"Transfer failed for {asset.url} ({type(exc).__name__}): {exc}"
+            ) from exc
 
         return key, sha256, size
 
@@ -529,7 +533,9 @@ class AssetTransfer:
                     self._backend.delete(temp_key)
                 except Exception:
                     logger.warning("Failed to clean up temp key %s after error", temp_key)
-            raise StorageError(f"Failed to download asset {asset.url}: {exc}") from exc
+            raise StorageError(
+                f"Pipelined transfer failed for {asset.url} ({type(exc).__name__}): {exc}"
+            ) from exc
         finally:
             resp.release_conn()
 

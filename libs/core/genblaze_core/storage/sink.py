@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import wait as _futures_wait
 from typing import TYPE_CHECKING
 
 from genblaze_core.exceptions import SinkError
@@ -243,20 +244,35 @@ class ObjectStorageSink(BaseSink):
         if self._parquet_sink is not None:
             self._parquet_sink.write_run(run, manifest)
 
-    def close(self) -> None:
+    def close(self, timeout: float | None = None) -> None:
         """Release storage backend resources.
 
-        Shuts down the eager-transfer pool if one was created. Waits for
-        in-flight transfers so any pending async work is either finished
-        or already drained by ``write_run``. Pipelines that errored mid-
-        execution and never called ``write_run`` rely on this to flush
-        orphan futures.
+        Shuts down the eager-transfer pool if one was created. Pipelines
+        that errored mid-execution and never called ``write_run`` rely on
+        this to flush orphan futures.
+
+        Args:
+            timeout: If ``None`` (default), waits indefinitely for all
+                in-flight uploads. If set, waits at most ``timeout`` seconds
+                for the pool to drain, then gives up — queued-but-not-started
+                tasks are cancelled via ``cancel_futures=True``. Running
+                HTTP uploads cannot be preempted in Python; they complete
+                or exit with the process.
         """
         with self._eager_lock:
             pool = self._eager_pool
             self._eager_pool = None
+            pending = list(self._eager_pending.values())
+            self._eager_pending.clear()
         if pool is not None:
-            pool.shutdown(wait=True)
+            if timeout is None:
+                pool.shutdown(wait=True)
+            else:
+                # Stop accepting new work and cancel queued tasks; running
+                # tasks keep going but we cap our wait.
+                pool.shutdown(wait=False, cancel_futures=True)
+                if pending:
+                    _futures_wait(pending, timeout=timeout)
         self._backend.close()
         if self._parquet_sink is not None:
             self._parquet_sink.close()

@@ -52,6 +52,17 @@ class StepCache:
         self._dir = Path(cache_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._corruption_count: int = 0
+
+    @property
+    def corruption_count(self) -> int:
+        """Number of corrupt-or-unreadable entries encountered by ``get``.
+
+        Useful signal for ops: a steadily climbing count usually indicates
+        disk problems (fs-level bit rot, aborted writes from OOM kills) or
+        an incompatible Step schema upgrade that left old entries stranded.
+        """
+        return self._corruption_count
 
     def _path(self, key: str) -> Path:
         return self._dir / f"{key}.json"
@@ -66,6 +77,7 @@ class StepCache:
         except FileNotFoundError:
             return None
         except Exception as exc:
+            self._corruption_count += 1
             logger.warning("Cache entry corrupt or unreadable (treating as miss): %s", exc)
             return None
 

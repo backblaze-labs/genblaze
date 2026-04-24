@@ -324,6 +324,87 @@ class TestClassifyError:
         assert err == ProviderErrorCode.UNKNOWN
 
 
+# --- Intra-poll transient-retry budget tests ---
+
+
+class _FlakyPollProvider(BaseProvider):
+    """poll() raises a retryable error N times then returns True."""
+
+    name = "flaky-poll"
+
+    def __init__(self, *, fail_count: int, error_msg: str = "server 503 temporary"):
+        super().__init__()
+        self._fail_count = fail_count
+        self._error_msg = error_msg
+        self.poll_calls = 0
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-flaky"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        self.poll_calls += 1
+        if self.poll_calls <= self._fail_count:
+            raise RuntimeError(self._error_msg)
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_poll_transient_retry_recovers(mock_sleep) -> None:
+    """A few transient 5xx during poll() shouldn't fail the step."""
+    provider = _FlakyPollProvider(fail_count=3)
+    result = provider.invoke(_make_step(), {"timeout": 60})
+    assert result.status == StepStatus.SUCCEEDED
+    assert provider.poll_calls == 4  # 3 failures + 1 success
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_poll_transient_retry_budget_exhausted(mock_sleep) -> None:
+    """After poll_transient_retries consecutive failures, escalate."""
+    provider = _FlakyPollProvider(fail_count=99)
+    provider.poll_transient_retries = 2
+    result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 0})
+    assert result.status == StepStatus.FAILED
+    # 1 initial + 2 retries = 3 calls before giving up
+    assert provider.poll_calls == 3
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_poll_non_retryable_not_retried(mock_sleep) -> None:
+    """Auth errors during poll() don't consume the transient budget."""
+    provider = _FlakyPollProvider(fail_count=99, error_msg="401 unauthorized")
+    result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 0})
+    assert result.status == StepStatus.FAILED
+    assert provider.poll_calls == 1  # no retries
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_apoll_transient_retry_recovers(mock_sleep) -> None:
+    """Async path tolerates the same transient errors."""
+    provider = _FlakyPollProvider(fail_count=2)
+    result = asyncio.run(provider.ainvoke(_make_step(), {"timeout": 60}))
+    assert result.status == StepStatus.SUCCEEDED
+    assert provider.poll_calls == 3
+
+
+# --- Poll cache thread-safety regression ---
+
+
+def test_cleanup_poll_cache_snapshot_safe() -> None:
+    """_cleanup_poll_cache must not raise if dict mutates during iteration."""
+    provider = _RetryProvider(fail_count=0)
+    # Populate stale entries so cleanup has work to do
+    for i in range(50):
+        provider._poll_cache[f"k{i}"] = "v"
+        provider._poll_cache_times[f"k{i}"] = 0.0  # very old
+    # Should drain all without "dictionary changed size during iteration"
+    provider._cleanup_poll_cache()
+    assert provider._poll_cache == {}
+    assert provider._poll_cache_times == {}
+
+
 class TestAdaptivePollInterval:
     """Test the adaptive poll interval backoff."""
 

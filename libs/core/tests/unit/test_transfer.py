@@ -308,7 +308,7 @@ class TestAssetTransfer:
         mock_get_stream.side_effect = OSError("connection refused")
         transfer, _ = self._make_transfer()
         asset = Asset(url="https://slow.example.com/huge.mp4", media_type="video/mp4")
-        with pytest.raises(StorageError, match="Failed to download"):
+        with pytest.raises(StorageError, match="Transfer failed"):
             transfer.transfer(asset)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)

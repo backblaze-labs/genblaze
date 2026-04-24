@@ -185,6 +185,54 @@ def test_fetch_output_success_with_none():
     assert len(result.assets) == 0
 
 
+def test_fetch_output_success_with_dict():
+    """Some Replicate models return dict outputs like {'video': url, 'audio': url}."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.predictions.get.return_value = FakePrediction(
+        output={
+            "video": "https://example.com/video.mp4",
+            "subtitles": "https://example.com/subs.vtt",
+        }
+    )
+    provider._client = mock_client
+
+    step = _make_step()
+    result = provider.fetch_output("pred-abc123", step)
+
+    urls = {a.url for a in result.assets}
+    assert urls == {"https://example.com/video.mp4", "https://example.com/subs.vtt"}
+
+
+def test_fetch_output_success_with_nested_list():
+    """Batch-output models return list[list[str]]; flatten one level."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.predictions.get.return_value = FakePrediction(
+        output=[["https://example.com/a.png", "https://example.com/b.png"]]
+    )
+    provider._client = mock_client
+
+    step = _make_step()
+    result = provider.fetch_output("pred-abc123", step)
+
+    assert len(result.assets) == 2
+
+
+def test_fetch_output_unknown_shape_raises_clear_error():
+    """Unknown output shapes raise ProviderError with a specific message."""
+    from genblaze_core.exceptions import ProviderError
+
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.predictions.get.return_value = FakePrediction(output=42)
+    provider._client = mock_client
+
+    step = _make_step()
+    with pytest.raises(ProviderError, match="Unexpected Replicate output shape"):
+        provider.fetch_output("pred-abc123", step)
+
+
 def test_fetch_output_failed():
     from genblaze_core.exceptions import ProviderError
 

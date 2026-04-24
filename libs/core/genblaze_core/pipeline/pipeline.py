@@ -44,8 +44,12 @@ def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, mo
     """
 
     def _scan(value: Any, path: str) -> None:
-        if isinstance(value, str):
-            if _SECRET_PATTERNS.search(value):
+        # Accept bytes/bytearray as well — otherwise a caller could slip a
+        # token past this guard by passing the UTF-8 bytes of the token
+        # instead of the string, and still have it serialized downstream.
+        if isinstance(value, (str, bytes, bytearray)):
+            text = value if isinstance(value, str) else value.decode("utf-8", errors="replace")
+            if _SECRET_PATTERNS.search(text):
                 raise GenblazeError(
                     f"step.params[{path}] for {provider_name}/{model} looks "
                     "like an API credential. step.params is hashed, embedded "
@@ -579,6 +583,22 @@ class Pipeline(Runnable[None, PipelineResult]):
     # Event emission — internal helpers feeding tracer + stream emitter.
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _call_user_callback(callback: Any, event: Any, name: str) -> None:
+        """Invoke a user-supplied callback; swallow + log exceptions.
+
+        User callbacks (on_progress, on_step_complete) live on the pipeline's
+        critical path. If they raise, we'd lose the manifest write, partial
+        assets, and tracer end-of-run events. Match the safety posture of
+        moderation hooks and sink.on_step_complete.
+        """
+        if callback is None:
+            return
+        try:
+            callback(event)
+        except Exception:  # noqa: BLE001 — user code; log and keep going
+            logger.warning("%s callback raised", name, exc_info=True)
+
     def attach_emitter(self, emitter: QueueEmitter | None) -> QueueEmitter | None:
         """Install (or clear) the stream event emitter, returning the prior one.
 
@@ -601,8 +621,9 @@ class Pipeline(Runnable[None, PipelineResult]):
             return config
 
         def _composite(ev: Any) -> None:
-            if user_on_progress is not None:
-                user_on_progress(ev)
+            # User callback first so their side effects see the raw ProgressEvent
+            # ordering; emit event to tracer/stream regardless of callback outcome.
+            self._call_user_callback(user_on_progress, ev, "on_progress")
             self._emit_event(progress_to_stream_event(ev, run_id))
 
         merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
@@ -910,8 +931,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     step=result,
                     elapsed_sec=time.monotonic() - started_at_mono,
                 )
-                if on_step_complete is not None:
-                    on_step_complete(step_event)
+                self._call_user_callback(on_step_complete, step_event, "on_step_complete")
                 self._emit_step_complete_event(step_event, run_id)
 
                 if result.status == StepStatus.SUCCEEDED:
@@ -1074,8 +1094,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                         step=result,
                         elapsed_sec=time.monotonic() - started_at_mono,
                     )
-                    if on_step_complete is not None:
-                        on_step_complete(step_event)
+                    self._call_user_callback(on_step_complete, step_event, "on_step_complete")
                     self._emit_step_complete_event(step_event, run_id)
 
                     if result.status == StepStatus.SUCCEEDED:
@@ -1169,8 +1188,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                         step=step_result,
                         elapsed_sec=time.monotonic() - started_at_mono,
                     )
-                    if on_step_complete is not None:
-                        on_step_complete(step_event)
+                    self._call_user_callback(on_step_complete, step_event, "on_step_complete")
                     self._emit_step_complete_event(step_event, run_id)
 
             pipeline_result = self._finalize(completed_steps, sink, run_id, started_at_ts)

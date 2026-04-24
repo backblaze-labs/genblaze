@@ -30,6 +30,12 @@ logger = logging.getLogger("genblaze.webhook")
 # Sentinel to signal the worker thread to stop
 _STOP = object()
 
+# Max queued payloads. If the consumer is slower than the event rate the
+# queue grows unboundedly otherwise (one hot pipeline can emit hundreds of
+# progress events per second). At capacity we drop oldest and count so
+# operators can size up.
+_DEFAULT_QUEUE_MAXSIZE = 10_000
+
 
 class WebhookEvent(StrEnum):
     """Webhook event types."""
@@ -94,17 +100,18 @@ class WebhookNotifier:
         notifier.close()
     """
 
-    def __init__(self, config: WebhookConfig) -> None:
+    def __init__(
+        self, config: WebhookConfig, *, queue_maxsize: int = _DEFAULT_QUEUE_MAXSIZE
+    ) -> None:
         self._config = config
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
+        self._dropped_count: int = 0
         self._worker = threading.Thread(target=self._drain, daemon=True)
         self._worker.start()
         # Track which steps have fired "step.started" (avoid duplicates)
         self._started_steps: set[str] = set()
         self._lock = threading.Lock()
         self._closed = False
-        self._ssrf_validated_at: float = 0.0  # monotonic timestamp of last SSRF check
-        self._ssrf_ttl: float = 60.0  # Re-validate DNS every 60s to limit rebinding window
         # Register cleanup via atexit with a weak reference to avoid preventing GC
         self._atexit_ref = weakref.ref(self)
         atexit.register(WebhookNotifier._atexit_close, self._atexit_ref)
@@ -116,24 +123,45 @@ class WebhookNotifier:
         return event in self._config.include_events
 
     def enqueue(self, payload: dict[str, Any]) -> None:
-        """Add a payload to the delivery queue (filtered by include_events)."""
+        """Add a payload to the delivery queue (filtered by include_events).
+
+        Drops the payload and increments ``dropped_count`` when the queue is
+        full — never blocks the caller. A slow webhook endpoint should not
+        apply backpressure to the pipeline executing on the main thread.
+        """
         event = payload.get("event", "")
-        if self._should_send(event):
-            self._queue.put(payload)
+        if not self._should_send(event):
+            return
+        try:
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            self._dropped_count += 1
+            # Log sparingly so a broken endpoint doesn't flood the log.
+            if self._dropped_count == 1 or self._dropped_count % 100 == 0:
+                logger.warning(
+                    "Webhook queue full; dropped %d events so far. "
+                    "Consumer is slower than event rate — increase queue_maxsize "
+                    "or speed up the endpoint.",
+                    self._dropped_count,
+                )
+
+    @property
+    def dropped_count(self) -> int:
+        """Number of events dropped because the delivery queue was full."""
+        return self._dropped_count
 
     def _validate_ssrf(self) -> None:
         """DNS-resolve the webhook host and block private IPs.
 
-        Re-validates periodically (every ``_ssrf_ttl`` seconds) to prevent
-        DNS rebinding attacks while avoiding a DNS lookup on every delivery.
+        Validated on every delivery. Caching the check opens a DNS-rebind
+        window where an attacker-controlled domain alternates between public
+        (passes the check) and private (used by urllib) IPs. DNS responses
+        are already cached by the OS resolver at the hostname TTL, so the
+        per-delivery cost is negligible.
         """
-        now = time.monotonic()
-        if now - self._ssrf_validated_at < self._ssrf_ttl:
-            return
         from genblaze_core._utils import check_ssrf
 
         check_ssrf(self._config.url, exc_type=WebhookError)
-        self._ssrf_validated_at = now
 
     def _post(self, payload: dict[str, Any]) -> None:
         """POST a JSON payload to the configured URL with retries."""

@@ -34,6 +34,12 @@ DEFAULT_TIMEOUT = 600.0  # 10 minutes
 # Max error message length stored in step.error (prevents bloated manifests)
 _MAX_ERROR_LENGTH = 500
 
+# Max consecutive transient poll() errors tolerated inside a single invoke().
+# Guards against misclassification in connectors that wrap httpx/boto exceptions
+# opaquely — a single 503 mid-poll shouldn't fail a 10-minute video generation.
+# Overridable per-provider via subclass attribute if needed.
+_DEFAULT_POLL_TRANSIENT_RETRIES = 5
+
 
 @dataclass
 class ProviderCapabilities:
@@ -163,6 +169,10 @@ class BaseProvider(Runnable[Step, Step]):
 
     name: str = "base"
     poll_interval: float = DEFAULT_POLL_INTERVAL
+    # Max consecutive transient poll failures tolerated before escalating.
+    # Counter resets on any successful poll, so this is a consecutive-failure
+    # budget, not a total. Set to 0 to disable intra-poll retries.
+    poll_transient_retries: int = _DEFAULT_POLL_TRANSIENT_RETRIES
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # Ensure each subclass has its own cache slot — avoids inheriting a
@@ -212,7 +222,11 @@ class BaseProvider(Runnable[Step, Step]):
         """Remove poll cache entries older than TTL to prevent memory leaks."""
         now = time.monotonic()
         max_age = self._poll_cache_max_age
-        stale = [k for k, t in self._poll_cache_times.items() if now - t > max_age]
+        # Snapshot first — a concurrent poll() running in asyncio.to_thread
+        # can call _cache_poll_result mid-iteration and raise
+        # "RuntimeError: dictionary changed size during iteration".
+        snapshot = list(self._poll_cache_times.items())
+        stale = [k for k, t in snapshot if now - t > max_age]
         for k in stale:
             self._poll_cache.pop(k, None)
             self._poll_cache_times.pop(k, None)
@@ -321,6 +335,18 @@ class BaseProvider(Runnable[Step, Step]):
         """Fetch results and attach assets to the step. Returns updated step."""
         ...
 
+    @staticmethod
+    def _classify_poll_exc(exc: Exception) -> ProviderErrorCode:
+        """Pick the best error code for an exception raised by poll().
+
+        Prefers an explicit ProviderError.error_code over string-matching so
+        connectors that already categorize their SDK exceptions keep the
+        classification they set.
+        """
+        if isinstance(exc, ProviderError) and exc.error_code is not None:
+            return exc.error_code
+        return classify_api_error(exc)
+
     def _attempt_once(
         self, step: Step, config: RunnableConfig | None, timeout: float, start_time: float
     ) -> Step:
@@ -357,7 +383,33 @@ class BaseProvider(Runnable[Step, Step]):
             if initial_delay > 0:
                 time.sleep(initial_delay)
 
-        while not self.poll(prediction_id, config):
+        transient_retries = 0
+        while True:
+            try:
+                done = self.poll(prediction_id, config)
+            except Exception as exc:
+                code = self._classify_poll_exc(exc)
+                elapsed = time.monotonic() - start_time
+                if (
+                    code in RETRYABLE_ERROR_CODES
+                    and transient_retries < self.poll_transient_retries
+                    and elapsed < timeout
+                ):
+                    transient_retries += 1
+                    backoff = jittered_backoff(transient_retries)
+                    logger.debug(
+                        "Poll transient error (%s), retry %d/%d in %.1fs",
+                        code,
+                        transient_retries,
+                        self.poll_transient_retries,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    continue
+                raise
+            transient_retries = 0  # reset on any successful poll
+            if done:
+                break
             elapsed = time.monotonic() - start_time
             if elapsed >= timeout:
                 raise ProviderError(f"Poll timeout after {elapsed:.1f}s (limit: {timeout}s)")
@@ -433,7 +485,25 @@ class BaseProvider(Runnable[Step, Step]):
         self._fire_progress(step, config, "resumed", start_time)
 
         try:
-            while not self.poll(prediction_id, config):
+            transient_retries = 0
+            while True:
+                try:
+                    done = self.poll(prediction_id, config)
+                except Exception as exc:
+                    code = self._classify_poll_exc(exc)
+                    elapsed = time.monotonic() - start_time
+                    if (
+                        code in RETRYABLE_ERROR_CODES
+                        and transient_retries < self.poll_transient_retries
+                        and elapsed < timeout
+                    ):
+                        transient_retries += 1
+                        time.sleep(jittered_backoff(transient_retries))
+                        continue
+                    raise
+                transient_retries = 0
+                if done:
+                    break
                 elapsed = time.monotonic() - start_time
                 if elapsed >= timeout:
                     msg = f"Resume poll timeout after {elapsed:.1f}s (limit: {timeout}s)"
@@ -468,7 +538,25 @@ class BaseProvider(Runnable[Step, Step]):
         self._fire_progress(step, config, "resumed", start_time)
 
         try:
-            while not await asyncio.to_thread(self.poll, prediction_id, config):
+            transient_retries = 0
+            while True:
+                try:
+                    done = await asyncio.to_thread(self.poll, prediction_id, config)
+                except Exception as exc:
+                    code = self._classify_poll_exc(exc)
+                    elapsed = time.monotonic() - start_time
+                    if (
+                        code in RETRYABLE_ERROR_CODES
+                        and transient_retries < self.poll_transient_retries
+                        and elapsed < timeout
+                    ):
+                        transient_retries += 1
+                        await asyncio.sleep(jittered_backoff(transient_retries))
+                        continue
+                    raise
+                transient_retries = 0
+                if done:
+                    break
                 elapsed = time.monotonic() - start_time
                 if elapsed >= timeout:
                     msg = f"Resume poll timeout after {elapsed:.1f}s (limit: {timeout}s)"
@@ -590,7 +678,33 @@ class BaseProvider(Runnable[Step, Step]):
             if initial_delay > 0:
                 await asyncio.sleep(initial_delay)
 
-        while not await asyncio.to_thread(self.poll, prediction_id, config):
+        transient_retries = 0
+        while True:
+            try:
+                done = await asyncio.to_thread(self.poll, prediction_id, config)
+            except Exception as exc:
+                code = self._classify_poll_exc(exc)
+                elapsed = time.monotonic() - start_time
+                if (
+                    code in RETRYABLE_ERROR_CODES
+                    and transient_retries < self.poll_transient_retries
+                    and elapsed < timeout
+                ):
+                    transient_retries += 1
+                    backoff = jittered_backoff(transient_retries)
+                    logger.debug(
+                        "Poll transient error (%s), retry %d/%d in %.1fs",
+                        code,
+                        transient_retries,
+                        self.poll_transient_retries,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
+            transient_retries = 0
+            if done:
+                break
             elapsed = time.monotonic() - start_time
             if elapsed >= timeout:
                 raise ProviderError(f"Poll timeout after {elapsed:.1f}s (limit: {timeout}s)")

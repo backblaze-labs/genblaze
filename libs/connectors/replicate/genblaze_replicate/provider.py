@@ -176,14 +176,35 @@ class ReplicateProvider(BaseProvider):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            output = prediction.output
-            if isinstance(output, str):
-                output = [output]
-            elif output is None:
-                output = []
+            # Replicate output shapes vary by model: str (single URL), list[str]
+            # (multi-asset), dict[str, str | list] (e.g. {"video": url,
+            # "subtitles": url} from text-to-video models with side-channels),
+            # or None (no output). Normalize to list[str].
+            raw_output = prediction.output
+            urls: list[str]
+            if raw_output is None:
+                urls = []
+            elif isinstance(raw_output, str):
+                urls = [raw_output]
+            elif isinstance(raw_output, list):
+                # Nested lists happen on batch-output models; flatten one level.
+                urls = []
+                for item in raw_output:
+                    if isinstance(item, str):
+                        urls.append(item)
+                    elif isinstance(item, list):
+                        urls.extend(str(u) for u in item if isinstance(u, (str, bytes)))
+            elif isinstance(raw_output, dict):
+                # Multi-channel outputs: keep only URL-shaped string values.
+                urls = [str(v) for v in raw_output.values() if isinstance(v, str)]
+            else:
+                raise ProviderError(
+                    f"Unexpected Replicate output shape "
+                    f"({type(raw_output).__name__}): {raw_output!r}",
+                    error_code=ProviderErrorCode.SERVER_ERROR,
+                )
 
-            for url in output:
-                url_str = str(url)
+            for url_str in urls:
                 validate_asset_url(url_str)
                 path = urlparse(url_str).path
                 mime, _ = mimetypes.guess_type(path)

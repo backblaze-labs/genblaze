@@ -237,13 +237,28 @@ class S3StorageBackend(StorageBackend):
             raise StorageError(f"S3 get failed for {key}: {exc}") from exc
 
     def exists(self, key: str) -> bool:
-        """Check if an object exists in S3."""
+        """Check if an object exists in S3.
+
+        Treats 404 and 403/AccessDenied as "does not exist". Scoped B2/AWS
+        application keys commonly have ReadFiles without ListFiles, which
+        returns 403 for HEAD on non-existent keys. Raising would break CAS
+        dedup for least-privilege credentials — we log at DEBUG so real
+        permission failures still leave a breadcrumb.
+        """
         try:
             self._ensure_region_verified()
             self._client.head_object(Bucket=self._bucket, Key=key)
             return True
         except ClientError as exc:
-            if exc.response["Error"]["Code"] == "404":
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "404":
+                return False
+            if code in ("403", "AccessDenied"):
+                logger.debug(
+                    "head_object %s returned 403/AccessDenied — treating as not-exist. "
+                    "If the key should be visible, check bucket/prefix permissions.",
+                    key,
+                )
                 return False
             raise StorageError(f"S3 exists check failed for {key}: {exc}") from exc
         except StorageError:

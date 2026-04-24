@@ -36,4 +36,6 @@ def verify(file: Path) -> None:
     except click.exceptions.Exit:
         raise
     except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
+        # Prefix with exception type so "PermissionError: ..." and
+        # "EmbeddingError: ..." are distinguishable at a glance.
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
