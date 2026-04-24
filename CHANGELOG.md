@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `genblaze-core`: `genblaze_core.pipeline` package now uses PEP 562
+  module-level `__getattr__` for lazy attribute resolution (`Pipeline`,
+  `StepCache`, `PipelineResult`, `StepCompleteEvent`). `from
+  genblaze_core.pipeline import Pipeline` still works; loading the heavy
+  `pipeline.py` module is deferred until first access. Lets
+  `observability.events` import from `pipeline.result` without a
+  circular import through `pipeline.py`.
 - `libs/spec/ts/genblaze.d.ts` — TypeScript type declarations generated
   from the JSON Schemas. Eliminates hand-rolled type drift in downstream
   TS consumers (studio UIs, Node backends). Regenerate via
@@ -64,6 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remain on the Python object but are excluded from the wire shape;
   derived `step_status`/`manifest_hash`/`run_status`/`error` fields are
   pre-populated at construction so consumers don't lose context.
+- `StepCompletedEvent.step` / `StepFailedEvent.step` are now typed as
+  `Step | None` (was `Any`); `PipelineCompletedEvent.result`,
+  `PipelineFailedEvent.result`, `AgentIterationEvaluatedEvent.result`,
+  and `AgentCompletedEvent.result` are typed as `PipelineResult | None`.
+  Pydantic passes instances through by identity
+  (`revalidate_instances="never"`) — no copy, no perf regression. IDE
+  autocomplete and static type checkers now narrow `event.step.assets`
+  and `event.result.manifest` correctly.
 
 ## [0.2.2] - 2026-04-23
 

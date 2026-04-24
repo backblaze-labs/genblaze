@@ -19,22 +19,13 @@ construction time so consumers reading the wire format don't lose context.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from genblaze_core._utils import utc_now
-
-if TYPE_CHECKING:
-    # Type-only imports — ``Step`` and ``PipelineResult`` annotations would
-    # create an import cycle at runtime through ``genblaze_core.pipeline``'s
-    # package-level imports. The runtime fields use ``Any`` so Pydantic
-    # doesn't try to resolve the forward references; the actual objects
-    # attached are always the real types.
-    from genblaze_core.models.step import Step  # noqa: F401 — documented contract
-    from genblaze_core.pipeline.result import (
-        PipelineResult,  # noqa: F401 — documented contract
-    )
+from genblaze_core.models.step import Step
+from genblaze_core.pipeline.result import PipelineResult
 
 # Tagged-union event types. Keep these string literals stable — external
 # consumers (dashboards, tracers, TS clients) match on them.
@@ -103,11 +94,9 @@ class PipelineCompletedEvent(StreamEvent):
     manifest_hash: str | None = Field(
         default=None, description="Canonical SHA-256 hash of the run's manifest."
     )
-    # In-process only — a :class:`PipelineResult` instance. Typed as ``Any``
-    # to avoid an import cycle through ``genblaze_core.pipeline`` — consumers
-    # should treat this field as :class:`PipelineResult | None`.
-    # Excluded from JSON serialization; use manifest_hash/run_status for the wire.
-    result: Any = Field(default=None, exclude=True, repr=False)
+    # In-process only — full :class:`PipelineResult`. Excluded from JSON
+    # serialization; wire consumers read ``manifest_hash`` / ``run_status``.
+    result: PipelineResult | None = Field(default=None, exclude=True, repr=False)
 
 
 class PipelineFailedEvent(StreamEvent):
@@ -122,8 +111,8 @@ class PipelineFailedEvent(StreamEvent):
     manifest_hash: str | None = Field(
         default=None, description="Canonical hash of the partial manifest, if one was produced."
     )
-    # In-process only — see PipelineCompletedEvent.result for the typing note.
-    result: Any = Field(default=None, exclude=True, repr=False)
+    # In-process only — excluded from JSON serialization.
+    result: PipelineResult | None = Field(default=None, exclude=True, repr=False)
 
 
 # --- Step-level events ------------------------------------------------------
@@ -183,9 +172,10 @@ class StepCompletedEvent(StreamEvent):
     step_status: str | None = Field(
         default=None, description="Terminal status string (usually ``succeeded``)."
     )
-    # In-process only — a :class:`Step` instance with assets, cost, etc.
-    # Typed as ``Any`` to avoid an import cycle; treat as ``Step | None``.
-    step: Any = Field(default=None, exclude=True, repr=False)
+    # In-process only — full :class:`Step` with assets, cost, etc.
+    # Excluded from JSON serialization (wire consumers read the derived
+    # ``step_status`` field).
+    step: Step | None = Field(default=None, exclude=True, repr=False)
 
 
 class StepFailedEvent(StreamEvent):
@@ -203,8 +193,8 @@ class StepFailedEvent(StreamEvent):
     step_status: str | None = Field(
         default=None, description="Terminal status string (usually ``failed``)."
     )
-    # In-process only — see StepCompletedEvent.step for the typing note.
-    step: Any = Field(default=None, exclude=True, repr=False)
+    # In-process only — excluded from JSON serialization.
+    step: Step | None = Field(default=None, exclude=True, repr=False)
 
 
 # --- Agent-loop events ------------------------------------------------------
@@ -233,8 +223,8 @@ class AgentIterationEvaluatedEvent(StreamEvent):
         "May be absent when the evaluator only returns pass/fail.",
     )
     feedback: str | None = Field(default=None, description="Free-text evaluator feedback.")
-    # In-process only — see PipelineCompletedEvent.result for the typing note.
-    result: Any = Field(default=None, exclude=True, repr=False)
+    # In-process only — excluded from JSON serialization.
+    result: PipelineResult | None = Field(default=None, exclude=True, repr=False)
 
 
 class AgentCompletedEvent(StreamEvent):
@@ -246,8 +236,8 @@ class AgentCompletedEvent(StreamEvent):
     total_cost_usd: float | None = Field(
         default=None, description="Summed cost across all iterations, if tracked."
     )
-    # In-process only — see PipelineCompletedEvent.result for the typing note.
-    result: Any = Field(default=None, exclude=True, repr=False)
+    # In-process only — excluded from JSON serialization.
+    result: PipelineResult | None = Field(default=None, exclude=True, repr=False)
 
 
 # --- Discriminated union surface -------------------------------------------
