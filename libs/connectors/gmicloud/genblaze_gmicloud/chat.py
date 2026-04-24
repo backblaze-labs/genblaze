@@ -157,7 +157,7 @@ def chat(
     payload.update(kwargs)
 
     own_client = client is None
-    if own_client:
+    if client is None:
         client = httpx.Client(
             base_url=base_url or _DEFAULT_BASE_URL,
             headers={"Authorization": f"Bearer {key}"},
