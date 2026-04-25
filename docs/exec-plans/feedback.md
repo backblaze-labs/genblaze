@@ -86,7 +86,76 @@ discriminated union + JSON Schemas under `libs/spec/schemas/events/` + TS
 
 ## Inbox
 
-_(Empty — all 2026-04-24 feedback triaged into the priority sections below.)_
+### 2026-04-25 — external SDK-review critique (uninformed but with UX kernels)
+
+A third-party reviewer asserted Genblaze "has no primitives", "is just a folder",
+and "lacks a quickstart" — all refuted by code-walk against the current repo
+(`Pipeline`, `Step`, `Run`, `Asset`, `Manifest`, `BaseProvider`, `ModelRegistry`
+all present and exercised; quickstart at README + `examples/quickstart.py` +
+`examples/quickstart_local.py`; storage first-class via
+`S3StorageBackend.for_backblaze()`; 11 connectors; conformance + probe + retry
+policy infra all shipping). Surfacing the genuine UX kernels for triage.
+README professionalization (positioning, "Why Genblaze" framing, Concepts
+hoist, Runtime section, install dedupe) shipped same-day to address
+surface-perception issues independently.
+
+- **F-2026-04-25-01** — `Pipeline.run(save=True)` autoresolves an
+  `ObjectStorageSink` from env. Critique: `sink=storage` requires three import
+  lines before the demo runs. Resolution shape: **A** — boolean opens default
+  sink built from `B2_KEY_ID` / `B2_APP_KEY` (or `GENBLAZE_STORAGE_URI`),
+  no-op when env absent. Pairs with P2-09 (`b2_sink` preset) — likely subsume
+  into the same preset surface.
+- **F-2026-04-25-02** — `Pipeline.replay(run_id)` /
+  `Pipeline.from_manifest_uri(uri)` programmatic replay. CLI already has
+  `genblaze replay`; SDK callers fall back to loading the manifest by hand.
+  Resolution shape: **A**. Pairs with P2-16 (idempotency / rehydrate recipe),
+  P2-33 (`with_parent`).
+- **F-2026-04-25-03** — String-routed model selection:
+  `Step.generate(model="openai:sora-2", ...)`. Sugar over typed provider
+  classes via the existing entry-point registry. Matches LiteLLM / Vercel AI
+  ergonomic; lowers first-touch friction. Resolution shape: **A** — thin
+  `ProviderRegistry.resolve("openai:sora-2") -> (ProviderClass, model_id)`
+  factory; keep typed providers as the supported surface. Don't replace the
+  typed API — additive only.
+- **F-2026-04-25-04** — CLI subcommands: `genblaze init` (scaffold
+  `pipeline.py` + `.env.example`) and `genblaze run pipeline.py` (import the
+  module's `pipeline` symbol, execute it, stream events to terminal).
+  Distinct from P1-13 (distributing the existing CLI). Pairs with P3-06
+  (offline quickstart promotion) and the "First-30-minutes experience"
+  cross-cutting initiative. Resolution shape: **A**.
+- **F-2026-04-25-05** — Reference applications under `examples/apps/`: 2–3
+  packaged end-to-end apps with their own README + requirements. Candidates:
+  text → image → B2-published gallery; long-form audio → transcription →
+  searchable summary; agentic refinement loop with quality scoring. Distinct
+  from P1-18 (which inlines snippets into the README). Goal: prove
+  production-readiness to skimmers. Resolution shape: **A** (docs/examples).
+- **F-2026-04-25-06** — `Pipeline.run(evaluate=True)` evaluator hooks
+  contract: pluggable quality scorers / output validators that fire after
+  each step or at terminal step. Today users wire equivalent logic through
+  `on_step_complete`. Resolution shape: **A**, **deferred until concrete user
+  demand** — half-built eval is worse than none. Possibly subsumed by the
+  analysis-pipeline cross-cutting initiative once `Step.output` lands
+  (P0-06).
+- **F-2026-04-25-07** — Explicit `Pipeline.branch(condition=fn, then=Step,
+  else_=Step)` conditional helper. Today expressible via `on_step_complete` +
+  `fail_fast=False` + `input_from`. Resolution shape: **A**, **low
+  priority** — only ship if a real example needs it; current patterns cover
+  the use cases. Don't preempt for the critique's snippet alone.
+
+**Items the critique demanded that we are explicitly NOT pursuing:**
+
+- Replacing typed provider classes with `Step.generate_text()` /
+  `Step.generate_image()` static methods. Discards the `BaseProvider`
+  lifecycle, `ProviderCapabilities` typing, and per-provider conformance
+  suite. The string-router (F-2026-04-25-03) gives the ergonomic without the
+  architectural regression.
+- Renaming "embedding" terminology in response to RAG/vector-embedding
+  collision concerns — already tracked at P2-13. Single design touchpoint,
+  not a critique-driven rewrite.
+- Re-architecting around the critic's `pipeline.run(save=True)` /
+  `pipeline.replay(run_id="abc123")` as the *only* APIs. The current
+  `sink=` / `from_result()` surface stays; the items above are additive
+  sugar.
 
 ## P0 — Blocking
 
@@ -266,3 +335,10 @@ Do not re-open. Links point to the shipped or in-flight fix.
   → P2-36 (new), P3-20 → P3-21 (new). Several "real bugs" in the input were refuted by
   verification (docstring/API drift claims for `ProviderError`, `ProviderCapabilities`,
   `PipelineResult`, `chat()` exception wrapping) — left out as false alarms.
+- **2026-04-25 — external SDK-review critique** — third-party reviewer feedback.
+  Most claims (no primitives, no quickstart, no storage layer, no multi-model,
+  no observability, no positioning) refuted by code-walk against the current
+  repo. Genuine UX kernels filed as F-2026-04-25-01 → F-2026-04-25-07 in the
+  Inbox above. Same-day: README professionalization (Concepts hoist, "Why
+  Genblaze" framing, Runtime section, install dedupe) shipped to address
+  surface-positioning issues independently.
