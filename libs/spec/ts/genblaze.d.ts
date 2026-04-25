@@ -300,6 +300,7 @@ export type StreamEvent =
   | PipelineFailedEvent
   | StepStartedEvent
   | StepProgressEvent
+  | StepRetriedEvent
   | StepCompletedEvent
   | StepFailedEvent
   | AgentIterationStartedEvent
@@ -472,6 +473,59 @@ export interface StepProgressEvent {
   data?: {
     [k: string]: unknown;
   };
+}
+/**
+ * Emitted when a transient phase failure triggers a retry. Fires once per retry attempt (not per final failure).
+ */
+export interface StepRetriedEvent {
+  /**
+   * Discriminator tag identifying the event variant.
+   */
+  type: "step.retried";
+  /**
+   * When this event was created (UTC).
+   */
+  timestamp: string;
+  /**
+   * Run identifier if available.
+   */
+  run_id?: string | null;
+  /**
+   * Step identifier (UUID).
+   */
+  step_id: string;
+  /**
+   * Provider name.
+   */
+  provider: string;
+  /**
+   * Model slug.
+   */
+  model: string;
+  /**
+   * Which lifecycle phase is being retried.
+   */
+  phase: "submit" | "poll" | "fetch";
+  /**
+   * 1-based attempt counter that just failed.
+   */
+  attempt: number;
+  /**
+   * Total attempts permitted for this phase.
+   */
+  max_attempts: number;
+  /**
+   * Seconds the retry helper will sleep before the next attempt.
+   */
+  delay_sec: number;
+  /**
+   * Normalized ProviderErrorCode that triggered the retry.
+   */
+  error_code?: string | null;
+  /**
+   * Sanitized failure message, if available.
+   */
+  error?: string | null;
 }
 /**
  * Emitted when a step finishes successfully.

@@ -19,8 +19,8 @@ upstream confirms availability.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from genblaze_core.models.enums import Modality
 from genblaze_core.providers import (

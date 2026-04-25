@@ -19,13 +19,12 @@ import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.models.voice import Voice
-from genblaze_core.providers import ModelRegistry, ModelSpec, ProbeStatus, per_unit
+from genblaze_core.providers import ProbeStatus
 from genblaze_gmicloud import (
     GMICloudAudioProvider,
     GMICloudImageProvider,
     GMICloudVideoProvider,
 )
-
 
 # --- models= kwarg forwarding -----------------------------------------------
 

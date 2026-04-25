@@ -258,7 +258,7 @@ def test_batch_pipeline_error_pickles() -> None:
         pipe.batch_run(items=[{"prompt": str(i)} for i in range(2)], raise_on_failure=True)
     except BatchPipelineError as exc:
         blob = pickle.dumps(exc)
-        restored = pickle.loads(blob)
+        restored = pickle.loads(blob)  # noqa: S301 — round-tripping our own exception in a test
         assert isinstance(restored, BatchPipelineError)
         assert restored.total == exc.total
         assert len(restored.failures) == len(exc.failures)

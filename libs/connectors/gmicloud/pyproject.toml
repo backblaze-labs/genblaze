@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-gmicloud"
-version = "0.2.4"
+version = "0.2.5"
 description = "GMICloud media provider adapters for genblaze (video, image, audio)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"

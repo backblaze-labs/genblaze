@@ -26,7 +26,6 @@ import os
 from decimal import Decimal
 
 import pytest
-from genblaze_core.models.voice import Voice
 from genblaze_core.providers import (
     BaseProvider,
     ModelRegistry,

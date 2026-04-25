@@ -8,12 +8,11 @@ import time
 from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
-from decimal import Decimal
-
 from genblaze_core.exceptions import (
     BatchPipelineError,
     GenblazeError,

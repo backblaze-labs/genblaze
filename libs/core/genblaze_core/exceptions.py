@@ -117,7 +117,9 @@ class PipelineError(GenblazeError):
             },
         )
 
-    def __setstate__(self, state: dict[str, Any]) -> None:
+    def __setstate__(self, state: dict[str, Any] | None) -> None:
+        if state is None:
+            return
         self.result = state.get("result")
         self.failed_step_index = state.get("failed_step_index")
         self.failed_step_error = state.get("failed_step_error")
