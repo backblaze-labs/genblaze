@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import threading
 import time
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
-from genblaze_core._utils import _SECRET_PATTERNS, jittered_backoff, utc_now
+from genblaze_core._utils import _SECRET_PATTERNS, jittered_backoff, new_id, utc_now
 from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import (
     RETRYABLE_ERROR_CODES,
     Modality,
@@ -21,12 +26,22 @@ from genblaze_core.models.enums import (
 from genblaze_core.models.step import Step
 from genblaze_core.observability.span import StepSpan
 from genblaze_core.providers.model_registry import EMPTY_REGISTRY, ModelRegistry, compute_cost
+from genblaze_core.providers.pricing import PricingContext
+from genblaze_core.providers.probe import ProbeResult
 from genblaze_core.providers.progress import ProgressEvent
 from genblaze_core.providers.retry import PRE_RESPONSE_EXCEPTIONS
+from genblaze_core.providers.spec import ModelSpec
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
+if TYPE_CHECKING:
+    from genblaze_core.models.voice import Voice
+
 logger = logging.getLogger("genblaze.provider")
+
+# Env-var escape hatch for offline tests / fixtures that mock submit() without
+# also mocking the preflight endpoint.
+_SKIP_PREFLIGHT_ENV = "GENBLAZE_SKIP_PREFLIGHT"
 
 # Default poll interval and timeout for the submit→poll→fetch lifecycle
 DEFAULT_POLL_INTERVAL = 1.0  # seconds
@@ -219,7 +234,18 @@ class BaseProvider(Runnable[Step, Step]):
         self._poll_cache: dict[str, Any] = {}
         self._poll_cache_times: dict[str, float] = {}
         self._poll_cache_max_age: float = 3600.0  # 1 hour TTL
-        self._models: ModelRegistry = models or type(self).models_default()
+        # Use ``is not None`` rather than truthiness — ``ModelRegistry.__len__``
+        # makes an empty registry falsy, so ``models or default`` would silently
+        # discard explicit empty overrides (Replicate / LMNT have empty defaults).
+        self._models: ModelRegistry = models if models is not None else type(self).models_default()
+        # One-shot preflight gate — credentials checked before the first submit
+        # of this instance, then skipped for the lifetime of the object.
+        # The locks are lazy: ``threading.Lock`` is cheap to construct here, but
+        # ``asyncio.Lock`` requires a running loop, so it's deferred to first
+        # async use via ``_get_async_preflight_lock``.
+        self._preflight_done: bool = False
+        self._preflight_sync_lock: threading.Lock = threading.Lock()
+        self._preflight_async_lock: asyncio.Lock | None = None
 
     def _cache_poll_result(self, prediction_id: Any, result: Any) -> None:
         """Cache a poll result for reuse in fetch_output()."""
@@ -251,6 +277,118 @@ class BaseProvider(Runnable[Step, Step]):
     def models(self) -> ModelRegistry:
         """The per-instance ``ModelRegistry`` (class default unless overridden)."""
         return self._models
+
+    # --- discovery / catalog hooks -----------------------------------------
+
+    def list_models(self) -> list[ModelSpec]:
+        """Return every registered ``ModelSpec`` for this provider instance.
+
+        Convenience over ``provider.models.items()`` for app-side discovery
+        (model pickers, cost dashboards, capability matrices). Sorted by
+        ``model_id`` for deterministic output.
+        """
+        return [spec for _, spec in self._models.items()]
+
+    def list_voices(
+        self,
+        *,
+        model: str | None = None,
+        language: str | None = None,
+    ) -> list[Voice]:
+        """Return available voices for TTS / music models. Default empty.
+
+        Audio connectors override this to return either a curated catalog
+        (GMI, OpenAI TTS, NVIDIA Riva) or a live-API fetch with caching
+        (ElevenLabs, LMNT). Non-audio connectors leave the default in place.
+
+        Filters are advisory — implementations should return only voices that
+        match both ``model`` (when supplied) and ``language`` (BCP 47 prefix
+        match, e.g. ``"en"`` matches ``"en-US"``).
+        """
+        return []
+
+    # --- pre-flight + probe contracts --------------------------------------
+
+    def preflight_auth(self, *, timeout: float = 5.0) -> None:
+        """Cheap credential check called once per instance before the first submit.
+
+        Default is a no-op so connectors that haven't opted in keep working.
+        Override with a fast (sub-second) call against a known-cheap endpoint
+        to surface bad credentials immediately rather than after a long-running
+        ``submit()`` blocks for the full HTTP timeout.
+
+        Implementations should raise ``ProviderError`` (preferably with
+        ``error_code=AUTH_FAILURE``) on credential rejection, and let
+        transient/network errors surface naturally — the calling site treats
+        any exception as a hard preflight failure.
+
+        Disabled when ``GENBLAZE_SKIP_PREFLIGHT`` is set (offline test escape).
+        """
+        return None
+
+    def probe_model(self, model_id: str) -> ProbeResult:
+        """Cheap liveness check for a single model id. Default ``SKIPPED``.
+
+        Used by ``tools/probe_models.py`` to detect drift between a connector's
+        registry defaults and its upstream API. Connectors with a cheap catalog
+        endpoint (``GET /models``) intersect against the live list; queue-style
+        connectors POST a deliberately-empty payload and distinguish 404 from
+        400. See :class:`~genblaze_core.providers.probe.ProbeResult`.
+        """
+        return ProbeResult.skipped()
+
+    # --- pricing estimation ------------------------------------------------
+
+    def estimate_cost(
+        self,
+        model: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        n: int = 1,
+    ) -> Decimal | None:
+        """Compute upfront USD cost for ``n`` outputs without running the model.
+
+        Returns ``None`` when:
+        - the model is unknown or has no registered ``pricing`` strategy, or
+        - the strategy depends on response-only data (e.g. per-byte costs that
+          require an actual asset), in which case the caller falls back to
+          "varies."
+
+        Synthesizes a minimal ``Step`` + ``n`` placeholder ``Asset`` instances
+        so existing per-unit / per-second / param-based pricing strategies work
+        unchanged. Asset ``duration`` is populated from ``params["duration"]``
+        when present, so per-second video pricing estimates correctly.
+        """
+        spec = self._models.get(model)
+        if spec is None or spec.pricing is None:
+            return None
+        params = dict(params or {})
+        fake_step = Step(
+            provider=self.name,
+            model=model,
+            params=params,
+            prompt=str(params.get("prompt") or ""),
+        )
+        duration = params.get("duration")
+        try:
+            duration_f = float(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            duration_f = None
+        fake_assets = tuple(
+            Asset(
+                asset_id=new_id(),
+                url=f"about:blank#{i}",
+                media_type="application/octet-stream",
+                duration=duration_f,
+            )
+            for i in range(n)
+        )
+        cost = spec.pricing(PricingContext(step=fake_step, assets=fake_assets))
+        if cost is None:
+            return None
+        return Decimal(str(cost))
+
+    # --- capability declaration --------------------------------------------
 
     def get_capabilities(self) -> ProviderCapabilities | None:
         """Return provider capabilities for discovery and validation.
@@ -494,11 +632,52 @@ class BaseProvider(Runnable[Step, Step]):
                 await asyncio.sleep(delay)
                 attempt += 1
 
+    def _run_preflight_once(self) -> None:
+        """Run ``preflight_auth`` once per instance, honoring the env-var skip.
+
+        Idempotent and thread-safe: concurrent submit() calls (e.g. from
+        ``ThreadPoolExecutor`` batches) will only invoke ``preflight_auth``
+        once. The flag is set even when the check raises, so a permanent
+        auth failure doesn't get retried on every submit (the calling site
+        already surfaced the error).
+        """
+        if self._preflight_done or os.environ.get(_SKIP_PREFLIGHT_ENV):
+            return
+        # Double-checked locking — cheap fast-path read, lock only when needed.
+        with self._preflight_sync_lock:
+            if self._preflight_done:
+                return
+            try:
+                self.preflight_auth()
+            finally:
+                self._preflight_done = True
+
+    def _get_async_preflight_lock(self) -> asyncio.Lock:
+        """Lazily create the asyncio lock on the running loop's first call."""
+        if self._preflight_async_lock is None:
+            self._preflight_async_lock = asyncio.Lock()
+        return self._preflight_async_lock
+
+    async def _arun_preflight_once(self) -> None:
+        """Async twin of ``_run_preflight_once`` — protects concurrent coroutines.
+
+        Without this, two coroutines that pass the unlocked ``_preflight_done``
+        check on the same loop both dispatch ``asyncio.to_thread`` and run
+        ``preflight_auth`` in parallel.
+        """
+        if self._preflight_done or os.environ.get(_SKIP_PREFLIGHT_ENV):
+            return
+        async with self._get_async_preflight_lock():
+            if self._preflight_done:
+                return
+            await asyncio.to_thread(self._run_preflight_once)
+
     def _attempt_once(
         self, step: Step, config: RunnableConfig | None, timeout: float, start_time: float
     ) -> Step:
         """Execute a single submit→poll→fetch attempt with adaptive polling."""
         self._cleanup_poll_cache()
+        self._run_preflight_once()
         step.started_at = utc_now()
         step.status = StepStatus.SUBMITTED
         self._fire_progress(step, config, "submitted", start_time)
@@ -791,6 +970,16 @@ class BaseProvider(Runnable[Step, Step]):
     ) -> Step:
         """Execute a single submit→poll→fetch attempt without blocking the event loop."""
         self._cleanup_poll_cache()
+        if not self._preflight_done and not os.environ.get(_SKIP_PREFLIGHT_ENV):
+            if type(self).preflight_auth is BaseProvider.preflight_auth:
+                # Default no-op — set the flag inline; no need to spawn a thread
+                # (and avoid the context switch that would reorder concurrent
+                # steps in tests using cooperative ``asyncio.gather`` ordering).
+                self._preflight_done = True
+            else:
+                # Custom preflight does I/O; the locked async runner ensures
+                # concurrent coroutines on the same loop only invoke it once.
+                await self._arun_preflight_once()
         step.started_at = utc_now()
         step.status = StepStatus.SUBMITTED
         self._fire_progress(step, config, "submitted", start_time)

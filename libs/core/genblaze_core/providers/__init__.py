@@ -29,6 +29,11 @@ from genblaze_core.providers.model_registry import (
     ModelRegistry,
     compute_cost,
 )
+from genblaze_core.providers.params import (
+    ParamSurface,
+    modality_defaults,
+    register_modality_default,
+)
 from genblaze_core.providers.pricing import (
     PricingContext,
     PricingStrategy,
@@ -42,7 +47,12 @@ from genblaze_core.providers.pricing import (
     per_unit,
     tiered,
 )
-from genblaze_core.providers.registry import discover_providers
+from genblaze_core.providers.probe import ProbeResult, ProbeStatus
+from genblaze_core.providers.registry import (
+    CREDENTIAL_KWARGS,
+    discover_providers,
+    instantiate_with_credential,
+)
 from genblaze_core.providers.spec import (
     FALLBACK_SPEC,
     ArraySchema,
@@ -56,6 +66,7 @@ from genblaze_core.providers.spec import (
 )
 
 __all__ = [
+    "CREDENTIAL_KWARGS",
     "EMPTY_REGISTRY",
     "FALLBACK_SPEC",
     "ArraySchema",
@@ -69,8 +80,11 @@ __all__ = [
     "ModelRegistry",
     "ModelSpec",
     "ParamSchema",
+    "ParamSurface",
     "PricingContext",
     "PricingStrategy",
+    "ProbeResult",
+    "ProbeStatus",
     "ProviderCapabilities",
     "StringSchema",
     "SubmitResult",
@@ -83,11 +97,14 @@ __all__ = [
     "discover_providers",
     "first_match",
     "implies",
+    "instantiate_with_credential",
+    "modality_defaults",
     "mutually_exclusive",
     "per_input_chars",
     "per_output_second",
     "per_response_metric",
     "per_unit",
+    "register_modality_default",
     "required_one_of",
     "requires_together",
     "route_audio",

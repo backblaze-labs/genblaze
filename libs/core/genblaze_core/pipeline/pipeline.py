@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Any
 
 from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
-from genblaze_core.exceptions import GenblazeError, PipelineTimeoutError
+from decimal import Decimal
+
+from genblaze_core.exceptions import (
+    BatchPipelineError,
+    GenblazeError,
+    PipelineError,
+    PipelineTimeoutError,
+)
 from genblaze_core.models.enums import (
     Modality,
     ProviderErrorCode,
@@ -40,6 +47,87 @@ from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
 logger = logging.getLogger("genblaze.pipeline")
+
+
+# Sentinel for ``raise_on_failure``. ``None`` means "caller didn't pass it,
+# warn about the upcoming default flip"; ``True`` / ``False`` are explicit.
+# In genblaze-core 0.4.0 the default becomes ``True`` and the sentinel is
+# removed.
+_RAISE_ON_FAILURE_DEFAULT_FLIP_VERSION = "0.4.0"
+
+
+def _resolve_raise_on_failure(
+    raise_on_failure: bool | None,
+    *,
+    exception_type: str = "PipelineError",
+    surface: str = "Pipeline.run()",
+) -> bool:
+    """Resolve the ``raise_on_failure`` arg, emitting one ``DeprecationWarning``.
+
+    Today's silent contract (``run()`` returns a failed ``PipelineResult``) is
+    a footgun — pipelines stamp manifests over failed runs without notifying
+    the caller. The fix is to raise; the deprecation cycle keeps existing
+    code working until 0.4.0 with a single visible warning per call site.
+
+    ``exception_type`` and ``surface`` parameterize the warning so batch and
+    single-pipeline call sites mention the right class
+    (``BatchPipelineError`` vs ``PipelineError``).
+    """
+    if raise_on_failure is not None:
+        return raise_on_failure
+    import warnings
+
+    warnings.warn(
+        f"{surface} will raise {exception_type} on step failure starting in "
+        f"genblaze-core {_RAISE_ON_FAILURE_DEFAULT_FLIP_VERSION}. To opt in "
+        "today, pass raise_on_failure=True. To preserve the current behavior, "
+        "pass raise_on_failure=False.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return False
+
+
+def _maybe_raise_pipeline_error(
+    pipeline_result: PipelineResult,
+    completed_steps: list[Step],
+    raise_on_failure: bool,
+) -> None:
+    """If ``raise_on_failure`` and any step failed, raise ``PipelineError``."""
+    if not raise_on_failure:
+        return
+    if pipeline_result.run.status != RunStatus.FAILED:
+        return
+    failed_idx: int | None = None
+    failed_err: str | None = None
+    for i, s in enumerate(completed_steps):
+        if s.status == StepStatus.FAILED:
+            failed_idx = i
+            failed_err = s.error
+            break
+    raise PipelineError(
+        f"Pipeline {pipeline_result.run.run_id} failed at step {failed_idx}: {failed_err}",
+        result=pipeline_result,
+        failed_step_index=failed_idx,
+        failed_step_error=failed_err,
+    )
+
+
+def _maybe_raise_batch_error(
+    results: list[PipelineResult],
+    raise_on_failure: bool,
+) -> None:
+    """If ``raise_on_failure`` and any batch item failed, raise ``BatchPipelineError``.
+
+    Called by ``batch_run`` / ``abatch_run`` **after** every item has run, so
+    the caller can salvage successes via ``exc.succeeded`` even when some
+    items failed. The early-return guards keep the happy path branch-free.
+    """
+    if not raise_on_failure:
+        return
+    if not any(r.run.status == RunStatus.FAILED for r in results):
+        return
+    raise BatchPipelineError(results)
 
 
 def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, model: str) -> None:
@@ -182,6 +270,24 @@ class Pipeline(Runnable[None, PipelineResult]):
         """
         self._parent_run_id = result.run.run_id
         return self
+
+    def estimated_cost(self) -> Decimal | None:
+        """Sum the upfront USD estimate across every configured step.
+
+        Each step's contribution comes from
+        :meth:`BaseProvider.estimate_cost` using the step's params (so
+        per-second video pricing reads ``duration`` correctly). Returns
+        ``None`` if any step is non-estimable (unknown model, response-only
+        pricing, no pricing strategy at all) — apps should display "varies"
+        rather than a misleading partial total.
+        """
+        total = Decimal("0")
+        for ps in self._steps:
+            cost = ps.provider.estimate_cost(ps.model, ps.params)
+            if cost is None:
+                return None
+            total += cost
+        return total
 
     def step(
         self,
@@ -838,6 +944,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         *,
         sink: BaseSink | None = None,
         fail_fast: bool = True,
+        raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
         on_progress: Any = None,
@@ -851,6 +958,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         Args:
             sink: Optional sink to write run data to.
             fail_fast: If True (default), stop on first failed step.
+            raise_on_failure: If ``True``, raise :class:`PipelineError` when any
+                step ends in ``StepStatus.FAILED``. If ``False``, the failed
+                ``PipelineResult`` is returned as today. ``None`` (default in
+                0.3.x) emits a ``DeprecationWarning`` describing the 0.4.0
+                default flip and behaves like ``False``.
             timeout: Per-step timeout in seconds (builds RunnableConfig internally).
             max_retries: Per-step max retries (builds RunnableConfig internally).
             on_progress: Optional callback fired during provider poll loops.
@@ -967,6 +1079,10 @@ class Pipeline(Runnable[None, PipelineResult]):
                 pipeline_result.run.status,
                 pipeline_result.run.run_id,
             )
+            # Resolve raise_on_failure inside the try-block so the finally
+            # still emits pipeline_end. PipelineError propagates after.
+            should_raise = _resolve_raise_on_failure(raise_on_failure)
+            _maybe_raise_pipeline_error(pipeline_result, completed_steps, should_raise)
             return pipeline_result
         finally:
             # Guarantee on_run_end fires — covers timeouts, KeyboardInterrupt,
@@ -984,6 +1100,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         *,
         sink: BaseSink | None = None,
         fail_fast: bool = True,
+        raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
         max_concurrency: int | None = None,
@@ -1214,6 +1331,8 @@ class Pipeline(Runnable[None, PipelineResult]):
                 pipeline_result.run.status,
                 pipeline_result.run.run_id,
             )
+            should_raise = _resolve_raise_on_failure(raise_on_failure)
+            _maybe_raise_pipeline_error(pipeline_result, completed_steps, should_raise)
             return pipeline_result
         finally:
             # Guarantee on_run_end fires — covers timeouts, cancellation,
@@ -1325,31 +1444,77 @@ class Pipeline(Runnable[None, PipelineResult]):
             return ps.prompt
         return prompt_or_vars
 
+    @staticmethod
+    def _apply_item_to_steps(
+        steps: list[_PipelineStep], item: dict[str, Any]
+    ) -> list[_PipelineStep]:
+        """Build a per-item step list by merging ``item`` into step 0.
+
+        Convention: ``item["prompt"]`` overrides step 0's prompt; every other
+        key merges into step 0's ``params`` (per-item values win). Steps after
+        index 0 are unchanged.
+
+        Multi-step per-item params are intentionally out-of-scope here — the
+        single-step batch case covers ~95% of asset-pack / aspect-ratio /
+        seed-sweep workloads, and the position-keyed alternative
+        (``item["steps"] = [{...}, {...}]``) is easy to add later without a
+        breaking change.
+        """
+        if not steps:
+            return steps
+        head = steps[0]
+        item_copy = dict(item)
+        new_prompt = item_copy.pop("prompt", head.prompt)
+        merged_params = {**head.params, **item_copy}
+        new_head = replace(head, prompt=new_prompt, params=merged_params)
+        return [new_head, *steps[1:]]
+
+    @staticmethod
+    def _validate_batch_args(
+        prompts: list[str] | list[dict[str, str]] | None,
+        items: list[dict[str, Any]] | None,
+    ) -> None:
+        if prompts is not None and items is not None:
+            raise ValueError(
+                "Pass either prompts= or items=, not both. items= is the "
+                "richer per-iteration override; prompts= is shorthand when "
+                "only the prompt varies."
+            )
+        if prompts is None and items is None:
+            raise ValueError("batch_run requires either prompts= or items=.")
+
     def batch_run(
         self,
-        prompts: list[str] | list[dict[str, str]],
+        prompts: list[str] | list[dict[str, str]] | None = None,
         *,
+        items: list[dict[str, Any]] | None = None,
         max_concurrency: int = 5,
         sink: BaseSink | None = None,
         fail_fast: bool = True,
+        raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
         on_progress: Any = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
     ) -> list[PipelineResult]:
-        """Execute the pipeline independently for each prompt (sync).
+        """Execute the pipeline independently for each batch entry (sync).
 
-        Each prompt gets its own run with cloned steps. Results are returned
-        in the same order as the input prompts.
+        Each entry produces its own run with cloned steps. Results are
+        returned in input order.
 
         Args:
-            prompts: List of prompts (strings) or template variable dicts.
-                String items override all step prompts. Dict items render
-                PromptTemplate steps and leave plain string prompts unchanged.
-            max_concurrency: Max concurrent pipeline executions (used in abatch_run).
+            prompts: Per-item prompt overrides. Strings override step 0's
+                prompt; dicts render ``PromptTemplate`` variables.
+            items: Per-item params (incl. optional ``prompt``) merged into
+                step 0. Use this for asset-pack / aspect-ratio / seed-sweep
+                fan-outs where each iteration needs different ``seed``,
+                ``aspect_ratio``, ``quality``, etc. Mutually exclusive with
+                ``prompts=``.
+            max_concurrency: Max concurrent pipeline executions (``abatch_run``).
             sink: Optional sink to write each run to.
-            fail_fast: If True (default), stop each pipeline on first failed step.
+            fail_fast: If True (default), stop each pipeline on first failure.
+            raise_on_failure: See :meth:`run`. Applied per pipeline.
             timeout: Per-step timeout in seconds.
             max_retries: Per-step max retries.
             on_progress: Optional callback fired during provider poll loops.
@@ -1358,78 +1523,101 @@ class Pipeline(Runnable[None, PipelineResult]):
         """
         import copy
 
-        results: list[PipelineResult] = []
-        for prompt_or_vars in prompts:
+        self._validate_batch_args(prompts, items)
+        # Resolve the deprecation sentinel ONCE per batch — otherwise each
+        # per-item ``pipe.run()`` would re-trigger the warning, swamping logs
+        # for callers iterating over hundreds of items. The warning text
+        # mentions ``BatchPipelineError`` so users see the right class name.
+        resolved_raise = _resolve_raise_on_failure(
+            raise_on_failure,
+            exception_type="BatchPipelineError",
+            surface="Pipeline.batch_run()",
+        )
+
+        def _build_pipe(rebuild_steps: list[_PipelineStep]) -> Pipeline:
             pipe = copy.copy(self)
-            pipe._steps = [
-                replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars)) for ps in self._steps
-            ]
-            results.append(
-                pipe.run(
-                    sink=sink,
-                    fail_fast=fail_fast,
-                    timeout=timeout,
-                    max_retries=max_retries,
-                    on_progress=on_progress,
-                    pipeline_timeout=pipeline_timeout,
-                    on_step_complete=on_step_complete,
-                )
+            pipe._steps = rebuild_steps
+            return pipe
+
+        # Always pass raise_on_failure=False to per-item runs — collect every
+        # result first, then synthesize ``BatchPipelineError`` after the loop
+        # if requested. Aborting mid-batch on the first failed item would
+        # silently lose the remaining results, which is rarely what callers
+        # actually want for asset packs / aspect-ratio sweeps / A/B fan-outs.
+        def _run_one(rebuild_steps: list[_PipelineStep]) -> PipelineResult:
+            return _build_pipe(rebuild_steps).run(
+                sink=sink,
+                fail_fast=fail_fast,
+                raise_on_failure=False,
+                timeout=timeout,
+                max_retries=max_retries,
+                on_progress=on_progress,
+                pipeline_timeout=pipeline_timeout,
+                on_step_complete=on_step_complete,
             )
+
+        results: list[PipelineResult] = []
+        if items is not None:
+            for item in items:
+                results.append(_run_one(self._apply_item_to_steps(self._steps, item)))
+        else:
+            assert prompts is not None  # narrowed by _validate_batch_args
+            for prompt_or_vars in prompts:
+                results.append(
+                    _run_one(
+                        [
+                            replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars))
+                            for ps in self._steps
+                        ]
+                    )
+                )
+        _maybe_raise_batch_error(results, resolved_raise)
         return results
 
     async def abatch_run(
         self,
-        prompts: list[str] | list[dict[str, str]],
+        prompts: list[str] | list[dict[str, str]] | None = None,
         *,
+        items: list[dict[str, Any]] | None = None,
         max_concurrency: int = 5,
         sink: BaseSink | None = None,
         fail_fast: bool = True,
+        raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
         on_progress: Any = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
     ) -> list[PipelineResult]:
-        """Execute the pipeline independently for each prompt (async).
+        """Execute the pipeline independently for each batch entry (async).
 
-        Uses a semaphore to limit concurrency.
-
-        Args:
-            prompts: List of prompts (strings) or template variable dicts.
-                String items override all step prompts. Dict items render
-                PromptTemplate steps and leave plain string prompts unchanged.
-            max_concurrency: Max concurrent pipeline executions.
-            sink: Optional sink to write each run to.
-            fail_fast: If True (default), stop each pipeline on first failed step.
-            timeout: Per-step timeout in seconds.
-            max_retries: Per-step max retries.
-            on_progress: Optional callback fired during provider poll loops.
-            pipeline_timeout: End-to-end timeout in seconds for each pipeline.
-            on_step_complete: Optional callback fired after each step completes.
+        Uses a semaphore to limit concurrency. Either ``prompts=`` or ``items=``
+        must be supplied; see :meth:`batch_run` for the semantic difference.
         """
         import copy
 
+        self._validate_batch_args(prompts, items)
+        # Resolve the deprecation sentinel ONCE per batch — see batch_run.
+        # Same collect-then-raise semantics: each per-item run is silenced,
+        # ``BatchPipelineError`` is synthesized after gather completes.
+        resolved_raise = _resolve_raise_on_failure(
+            raise_on_failure,
+            exception_type="BatchPipelineError",
+            surface="Pipeline.abatch_run()",
+        )
         sem = asyncio.Semaphore(max_concurrency)
 
-        async def _run_one(prompt_or_vars: str | dict[str, str]) -> PipelineResult:
+        def _build_pipe(rebuild_steps: list[_PipelineStep]) -> Pipeline:
+            pipe = copy.copy(self)
+            pipe._steps = rebuild_steps
+            return pipe
+
+        async def _run(rebuild_steps: list[_PipelineStep]) -> PipelineResult:
             async with sem:
-                pipe = copy.copy(self)
-                pipe._steps = [
-                    _PipelineStep(
-                        ps.provider,
-                        ps.model,
-                        self._resolve_prompt(ps, prompt_or_vars),
-                        ps.params,
-                        ps.modality,
-                        ps.step_type,
-                        ps.fallback_models,
-                        ps.input_from,
-                    )
-                    for ps in self._steps
-                ]
-                return await pipe.arun(
+                return await _build_pipe(rebuild_steps).arun(
                     sink=sink,
                     fail_fast=fail_fast,
+                    raise_on_failure=False,
                     timeout=timeout,
                     max_retries=max_retries,
                     on_progress=on_progress,
@@ -1437,7 +1625,33 @@ class Pipeline(Runnable[None, PipelineResult]):
                     on_step_complete=on_step_complete,
                 )
 
-        return list(await asyncio.gather(*(_run_one(p) for p in prompts)))
+        if items is not None:
+            tasks = [_run(self._apply_item_to_steps(self._steps, item)) for item in items]
+        else:
+            assert prompts is not None
+            tasks = [
+                _run([replace(ps, prompt=self._resolve_prompt(ps, p)) for ps in self._steps])
+                for p in prompts
+            ]
+        # ``return_exceptions=True`` is load-bearing — without it, a single
+        # ``PipelineTimeoutError`` (or any other non-step exception) would
+        # propagate immediately and cancel every other in-flight task,
+        # silently breaking the "every batch item runs to completion"
+        # promise. Per-item ``PipelineError``s are already suppressed via
+        # ``raise_on_failure=False`` so they never reach this list; anything
+        # we DO see here is a genuine pipeline-level error worth surfacing.
+        results_or_excs = await asyncio.gather(*tasks, return_exceptions=True)
+        results: list[PipelineResult] = []
+        for r in results_or_excs:
+            if isinstance(r, BaseException):
+                # Re-raise the first non-result item so callers see the
+                # original error (timeout, validation, etc.) instead of a
+                # generic BatchPipelineError. Every task has already finished
+                # by the time we get here, so we're not aborting work in flight.
+                raise r
+            results.append(r)
+        _maybe_raise_batch_error(results, resolved_raise)
+        return results
 
     def resume_step(
         self,

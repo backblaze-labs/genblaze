@@ -18,6 +18,7 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
+from genblaze_core.models.voice import Voice
 from genblaze_core.providers.base import (
     ProviderCapabilities,
     validate_asset_url,
@@ -28,6 +29,7 @@ from genblaze_core.runnable.config import RunnableConfig
 from ._base import GMICloudBase, extract_media_url
 from ._errors import map_gmicloud_error
 from .models.audio import build_audio_registry
+from .models.voices import list_curated_voices
 
 
 class GMICloudAudioProvider(GMICloudBase):
@@ -65,6 +67,23 @@ class GMICloudAudioProvider(GMICloudBase):
             models=self._models.known(),
             output_formats=["audio/mpeg", "audio/wav"],
         )
+
+    def list_voices(
+        self,
+        *,
+        model: str | None = None,
+        language: str | None = None,
+    ) -> list[Voice]:
+        """Curated voice catalog for GMI's TTS / voice-clone models.
+
+        Reads from ``models/voices.py``; refreshed manually each quarter
+        rather than fetched live (catalogs change rarely and a static list is
+        offline-friendly). To list voices for a specific model::
+
+            provider.list_voices(model="ElevenLabs-TTS-v3")
+            provider.list_voices(language="en")  # any English-prefix voice
+        """
+        return list_curated_voices(model=model, language=language)
 
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         try:

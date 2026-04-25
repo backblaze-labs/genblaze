@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import warnings
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from genblaze_core.exceptions import ProviderError
@@ -162,6 +162,29 @@ class ModelRegistry:
             or model_id in self._deprecated_alias_index
         )
 
+    def items(self) -> Iterator[tuple[str, ModelSpec]]:
+        """Iterate over ``(model_id, spec)`` pairs in deterministic order.
+
+        User overrides take precedence over package defaults, matching ``get``.
+        Aliases are not yielded — only canonical ids appear.
+        """
+        for model_id in self.known():
+            spec = self._user.get(model_id) or self._defaults.get(model_id)
+            if spec is not None:
+                yield model_id, spec
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over registered model ids (sorted, canonical only)."""
+        return iter(self.known())
+
+    def __contains__(self, model_id: object) -> bool:
+        """``"slug" in registry`` mirrors ``has()``."""
+        return isinstance(model_id, str) and self.has(model_id)
+
+    def __len__(self) -> int:
+        """Count of registered canonical ids (excludes aliases and fallback)."""
+        return len(self.known())
+
     # --- pipeline -----------------------------------------------------------
 
     def prepare_payload(
@@ -258,10 +281,12 @@ class ModelRegistry:
                         f"Unknown parameters for {step.model}: {sorted(extras)}",
                         error_code=ProviderErrorCode.INVALID_INPUT,
                     )
-                # INFO (not DEBUG) so silently-dropped params surface in
-                # production logs — users routinely miss DEBUG-level drops.
-                # Bump to WARNING if this becomes load-bearing; start quieter.
-                logger.info(
+                # WARNING (not INFO) so silently-dropped params surface in
+                # production logs — these have caused a class of "looks fine,
+                # output is wrong" bugs (Pixverse `quality`, Bria `mask_url`,
+                # voice clone `language`). Callers that want hard failure on
+                # unknown keys can opt into ``ModelRegistry(strict_params=True)``.
+                logger.warning(
                     "Dropping non-allowlisted params for %s: %s", step.model, sorted(extras)
                 )
             params = {k: v for k, v in params.items() if k in spec.param_allowlist}

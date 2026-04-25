@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-04-24T22:10:02.394894+00:00",
+  "providers": {
+    "gmicloud": {
+      "models": {},
+      "skipped_reason": "missing env var GENBLAZE_PROBE_GMICLOUD_API_KEY",
+      "summary": {
+        "skipped": 23
+      }
+    }
+  }
+}
