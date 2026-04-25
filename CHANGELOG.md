@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-04-24
+
+### Released package versions
+- Code-change bumps: `genblaze-core` 0.2.5, `genblaze-gmicloud` 0.2.5.
+- Untouched (no republish): every other Python and npm package.
+
+### Added
+- `genblaze-core`: `providers/probe.py` — model-probe contract for runtime
+  capability discovery against a live provider, plus a conformance test
+  suite (`tests/conformance/test_provider_contract.py`) that every provider
+  adapter must pass.
+- `genblaze-core`: `providers/params.py` — shared parameter-standardization
+  hooks (canonical → native rewriting at the provider boundary).
+- `genblaze-core`: `models/voice.py` — first-class `Voice` model for TTS
+  providers.
+- `genblaze-core`: `Pipeline` gains `batch_items` / `batch_raise` /
+  `estimated_cost` / `raise_on_failure` — execution controls covered by
+  four new dedicated test files.
+- `genblaze-core`: `exceptions.py` expanded with new typed errors aligned to
+  the probe + standardization contracts.
+- `genblaze-gmicloud`: model registries fully reconciled with live GMICloud
+  catalog — image/audio/video spec rewrites, new `models/voices.py` (172
+  lines) for the audio voice catalog, standardization-hook tests.
+- Tooling: `tools/probe_models.py` and `tools/gen_model_matrix.py` for
+  generating the model-status matrix from live API probes (not part of any
+  published package; repo-only utilities).
+- Docs: `docs/reference/model-matrix.md`, `docs/reference/model-probe-status.json`.
+
 ## [0.2.5.post1] - 2026-04-24
 
 ### Fixed
