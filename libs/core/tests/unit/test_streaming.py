@@ -388,3 +388,83 @@ def test_consecutive_streams_after_early_break_terminate_cleanly() -> None:
     types2 = _event_types(events2)
     assert types2[0] == "pipeline.started"
     assert types2[-1] == "pipeline.completed"
+
+
+# --- StepRetried events reach the stream -------------------------------------
+
+
+class _FlakyPollStreamProvider(BaseProvider):
+    """poll() raises a retryable 503 N times then returns True.
+
+    Used to exercise the on_retry → stream wiring without depending on
+    test_provider_retry's helpers (which test the callback path directly).
+    """
+
+    name = "flaky-poll-stream"
+
+    def __init__(self, fail_count: int = 2) -> None:
+        super().__init__()
+        self._fail_count = fail_count
+        self._poll_calls = 0
+
+    def submit(self, step, config=None) -> Any:
+        return "pred"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        self._poll_calls += 1
+        if self._poll_calls <= self._fail_count:
+            raise RuntimeError("503 server temporarily unavailable")
+        return True
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        return step
+
+
+def test_step_retried_event_reaches_stream() -> None:
+    """Retries during poll() must surface as step.retried events on the stream.
+
+    Regression: _install_progress_tracer previously only wrapped on_progress,
+    so StepRetriedEvents fired by BaseProvider._emit_retry never reached
+    Pipeline.stream() consumers.
+    """
+    from unittest.mock import patch
+
+    with patch("genblaze_core.providers.base.time.sleep"):
+        events = list(
+            Pipeline("t")
+            .step(_FlakyPollStreamProvider(fail_count=2), model="m", prompt="p")
+            .stream()
+        )
+
+    types = _event_types(events)
+    assert types.count("step.retried") == 2, f"expected 2 retry events, got {types}"
+    # Ordering: started -> first retry -> second retry -> completed
+    started = types.index("step.started")
+    completed = types.index("step.completed")
+    retries = [i for i, t in enumerate(types) if t == "step.retried"]
+    assert all(started < r < completed for r in retries)
+    # Field surface check on the first retry event
+    retry_ev = next(e for e in events if e.type == "step.retried")
+    assert retry_ev.phase == "poll"
+    assert retry_ev.attempt == 1
+    assert retry_ev.delay_sec >= 0
+    assert retry_ev.error is not None
+
+
+def test_step_retried_event_user_callback_still_fires() -> None:
+    """Wiring on_retry into the stream must not swallow user-supplied on_retry."""
+    from unittest.mock import patch
+
+    user_events: list[Any] = []
+    pipe = Pipeline("t").step(_FlakyPollStreamProvider(fail_count=1), model="m", prompt="p")
+
+    with patch("genblaze_core.providers.base.time.sleep"):
+        # User callback supplied via the run config — Pipeline.run() forwards
+        # config kwargs through, so this exercises the composite path.
+        events = list(pipe.stream(on_retry=user_events.append))
+
+    assert len(user_events) == 1
+    assert user_events[0].type == "step.retried"
+    # And the stream still saw it.
+    assert sum(1 for e in events if e.type == "step.retried") == 1

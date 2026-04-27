@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `genblaze_core.providers` in 0.2.5 will now find it.
 
 ### Fixed
+- `genblaze-core`: `StepRetriedEvent` now reaches `Pipeline.stream()` /
+  `astream()` consumers. `_install_progress_tracer` previously wrapped only
+  `on_progress`, so retry events fired by `BaseProvider._emit_retry` never
+  propagated to the queue. UIs subscribed to the stream now see retry
+  attempts in real time as advertised by the 0.3.2 schema. `Pipeline.run()`
+  / `arun()` also gain an `on_retry=` kwarg for synchronous side-effects
+  (metrics, logs); the same event continues to flow through the stream.
 - `genblaze-core`: JPEG, WebP, MP3, FLAC, and AAC inline embed are now atomic
   (temp file + `os.replace`). A crash mid-save no longer corrupts the source
   file in any handler.

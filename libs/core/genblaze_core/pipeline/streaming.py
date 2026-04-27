@@ -2,8 +2,8 @@
 
 Used by :meth:`Pipeline.stream`, :meth:`Pipeline.astream`, and the agent
 loop streams to emit a single ordered stream of :class:`StreamEvent`
-instances. The emitter wraps the existing ``on_progress`` and
-``on_step_complete`` callbacks so no provider changes are required.
+instances. The emitter wraps the existing ``on_progress``, ``on_retry``,
+and ``on_step_complete`` callbacks so no provider changes are required.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from genblaze_core.observability.events import (
     StepCompletedEvent,
     StepFailedEvent,
     StepProgressEvent,
+    StepRetriedEvent,
     StreamEvent,
 )
 
@@ -118,6 +119,12 @@ class QueueEmitter:
 
     def on_progress(self, ev: ProgressEvent) -> None:
         self.put(progress_to_stream_event(ev, self.run_id))
+
+    def on_retry(self, ev: StepRetriedEvent) -> None:
+        # StepRetriedEvent is already a StreamEvent — forward as-is. The
+        # provider layer fills run_id from RunnableConfig, so we don't
+        # need to backfill from self.run_id here.
+        self.put(ev)
 
     def on_step_complete(self, ev: StepCompleteEvent) -> None:
         self.put(step_complete_to_stream_event(ev, self.run_id))

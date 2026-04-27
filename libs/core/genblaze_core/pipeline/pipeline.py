@@ -726,19 +726,40 @@ class Pipeline(Runnable[None, PipelineResult]):
         user_on_progress: Any,
         run_id: str,
     ) -> RunnableConfig | None:
-        """Wrap on_progress so tracer + stream emitter also see each tick."""
+        """Wrap ``on_progress`` and ``on_retry`` so tracer + stream emitter see each tick.
+
+        ``on_retry`` originates from ``BaseProvider._emit_retry`` and carries an
+        already-constructed :class:`StepRetriedEvent`; we forward it verbatim
+        to the stream so dashboards can surface retry attempts in real time.
+        Without this wiring, retry events fire only into the user-supplied
+        ``config["on_retry"]`` callback (if any) and never reach
+        ``Pipeline.stream()`` consumers.
+        """
+        user_on_retry = (config or {}).get("on_retry")
         has_tracer = not isinstance(self._tracer, NoOpTracer)
-        if user_on_progress is None and not has_tracer and self._event_emitter is None:
+        needs_install = (
+            user_on_progress is not None
+            or user_on_retry is not None
+            or has_tracer
+            or self._event_emitter is not None
+        )
+        if not needs_install:
             return config
 
-        def _composite(ev: Any) -> None:
+        def _composite_progress(ev: Any) -> None:
             # User callback first so their side effects see the raw ProgressEvent
             # ordering; emit event to tracer/stream regardless of callback outcome.
             self._call_user_callback(user_on_progress, ev, "on_progress")
             self._emit_event(progress_to_stream_event(ev, run_id))
 
+        def _composite_retry(ev: Any) -> None:
+            # ``ev`` is a fully-formed StepRetriedEvent — emit verbatim.
+            self._call_user_callback(user_on_retry, ev, "on_retry")
+            self._emit_event(ev)
+
         merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
-        merged["on_progress"] = _composite
+        merged["on_progress"] = _composite_progress
+        merged["on_retry"] = _composite_retry
         return merged
 
     def _emit_event(self, event: StreamEvent) -> None:
@@ -950,6 +971,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         progress: bool | None = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
+        on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
     ) -> PipelineResult:
         """Execute all steps synchronously and return a PipelineResult.
@@ -972,6 +994,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             pipeline_timeout: End-to-end timeout in seconds for the entire pipeline.
             on_step_complete: Optional callback fired after each step completes.
                 Receives a StepCompleteEvent.
+            on_retry: Optional callback fired before each retry sleep with a
+                :class:`StepRetriedEvent`. Same event also flows through
+                :meth:`stream` consumers — supply this only if you need a
+                synchronous side-effect alongside (e.g., metrics).
 
         Raises:
             GenblazeError: If no steps have been added to the pipeline.
@@ -1001,6 +1027,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             spinner = Spinner()
             spinner.start()
             on_progress = spinner
+        if on_retry is not None:
+            # Splice a user-supplied callback into config so the progress tracer
+            # composite picks it up alongside the stream emitter.
+            config = RunnableConfig(**(config or {}))
+            config["on_retry"] = on_retry
         config = self._install_progress_tracer(config, on_progress, run_id)
 
         started_at_ts = time.time()
@@ -1107,6 +1138,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         progress: bool | None = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
+        on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
     ) -> PipelineResult:
         """Execute steps asynchronously and return a PipelineResult.
@@ -1128,6 +1160,9 @@ class Pipeline(Runnable[None, PipelineResult]):
             pipeline_timeout: End-to-end timeout in seconds for the entire pipeline.
             on_step_complete: Optional callback fired after each step completes.
                 Receives a StepCompleteEvent.
+            on_retry: Optional callback fired before each retry sleep with a
+                :class:`StepRetriedEvent`. Same event also flows through
+                :meth:`astream` consumers.
 
         Raises:
             GenblazeError: If no steps have been added to the pipeline.
@@ -1167,6 +1202,9 @@ class Pipeline(Runnable[None, PipelineResult]):
             spinner = Spinner()
             spinner.start()
             on_progress = spinner
+        if on_retry is not None:
+            config = RunnableConfig(**(config or {}))
+            config["on_retry"] = on_retry
         config = self._install_progress_tracer(config, on_progress, run_id)
 
         started_at_ts = time.time()
