@@ -298,6 +298,7 @@ export type StreamEvent =
   | PipelineStartedEvent
   | PipelineCompletedEvent
   | PipelineFailedEvent
+  | StepQueuedEvent
   | StepStartedEvent
   | StepProgressEvent
   | StepRetriedEvent
@@ -387,6 +388,47 @@ export interface PipelineFailedEvent {
   manifest_hash?: string | null;
 }
 /**
+ * Emitted when a step is waiting on capacity (serial pipeline or concurrency-limit), not yet running. Additive — fires alongside the existing step.started flow rather than replacing it.
+ */
+export interface StepQueuedEvent {
+  /**
+   * Discriminator tag identifying the event variant.
+   */
+  type: "step.queued";
+  /**
+   * When this event was created (UTC).
+   */
+  timestamp: string;
+  /**
+   * Run identifier this event belongs to.
+   */
+  run_id: string;
+  /**
+   * Step identifier (UUID).
+   */
+  step_id: string;
+  /**
+   * 0-based step position in the pipeline.
+   */
+  step_index: number;
+  /**
+   * Total number of steps in the pipeline.
+   */
+  total_steps: number;
+  /**
+   * Provider name.
+   */
+  provider: string;
+  /**
+   * Model slug.
+   */
+  model: string;
+  /**
+   * Why the step is queued.
+   */
+  reason: "serial" | "concurrency_limit";
+}
+/**
  * Emitted when a step transitions from queued to running.
  */
 export interface StepStartedEvent {
@@ -422,6 +464,10 @@ export interface StepStartedEvent {
    * Model slug passed to the provider.
    */
   model: string;
+  /**
+   * Caller-supplied ETA hint (seconds) for this step, set via Pipeline.step(expected_duration_sec=...). Informational only; the SDK does not synthesize this.
+   */
+  expected_duration_sec?: number | null;
 }
 /**
  * Emitted on provider progress ticks (may fire many times per step).
@@ -471,6 +517,10 @@ export interface StepProgressEvent {
    * Optional provider-supplied note.
    */
   message?: string | null;
+  /**
+   * True for keepalive ticks emitted between long-poll intervals; tracers and dashboards may safely filter these out.
+   */
+  is_heartbeat?: boolean;
   /**
    * Provider-specific extra fields (e.g. polling status).
    */

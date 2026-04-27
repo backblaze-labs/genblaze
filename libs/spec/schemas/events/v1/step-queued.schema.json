@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/step-started.schema.json",
-  "title": "StepStartedEvent",
-  "description": "Emitted when a step transitions from queued to running.",
+  "$id": "https://github.com/backblaze-labs/genblaze/schemas/events/v1/step-queued.schema.json",
+  "title": "StepQueuedEvent",
+  "description": "Emitted when a step is waiting on capacity (serial pipeline or concurrency-limit), not yet running. Additive — fires alongside the existing step.started flow rather than replacing it.",
   "type": "object",
   "required": [
     "type",
@@ -12,11 +12,12 @@
     "step_index",
     "total_steps",
     "provider",
-    "model"
+    "model",
+    "reason"
   ],
   "properties": {
     "type": {
-      "const": "step.started",
+      "const": "step.queued",
       "description": "Discriminator tag identifying the event variant."
     },
     "timestamp": {
@@ -44,17 +45,16 @@
     },
     "provider": {
       "type": "string",
-      "description": "Provider name (e.g. `gmicloud`)."
+      "description": "Provider name."
     },
     "model": {
       "type": "string",
-      "description": "Model slug passed to the provider."
+      "description": "Model slug."
     },
-    "expected_duration_sec": {
-      "type": ["number", "null"],
-      "minimum": 0,
-      "default": null,
-      "description": "Caller-supplied ETA hint (seconds) for this step, set via Pipeline.step(expected_duration_sec=...). Informational only; the SDK does not synthesize this."
+    "reason": {
+      "type": "string",
+      "enum": ["serial", "concurrency_limit"],
+      "description": "Why the step is queued."
     }
   },
   "additionalProperties": false

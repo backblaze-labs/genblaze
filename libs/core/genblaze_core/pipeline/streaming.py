@@ -16,6 +16,7 @@ from genblaze_core.observability.events import (
     StepCompletedEvent,
     StepFailedEvent,
     StepProgressEvent,
+    StepQueuedEvent,
     StepRetriedEvent,
     StreamEvent,
 )
@@ -44,6 +45,7 @@ def progress_to_stream_event(ev: ProgressEvent, run_id: str | None = None) -> St
         elapsed_sec=ev.elapsed_sec,
         preview_url=ev.preview_url,
         message=ev.message,
+        is_heartbeat=ev.is_heartbeat,
         data={"status": ev.status},
     )
 
@@ -93,18 +95,37 @@ class QueueEmitter:
     async stream). The put/put_nowait dispatch lives here so callers
     don't replicate the isinstance branching.
 
+    Set ``include_heartbeats=False`` to drop ``is_heartbeat=True`` progress
+    events at the emitter — useful for high-volume deployments where the
+    keepalive overhead outweighs the SSE-proxy benefit.
+
     After :meth:`close`, subsequent :meth:`put` calls are silent no-ops.
     This lets abandoned background workers (after early stream break)
     drop events without crashing when the consumer has moved on.
     """
 
-    def __init__(self, q: queue.Queue | asyncio.Queue, run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        q: queue.Queue | asyncio.Queue,
+        run_id: str | None = None,
+        *,
+        include_heartbeats: bool = True,
+    ) -> None:
         self._q = q
         self.run_id = run_id
         self._closed = False
+        self._include_heartbeats = include_heartbeats
 
     def put(self, event: StreamEvent | object) -> None:
         if self._closed:
+            return
+        # Filter heartbeat ticks at the emitter so they never reach the queue,
+        # keeping high-volume deployments from buffering keepalive noise.
+        if (
+            not self._include_heartbeats
+            and isinstance(event, StepProgressEvent)
+            and event.is_heartbeat
+        ):
             return
         if isinstance(self._q, asyncio.Queue):
             self._q.put_nowait(event)
@@ -125,6 +146,10 @@ class QueueEmitter:
 
     def on_progress(self, ev: ProgressEvent) -> None:
         self.put(progress_to_stream_event(ev, self.run_id))
+
+    def on_queued(self, ev: StepQueuedEvent) -> None:
+        # Already a fully-formed StreamEvent — forward verbatim.
+        self.put(ev)
 
     def on_retry(self, ev: StepRetriedEvent) -> None:
         # StepRetriedEvent is already a StreamEvent — forward as-is. The

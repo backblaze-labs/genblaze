@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `genblaze-core`: `BaseProvider.poll_progress(prediction_id)` hook —
+  connectors return mid-poll signals (`preview_url`, `progress_pct`,
+  `message`) that the base poll loop merges into the next `step.progress`
+  event. Default `None`; backwards compatible. Closes the long-standing
+  spec/implementation gap where `StepProgressEvent.preview_url` shipped
+  on the wire but no connector populated it.
+- `genblaze-runway`: surfaces `task.progress` and `task.thumbnail_url` /
+  `task.preview_url` via `poll_progress()` so dashboards see live
+  intermediate frames during Gen-4 video generation.
+- `genblaze-luma`: surfaces intermediate Dream Machine preview frames
+  (`assets.preview` / `assets.image` / `assets.thumbnail`) and the
+  current `state` string via `poll_progress()`.
+- `genblaze-core`: new `StepQueuedEvent` (`type="step.queued"`) — additive
+  signal for steps waiting on capacity. Sequential pipelines emit it for
+  every upcoming step at run start (`reason="serial"`); concurrent
+  pipelines with `max_concurrency` emit it when a coroutine finds the
+  semaphore locked at entry (`reason="concurrency_limit"`). `step.started`
+  semantics are unchanged — consumers that don't care about queued state
+  ignore the event type. `Pipeline._build_step` now accepts an optional
+  `step_id=` so queued and started events reference the same UUID. New
+  schema, parent stream-event union extended, TypeScript types
+  regenerated.
+- `genblaze-core`: heartbeat ticks during long polls. When the adaptive
+  poll interval grows past 15s, `BaseProvider` splits the sleep into 10s
+  chunks and emits an `is_heartbeat=True` `step.progress` event between
+  chunks so SSE proxies, load balancers, and impatient users see the
+  connection is alive. New `is_heartbeat: bool` field on `StepProgressEvent`
+  and `ProgressEvent`. `Pipeline.stream(heartbeats=False)` /
+  `astream(heartbeats=False)` drops keepalive ticks at the emitter for
+  high-volume deployments where the overhead outweighs the benefit.
+  Schema updated; TypeScript types regenerated.
+- `genblaze-core`: `Pipeline.step(expected_duration_sec=...)` and matching
+  `expected_duration_sec` field on `StepStartedEvent`. Caller-supplied ETA
+  hint surfaces on the wire so progress UIs can render meaningful bars
+  without hard-coding per-model knowledge. SDK does not synthesize the
+  value — apps own accuracy. Schema updated; TypeScript types regenerated.
 - `genblaze-core`: `request_id` field on `StepProgressEvent`, `StepCompletedEvent`,
   and `StepFailedEvent` carries the upstream provider's prediction/job id
   (e.g. Replicate prediction id, Runway task id) on the wire. `BaseProvider`

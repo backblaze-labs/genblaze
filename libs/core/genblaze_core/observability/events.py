@@ -33,6 +33,7 @@ StreamEventType = Literal[
     "pipeline.started",
     "pipeline.completed",
     "pipeline.failed",
+    "step.queued",
     "step.started",
     "step.progress",
     "step.retried",
@@ -119,6 +120,32 @@ class PipelineFailedEvent(StreamEvent):
 # --- Step-level events ------------------------------------------------------
 
 
+class StepQueuedEvent(StreamEvent):
+    """Emitted when a step is waiting on capacity, not yet running.
+
+    Fully additive — emitted alongside the existing ``step.started`` flow
+    rather than replacing any prior event. Two cases fire today:
+
+    - **serial**: in a sequential pipeline, upcoming steps emit
+      ``reason="serial"`` while a prior step is still executing.
+    - **concurrency_limit**: in concurrent execution with ``max_concurrency``
+      set, steps that find the semaphore full emit
+      ``reason="concurrency_limit"`` before they acquire it.
+
+    Consumers can render these as an "Up next" tray; consumers that don't
+    care about queued state can ignore the event type entirely.
+    """
+
+    type: Literal["step.queued"] = "step.queued"
+    run_id: str = Field(description="Run identifier this event belongs to.")
+    step_id: str = Field(description="Step identifier (UUID).")
+    step_index: int = Field(description="0-based step position in the pipeline.", ge=0)
+    total_steps: int = Field(description="Total number of steps in the pipeline.", ge=0)
+    provider: str = Field(description="Provider name.")
+    model: str = Field(description="Model slug.")
+    reason: Literal["serial", "concurrency_limit"] = Field(description="Why the step is queued.")
+
+
 class StepStartedEvent(StreamEvent):
     """Emitted when a step transitions from queued to running."""
 
@@ -129,6 +156,13 @@ class StepStartedEvent(StreamEvent):
     total_steps: int = Field(description="Total number of steps in the pipeline.", ge=0)
     provider: str = Field(description="Provider name (e.g. ``gmicloud``).")
     model: str = Field(description="Model slug passed to the provider.")
+    expected_duration_sec: float | None = Field(
+        default=None,
+        description="Caller-supplied ETA hint (seconds) for this step. Lets "
+        "consumers render meaningful progress without hard-coding per-model "
+        "knowledge. Set via ``Pipeline.step(expected_duration_sec=...)``.",
+        ge=0,
+    )
 
 
 class StepProgressEvent(StreamEvent):
@@ -157,6 +191,12 @@ class StepProgressEvent(StreamEvent):
         default=None, description="Ephemeral preview URL, if the provider emits one."
     )
     message: str | None = Field(default=None, description="Optional provider-supplied note.")
+    is_heartbeat: bool = Field(
+        default=False,
+        description="True for keepalive ticks emitted between long-poll intervals "
+        "to keep SSE / streaming connections alive. Carries no new payload data; "
+        "tracers and dashboards may safely filter these out.",
+    )
     data: dict[str, Any] = Field(
         default_factory=dict, description="Provider-specific extra fields (e.g. polling status)."
     )
@@ -296,6 +336,7 @@ AnyStreamEvent = Annotated[
     PipelineStartedEvent
     | PipelineCompletedEvent
     | PipelineFailedEvent
+    | StepQueuedEvent
     | StepStartedEvent
     | StepProgressEvent
     | StepRetriedEvent
@@ -323,6 +364,7 @@ __all__ = [
     "StepCompletedEvent",
     "StepFailedEvent",
     "StepProgressEvent",
+    "StepQueuedEvent",
     "StepRetriedEvent",
     "StepStartedEvent",
     "StreamEvent",

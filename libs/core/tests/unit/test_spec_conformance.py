@@ -42,6 +42,7 @@ from genblaze_core.observability.events import (
     StepCompletedEvent,
     StepFailedEvent,
     StepProgressEvent,
+    StepQueuedEvent,
     StepRetriedEvent,
     StepStartedEvent,
     StreamEventAdapter,
@@ -213,6 +214,7 @@ EVENT_MODEL_SCHEMA_PAIRS = [
     ("PipelineStartedEvent", PipelineStartedEvent, "pipeline-started.schema.json"),
     ("PipelineCompletedEvent", PipelineCompletedEvent, "pipeline-completed.schema.json"),
     ("PipelineFailedEvent", PipelineFailedEvent, "pipeline-failed.schema.json"),
+    ("StepQueuedEvent", StepQueuedEvent, "step-queued.schema.json"),
     ("StepStartedEvent", StepStartedEvent, "step-started.schema.json"),
     ("StepProgressEvent", StepProgressEvent, "step-progress.schema.json"),
     ("StepRetriedEvent", StepRetriedEvent, "step-retried.schema.json"),
@@ -310,9 +312,17 @@ def test_pipeline_failed_roundtrip_validates():
 
 def test_step_started_roundtrip_validates():
     ev = StepStartedEvent(
-        run_id="r1", step_id="s1", step_index=0, total_steps=1, provider="p", model="m"
+        run_id="r1",
+        step_id="s1",
+        step_index=0,
+        total_steps=1,
+        provider="p",
+        model="m",
+        expected_duration_sec=12.5,
     )
-    _event_validator("step-started.schema.json").validate(ev.to_dict())
+    d = ev.to_dict()
+    assert d["expected_duration_sec"] == 12.5
+    _event_validator("step-started.schema.json").validate(d)
 
 
 def test_step_progress_roundtrip_validates():
@@ -392,6 +402,19 @@ _VARIANT_FIXTURES = [
         "pipeline.failed",
         PipelineFailedEvent,
         dict(run_id="r1", run_status="failed", message="boom"),
+    ),
+    (
+        "step.queued",
+        StepQueuedEvent,
+        dict(
+            run_id="r1",
+            step_id="s1",
+            step_index=1,
+            total_steps=2,
+            provider="p",
+            model="m",
+            reason="serial",
+        ),
     ),
     (
         "step.started",
@@ -509,6 +532,7 @@ def test_stream_event_schema_covers_every_variant():
         "pipeline-started.schema.json",
         "pipeline-completed.schema.json",
         "pipeline-failed.schema.json",
+        "step-queued.schema.json",
         "step-started.schema.json",
         "step-progress.schema.json",
         "step-retried.schema.json",

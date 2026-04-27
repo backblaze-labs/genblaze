@@ -9,7 +9,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
@@ -33,6 +33,7 @@ from genblaze_core.observability.events import (
     PipelineCompletedEvent,
     PipelineFailedEvent,
     PipelineStartedEvent,
+    StepQueuedEvent,
     StepStartedEvent,
     StreamEvent,
 )
@@ -180,6 +181,9 @@ class _PipelineStep:
     step_type: StepType
     fallback_models: list[str] = field(default_factory=list)
     input_from: list[int] | None = None
+    # Caller-supplied ETA hint surfaced on StepStartedEvent so consumers can
+    # render meaningful progress UIs without hard-coding per-model duration.
+    expected_duration_sec: float | None = None
 
 
 @dataclass(frozen=True)
@@ -298,8 +302,18 @@ class Pipeline(Runnable[None, PipelineResult]):
         step_type: StepType = StepType.GENERATE,
         fallback_models: list[str] | None = None,
         input_from: list[int] | int | None = None,
+        expected_duration_sec: float | None = None,
         **params,
     ) -> Pipeline:
+        """Add a step to the pipeline.
+
+        Args:
+            expected_duration_sec: Caller-supplied ETA hint (seconds), echoed
+                on the ``step.started`` event so consumers can render progress
+                UIs. The SDK does not synthesize this — supply your own median
+                from observed runs. Stale values produce worse UX than
+                omitting the field; treat as informational.
+        """
         # Normalize scalar index to list for uniform handling
         normalized_from: list[int] | None = None
         if input_from is not None:
@@ -314,6 +328,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 step_type=step_type,
                 fallback_models=fallback_models or [],
                 input_from=normalized_from,
+                expected_duration_sec=expected_duration_sec,
             )
         )
         return self
@@ -368,12 +383,23 @@ class Pipeline(Runnable[None, PipelineResult]):
             return prev_assets
         return None
 
-    def _build_step(self, ps: _PipelineStep, inputs: list[Asset] | None = None) -> Step:
+    def _build_step(
+        self,
+        ps: _PipelineStep,
+        inputs: list[Asset] | None = None,
+        *,
+        step_id: str | None = None,
+    ) -> Step:
         """Create a Step model from a deferred pipeline step.
 
         Normalizes params via the provider's normalize_params() so cache keys
         and manifests use consistent parameter names. Extracts seed and
         negative_prompt from params into their top-level Step fields.
+
+        Args:
+            step_id: Optional pre-allocated UUID. Lets the caller emit
+                ``step.queued`` events referencing the same id this step
+                will carry once built. Default: a new UUID.
         """
         # Guard: PromptTemplate must be rendered before execution
         if isinstance(ps.prompt, PromptTemplate):
@@ -401,7 +427,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         if ps.input_from is not None:
             metadata["_input_from"] = ps.input_from
 
-        return Step(
+        step_kwargs: dict[str, Any] = dict(
             provider=ps.provider.name,
             model=ps.model,
             prompt=ps.prompt,
@@ -414,6 +440,9 @@ class Pipeline(Runnable[None, PipelineResult]):
             inputs=inputs or [],
             metadata=metadata,
         )
+        if step_id is not None:
+            step_kwargs["step_id"] = step_id
+        return Step(**step_kwargs)
 
     def _apply_moderation_failure(
         self,
@@ -793,6 +822,29 @@ class Pipeline(Runnable[None, PipelineResult]):
                 total_steps=ctx.total_steps,
                 provider=ps.provider.name,
                 model=ps.model,
+                expected_duration_sec=ps.expected_duration_sec,
+            )
+        )
+
+    def _emit_step_queued(
+        self,
+        run_id: str,
+        step: Step,
+        ps: _PipelineStep,
+        step_index: int,
+        total_steps: int,
+        reason: Literal["serial", "concurrency_limit"],
+    ) -> None:
+        """Emit a step.queued event. Additive — does not replace step.started."""
+        self._emit_event(
+            StepQueuedEvent(
+                run_id=run_id,
+                step_id=step.step_id,
+                step_index=step_index,
+                total_steps=total_steps,
+                provider=ps.provider.name,
+                model=ps.model,
+                reason=reason,
             )
         )
 
@@ -864,12 +916,21 @@ class Pipeline(Runnable[None, PipelineResult]):
     # Streaming — sync and async iterators over StreamEvent.
     # ------------------------------------------------------------------
 
-    def stream(self, **run_kwargs: Any):
+    def stream(self, *, heartbeats: bool = True, **run_kwargs: Any):
         """Run the pipeline in a worker thread and yield events as they occur.
 
         Emits ``pipeline.started``, ``step.started``, ``step.progress``,
         ``step.completed``/``step.failed``, then ``pipeline.completed``/
         ``pipeline.failed`` (with :class:`PipelineResult` attached).
+
+        Args:
+            heartbeats: When ``True`` (default), keepalive ``step.progress``
+                events with ``is_heartbeat=True`` are emitted between
+                long-poll intervals so SSE proxies and load balancers see
+                an active connection. Set ``False`` for high-volume
+                deployments where the keepalive overhead outweighs the
+                benefit (heartbeat events are dropped at the emitter so
+                they never reach the queue).
 
         Uncaught exceptions from the pipeline are re-raised after the
         event stream drains.
@@ -885,7 +946,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         from genblaze_core.pipeline.streaming import drain_queue_sync
 
         q: _queue.Queue = _queue.Queue()
-        emitter = QueueEmitter(q)
+        emitter = QueueEmitter(q, include_heartbeats=heartbeats)
         prior = self.attach_emitter(emitter)
 
         exc_box: list[BaseException] = []
@@ -913,8 +974,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             # else: consumer broke early; worker keeps running as a daemon
             # thread and exits when the pipeline naturally completes.
 
-    async def astream(self, **run_kwargs: Any):
+    async def astream(self, *, heartbeats: bool = True, **run_kwargs: Any):
         """Async version of :meth:`stream`.
+
+        Args:
+            heartbeats: See :meth:`stream`. Default ``True``.
 
         Early break: cancels the worker task so in-flight provider calls
         unwind at their next await point. Any post-break exception from
@@ -923,7 +987,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
-        emitter = QueueEmitter(q)
+        emitter = QueueEmitter(q, include_heartbeats=heartbeats)
         prior = self.attach_emitter(emitter)
 
         async def _worker() -> None:
@@ -1040,6 +1104,19 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         total_steps = len(self._steps)
         self._emit_run_start(run_id, total_steps)
+        # Pre-allocate step_ids so step.queued events can reference the same
+        # id the step will carry once built. Sequential pipelines emit queued
+        # events for every step except the first (which starts immediately).
+        step_ids = [new_id() for _ in self._steps]
+        for idx, ps in enumerate(self._steps[1:], start=1):
+            self._emit_step_queued(
+                run_id=run_id,
+                step=Step(step_id=step_ids[idx], provider=ps.provider.name, model=ps.model),
+                ps=ps,
+                step_index=idx,
+                total_steps=total_steps,
+                reason="serial",
+            )
         completed_steps: list[Step] = []
         prev_assets: list[Asset] = []
         pipeline_result: PipelineResult | None = None
@@ -1056,7 +1133,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                         raise PipelineTimeoutError(msg)
 
                 inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                step = self._build_step(ps, inputs)
+                step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
                 logger.debug(
                     "Executing step %d/%d: %s/%s",
                     i,
@@ -1220,7 +1297,23 @@ class Pipeline(Runnable[None, PipelineResult]):
         pipeline_result: PipelineResult | None = None
         try:
             if sequential:
-                # Sequential: each step's outputs feed the next step's inputs
+                # Sequential: each step's outputs feed the next step's inputs.
+                # Pre-allocate step_ids so step.queued events match the ids
+                # the steps will carry once built.
+                step_ids = [new_id() for _ in self._steps]
+                for idx, ps_q in enumerate(self._steps[1:], start=1):
+                    self._emit_step_queued(
+                        run_id=run_id,
+                        step=Step(
+                            step_id=step_ids[idx],
+                            provider=ps_q.provider.name,
+                            model=ps_q.model,
+                        ),
+                        ps=ps_q,
+                        step_index=idx,
+                        total_steps=total_steps,
+                        reason="serial",
+                    )
                 prev_assets: list[Asset] = []
                 for i, ps in enumerate(self._steps, 1):
                     if pipeline_timeout is not None:
@@ -1233,7 +1326,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                             raise PipelineTimeoutError(msg)
 
                     inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                    step = self._build_step(ps, inputs)
+                    step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
                     logger.debug(
                         "Executing step %d/%d: %s/%s",
                         i,
@@ -1311,6 +1404,18 @@ class Pipeline(Runnable[None, PipelineResult]):
 
                 async def _sem_execute(ps: _PipelineStep, step: Step) -> Step:
                     if sem:
+                        # Emit step.queued only when this coroutine actually
+                        # has to wait — keeps the event meaningful (signals
+                        # capacity-bound delay, not just dispatch).
+                        if sem.locked():
+                            self._emit_step_queued(
+                                run_id=run_id,
+                                step=step,
+                                ps=ps,
+                                step_index=step_positions[step.step_id],
+                                total_steps=total_steps,
+                                reason="concurrency_limit",
+                            )
                         async with sem:
                             return await self._execute_step_async(ps, step, config, _ctx_for(step))
                     return await self._execute_step_async(ps, step, config, _ctx_for(step))
@@ -1318,7 +1423,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                 coro: Awaitable[list[Step]]
                 if fail_fast:
                     coro = self._gather_fail_fast(
-                        steps_and_models, config, _ctx_for, semaphore=sem
+                        steps_and_models,
+                        config,
+                        _ctx_for,
+                        semaphore=sem,
+                        run_id=run_id,
+                        total_steps=total_steps,
                     )
                 else:
                     coro = asyncio.gather(
@@ -1398,6 +1508,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx_for: Any,
         *,
         semaphore: asyncio.Semaphore | None = None,
+        run_id: str | None = None,
+        total_steps: int = 0,
     ) -> list[Step]:
         """Run steps concurrently, cancelling remaining on first failure."""
         tasks: list[asyncio.Task] = []
@@ -1406,6 +1518,17 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         async def _run(ps: _PipelineStep, step: Step) -> Step:
             if semaphore:
+                if semaphore.locked() and run_id is not None:
+                    # Mirror _sem_execute's queued emission so fail-fast and
+                    # the gather path stay observably equivalent.
+                    self._emit_step_queued(
+                        run_id=run_id,
+                        step=step,
+                        ps=ps,
+                        step_index=ctx_for(step).step_index,
+                        total_steps=total_steps,
+                        reason="concurrency_limit",
+                    )
                 async with semaphore:
                     return await self._execute_step_async(ps, step, config, ctx_for(step))
             return await self._execute_step_async(ps, step, config, ctx_for(step))

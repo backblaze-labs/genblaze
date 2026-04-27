@@ -50,6 +50,32 @@ def test_poll_returns_false_on_dreaming(mock_luma):
     assert provider.poll("gen-abc") is False
 
 
+def test_poll_progress_surfaces_preview_frame(mock_luma):
+    """poll_progress() exposes intermediate preview frame from cached generation."""
+    provider, client = mock_luma
+    client.generations.get.return_value = SimpleNamespace(
+        id="gen-abc",
+        state="dreaming",
+        assets=SimpleNamespace(preview="https://luma-preview.test/frame.jpg"),
+    )
+    assert provider.poll("gen-abc") is False
+    signals = provider.poll_progress("gen-abc")
+    assert signals is not None
+    assert signals["preview_url"] == "https://luma-preview.test/frame.jpg"
+    assert signals["message"] == "dreaming"
+
+
+def test_poll_progress_returns_none_when_no_preview(mock_luma):
+    """state alone is enough to return signals (message), even without preview."""
+    provider, client = mock_luma
+    client.generations.get.return_value = SimpleNamespace(
+        id="gen-abc", state="queued", assets=None
+    )
+    assert provider.poll("gen-abc") is False
+    signals = provider.poll_progress("gen-abc")
+    assert signals == {"message": "queued"}
+
+
 def test_fetch_output_attaches_asset(mock_luma):
     provider, _ = mock_luma
     step = Step(provider="luma", model="ray-2", prompt="a sunset")

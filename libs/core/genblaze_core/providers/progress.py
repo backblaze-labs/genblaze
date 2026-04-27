@@ -34,3 +34,8 @@ class ProgressEvent:
     message: str | None = None
     preview_url: str | None = None
     request_id: str | None = None
+    # True when this tick was synthesized by the heartbeat helper (no real
+    # progress change) just to keep long-poll connections alive. Tracers
+    # and observability sinks can filter on this to avoid billing for
+    # keepalive ticks.
+    is_heartbeat: bool = False

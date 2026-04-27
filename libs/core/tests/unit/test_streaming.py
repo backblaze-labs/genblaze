@@ -452,6 +452,226 @@ def test_step_retried_event_reaches_stream() -> None:
     assert retry_ev.error is not None
 
 
+# --- poll_progress() hook ----------------------------------------------------
+
+
+class _PollProgressProvider(BaseProvider):
+    """Provider whose poll_progress returns a preview URL mid-flight."""
+
+    name = "preview-poll"
+    poll_interval = 1.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._poll_count = 0
+
+    def submit(self, step, config=None) -> Any:
+        return "pred"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        self._poll_count += 1
+        return self._poll_count >= 2
+
+    def poll_progress(self, prediction_id) -> dict[str, Any] | None:
+        return {
+            "preview_url": "https://cdn.test/preview-1.jpg",
+            "progress_pct": 0.5,
+            "message": "running",
+        }
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(Asset(url="https://x.test/final.png", media_type="image/png"))
+        return step
+
+
+def test_poll_progress_hook_flows_to_step_progress() -> None:
+    """poll_progress() return values appear on step.progress events."""
+    from unittest.mock import patch
+
+    with patch("genblaze_core.providers.base.time.sleep"):
+        events = list(Pipeline("t").step(_PollProgressProvider(), model="m", prompt="p").stream())
+
+    progress = [e for e in events if e.type == "step.progress"]
+    matching = [e for e in progress if e.preview_url == "https://cdn.test/preview-1.jpg"]
+    assert matching, f"expected preview_url on at least one progress event; got {progress}"
+    assert any(e.progress_pct == 0.5 for e in matching)
+    assert any(e.message == "running" for e in matching)
+
+
+# --- step.queued additive event ----------------------------------------------
+
+
+def test_step_queued_emitted_serially_for_upcoming_steps() -> None:
+    """Sequential pipeline emits step.queued for every step except the first."""
+    events = list(
+        Pipeline("t")
+        .step(_OKProvider(), model="m", prompt="p1")
+        .step(_OKProvider(), model="m", prompt="p2")
+        .step(_OKProvider(), model="m", prompt="p3")
+        .stream()
+    )
+    queued = [e for e in events if e.type == "step.queued"]
+    assert len(queued) == 2  # steps 1 and 2 (indices)
+    assert all(e.reason == "serial" for e in queued)
+    assert [e.step_index for e in queued] == [1, 2]
+
+
+def test_step_queued_id_matches_step_started_id() -> None:
+    """Pre-allocated step_id must persist through to step.started + step.completed."""
+    events = list(
+        Pipeline("t")
+        .step(_OKProvider(), model="m", prompt="p1")
+        .step(_OKProvider(), model="m", prompt="p2")
+        .stream()
+    )
+    queued = next(e for e in events if e.type == "step.queued")
+    started = next(
+        e for e in events if e.type == "step.started" and e.step_index == queued.step_index
+    )
+    assert queued.step_id == started.step_id
+
+
+def test_step_queued_omitted_for_single_step() -> None:
+    """Single-step pipeline emits no queued events (nothing waiting)."""
+    events = list(Pipeline("t").step(_OKProvider(), model="m", prompt="p").stream())
+    assert not [e for e in events if e.type == "step.queued"]
+
+
+@pytest.mark.asyncio
+async def test_step_queued_concurrency_limit_in_concurrent_arun() -> None:
+    """Steps blocked on the semaphore emit step.queued(reason='concurrency_limit')."""
+    import asyncio as _asyncio
+
+    class _SlowAsyncProvider(BaseProvider):
+        name = "slow-async"
+
+        def __init__(self) -> None:
+            super().__init__()
+
+        def submit(self, step, config=None) -> Any:
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            return step
+
+    async def _run() -> list[StreamEvent]:
+        # max_concurrency=1 ensures every step except the first sees a locked sem
+        pipe = Pipeline("t", max_concurrency=1)
+        for i in range(3):
+            pipe.step(_SlowAsyncProvider(), model="m", prompt=f"p{i}")
+        events: list[StreamEvent] = []
+        async for ev in pipe.astream():
+            events.append(ev)
+        return events
+
+    events = await _run()
+    queued = [e for e in events if e.type == "step.queued"]
+    # We can't predict exactly how many queue events fire (depends on event-loop
+    # scheduler timing), but at least one must fire when max_concurrency=1 and
+    # there are 3 steps — at minimum the second or third step finds sem locked.
+    assert queued, f"expected at least one concurrency_limit queued event, got {events}"
+    assert all(e.reason == "concurrency_limit" for e in queued)
+    # Wait so unused asyncio task don't leak between tests
+    await _asyncio.sleep(0)
+
+
+# --- heartbeat events on long polls ------------------------------------------
+
+
+class _LongPollProvider(BaseProvider):
+    """poll() returns False N times then True. Used to simulate long jobs."""
+
+    name = "long-poll"
+    poll_interval = 30.0  # forces _adaptive_poll_interval >= 15s threshold
+
+    def __init__(self, *, polls_until_done: int = 1) -> None:
+        super().__init__()
+        self._polls_until_done = polls_until_done
+        self._poll_count = 0
+
+    def submit(self, step, config=None) -> Any:
+        return "pred-long"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        self._poll_count += 1
+        return self._poll_count >= self._polls_until_done
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        return step
+
+
+def test_heartbeats_emit_during_long_poll() -> None:
+    """When the adaptive poll interval >= 15s, heartbeat ticks fire mid-sleep."""
+    from unittest.mock import patch
+
+    # poll_interval=30s on first poll iteration triggers the heartbeat path.
+    pipe = Pipeline("t").step(_LongPollProvider(polls_until_done=2), model="m", prompt="p")
+
+    # Patch only the helper's sleeps to avoid 30s of real wall time.
+    with (
+        patch("genblaze_core.providers.base.time.sleep"),
+        patch("genblaze_core.providers.base.asyncio.sleep"),
+    ):
+        events = list(pipe.stream())
+
+    progress_events = [e for e in events if e.type == "step.progress"]
+    heartbeats = [e for e in progress_events if e.is_heartbeat]
+    assert heartbeats, f"expected heartbeat ticks during 30s poll, got {progress_events}"
+
+
+def test_heartbeats_disabled_drops_them_at_emitter() -> None:
+    """heartbeats=False on stream() suppresses heartbeat events entirely."""
+    from unittest.mock import patch
+
+    pipe = Pipeline("t").step(_LongPollProvider(polls_until_done=2), model="m", prompt="p")
+
+    with patch("genblaze_core.providers.base.time.sleep"):
+        events = list(pipe.stream(heartbeats=False))
+
+    progress_events = [e for e in events if e.type == "step.progress"]
+    assert not any(e.is_heartbeat for e in progress_events), (
+        f"heartbeats=False should drop is_heartbeat events; got {progress_events}"
+    )
+
+
+def test_short_poll_interval_does_not_heartbeat() -> None:
+    """When poll interval < 15s, no heartbeat is emitted (no overhead)."""
+    pipe = Pipeline("t").step(
+        _OKProvider(), model="m", prompt="p"
+    )  # _OKProvider polls done immediately
+    events = list(pipe.stream())
+    progress_events = [e for e in events if e.type == "step.progress"]
+    assert not any(e.is_heartbeat for e in progress_events)
+
+
+# --- expected_duration_sec on step.started -----------------------------------
+
+
+def test_expected_duration_sec_flows_to_step_started() -> None:
+    """Kwarg on .step() echoes onto the step.started event."""
+    events = list(
+        Pipeline("t")
+        .step(_OKProvider(), model="m", prompt="p", expected_duration_sec=42.0)
+        .stream()
+    )
+    started = next(e for e in events if e.type == "step.started")
+    assert started.expected_duration_sec == 42.0
+
+
+def test_expected_duration_sec_default_none() -> None:
+    """Omitted kwarg leaves the field None on the event (and out of JSON)."""
+    events = list(Pipeline("t").step(_OKProvider(), model="m", prompt="p").stream())
+    started = next(e for e in events if e.type == "step.started")
+    assert started.expected_duration_sec is None
+    # to_dict drops None-valued optional fields
+    assert "expected_duration_sec" not in started.to_dict()
+
+
 # --- request_id propagation --------------------------------------------------
 
 

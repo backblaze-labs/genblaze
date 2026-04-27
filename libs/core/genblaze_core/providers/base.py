@@ -46,6 +46,13 @@ _SKIP_PREFLIGHT_ENV = "GENBLAZE_SKIP_PREFLIGHT"
 DEFAULT_POLL_INTERVAL = 1.0  # seconds
 DEFAULT_TIMEOUT = 600.0  # 10 minutes
 
+# Heartbeat thresholds — once the adaptive poll interval grows past
+# _HEARTBEAT_THRESHOLD_SEC, split the sleep into _HEARTBEAT_CHUNK_SEC chunks
+# and fire a heartbeat-flavored progress event between chunks so SSE
+# proxies, load balancers, and impatient users see the connection is alive.
+_HEARTBEAT_THRESHOLD_SEC = 15.0
+_HEARTBEAT_CHUNK_SEC = 10.0
+
 # Max error message length stored in step.error (prevents bloated manifests)
 _MAX_ERROR_LENGTH = 500
 
@@ -520,6 +527,7 @@ class BaseProvider(Runnable[Step, Step]):
         progress_pct: float | None = None,
         message: str | None = None,
         preview_url: str | None = None,
+        is_heartbeat: bool = False,
     ) -> None:
         """Fire on_progress callback if one is configured."""
         callback = (config or {}).get("on_progress")
@@ -539,8 +547,88 @@ class BaseProvider(Runnable[Step, Step]):
                     # fired before submit returns) carry None — that's
                     # accurate, the id doesn't exist yet.
                     request_id=step.metadata.get("upstream_id"),
+                    is_heartbeat=is_heartbeat,
                 )
             )
+
+    def _fire_poll_progress(
+        self,
+        prediction_id: Any,
+        step: Step,
+        config: RunnableConfig | None,
+        start_time: float,
+    ) -> None:
+        """Fire a ``processing`` progress tick, optionally enriched by ``poll_progress``.
+
+        Connectors that override ``poll_progress`` return preview_url /
+        progress_pct / message; the base default returns None and we fire
+        a plain processing tick.
+        """
+        signals = self.poll_progress(prediction_id) or {}
+        preview_url = signals.get("preview_url")
+        if preview_url is not None:
+            # Defensive validation — connectors should also call
+            # ``validate_asset_url`` themselves, but we re-check here so
+            # bypass via subclass mistakes can't ship an unsafe URL.
+            try:
+                validate_asset_url(preview_url)
+            except ProviderError:
+                logger.debug("poll_progress preview_url failed SSRF check; dropping")
+                preview_url = None
+        self._fire_progress(
+            step,
+            config,
+            "processing",
+            start_time,
+            progress_pct=signals.get("progress_pct"),
+            message=signals.get("message"),
+            preview_url=preview_url,
+        )
+
+    def _sleep_with_heartbeats(
+        self,
+        interval: float,
+        step: Step,
+        config: RunnableConfig | None,
+        start_time: float,
+    ) -> None:
+        """Sleep ``interval`` seconds, emitting heartbeat ticks for long waits.
+
+        Short waits sleep without overhead; once the interval crosses
+        ``_HEARTBEAT_THRESHOLD_SEC``, the sleep is broken into
+        ``_HEARTBEAT_CHUNK_SEC`` chunks with a ``is_heartbeat=True`` progress
+        event between chunks. Keeps SSE connections alive without flooding
+        observability when the interval is short.
+        """
+        if interval < _HEARTBEAT_THRESHOLD_SEC:
+            time.sleep(interval)
+            return
+        remaining = interval
+        while remaining > 0:
+            chunk = min(_HEARTBEAT_CHUNK_SEC, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
+            if remaining > 0:
+                self._fire_progress(step, config, "processing", start_time, is_heartbeat=True)
+
+    async def _asleep_with_heartbeats(
+        self,
+        interval: float,
+        step: Step,
+        config: RunnableConfig | None,
+        start_time: float,
+    ) -> None:
+        """Async twin of ``_sleep_with_heartbeats``."""
+        if interval < _HEARTBEAT_THRESHOLD_SEC:
+            await asyncio.sleep(interval)
+            return
+        remaining = interval
+        while remaining > 0:
+            chunk = min(_HEARTBEAT_CHUNK_SEC, remaining)
+            await asyncio.sleep(chunk)
+            remaining -= chunk
+            if remaining > 0:
+                self._fire_progress(step, config, "processing", start_time, is_heartbeat=True)
 
     @abstractmethod
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
@@ -551,6 +639,25 @@ class BaseProvider(Runnable[Step, Step]):
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
         """Poll for completion. Returns True when done."""
         ...
+
+    def poll_progress(self, prediction_id: Any) -> dict[str, Any] | None:
+        """Return mid-poll signals to merge into the next ``step.progress`` event.
+
+        Default ``None`` — no extra signals. Connectors with rich poll
+        responses (Runway preview frames, Luma intermediate stills,
+        Replicate streamed logs) override to return any of:
+
+        - ``preview_url`` (str): ephemeral preview (validated via
+          ``validate_asset_url`` before forwarding).
+        - ``progress_pct`` (float, 0.0–1.0): upstream-reported progress.
+        - ``message`` (str): human-readable status.
+
+        The base poll loop calls this between poll iterations and merges
+        the returned dict into the generic "processing" progress event.
+        Use the cached poll result via ``self._get_cached_poll_result`` /
+        ``self._cache_poll_result`` to avoid an extra API call.
+        """
+        return None
 
     @abstractmethod
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
@@ -824,9 +931,9 @@ class BaseProvider(Runnable[Step, Step]):
             elapsed = time.monotonic() - start_time
             if elapsed >= timeout:
                 raise ProviderError(f"Poll timeout after {elapsed:.1f}s (limit: {timeout}s)")
-            self._fire_progress(step, config, "processing", start_time)
+            self._fire_poll_progress(prediction_id, step, config, start_time)
             interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-            time.sleep(interval)
+            self._sleep_with_heartbeats(interval, step, config, start_time)
 
         step = self._retry_phase(
             lambda: self.fetch_output(prediction_id, step),
@@ -918,9 +1025,9 @@ class BaseProvider(Runnable[Step, Step]):
                 if elapsed >= timeout:
                     msg = f"Resume poll timeout after {elapsed:.1f}s (limit: {timeout}s)"
                     raise ProviderError(msg)
-                self._fire_progress(step, config, "processing", start_time)
+                self._fire_poll_progress(prediction_id, step, config, start_time)
                 interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-                time.sleep(interval)
+                self._sleep_with_heartbeats(interval, step, config, start_time)
 
             step = self._retry_phase(
                 lambda: self.fetch_output(prediction_id, step),
@@ -970,9 +1077,9 @@ class BaseProvider(Runnable[Step, Step]):
                 if elapsed >= timeout:
                     msg = f"Resume poll timeout after {elapsed:.1f}s (limit: {timeout}s)"
                     raise ProviderError(msg)
-                self._fire_progress(step, config, "processing", start_time)
+                self._fire_poll_progress(prediction_id, step, config, start_time)
                 interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-                await asyncio.sleep(interval)
+                await self._asleep_with_heartbeats(interval, step, config, start_time)
 
             step = await self._aretry_phase(
                 lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),
@@ -1139,9 +1246,9 @@ class BaseProvider(Runnable[Step, Step]):
             elapsed = time.monotonic() - start_time
             if elapsed >= timeout:
                 raise ProviderError(f"Poll timeout after {elapsed:.1f}s (limit: {timeout}s)")
-            self._fire_progress(step, config, "processing", start_time)
+            self._fire_poll_progress(prediction_id, step, config, start_time)
             interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-            await asyncio.sleep(interval)
+            await self._asleep_with_heartbeats(interval, step, config, start_time)
 
         step = await self._aretry_phase(
             lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),

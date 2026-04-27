@@ -117,6 +117,9 @@ class LumaProvider(BaseProvider):
         self.poll_interval = poll_interval
         self._auth_token = auth_token
         self._client: Any = None
+        # In-progress generations cached for poll_progress() so we don't
+        # double the API call rate to surface preview frames.
+        self._progress_cache: dict[str, Any] = {}
 
     def _get_client(self):
         if self._client is None:
@@ -158,6 +161,9 @@ class LumaProvider(BaseProvider):
             if generation.state in ("completed", "failed"):
                 self._cache_poll_result(prediction_id, generation)
                 return True
+            # Stash so poll_progress() can read intermediate preview frames
+            # without a second API call.
+            self._progress_cache[str(prediction_id)] = generation
             return False
         except Exception as exc:
             raise ProviderError(
@@ -165,6 +171,34 @@ class LumaProvider(BaseProvider):
                 error_code=map_luma_error(exc),
                 retry_after=retry_after_from_response(exc),
             ) from exc
+
+    def poll_progress(self, prediction_id: Any) -> dict[str, Any] | None:
+        """Surface Luma intermediate preview frames if the generation has any.
+
+        The Luma SDK exposes draft frames in ``generation.assets.image`` /
+        ``generation.assets.preview`` on some Dream Machine models partway
+        through generation. ``getattr`` is defensive against SDK versions
+        that don't carry the field.
+        """
+        gen = self._progress_cache.get(str(prediction_id))
+        if gen is None:
+            return None
+        signals: dict[str, Any] = {}
+        assets = getattr(gen, "assets", None)
+        if assets is not None:
+            preview = (
+                getattr(assets, "preview", None)
+                or getattr(assets, "image", None)
+                or getattr(assets, "thumbnail", None)
+            )
+            if preview:
+                signals["preview_url"] = str(preview)
+        # Luma exposes a status string but no numeric progress; surface the
+        # state as a human-readable message so consumers can show it.
+        state = getattr(gen, "state", None)
+        if state:
+            signals["message"] = str(state)
+        return signals or None
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         """Fetch the completed video URL from Luma."""

@@ -60,6 +60,11 @@
       "default": null,
       "description": "Optional provider-supplied note."
     },
+    "is_heartbeat": {
+      "type": "boolean",
+      "default": false,
+      "description": "True for keepalive ticks emitted between long-poll intervals; tracers and dashboards may safely filter these out."
+    },
     "data": {
       "type": "object",
       "additionalProperties": true,

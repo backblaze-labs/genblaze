@@ -143,6 +143,37 @@ def test_invalid_aspect_ratio_alias_raises(mock_runway):
 # --- Compliance harness ---
 
 
+def test_poll_progress_surfaces_preview_and_progress(mock_runway):
+    """poll_progress() reads the cached in-progress task without a 2nd API call."""
+    provider, client = mock_runway
+    # First poll returns a RUNNING task with progress + a preview thumbnail
+    client.tasks.retrieve.return_value = SimpleNamespace(
+        id="task-abc",
+        status="RUNNING",
+        progress=0.42,
+        thumbnail_url="https://runway-preview.test/frame-0042.jpg",
+    )
+    assert provider.poll("task-abc") is False
+    signals = provider.poll_progress("task-abc")
+    assert signals is not None
+    assert signals["progress_pct"] == 0.42
+    assert signals["preview_url"] == "https://runway-preview.test/frame-0042.jpg"
+
+
+def test_poll_progress_returns_none_before_first_poll(mock_runway):
+    """poll_progress() before any poll() call returns None (nothing cached)."""
+    provider, _ = mock_runway
+    assert provider.poll_progress("task-never-polled") is None
+
+
+def test_poll_progress_omits_missing_fields(mock_runway):
+    """When the SDK doesn't expose progress/thumbnail, return None (not an empty dict)."""
+    provider, client = mock_runway
+    client.tasks.retrieve.return_value = SimpleNamespace(id="task-abc", status="RUNNING")
+    assert provider.poll("task-abc") is False
+    assert provider.poll_progress("task-abc") is None
+
+
 class TestRunwayCompliance(ProviderComplianceTests):
     """Verify RunwayProvider satisfies the genblaze provider contract."""
 

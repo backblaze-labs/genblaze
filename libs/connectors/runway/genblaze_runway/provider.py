@@ -139,6 +139,10 @@ class RunwayProvider(BaseProvider):
         self.poll_interval = poll_interval
         self._api_secret = api_secret
         self._client: Any = None
+        # Cache of in-progress task objects keyed by prediction_id, populated
+        # in ``poll()`` and consumed in ``poll_progress()`` so we don't double
+        # the API call rate just to surface preview/progress.
+        self._progress_cache: dict[str, Any] = {}
 
     def normalize_params(self, params: dict, modality: Any = None) -> dict:
         """Map standard params to Runway-native names.
@@ -202,6 +206,9 @@ class RunwayProvider(BaseProvider):
             if task.status in ("SUCCEEDED", "FAILED"):
                 self._cache_poll_result(prediction_id, task)
                 return True
+            # Stash the in-progress task so poll_progress() can read it
+            # without a second API call.
+            self._progress_cache[str(prediction_id)] = task
             return False
         except Exception as exc:
             raise ProviderError(
@@ -209,6 +216,28 @@ class RunwayProvider(BaseProvider):
                 error_code=map_runway_error(exc),
                 retry_after=retry_after_from_response(exc),
             ) from exc
+
+    def poll_progress(self, prediction_id: Any) -> dict[str, Any] | None:
+        """Surface Runway task ``progress`` and any preview thumbnail.
+
+        Reads the in-progress task cached by the most recent ``poll()`` so
+        we don't hit the API twice per tick. Returns None when no task has
+        been cached yet (first poll attempt) or when neither field is set.
+        """
+        task = self._progress_cache.get(str(prediction_id))
+        if task is None:
+            return None
+        signals: dict[str, Any] = {}
+        progress = getattr(task, "progress", None)
+        if isinstance(progress, (int, float)) and 0 <= progress <= 1:
+            signals["progress_pct"] = float(progress)
+        # Runway's task object exposes ``thumbnail_url`` on some Gen-4 models
+        # for in-progress draft frames; getattr is defensive against SDK
+        # versions that don't carry the field.
+        preview = getattr(task, "thumbnail_url", None) or getattr(task, "preview_url", None)
+        if preview:
+            signals["preview_url"] = str(preview)
+        return signals or None
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         """Fetch the completed video URL."""
