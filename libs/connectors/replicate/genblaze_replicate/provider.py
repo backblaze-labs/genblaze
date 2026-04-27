@@ -84,8 +84,9 @@ class ReplicateProvider(BaseProvider):
         http_timeout: float = 30.0,
         *,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self.poll_interval = poll_interval
         self._client: Any = None
         self._api_token = api_token

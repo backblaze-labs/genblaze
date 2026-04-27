@@ -14,11 +14,10 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
-from genblaze_core._utils import _SECRET_PATTERNS, jittered_backoff, new_id, utc_now
+from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import (
-    RETRYABLE_ERROR_CODES,
     Modality,
     ProviderErrorCode,
     StepStatus,
@@ -29,7 +28,7 @@ from genblaze_core.providers.model_registry import EMPTY_REGISTRY, ModelRegistry
 from genblaze_core.providers.pricing import PricingContext
 from genblaze_core.providers.probe import ProbeResult
 from genblaze_core.providers.progress import ProgressEvent
-from genblaze_core.providers.retry import PRE_RESPONSE_EXCEPTIONS
+from genblaze_core.providers.retry import PRE_RESPONSE_EXCEPTIONS, RetryPolicy
 from genblaze_core.providers.spec import ModelSpec
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
@@ -202,8 +201,18 @@ class BaseProvider(Runnable[Step, Step]):
     poll_interval: float = DEFAULT_POLL_INTERVAL
     # Max transient failures tolerated per phase (submit/poll/fetch) before escalating.
     # Counter is phase-local — a successful poll does not refund submit's budget.
-    # Set to 0 to disable intra-phase retries.
+    # Set to 0 to disable intra-phase retries. Backwards-compat knob: when a caller
+    # doesn't pass ``retry_policy=``, ``_default_retry_policy()`` reads this attribute
+    # and folds it into the policy's ``max_attempts`` (= ``poll_transient_retries + 1``).
     poll_transient_retries: int = _DEFAULT_POLL_TRANSIENT_RETRIES
+
+    # Per-provider opt-in for idempotency-key header injection on submit retries.
+    # When set, ``_inject_idempotency_header()`` adds the header with a value
+    # derived from ``self._retry_policy.make_idempotency_key(step)``. The same
+    # value is reused across retries of one step — that's what makes the
+    # upstream able to dedupe. Leave as ``None`` for providers whose API
+    # doesn't document idempotency-key support.
+    IDEMPOTENCY_HEADER_NAME: str | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # Ensure each subclass has its own cache slot — avoids inheriting a
@@ -229,7 +238,12 @@ class BaseProvider(Runnable[Step, Step]):
             cls._models_cache = cls.create_registry()  # type: ignore[attr-defined]
         return cls._models_cache  # type: ignore[attr-defined,return-value]
 
-    def __init__(self, *, models: ModelRegistry | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
         # Poll result cache — avoids redundant API calls between poll() and fetch_output()
         self._poll_cache: dict[str, Any] = {}
         self._poll_cache_times: dict[str, float] = {}
@@ -238,6 +252,13 @@ class BaseProvider(Runnable[Step, Step]):
         # makes an empty registry falsy, so ``models or default`` would silently
         # discard explicit empty overrides (Replicate / LMNT have empty defaults).
         self._models: ModelRegistry = models if models is not None else type(self).models_default()
+        # Caller-passed override; if ``None``, the ``retry_policy`` property
+        # builds a fresh policy on each access from ``self.poll_transient_retries``
+        # so legacy mutations (``provider.poll_transient_retries = 2``) keep
+        # working. Stored as override-only so an explicit ``RetryPolicy`` is
+        # authoritative — instance-level ``poll_transient_retries`` mutations
+        # are ignored once a policy has been passed in.
+        self._retry_policy_override: RetryPolicy | None = retry_policy
         # One-shot preflight gate — credentials checked before the first submit
         # of this instance, then skipped for the lifetime of the object.
         # The locks are lazy: ``threading.Lock`` is cheap to construct here, but
@@ -246,6 +267,48 @@ class BaseProvider(Runnable[Step, Step]):
         self._preflight_done: bool = False
         self._preflight_sync_lock: threading.Lock = threading.Lock()
         self._preflight_async_lock: asyncio.Lock | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy:
+        """The active retry policy for this provider instance.
+
+        Resolution order:
+
+        1. The ``retry_policy=`` argument passed to ``__init__`` if any —
+           authoritative; ``poll_transient_retries`` mutations are ignored.
+        2. Otherwise, a fresh ``RetryPolicy`` built from
+           ``self.poll_transient_retries`` (read at access time, so
+           ``provider.poll_transient_retries = 2`` after construction works).
+
+        Built lazily on access rather than cached at ``__init__`` so the legacy
+        path remains responsive to mutations. The dataclass is frozen + slotted,
+        so per-access construction is cheap.
+        """
+        if self._retry_policy_override is not None:
+            return self._retry_policy_override
+        return RetryPolicy(max_attempts=self.poll_transient_retries + 1)
+
+    def _inject_idempotency_header(
+        self,
+        headers: dict[str, str] | None,
+        step: Step,
+    ) -> dict[str, str]:
+        """Add the idempotency-key header to ``headers`` iff the provider opted in.
+
+        No-op when ``IDEMPOTENCY_HEADER_NAME`` is unset or the policy returns
+        ``None``. Returns a new dict so callers can safely pass the result to
+        SDKs that retain header references. Always returns a dict (never
+        modifies the input in place) to keep the call site total.
+        """
+        out: dict[str, str] = dict(headers) if headers else {}
+        header_name = type(self).IDEMPOTENCY_HEADER_NAME
+        if header_name is None:
+            return out
+        key = self.retry_policy.make_idempotency_key(step)
+        if key is None:
+            return out
+        out[header_name] = key
+        return out
 
     def _cache_poll_result(self, prediction_id: Any, result: Any) -> None:
         """Cache a poll result for reuse in fetch_output()."""
@@ -501,26 +564,42 @@ class BaseProvider(Runnable[Step, Step]):
             return exc.error_code
         return classify_api_error(exc)
 
-    @staticmethod
-    def _is_retryable(exc: Exception, retry_on: tuple[type[BaseException], ...] | None) -> bool:
+    def _is_retryable(
+        self,
+        exc: Exception,
+        retry_on: tuple[type[BaseException], ...] | None,
+        attempt: int,
+    ) -> bool:
         """Retry rule for one phase.
 
-        When ``retry_on`` is supplied (submit phase), only those exception
-        classes are eligible — this is how we constrain submit retries to
-        pre-response network failures where replay is safe without an
-        idempotency key. Otherwise (poll/fetch) we fall back to the normalized
-        error code.
-        """
-        if retry_on is not None:
-            return isinstance(exc, retry_on)
-        return BaseProvider._classify_poll_exc(exc) in RETRYABLE_ERROR_CODES
+        Two distinct rules, picked by whether ``retry_on`` is supplied:
 
-    @staticmethod
-    def _retry_delay(exc: Exception, attempt: int) -> float:
+        - **Submit phase** (``retry_on`` set, typically ``PRE_RESPONSE_EXCEPTIONS``):
+          membership in ``retry_on`` is itself the declaration that the
+          exception type is safe to retry — pre-response network failures
+          can't have triggered a side effect, regardless of how the message
+          string would classify. We honor only the policy's ``max_attempts``
+          gate, not its ``retryable_codes`` set, because pre-response error
+          strings often classify to ``UNKNOWN``.
+        - **Poll / fetch phase** (``retry_on`` is ``None``): delegate fully to
+          ``self.retry_policy.should_retry`` (code membership + budget gate).
+        """
+        policy = self.retry_policy
+        if retry_on is not None:
+            if not isinstance(exc, retry_on):
+                return False
+            return attempt < policy.max_attempts
+        code = self._classify_poll_exc(exc)
+        return policy.should_retry(code, attempt)
+
+    def _retry_delay(self, exc: Exception, attempt: int) -> float:
         """Delay before the next attempt — server hint wins over computed backoff."""
-        if isinstance(exc, ProviderError) and exc.retry_after is not None:
-            return exc.retry_after
-        return jittered_backoff(attempt)
+        retry_after = (
+            exc.retry_after
+            if isinstance(exc, ProviderError) and exc.retry_after is not None
+            else None
+        )
+        return self.retry_policy.compute_delay(attempt, retry_after=retry_after)
 
     def _emit_retry(
         self,
@@ -533,12 +612,13 @@ class BaseProvider(Runnable[Step, Step]):
     ) -> None:
         """Log + fire ``on_retry`` so pipeline streams can surface the retry."""
         code = self._classify_poll_exc(exc)
+        max_attempts = self.retry_policy.max_attempts
         logger.warning(
             "%s %s retry %d/%d in %.1fs (code=%s)",
             self.name,
             phase,
             attempt,
-            self.poll_transient_retries,
+            max_attempts,
             delay,
             code,
         )
@@ -556,7 +636,7 @@ class BaseProvider(Runnable[Step, Step]):
                 model=step.model,
                 phase=phase,
                 attempt=attempt,
-                max_attempts=self.poll_transient_retries + 1,
+                max_attempts=max_attempts,
                 delay_sec=delay,
                 error_code=str(code) if code else None,
                 error=_sanitize_error(str(exc)),
@@ -579,14 +659,17 @@ class BaseProvider(Runnable[Step, Step]):
         ``retry_on=PRE_RESPONSE_EXCEPTIONS`` narrows submit retries to network
         errors that cannot have triggered a side effect. Everywhere else the
         retryable set is driven by the normalized error code.
+
+        Both the budget gate (``max_attempts``) and the code-eligibility check
+        live in ``self._retry_policy``; ``_is_retryable`` composes them with
+        the optional exception-class narrowing.
         """
-        max_budget = self.poll_transient_retries
         attempt = 1
         while True:
             try:
                 return fn()
             except Exception as exc:
-                if not self._is_retryable(exc, retry_on) or attempt > max_budget:
+                if not self._is_retryable(exc, retry_on, attempt):
                     if isinstance(exc, ProviderError):
                         exc.attempts = attempt
                     raise
@@ -612,13 +695,12 @@ class BaseProvider(Runnable[Step, Step]):
         retry_on: tuple[type[BaseException], ...] | None = None,
     ) -> Any:
         """Async twin of ``_retry_phase`` — ``fn`` is an awaitable factory."""
-        max_budget = self.poll_transient_retries
         attempt = 1
         while True:
             try:
                 return await fn()
             except Exception as exc:
-                if not self._is_retryable(exc, retry_on) or attempt > max_budget:
+                if not self._is_retryable(exc, retry_on, attempt):
                     if isinstance(exc, ProviderError):
                         exc.attempts = attempt
                     raise
@@ -927,8 +1009,10 @@ class BaseProvider(Runnable[Step, Step]):
                         else classify_api_error(exc)
                     )
 
-                    # Only retry on transient errors
-                    if error_code not in RETRYABLE_ERROR_CODES or attempt >= max_retries:
+                    # Step-level retry: budget from config.max_retries (caller-driven),
+                    # retryable codes from the unified RetryPolicy so users tune one knob.
+                    retryable = error_code in self.retry_policy.retryable_codes
+                    if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
                         step.error = _sanitize_error(str(exc))
                         step.error_code = error_code
@@ -939,7 +1023,12 @@ class BaseProvider(Runnable[Step, Step]):
                         return step
 
                     step.retries += 1
-                    backoff = jittered_backoff(attempt)
+                    retry_after = (
+                        exc.retry_after
+                        if isinstance(exc, ProviderError) and exc.retry_after is not None
+                        else None
+                    )
+                    backoff = self.retry_policy.compute_delay(attempt + 1, retry_after=retry_after)
                     logger.info(
                         "Retry %d/%d after %s (backoff=%.1fs)",
                         attempt + 1,
@@ -1084,7 +1173,8 @@ class BaseProvider(Runnable[Step, Step]):
                         else classify_api_error(exc)
                     )
 
-                    if error_code not in RETRYABLE_ERROR_CODES or attempt >= max_retries:
+                    retryable = error_code in self.retry_policy.retryable_codes
+                    if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
                         step.error = _sanitize_error(str(exc))
                         step.error_code = error_code
@@ -1095,7 +1185,12 @@ class BaseProvider(Runnable[Step, Step]):
                         return step
 
                     step.retries += 1
-                    backoff = jittered_backoff(attempt)
+                    retry_after = (
+                        exc.retry_after
+                        if isinstance(exc, ProviderError) and exc.retry_after is not None
+                        else None
+                    )
+                    backoff = self.retry_policy.compute_delay(attempt + 1, retry_after=retry_after)
                     logger.info(
                         "Retry %d/%d after %s (backoff=%.1fs)",
                         attempt + 1,
@@ -1143,8 +1238,13 @@ class SyncProvider(BaseProvider):
                 return step
     """
 
-    def __init__(self, *, models: ModelRegistry | None = None) -> None:
-        super().__init__(models=models)
+    def __init__(
+        self,
+        *,
+        models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
+        super().__init__(models=models, retry_policy=retry_policy)
         # Results keyed by step_id — avoids monkey-patching Pydantic models
         self._sync_results: dict[str, Step] = {}
 

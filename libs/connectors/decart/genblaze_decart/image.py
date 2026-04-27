@@ -86,8 +86,9 @@ class DecartImageProvider(SyncProvider):
         output_dir: str | Path | None = None,
         *,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self._api_key = api_key
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.base import BaseMediaHandler, MediaCapability
+from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
 from genblaze_core.models.manifest import Manifest
 
 TXXX_DESC = "genblaze:manifest"
@@ -26,19 +27,17 @@ class Mp3Handler(BaseMediaHandler):
             ) from exc
 
         try:
-            if output != source:
-                import shutil
-
-                shutil.copy2(source, output)
-
-            try:
-                tags = ID3(output)
-            except ID3NoHeaderError:
-                tags = ID3()
-
-            tags.delall(f"TXXX:{TXXX_DESC}")
-            tags.add(TXXX(encoding=3, desc=TXXX_DESC, text=[manifest.to_canonical_json()]))
-            tags.save(output)
+            # Mutagen mutates files in place — copy first so a crash mid-save
+            # cannot touch the source file.
+            with atomic_write(output) as tmp:
+                shutil.copy2(source, tmp)
+                try:
+                    tags = ID3(tmp)
+                except ID3NoHeaderError:
+                    tags = ID3()
+                tags.delall(f"TXXX:{TXXX_DESC}")
+                tags.add(TXXX(encoding=3, desc=TXXX_DESC, text=[manifest.to_canonical_json()]))
+                tags.save(tmp)
             return output
         except EmbeddingError:
             raise

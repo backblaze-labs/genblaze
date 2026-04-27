@@ -49,3 +49,27 @@ def test_mp3_embed_replaces_existing(tmp_mp3: Path, sample_manifest: Manifest) -
 
 def test_mp3_capabilities() -> None:
     assert Mp3Handler.capabilities() == ["audio/mpeg"]
+
+
+def test_mp3_embed_atomic_on_failure(
+    tmp_path: Path, tmp_mp3: Path, sample_manifest: Manifest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash mid-save must leave the source file untouched."""
+    from mutagen.id3 import ID3
+
+    original_bytes = tmp_mp3.read_bytes()
+
+    real_save = ID3.save
+
+    def boom(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(ID3, "save", boom)
+    handler = Mp3Handler()
+    with pytest.raises(EmbeddingError):
+        handler.embed(tmp_mp3, sample_manifest)
+
+    monkeypatch.setattr(ID3, "save", real_save)
+    assert tmp_mp3.read_bytes() == original_bytes, "source corrupted by failed embed"
+    leftovers = [p for p in tmp_mp3.parent.iterdir() if p.suffix == ".tmp"]
+    assert leftovers == [], f"temp files leaked: {leftovers}"

@@ -23,7 +23,8 @@ class EmbedResult:
     path: Path
     sidecar_path: Path | None
     manifest_uri: str | None
-    method: str  # "inline", "sidecar"
+    method: str  # "inline", "sidecar", "pointer", "none"
+    embed_error: str | None = None  # set when inline embed failed and we fell back to sidecar
 
 
 def _get_handler_for_mime(mime_type: str):
@@ -66,34 +67,10 @@ class SmartEmbedder:
                 method="none",
             )
 
-        # Pointer mode: write pointer JSON to sidecar (not inline)
+        # Pointer mode: SidecarHandler.embed already writes the pointer JSON
+        # via the policy-aware path. Delegate rather than reimplement.
         if policy is not None and policy.embed_mode == "pointer":
-            import os
-            import tempfile
-
-            pointer_json = manifest.to_embed_json(policy)
-            sidecar = SidecarHandler()
-            sidecar_path = sidecar._sidecar_path(output or source)
-            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic write to match all other write paths
-            fd, tmp = tempfile.mkstemp(dir=sidecar_path.parent, suffix=".tmp")
-            fd_closed = False
-            try:
-                os.write(fd, pointer_json.encode("utf-8"))
-                os.close(fd)
-                fd_closed = True
-                os.replace(tmp, sidecar_path)
-            except BaseException:
-                if not fd_closed:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+            sidecar_path = SidecarHandler().embed(source, manifest, output, policy=policy)
             return EmbedResult(
                 path=output or source,
                 sidecar_path=sidecar_path,
@@ -101,22 +78,25 @@ class SmartEmbedder:
                 method="pointer",
             )
 
-        # Apply policy redaction if needed
+        # Validate policy. In non-pointer modes, to_embed_json() produces the
+        # same bytes as to_canonical_json() — or raises ManifestError when
+        # redaction would desynchronize hash and payload. We invoke it for
+        # the validation side effect and pass the original manifest through
+        # to avoid a wasteful serialize → parse → revalidate round-trip in
+        # the embed hot path.
         if policy is not None:
-            embed_json = manifest.to_embed_json(policy)
-            import json
-
-            redacted_manifest = Manifest.model_validate(json.loads(embed_json))
-        else:
-            redacted_manifest = manifest
+            manifest.to_embed_json(policy)
 
         mime = mime_type or guess_mime(source)
 
-        # Try format-specific handler, fall back to sidecar on any error
+        # Try format-specific handler, fall back to sidecar on any error.
+        # Failure reason is preserved in EmbedResult.embed_error so callers
+        # can distinguish silent fallback from explicit sidecar selection.
+        inline_error: str | None = None
         try:
             handler = _get_handler_for_mime(mime)
             if handler is not None:
-                result_path = handler.embed(source, redacted_manifest, output)
+                result_path = handler.embed(source, manifest, output)
                 return EmbedResult(
                     path=result_path,
                     sidecar_path=None,
@@ -124,6 +104,7 @@ class SmartEmbedder:
                     method="inline",
                 )
         except Exception as exc:
+            inline_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
                 "Inline embed failed for %s (%s), falling back to sidecar: %s",
                 source,
@@ -133,12 +114,13 @@ class SmartEmbedder:
 
         # Fallback to sidecar
         sidecar = SidecarHandler()
-        sidecar_path = sidecar.embed(source, redacted_manifest, output)
+        sidecar_path = sidecar.embed(source, manifest, output)
         return EmbedResult(
             path=output or source,
             sidecar_path=sidecar_path,
             manifest_uri=None,
             method="sidecar",
+            embed_error=inline_error,
         )
 
 
@@ -157,6 +139,50 @@ _EXTENSION_MIME_MAP = {
 }
 
 
+def sniff_mime(path: Path) -> str | None:
+    """Inspect file magic bytes to detect MIME type.
+
+    Returns None if the file can't be read or the signature isn't recognized.
+    Reads at most the first 16 bytes — bounded I/O even on hostile input.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+    if len(head) < 4:
+        return None
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    if head.startswith(b"ID3") or head[:2] == b"\xff\xfb" or head[:2] == b"\xff\xf3":
+        return "audio/mpeg"
+    if len(head) >= 12 and head[:4] == b"RIFF":
+        if head[8:12] == b"WEBP":
+            return "image/webp"
+        if head[8:12] == b"WAVE":
+            return "audio/wav"
+    if len(head) >= 8 and head[4:8] == b"ftyp":
+        # ISO-BMFF container; brand resolves video vs audio. We default to
+        # video/mp4 since that's the most common case for genblaze pipelines;
+        # audio/mp4 (.m4a) callers should pass mime_type explicitly.
+        return "video/mp4"
+    return None
+
+
 def guess_mime(path: Path) -> str:
-    """Guess MIME type from file extension."""
-    return _EXTENSION_MIME_MAP.get(path.suffix.lower(), "application/octet-stream")
+    """Determine MIME type, preferring file content over extension.
+
+    Magic-byte sniff wins when it identifies a known signature; falls back
+    to extension lookup, then to ``application/octet-stream``. This makes a
+    misnamed file (e.g. ``image.png`` containing JPEG bytes) dispatch to
+    the correct handler instead of failing inside the wrong one.
+    """
+    return (
+        sniff_mime(path)
+        or _EXTENSION_MIME_MAP.get(path.suffix.lower())
+        or "application/octet-stream"
+    )

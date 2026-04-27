@@ -85,8 +85,9 @@ class NvidiaVideoProvider(BaseProvider):
         output_dir: Path | str | None = None,
         http_client: httpx.Client | None = None,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self.poll_interval = poll_interval
         self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
         self._client = NvidiaClient(

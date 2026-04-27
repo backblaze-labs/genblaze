@@ -48,8 +48,35 @@ Embed provenance manifests directly into media files (PNG, JPEG, WebP, MP4, MP3,
 - MP4 files 500 MB–2 GB → seek-based streaming embed (avoids loading full file into RAM)
 - MP4 files > 2 GB → `EmbeddingError` (use sidecar fallback)
 - MP3/WAV/AAC/M4A/FLAC without mutagen installed → `EmbeddingError` with install instructions
+- RF64/BW64/RIFX WAV variants → `EmbeddingError` (not supported; use sidecar)
 - Invalid file format → `EmbeddingError`
 - File without embedded manifest → `EmbeddingError`
+
+## Asset binding caveat
+
+`asset.sha256` in the manifest is the hash of the asset bytes **before** embedding.
+Embedding modifies the file (PNG inserts an iTXt chunk, MP4 appends a UUID box, etc.),
+so the on-disk file's SHA-256 after embed will not match `asset.sha256`. To verify the
+asset bytes themselves, either:
+
+1. Hash the upstream artifact (the original asset stored in B2/S3 before embedding), or
+2. Extract the manifest, strip the embed region per format, and re-hash the remainder.
+
+Manifest-content verification (`manifest.verify()` and `genblaze verify <file>`) is
+unaffected by this — the canonical hash is over the manifest payload, not the
+container file. See [trust-modes.md](trust-modes.md#asset-binding-caveat).
+
+## WebP lossless preservation
+
+When embedding into a lossless WebP (VP8L), the handler detects the source codec and
+preserves losslessness automatically. Callers can still override with `lossless=False`
+if a lossy re-encode is acceptable.
+
+## Atomicity
+
+All inline embed paths (PNG, JPEG, WebP, MP4, MP3, WAV) and the sidecar handler use
+atomic temp-file + `os.replace` writes. A crash mid-embed leaves the source file
+intact; partial writes never overwrite the original.
 
 ## Verification
 - Test files: `libs/core/tests/unit/test_png.py`, `test_jpeg.py`, `test_webp.py`, `test_mp4.py`, `test_mp3.py`, `test_wav.py`, `test_aac_handler.py`, `test_flac_handler.py`, `test_sidecar.py`, `test_embedder.py`, `libs/core/tests/golden/test_png_roundtrip.py`

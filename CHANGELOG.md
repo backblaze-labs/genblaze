@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `genblaze-core`: `RetryPolicy` frozen dataclass in `genblaze_core.providers.retry`
+  with seven knobs (`max_attempts`, `initial_backoff_sec`, `max_backoff_sec`,
+  `backoff_multiplier`, `jitter`, `respect_retry_after`, `retryable_codes`,
+  `idempotency_key_strategy`) and three preset classmethods
+  (`conservative()`, `aggressive()`, `disabled()`). Pass to any provider via
+  `Provider(retry_policy=...)` to tune transient-retry behavior per instance.
+  Defaults reproduce the historical `BaseProvider.poll_transient_retries=5`
+  behavior so existing code (including instance-level
+  `provider.poll_transient_retries = N` mutations) keeps working unchanged.
+  **Closes the gap left by the [0.2.5] release notes** — that version's
+  changelog promised a `RetryPolicy` users could override per-provider, but
+  the class itself wasn't shipped. This is the actual implementation.
+- `genblaze-core`: `BaseProvider.IDEMPOTENCY_HEADER_NAME` opt-in class
+  attribute and `_inject_idempotency_header(headers, step)` helper. When a
+  provider sets the header name, retried submits carry a stable
+  idempotency key (default: `step.step_id`) so the upstream can dedupe.
+  Per-provider header opt-ins are individual follow-up PRs.
+- `genblaze-core`: cross-provider conformance test
+  (`tests/conformance/test_provider_contract.py::test_accepts_retry_policy_kwarg`)
+  asserts every `BaseProvider` subclass forwards `retry_policy=` to
+  `super().__init__()` — same shape as the existing `models=` test.
+- `genblaze-core`: `EmbedResult.embed_error` — populated when `SmartEmbedder` falls
+  back from inline embed to sidecar so callers can see *why* the inline path
+  failed (previously logged at WARNING and silently swallowed).
+- `genblaze-core`: `WebpHandler.embed(lossless=None)` (default) auto-detects VP8L
+  source codec and preserves losslessness. Pass `lossless=True/False` to override.
+- `genblaze-core`: `media.atomic_write(path)` context manager — single
+  source of truth for atomic temp-file + rename writes, replacing eight
+  copies of the same boilerplate across handlers.
+- `genblaze-core`: `media.sniff_mime(path)` — magic-byte MIME detection
+  (PNG, JPEG, WebP, MP4, MP3, WAV, FLAC). `guess_mime()` now prefers
+  content over extension so a misnamed file (`image.png` containing JPEG
+  bytes) dispatches to the correct handler instead of failing inside the
+  wrong one.
+- Docs: `docs/features/retry-policy.md` — when to override the default,
+  preset chooser, idempotency-key rollout status table, migration from
+  `poll_transient_retries`.
+- Docs: `docs/features/trust-modes.md` — three-mode trust model (integrity / signed
+  / C2PA), threat model table, asset-binding caveat.
+- Docs: `docs/features/manifest-provenance.md` — explicit hash-payload-vs-canonical-JSON
+  documentation for third-party verifiers.
+
+### Changed
+- All 11 provider connectors (`genblaze-openai`, `genblaze-google`,
+  `genblaze-runway`, `genblaze-luma`, `genblaze-decart`, `genblaze-replicate`,
+  `genblaze-elevenlabs`, `genblaze-stability-audio`, `genblaze-lmnt`,
+  `genblaze-gmicloud`, `genblaze-nvidia`) now accept and forward
+  `retry_policy=` to `super().__init__()`. Backwards-compatible — providers
+  constructed without the kwarg behave identically to prior releases.
+
+### Corrected
+- The [0.2.5] release-notes entry "exposes a `RetryPolicy` the caller can
+  override per-provider" was aspirational — only utility functions and
+  constants shipped in that release. The class itself ships in this release
+  (see above). No code change is required for callers who only used the
+  default behavior; callers who tried to import `RetryPolicy` from
+  `genblaze_core.providers` in 0.2.5 will now find it.
+
+### Fixed
+- `genblaze-core`: JPEG, WebP, MP3, FLAC, and AAC inline embed are now atomic
+  (temp file + `os.replace`). A crash mid-save no longer corrupts the source
+  file in any handler.
+- `genblaze-core`: `WavHandler` explicitly rejects RF64 / BW64 / RIFX variants
+  with a clear `EmbeddingError` instead of silently misparsing them as RIFF.
+- `genblaze-core`: lossless WebP sources are no longer silently re-encoded as
+  lossy when the caller doesn't pass `lossless=True`. VP8X containers with
+  leading metadata chunks (ICCP, EXIF, XMP) are now correctly detected by
+  walking RIFF chunks instead of peeking at a fixed offset.
+- `genblaze-core`: PNG embed now patches chunks directly instead of
+  re-encoding through Pillow. Ancillary chunks (`pHYs`, `gAMA`, `cHRM`,
+  `sRGB`, `bKGD`, `tIME`, `iCCP`, plus private/custom chunks) survive
+  embed → extract verbatim. Also avoids decoding pixel data, faster for
+  large images.
+- `genblaze-core`: JPEG/WebP extract walks every XMP packet in the file
+  instead of returning on the first one. Files with leading non-genblaze
+  XMP (Photoshop, Lightroom) now correctly surface a later genblaze
+  packet rather than failing with a misleading "no manifest" error.
+- `genblaze-core`: FLAC and AAC extract apply `MAX_MANIFEST_BYTES` cap
+  before parsing to prevent OOM on hostile metadata payloads, matching
+  the existing guard in WAV/MP4.
+- `genblaze-core`: `MAX_FILE_BYTES` (500 MB) size cap now applies to PNG
+  inputs (was bypassed because PNG handler used Pillow's lazy loader).
+
+### Performance
+- `genblaze-core`: `SmartEmbedder.embed()` skips the JSON serialize → parse →
+  pydantic-revalidate round-trip when applying a no-redaction policy. Hot-path
+  win for large manifests.
+- `genblaze-core`: PNG embed bypasses Pillow's pixel decode/encode cycle
+  via direct chunk-level patching — typically 5-50× faster for non-trivial
+  images depending on size.
+
+### Refactor
+- `genblaze-core`: pointer-mode embed in `SmartEmbedder` now delegates to
+  `SidecarHandler.embed(policy=...)` rather than reimplementing the
+  atomic write inline.
+- `genblaze-core`: removed `Mp4Handler._atomic_write_bytes` (subsumed by
+  the shared `atomic_write` context manager).
+
+### Docs
+- README: rewrote the provenance bullet to drop "no bolt-on signing" framing and
+  link the new trust-modes page. Manifests are described as "SHA-256-bound" and
+  "tamper-evident in trusted storage" — honest about what the integrity hash
+  proves and where signing/C2PA fit on the roadmap.
+
 ## [0.2.6] - 2026-04-24
 
 ### Released package versions

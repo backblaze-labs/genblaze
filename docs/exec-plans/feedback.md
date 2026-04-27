@@ -1,5 +1,5 @@
-<!-- last_verified: 2026-04-24 -->
-<!-- cleaned: 2026-04-24 -->
+<!-- last_verified: 2026-04-25 -->
+<!-- cleaned: 2026-04-25 -->
 # SDK Feedback Tracker
 
 Living inbox for feedback from real users and sample-app builds. Each entry is
@@ -85,6 +85,121 @@ discriminated union + JSON Schemas under `libs/spec/schemas/events/` + TS
 `genblaze.d.ts`). Those items are in `### Resolved` below — do not re-open.
 
 ## Inbox
+
+### 2026-04-25 (batch 2) — sample-app builder hits GMICloud + retry-policy regressions
+
+A second sample-app builder reported 9 items against `genblaze-core` /
+`genblaze-gmicloud` 0.2.0 → 0.2.5 and `@genblaze/spec` 0.2.0 → 0.3.2.
+Verified in code on 2026-04-25:
+
+- 4 NEW items (filed below as F-2026-04-25-08 → -11; -10 already implemented this turn).
+- 2 UPDATE-EXISTING (P0-01 reconfirmed; R-09 expanded).
+- 2 ALREADY-RESOLVED (filed in Resolved as R-17, R-18).
+- 2 NEEDS-LIVE-API-VERIFY (F-2026-04-25-12, -13 — reporter and current code
+  disagree; the new probe at `tools/probe_gmicloud_wire.py` settles them).
+
+The exec-plan extensions for this batch are at:
+- [`active/retry-policy-unification.md`](active/retry-policy-unification.md)
+  Phase 2 — `RetryPolicy` class + idempotency scaffolding.
+- [`active/gmi-registry-reconciliation.md`](active/gmi-registry-reconciliation.md)
+  "Wire-conformance probe" section.
+
+**F-2026-04-25-08** — PixVerse `duration` requires string enum; the shared
+`_VIDEO_BASE.with_coercers(duration=int)` forces int across all video
+models. Evidence: `libs/connectors/gmicloud/genblaze_gmicloud/models/video.py:41`
+applies the int coercer universally; `_PIXVERSE` (line 45) inherits from
+`_VIDEO_BASE`. **Resolution shape:** F — replace shared int coercer with
+per-model `param_schemas={"duration": EnumSchema([...])}` once probe-confirmed
+values are known. Pending output of `tools/probe_gmicloud_wire.py`.
+
+**F-2026-04-25-09** — PixVerse `quality` is upstream-required but not
+defaulted or enforced by the SDK. Evidence:
+`libs/connectors/gmicloud/genblaze_gmicloud/models/video.py:45-47`
+(`_PIXVERSE = _VIDEO_BASE.extend("quality")` — allowlist only, no
+`param_defaults` or `param_required`); `libs/core/genblaze_core/providers/params.py:134-143`
+(`ParamSurface.build()` has no required-param enforcement). Hits 1/1 sample
+build that didn't know to pass `quality`. **Resolution shape:** F + A —
+either ship `param_defaults={"quality": "720p"}` or extend `ParamSurface`
+with a `param_required` set + a build-time validation gate that pairs with
+the existing `param_allowlist` enforcement. Already partly tracked in
+`active/gmi-registry-reconciliation.md`.
+
+**F-2026-04-25-10** — `RetryPolicy` class promised in CHANGELOG [0.2.5] but
+never shipped. **RESOLVED IN THIS RELEASE.** Implementation landed at
+`libs/core/genblaze_core/providers/retry.py` (frozen dataclass with seven
+knobs and three preset classmethods); wired into `BaseProvider` via the
+`retry_policy=` constructor kwarg + `retry_policy` property; cross-provider
+conformance test at `tests/conformance/test_provider_contract.py::test_accepts_retry_policy_kwarg`.
+27 unit tests at `tests/unit/test_retry_policy.py`. CHANGELOG `[Unreleased]`
+carries a `### Corrected` callout for the 0.2.5 overstatement. Move to
+Resolved as R-19 once `[Unreleased]` ships.
+
+**F-2026-04-25-11** — No idempotency-key generation on submit retries.
+Subset of original Item 9. **Scaffolding shipped in this release**
+(`BaseProvider.IDEMPOTENCY_HEADER_NAME` opt-in class attribute +
+`_inject_idempotency_header(headers, step)` helper, called via
+`RetryPolicy.make_idempotency_key()` with three strategies: `step_id`
+default, `uuid_per_attempt`, `none`). Per-provider header rollouts remain
+follow-ups — see the rollout-status table in
+[`docs/features/retry-policy.md`](../features/retry-policy.md). Resolution
+shape: **A**. Status: **partial** — scaffolding ✅, per-provider rollouts ❌.
+
+**F-2026-04-25-12** — Per-model image wire-key translation for GMICloud i2v
+(`kling-image2video-v2.1-master`, `wan2.6-i2v`, `pixverse-v5.6-i2v`).
+**REPORTER vs CODE DISAGREES.** Reporter claims each wants a different key
+(`image` / `img_url` / `image_url`); current registry uses `_VIDEO_BASE`
+allowlist (both `image` and `image_url` accepted, no per-model rename) at
+`libs/connectors/gmicloud/genblaze_gmicloud/models/video.py:38-43,102,131,134`.
+**Action:** run `tools/probe_gmicloud_wire.py` against staging GMICloud
+creds; results land at `docs/reference/gmicloud-wire-probe-{date}.{json,md}`.
+If reporter is right, ship `param_aliases` per model. If we're right, ask
+reporter to upgrade past the version they hit it on.
+
+**F-2026-04-25-13** — GMICloud `/models` may require PascalCase for 7 named
+families that 0.2.2 normalized to lowercase (R-06).
+**REPORTER vs CODE DISAGREES.** Reporter claims `Kling-Image2Video-V2.1-*`,
+`Kling-Text2Video-V2.1-*`, `Veo3`, `Veo3-Fast`, `Sora-2-Pro`, `Luma-Ray-2`,
+`Minimax-Hailuo-2.3-Fast` only accept PascalCase live; R-06 (CHANGELOG 0.2.2
+L292-299) deliberately rewrote them to lowercase as the live-accepted form.
+**Action:** `tools/probe_gmicloud_wire.py --skip-i2v --skip-duration` covers
+the slug-case matrix. If reporter is right, partially revert R-06 — declare
+PascalCase canonical and lowercase the deprecated alias for the affected
+families only (other slugs like Seedance keep lowercase). Per-family flip,
+not a global revert. CHANGELOG callout required.
+
+**Updates to existing rows:**
+
+- **P0-01** (`from_result()` narrowed) — **Re-reported 2026-04-25** by the
+  second sample-app builder hitting the same misleading
+  `input_from index 0 is out of range` error. Status unchanged. Strengthens
+  priority for the build-time validation option (c) in the original
+  resolution shape.
+- **R-09** (5xx transient retry) — promote from "partial" to "fulfilled
+  for the originally-claimed scope":
+  Retry on 5xx ✅ (`providers/base.py` outer loop + `_retry_phase`;
+  `RETRYABLE_ERROR_CODES` includes `SERVER_ERROR` — now sourced from
+  `RetryPolicy.retryable_codes` so callers can tune).
+  `Retry-After` honored ✅ (`retry.retry_after_from_response`,
+  `RetryPolicy.respect_retry_after=True`).
+  `StepRetriedEvent` shipped ✅ (`events.py:160-186`, fired via
+  `_emit_retry()`).
+  Per-provider retry override ✅ (NEW: `Provider(retry_policy=...)` —
+  closes F-2026-04-25-10).
+  Idempotency-key generation: scaffolding ✅, per-provider rollout ❌
+  (tracked at F-2026-04-25-11).
+
+**Items the reporter raised that are already documented or resolved:**
+
+- Item 6 of the report (`step.failed` wire-format change `message` →
+  `error`) — documented in CHANGELOG [0.2.3] L247-251 as a breaking
+  change. Filed as **R-18** in Resolved below; no SDK action required,
+  though future similar breaks should ship a one-minor deprecation window
+  emitting both keys to soften the impact for external webhook consumers
+  who don't read CHANGELOG.
+- Item 7 (`GMICloudBase.__init__` ignored documented `models=`) — fixed in
+  0.2.5 (`gmicloud/_base.py:117-129`); cross-provider conformance test at
+  `libs/core/tests/conformance/test_provider_contract.py:75-86`. Filed as
+  **R-17** in Resolved below.
 
 ### 2026-04-25 — external SDK-review critique (uninformed but with UX kernels)
 
@@ -270,6 +385,7 @@ These are meta-items implied by multiple rows above. Each deserves its own exec-
 - **Optional dependency isolation** — pytest, urllib3, pyarrow all currently break top-level or near-top-level imports in minimal installs. Establish a lazy-import convention and a CI job that installs `genblaze-core` with zero extras and smoke-tests `from genblaze_core import …` for every public symbol. (drives P1-01, P1-16, P3-18)
 - **Provenance correctness story** — decide inline-embed vs sidecar semantics, document it, and align `SmartEmbedder` surface + `PipelineResult.embed_all()` + `param_allowlist` strict-mode around it. The SDK's differentiator is provenance integrity; the current semantics for inline embedding undermine it. (drives P1-17, P2-30, P2-31, P3-11, P3-17)
 - **Business provenance modeling** — surface `Run.metadata` / `Step.metadata` through the fluent builder, let `PipelineTemplate` substitute step params, and wire batch correlation/idempotency. Workflows that track campaign/SKU/locale/reviewer/job identity currently shove this data into provider `params` or side indexes. (drives P2-16, P2-25, P2-28)
+- **GMICloud live-API conformance** — items F-2026-04-25-08, -09, -12, -13 all point to drift between the registered specs and the live request-queue API (param keys, slug case, required params, value enum types). Recommend extending the existing `tools/probe_models.py` contract (commit d600719) with a "live-submit probe" mode that submits a minimal payload against each GMICloud model variant and asserts the error-response shape matches the spec's expected param-name vocabulary. The first iteration of this is `tools/probe_gmicloud_wire.py` (added 2026-04-25) which targets the three immediate disagreements. Generalize it once the pattern proves out. Pairs with the existing **Catalog sync CI gate** initiative — same machinery, different drift dimension. (drives F-2026-04-25-08, -09, -12, -13.)
 
 ## Mapping to existing exec-plans
 
@@ -303,6 +419,8 @@ Do not re-open. Links point to the shipped or in-flight fix.
 | R-14 | Provider × modality capability matrix in root README | Includes "Chat (LLM)" column. Shipped in 0.2.4. Addresses the single-page "which connector does what?" question that was recurring in feedback. |
 | R-15 | `ModelRegistry` dropped-params visibility | Bumped from `DEBUG` to `INFO` so silent allowlist drops surface in typical production logs. Shipped in 0.2.4 (note: P3-16 still proposes warning + `strict_params=True` flip — separate ergonomic question). |
 | R-16 | Standalone `chat()` / `achat()` error classification | Uses same `ProviderError` / `ProviderErrorCode` taxonomy as pipeline steps. Covered in per-provider `test_chat.py` (openai, google, gmicloud). Shipped in 0.2.4. |
+| R-17 | `GMICloudBase.__init__` accepts `models=` kwarg + cross-provider conformance test (was P0-03) | Fixed in 0.2.5 — `libs/connectors/gmicloud/genblaze_gmicloud/_base.py:117-129` accepts `models=` and forwards to `super().__init__()` with comment "closes feedback P0-03". Conformance test `test_accepts_models_kwarg` at `libs/core/tests/conformance/test_provider_contract.py:75-86` parametrically asserts every discovered provider forwards `models=`. (`active/gmi-registry-reconciliation.md` resolution #3.) |
+| R-18 | `step.failed` wire-format renamed `message` → `error` (was Item 6 of 2026-04-25 batch 2) | Documented in `CHANGELOG.md` [0.2.3] L247-251 as a breaking wire-format change ("the serialized event no longer carries a `message` key — the failure reason lives on a dedicated `error` field"). No SDK action required. **Lesson for future similar breaks:** ship a one-minor deprecation window emitting both keys, since external webhook / log consumers don't read CHANGELOG. |
 
 ## Source log
 
@@ -342,3 +460,20 @@ Do not re-open. Links point to the shipped or in-flight fix.
   Inbox above. Same-day: README professionalization (Concepts hoist, "Why
   Genblaze" framing, Runtime section, install dedupe) shipped to address
   surface-positioning issues independently.
+- **2026-04-25 (batch 2) — sample-app builder hits GMICloud + retry-policy
+  regressions** — second-batch report against `genblaze-core` /
+  `genblaze-gmicloud` 0.2.0 → 0.2.5 and `@genblaze/spec` 0.2.0 → 0.3.2.
+  9 items: 4 NEW (filed F-2026-04-25-08 → -11; -10 implemented this turn as
+  the `RetryPolicy` class with seven knobs + idempotency-key scaffolding),
+  2 UPDATE-EXISTING (P0-01 reconfirmed; R-09 expanded with the shipped /
+  remaining split), 2 ALREADY-RESOLVED (R-17 GMICloudBase `models=` kwarg
+  fix + cross-provider conformance test, R-18 `step.failed` wire-format
+  rename documented in CHANGELOG [0.2.3]), 2 NEEDS-LIVE-API-VERIFY
+  (F-2026-04-25-12 per-model image keys, F-2026-04-25-13 slug case for 7
+  named families — reporter and current code disagree, settled by the new
+  `tools/probe_gmicloud_wire.py`). Exec-plans extended:
+  `active/retry-policy-unification.md` Phase 2 covers the policy class +
+  idempotency scaffolding; `active/gmi-registry-reconciliation.md`
+  "Wire-conformance probe" section covers the GMICloud drift items.
+  CHANGELOG `[Unreleased]` carries a `### Corrected` entry for the [0.2.5]
+  release-notes overstatement that promised `RetryPolicy` had shipped.

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import struct
-import tempfile
 from pathlib import Path
 
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.base import BaseMediaHandler, MediaCapability, read_media_bytes
+from genblaze_core.media.base import (
+    BaseMediaHandler,
+    MediaCapability,
+    atomic_write,
+    read_media_bytes,
+)
 from genblaze_core.models.manifest import Manifest
 
 # Custom INFO tag for genblaze manifest
@@ -26,6 +29,7 @@ class WavHandler(BaseMediaHandler):
             manifest_bytes = manifest.to_canonical_json().encode("utf-8")
             data = read_media_bytes(source)
 
+            _reject_unsupported_wav_variants(data, source)
             if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
                 raise EmbeddingError(f"Not a valid WAV file: {source}")
 
@@ -47,25 +51,8 @@ class WavHandler(BaseMediaHandler):
                 + list_chunk
             )
 
-            # Atomic write: temp file + rename to prevent corruption
-            fd, tmp = tempfile.mkstemp(dir=Path(output).parent, suffix=".tmp")
-            fd_closed = False
-            try:
-                os.write(fd, new_data)
-                os.close(fd)
-                fd_closed = True
-                os.replace(tmp, output)
-            except BaseException:
-                if not fd_closed:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+            with atomic_write(output) as tmp:
+                tmp.write_bytes(new_data)
             return output
         except EmbeddingError:
             raise
@@ -75,6 +62,7 @@ class WavHandler(BaseMediaHandler):
     def extract(self, source: Path) -> Manifest:
         try:
             data = read_media_bytes(source)
+            _reject_unsupported_wav_variants(data, source)
             if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
                 raise EmbeddingError(f"Not a valid WAV file: {source}")
 
@@ -101,6 +89,24 @@ class WavHandler(BaseMediaHandler):
                 strip_risk="low",
             )
         ]
+
+
+def _reject_unsupported_wav_variants(data: bytes, source: Path) -> None:
+    """Reject WAV variants that look RIFF-shaped but parse with different rules.
+
+    RF64/BW64 use 64-bit sizes for >4 GB audio; RIFX is big-endian RIFF. Both
+    pass the simple ``data[8:12] == b"WAVE"`` check below and would silently
+    misparse little-endian chunk sizes, producing a corrupt output file.
+    """
+    marker = data[:4] if len(data) >= 4 else b""
+    if marker in (b"RF64", b"BW64"):
+        raise EmbeddingError(
+            f"RF64/BW64 (>4 GB) WAV files are not supported: {source}. Use sidecar fallback."
+        )
+    if marker == b"RIFX":
+        raise EmbeddingError(
+            f"Big-endian RIFX WAV files are not supported: {source}. Use sidecar fallback."
+        )
 
 
 def _find_info_tag(data: bytes, tag: bytes) -> str | None:

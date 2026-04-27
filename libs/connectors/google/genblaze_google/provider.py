@@ -157,8 +157,9 @@ class VeoProvider(BaseProvider):
         location: str = "us-central1",
         poll_interval: float = 10.0,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self.poll_interval = poll_interval
         self._api_key = api_key
         self._project = project

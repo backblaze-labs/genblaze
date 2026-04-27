@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +28,36 @@ def read_media_bytes(source: Path) -> bytes:
             f"File too large for in-memory processing ({file_size} bytes, limit {MAX_FILE_BYTES})"
         )
     return source.read_bytes()
+
+
+@contextmanager
+def atomic_write(target: Path) -> Iterator[Path]:
+    """Yield a temp path in target's parent dir; on success rename to target.
+
+    On exception, the temp file is unlinked and the original target is left
+    untouched. Same-filesystem temp guarantees ``os.replace`` is atomic.
+
+    Usage::
+
+        with atomic_write(out_path) as tmp:
+            tmp.write_bytes(data)              # bytes
+            # or pass tmp to a library that writes by path:
+            img.save(tmp, "JPEG", ...)
+            tags.save(tmp)
+    """
+    target = Path(target)
+    fd, tmp_str = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_str)
+    try:
+        yield tmp
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 @dataclass

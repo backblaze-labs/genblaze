@@ -1,25 +1,28 @@
 # Adding a New Provider
 
-Step-by-step guide for contributing a provider adapter to genblaze.
+Step-by-step guide for contributing a provider adapter to genblaze. This guide is the canonical contract — every section maps to a check the compliance harness or pipeline relies on.
+
+> **Audience:** Connector authors. Read [`provider-system.md`](../features/provider-system.md) first for the high-level architecture and [`model-registry.md`](../features/model-registry.md) for the full `ModelSpec` surface.
 
 ## Quick start with Claude Code
 
 If you use [Claude Code](https://claude.ai/claude-code), the fastest way to scaffold a new provider is the built-in skill:
 
-```
+```text
 /scaffold-provider <name> <modality> [sync|polling]
 ```
 
 Examples:
-```
+
+```text
 /scaffold-provider fal image sync
 /scaffold-provider hedra video polling
 /scaffold-provider picovoice audio
 ```
 
-This reads the existing connectors and generates all required files (package, provider, error mapper, tests) following current conventions. You then fill in the actual API calls.
+The skill reads existing connectors and generates the package, provider class, error mapper, tests, and entry points following current conventions. You then fill in the SDK call sites, pricing rates, and model IDs.
 
-The rest of this guide documents what the skill generates and why — read it to understand the contracts your provider must satisfy.
+The rest of this guide documents what the skill generates **and why** — read it to understand the contracts your provider must satisfy, especially if you're hand-writing a connector or reviewing one.
 
 ## Choose your base class
 
@@ -45,6 +48,8 @@ libs/connectors/myprovider/
 
 ## 2. Set up pyproject.toml
 
+Match the layout used by the other connectors so packaging, classifiers, and discovery are consistent. The `genblaze-core` constraint must track the **current** core minor (`>=0.2.0,<0.3` at the time of writing — confirm against a sibling connector).
+
 ```toml
 [build-system]
 requires = ["hatchling"]
@@ -54,17 +59,32 @@ build-backend = "hatchling.build"
 name = "genblaze-myprovider"
 version = "0.1.0"
 description = "MyProvider adapter for genblaze"
+authors = [{name = "Your Name", email = "you@example.com"}]
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+]
 dependencies = [
-    "genblaze-core>=0.1.0",
+    "genblaze-core>=0.2.0,<0.3",
     "myprovider-sdk>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
+Documentation = "https://github.com/backblaze-labs/genblaze"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
-# Required: registers your provider for discover_providers()
+# Required: registers your provider for discover_providers().
+# Add one line per exported provider class — connectors with multiple
+# capabilities (e.g. openai-sora / openai-dalle / openai-tts) export each.
 [project.entry-points."genblaze.providers"]
 myprovider = "genblaze_myprovider:MyProvider"
 
@@ -75,7 +95,7 @@ packages = ["genblaze_myprovider"]
 testpaths = ["tests"]
 ```
 
-The entry point under `genblaze.providers` is how `discover_providers()` and the CLI `replay` command find your provider at runtime.
+The entry point under `genblaze.providers` is how `discover_providers()` and the CLI `replay` command find your provider at runtime. Ship a `py.typed` marker file inside the package so consumers get type-checker support.
 
 ## 3. Implement the provider
 
@@ -90,15 +110,27 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import SyncProvider, validate_asset_url
+from genblaze_core.providers import (
+    ModelRegistry,
+    SyncProvider,
+    validate_asset_url,
+)
 from genblaze_core.runnable.config import RunnableConfig
 
 
 class MyProvider(SyncProvider):
     name = "myprovider"
 
-    def __init__(self, api_key: str | None = None):
-        super().__init__()
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        models: ModelRegistry | None = None,
+    ):
+        # Forward `models` so users can pass a forked/customized registry
+        # without subclassing. Always call super().__init__() — it sets up
+        # poll caching, retry policy, preflight gates, and the registry.
+        super().__init__(models=models)
         self._api_key = api_key
         self._client: Any = None
 
@@ -226,19 +258,22 @@ This prevents SSRF — only `https://` and `file://` URLs are allowed.
 
 ## 7. Error classification
 
-Providers **should** set `error_code` on `ProviderError` for proper retry behavior:
+Providers **should** set `error_code` on `ProviderError` so retry decisions are deterministic. The default `RetryPolicy` retries `TIMEOUT`, `RATE_LIMIT`, and `SERVER_ERROR`; everything else fails fast.
 
 | Error code | When to use | Retried? |
 |-----------|-------------|----------|
-| `TIMEOUT` | Request timed out | Yes |
-| `RATE_LIMIT` | 429 / rate limit hit | Yes |
-| `SERVER_ERROR` | 500/502/503 | Yes |
-| `AUTH_FAILURE` | 401/403 | No |
-| `INVALID_INPUT` | 400 / validation error | No |
-| `MODEL_ERROR` | Model not found / crashed | No |
+| `TIMEOUT` | Request timed out client-side or upstream | Yes |
+| `RATE_LIMIT` | 429 / quota exhausted | Yes |
+| `SERVER_ERROR` | 500/502/503 / unknown upstream failure | Yes |
+| `AUTH_FAILURE` | 401/403 / bad API key | No |
+| `INVALID_INPUT` | 400 / validation error / malformed payload | No |
+| `MODEL_ERROR` | Model not found, deprecated, or crashed | No |
+| `CONTENT_POLICY` | Safety / policy refusal — never retryable | No |
 | `UNKNOWN` | Anything else | No |
 
-If you don't set an error code, the base class falls back to regex matching on the exception message — this is fragile and should not be relied on.
+If you don't set an error code, the base class falls back to `classify_api_error()` (string matching on the exception). That fallback is intentionally conservative — explicit codes are always preferred for connectors with structured SDK exceptions.
+
+To carry an upstream `Retry-After` value, set `retry_after=` on the `ProviderError`. The base class clamps it to `MAX_RETRY_AFTER_SEC` and prefers it over the policy's computed backoff. Use `retry_after_from_response(resp)` from `genblaze_core.providers.retry` to parse common shapes (httpx response, `requests` response, SDK exceptions wrapping a response).
 
 ## 8. Error mapper module
 
@@ -337,24 +372,24 @@ See [`docs/features/model-registry.md`](../features/model-registry.md) for the f
 
 ## 12. Poll result caching (BaseProvider only)
 
-For polling providers, cache the poll result so `fetch_output()` doesn't make a redundant API call. Use the base class helpers:
+For polling providers, cache the terminal poll response so `fetch_output()` doesn't make a redundant API call. The base class provides cache helpers with a 1-hour TTL and concurrency-safe access:
 
 ```python
 def poll(self, prediction_id, config=None):
     job = client.get_job(prediction_id)
     if job.status in ("succeeded", "failed"):
-        self._cache_poll_result(prediction_id, job)  # Cache for fetch_output
+        self._cache_poll_result(prediction_id, job)  # consumed by fetch_output()
         return True
     return False
 
 def fetch_output(self, prediction_id, step):
-    job = self._get_cached_poll_result(prediction_id)  # Use cache if available
+    job = self._get_cached_poll_result(prediction_id)  # consumes if present
     if job is None:
-        job = client.get_job(prediction_id)  # Fallback to fresh fetch
+        job = client.get_job(prediction_id)  # fallback fresh fetch
     ...
 ```
 
-Also call `super().__init__()` in your constructor to initialize the cache.
+`super().__init__()` (from §3) initializes the cache — never skip it.
 
 ## 13. Advanced: timing hints with SubmitResult (BaseProvider only)
 
@@ -406,7 +441,52 @@ result = provider.invoke(step, config)
 
 `SyncProvider` subclasses get this for free. `BaseProvider` subclasses get it automatically during polling. No provider code is needed — the lifecycle orchestration handles it.
 
-## 16. Write tests
+## 16. Optional: preflight + probe hooks
+
+Two opt-in hooks make connectors more operable in production. Override only when the provider exposes a cheap endpoint you can target.
+
+### `preflight_auth(*, timeout=5.0)`
+
+Runs once per provider instance before the first `submit()`. Surface bad credentials in **milliseconds** instead of after a 120-second `submit` hang. Implementations should:
+
+- Hit a known-cheap endpoint (e.g. `GET /me`, `GET /requests`)
+- Raise `ProviderError(error_code=AUTH_FAILURE)` on rejection
+- Let transient/network errors return naturally (the real submit has its own retry budget)
+- Honor the `GENBLAZE_SKIP_PREFLIGHT` env var (the base class handles this — your override only runs when preflight is enabled)
+
+Reference: `libs/connectors/gmicloud/genblaze_gmicloud/_base.py::preflight_auth`.
+
+### `probe_model(model_id) -> ProbeResult`
+
+Liveness probe for one model ID. `tools/probe_models.py` runs this in CI to detect when a registered model has been removed upstream. Use `ProbeResult.ok()`, `not_found()`, `auth()`, `unknown()`, or `skipped()`. Default is `skipped()` — opt in only if you have a cheap, idempotent way to ask "does this model exist?".
+
+## 17. Optional: tune retry behavior
+
+The default `RetryPolicy` (5 attempts, 1s exponential base, full jitter, 30s cap, retries `TIMEOUT` / `RATE_LIMIT` / `SERVER_ERROR`) suits most connectors. Override when the SDK has unusual transient-failure semantics or the provider charges per submission.
+
+```python
+from genblaze_core.providers import RetryPolicy
+
+# Pricey video — fail fast on duplicate billing risk
+provider = MyProvider(retry_policy=RetryPolicy.conservative())
+
+# Cheap analytical reads — push harder
+provider = MyProvider(retry_policy=RetryPolicy.aggressive())
+
+# Tests / debug — no retries
+provider = MyProvider(retry_policy=RetryPolicy.disabled())
+```
+
+If the upstream supports an idempotency-key header, opt in by setting the class attribute:
+
+```python
+class MyProvider(BaseProvider):
+    IDEMPOTENCY_HEADER_NAME = "Idempotency-Key"
+```
+
+The base class injects `step.step_id` (a stable UUID) on every submit retry — making the upstream eligible to deduplicate. Without this opt-in, submit retries are restricted to pre-response network failures (`PRE_RESPONSE_EXCEPTIONS`) where replay cannot have triggered a side effect.
+
+## 18. Write tests
 
 Use the compliance test harness for automatic coverage, then add provider-specific tests:
 
@@ -427,37 +507,56 @@ def test_my_specific_error_handling():
 
 The compliance harness covers 15 tests: name uniqueness, lifecycle methods, invoke success, timestamps, asset URL validation, media types, capabilities type, audio metadata, chain input security, normalize_params idempotency, and cost tracking (soft check).
 
-## 17. Export and install
+## 19. Export and install
 
 `genblaze_myprovider/__init__.py`:
+
 ```python
+"""MyProvider adapter for genblaze."""
+
 from genblaze_myprovider.provider import MyProvider
+
 __all__ = ["MyProvider"]
 ```
 
-Install in dev mode:
+Install in dev mode (run from repo root):
+
 ```bash
-cd libs/connectors/myprovider
-pip install -e ".[dev]"
+pip install -e "libs/connectors/myprovider[dev]"
 ```
 
 ## Checklist
 
-- [ ] Package at `libs/connectors/myprovider/`
-- [ ] `pyproject.toml` with `genblaze.providers` entry point
-- [ ] Subclass `SyncProvider` (or `BaseProvider` for polling APIs)
-- [ ] `super().__init__()` called in constructor
-- [ ] `get_capabilities()` declares supported modalities, inputs, models
-- [ ] `normalize_params()` maps standard names (duration, resolution, aspect_ratio)
-- [ ] `validate_asset_url()` called on all output asset URLs
-- [ ] `validate_chain_input_url()` called on all `step.inputs` URLs (if `accepts_chain_input=True`)
+**Packaging**
+- [ ] Package at `libs/connectors/myprovider/` with `genblaze_myprovider/` and `tests/`
+- [ ] `pyproject.toml` with `genblaze.providers` entry point and `py.typed` marker shipped in the wheel
+- [ ] `genblaze-core>=0.2.0,<0.3` (or current minor) in dependencies
+
+**Provider class**
+- [ ] Subclass `SyncProvider` (preferred) or `BaseProvider` (polling APIs only)
+- [ ] `super().__init__(models=models)` called in constructor
+- [ ] `get_capabilities()` declares supported modalities, inputs, models, `accepts_chain_input`
+- [ ] `normalize_params()` maps standard names (`duration`, `resolution`, `aspect_ratio`, `voice_id`, `output_format`) and is idempotent
+- [ ] `create_registry()` returns a `ModelRegistry` with per-model `pricing` strategies (or documents why it doesn't)
+
+**Security**
+- [ ] `validate_asset_url()` called on every output asset URL
+- [ ] `validate_chain_input_url()` called on every `step.inputs` URL (if `accepts_chain_input=True`)
+- [ ] No API tokens or secrets stored in `step.provider_payload`
+
+**Errors + retry**
 - [ ] `_errors.py` module with `map_*_error(exc) -> ProviderErrorCode`
-- [ ] Errors raised as `ProviderError` with explicit `error_code`
-- [ ] `AudioMetadata`/`VideoMetadata` populated on assets
-- [ ] `create_registry()` returns a `ModelRegistry` with per-model `pricing` strategies
+- [ ] Errors raised as `ProviderError` with explicit `error_code` (and `retry_after=` when applicable)
+- [ ] Retry behavior considered — default `RetryPolicy` is fine for most APIs
+
+**Assets + cost**
+- [ ] `AudioMetadata` / `VideoMetadata` populated on assets
 - [ ] Poll result cached in `poll()`, consumed in `fetch_output()` (BaseProvider only)
-- [ ] No API tokens in `provider_payload`
-- [ ] Compliance tests pass (`ProviderComplianceTests` subclass)
-- [ ] Provider-specific tests for error mapping
+- [ ] `step.cost_usd` populated on success (or `expects_cost = False` documented in the compliance test)
+
+**Tests + CI**
+- [ ] Compliance harness subclassed (`ProviderComplianceTests`)
+- [ ] Provider-specific tests for error mapping and any custom param logic
 - [ ] `make test` passes from repo root
 - [ ] `make lint` passes
+- [ ] `make typecheck` passes

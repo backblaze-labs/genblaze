@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
+from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.base import BaseMediaHandler, MediaCapability
+from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
 from genblaze_core.models.manifest import Manifest
 
 # Freeform atom key for genblaze manifest
@@ -27,32 +29,15 @@ class AacHandler(BaseMediaHandler):
             ) from exc
 
         try:
-            import os
-            import shutil
-            import tempfile
-
-            # Work on a temp copy to ensure atomic writes
-            fd, tmp = tempfile.mkstemp(dir=Path(output).parent, suffix=".tmp")
-            os.close(fd)
-            try:
+            with atomic_write(output) as tmp:
                 shutil.copy2(source, tmp)
                 audio = MP4(tmp)
                 if audio.tags is None:
                     audio.add_tags()
-
                 tags = audio.tags
                 assert tags is not None  # guaranteed after add_tags()
-
-                # Store manifest as freeform UTF-8 atom (must wrap in MP4FreeForm)
                 tags[FREEFORM_KEY] = [MP4FreeForm(manifest.to_canonical_json().encode("utf-8"))]
                 audio.save()
-                os.replace(tmp, output)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
             return output
         except EmbeddingError:
             raise
@@ -73,7 +58,15 @@ class AacHandler(BaseMediaHandler):
             values = audio.tags.get(FREEFORM_KEY) if audio.tags else None
             if not values:
                 raise EmbeddingError(f"No genblaze manifest found in {source}")
-            manifest_json = bytes(values[0]).decode("utf-8")
+            payload = bytes(values[0])
+            # Cap before decode + parse — hostile freeform atoms could
+            # otherwise OOM the consumer on extract.
+            if len(payload) > MAX_MANIFEST_BYTES:
+                raise EmbeddingError(
+                    f"Embedded manifest exceeds size limit "
+                    f"({len(payload)} > {MAX_MANIFEST_BYTES} bytes)"
+                )
+            manifest_json = payload.decode("utf-8")
             return Manifest.model_validate(json.loads(manifest_json))
         except EmbeddingError:
             raise

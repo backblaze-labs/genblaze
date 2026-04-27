@@ -132,8 +132,9 @@ class RunwayProvider(BaseProvider):
         poll_interval: float = 5.0,
         *,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self.poll_interval = poll_interval
         self._api_secret = api_secret
         self._client: Any = None

@@ -162,8 +162,9 @@ class SoraProvider(BaseProvider):
         output_dir: str | Path | None = None,
         *,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self.poll_interval = poll_interval
         self._api_key = api_key
         self._http_timeout = http_timeout

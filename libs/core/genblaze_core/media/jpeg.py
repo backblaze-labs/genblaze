@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.base import BaseMediaHandler, MediaCapability
+from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
 from genblaze_core.models.manifest import Manifest
 
 XMP_NS = "genblaze"
@@ -51,6 +51,44 @@ def _extract_from_xmp(xmp_bytes: bytes) -> str:
     return html.unescape(raw)
 
 
+def _scan_xmp_for_manifest(data: bytes, source: Path) -> str:
+    """Walk every XMP packet in ``data`` looking for one with our manifest.
+
+    JPEG/WebP files can carry multiple XMP packets — Photoshop, Lightroom,
+    or any other tool may have written XMP into the asset before genblaze
+    embedded its own. Returning on the first packet would incorrectly fail
+    when the leading packet has no ``<mf:manifest>``. Walking the file lets
+    a genblaze packet later in the stream still be found.
+    """
+    pos = 0
+    last_extract_error: EmbeddingError | None = None
+    while True:
+        xmp_start = data.find(b"<x:xmpmeta", pos)
+        if xmp_start == -1:
+            break
+        xpacket_end_marker = data.find(b"<?xpacket end", xmp_start)
+        if xpacket_end_marker == -1:
+            break
+        close_pos = data.find(b"?>", xpacket_end_marker)
+        if close_pos == -1:
+            raise EmbeddingError(f"Malformed XMP packet in {source}: missing closing '?>'")
+        xmp_end = close_pos + 2
+        try:
+            return _extract_from_xmp(data[xmp_start:xmp_end])
+        except EmbeddingError as exc:
+            last_extract_error = exc
+            pos = xmp_end
+            continue
+
+    if last_extract_error is not None:
+        # XMP packets exist but none carried a genblaze manifest. Surface the
+        # specific reason from the last attempt so callers see the real cause.
+        raise EmbeddingError(
+            f"No genblaze manifest in any XMP packet in {source}: {last_extract_error}"
+        )
+    raise EmbeddingError(f"No XMP data found in {source}")
+
+
 class JpegHandler(BaseMediaHandler):
     """Embed and extract manifests in JPEG XMP metadata."""
 
@@ -65,8 +103,18 @@ class JpegHandler(BaseMediaHandler):
                     "Use sidecar fallback."
                 )
             with Image.open(source) as img:
-                exif = img.info.get("exif", b"")
-                img.save(output, "JPEG", xmp=xmp_data, exif=exif, quality="keep")
+                save_kwargs: dict = {
+                    "xmp": xmp_data,
+                    "exif": img.info.get("exif", b""),
+                    "quality": "keep",
+                }
+                # Preserve color/density metadata when present.
+                if icc := img.info.get("icc_profile"):
+                    save_kwargs["icc_profile"] = icc
+                if dpi := img.info.get("dpi"):
+                    save_kwargs["dpi"] = dpi
+                with atomic_write(output) as tmp:
+                    img.save(tmp, "JPEG", **save_kwargs)
             return output
         except EmbeddingError:
             raise
@@ -77,17 +125,7 @@ class JpegHandler(BaseMediaHandler):
         try:
             with open(source, "rb") as f:
                 data = f.read()
-            # Search for XMP packet in raw bytes
-            xmp_start = data.find(b"<x:xmpmeta")
-            xmp_end = data.find(b"<?xpacket end", xmp_start)
-            if xmp_start == -1 or xmp_end == -1:
-                raise EmbeddingError(f"No XMP data found in {source}")
-            close_pos = data.find(b"?>", xmp_end)
-            if close_pos == -1:
-                raise EmbeddingError(f"Malformed XMP packet in {source}: missing closing '?>'")
-            xmp_end = close_pos + 2
-            xmp_bytes = data[xmp_start:xmp_end]
-            manifest_json = _extract_from_xmp(xmp_bytes)
+            manifest_json = _scan_xmp_for_manifest(data, source)
             return Manifest.model_validate(json.loads(manifest_json))
         except EmbeddingError:
             raise

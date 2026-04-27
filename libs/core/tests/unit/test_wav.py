@@ -57,3 +57,26 @@ def test_wav_invalid_file(tmp_path: Path, sample_manifest: Manifest) -> None:
 
 def test_wav_capabilities() -> None:
     assert WavHandler.capabilities() == ["audio/wav"]
+
+
+def test_wav_rejects_rf64(tmp_path: Path, sample_manifest: Manifest) -> None:
+    """RF64 (>4 GB) WAV files would silently misparse — must reject explicitly."""
+    bad = tmp_path / "rf64.wav"
+    # Minimal RF64-shaped header: marker + size placeholder + WAVE
+    bad.write_bytes(b"RF64\xff\xff\xff\xffWAVE" + b"\x00" * 32)
+    handler = WavHandler()
+    with pytest.raises(EmbeddingError, match="RF64"):
+        handler.embed(bad, sample_manifest)
+    with pytest.raises(EmbeddingError, match="RF64"):
+        handler.extract(bad)
+
+
+def test_wav_rejects_rifx(tmp_path: Path, sample_manifest: Manifest) -> None:
+    """Big-endian RIFX would silently misparse little-endian sizes — must reject."""
+    bad = tmp_path / "rifx.wav"
+    bad.write_bytes(b"RIFX\x00\x00\x00\x20WAVE" + b"\x00" * 32)
+    handler = WavHandler()
+    with pytest.raises(EmbeddingError, match="RIFX"):
+        handler.embed(bad, sample_manifest)
+    with pytest.raises(EmbeddingError, match="RIFX"):
+        handler.extract(bad)

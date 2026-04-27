@@ -7,9 +7,7 @@ For files 500 MB–2 GB, uses seek-based file I/O to avoid loading entire file i
 from __future__ import annotations
 
 import json
-import os
 import struct
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -20,6 +18,7 @@ from genblaze_core.media.base import (
     MAX_MMAP_BYTES,
     BaseMediaHandler,
     MediaCapability,
+    atomic_write,
 )
 from genblaze_core.models.manifest import Manifest
 
@@ -68,7 +67,8 @@ class Mp4Handler(BaseMediaHandler):
         cleaned = _remove_genblaze_box(data)
         result = cleaned + box
 
-        _atomic_write_bytes(Path(output), result)
+        with atomic_write(Path(output)) as tmp:
+            tmp.write_bytes(result)
         return output
 
     def _embed_streaming(self, source: Path, manifest: Manifest, output: Path) -> Path:
@@ -87,9 +87,7 @@ class Mp4Handler(BaseMediaHandler):
         manifest_bytes = manifest.to_canonical_json().encode("utf-8")
         uuid_box = _build_uuid_box(manifest_bytes)
 
-        fd, tmp = tempfile.mkstemp(dir=Path(output).parent, suffix=".tmp")
-        os.close(fd)
-        try:
+        with atomic_write(Path(output)) as tmp:
             with open(source, "rb") as src, open(tmp, "wb") as dst:
                 file_size = source.stat().st_size
                 pos = 0
@@ -133,14 +131,6 @@ class Mp4Handler(BaseMediaHandler):
 
                 # Append UUID at EOF (after mdat) so moov offsets stay valid.
                 dst.write(uuid_box)
-
-            os.replace(tmp, output)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
         return output
 
     def extract(self, source: Path) -> Manifest:
@@ -264,28 +254,6 @@ def _build_uuid_box(manifest_bytes: bytes) -> bytes:
             f"Manifest too large for MP4 UUID box ({box_total} bytes). Use sidecar fallback."
         )
     return struct.pack(">I", box_total) + b"uuid" + box_payload
-
-
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write bytes atomically via temp file + rename."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    fd_closed = False
-    try:
-        os.write(fd, data)
-        os.close(fd)
-        fd_closed = True
-        os.replace(tmp, path)
-    except BaseException:
-        if not fd_closed:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def _read_box_size(data: bytes, pos: int) -> int:

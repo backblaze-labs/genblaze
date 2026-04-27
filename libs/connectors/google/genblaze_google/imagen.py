@@ -106,8 +106,9 @@ class ImagenProvider(SyncProvider):
         location: str = "us-central1",
         output_dir: str | Path | None = None,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self._api_key = api_key
         self._project = project
         self._location = location

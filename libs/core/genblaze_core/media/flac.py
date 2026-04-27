@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
+from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.base import BaseMediaHandler, MediaCapability
+from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
 from genblaze_core.models.manifest import Manifest
 
 # Vorbis comment tag for genblaze manifest
@@ -27,26 +29,11 @@ class FlacHandler(BaseMediaHandler):
             ) from exc
 
         try:
-            import os
-            import shutil
-            import tempfile
-
-            # Work on a temp copy to ensure atomic writes
-            fd, tmp = tempfile.mkstemp(dir=Path(output).parent, suffix=".tmp")
-            os.close(fd)
-            try:
+            with atomic_write(output) as tmp:
                 shutil.copy2(source, tmp)
                 audio = FLAC(tmp)
-                # Set manifest as Vorbis comment tag
                 audio[VORBIS_TAG] = manifest.to_canonical_json()
                 audio.save()
-                os.replace(tmp, output)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
             return output
         except EmbeddingError:
             raise
@@ -68,6 +55,13 @@ class FlacHandler(BaseMediaHandler):
             if not values:
                 raise EmbeddingError(f"No genblaze manifest found in {source}")
             manifest_json = values[0]
+            # Cap before json.loads — a hostile FLAC with a large Vorbis
+            # comment could otherwise OOM the consumer.
+            if len(manifest_json.encode("utf-8")) > MAX_MANIFEST_BYTES:
+                raise EmbeddingError(
+                    f"Embedded manifest exceeds size limit "
+                    f"({len(manifest_json)} > {MAX_MANIFEST_BYTES} bytes)"
+                )
             return Manifest.model_validate(json.loads(manifest_json))
         except EmbeddingError:
             raise

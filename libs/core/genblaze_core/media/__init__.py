@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability
-from genblaze_core.media.embedder import EmbedResult, SmartEmbedder, guess_mime
+from genblaze_core.media.embedder import EmbedResult, SmartEmbedder, guess_mime, sniff_mime
 from genblaze_core.media.jpeg import JpegHandler
 from genblaze_core.media.mp4 import Mp4Handler
 from genblaze_core.media.png import PngHandler
@@ -26,6 +26,7 @@ __all__ = [
     "WebpHandler",
     "get_handler",
     "guess_mime",
+    "sniff_mime",
 ]
 
 

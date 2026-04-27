@@ -86,6 +86,24 @@ def test_accepts_models_kwarg(cls: type[BaseProvider]) -> None:
     )
 
 
+@pytest.mark.parametrize("cls", _PROVIDER_CLASSES, ids=lambda c: c.__name__)
+def test_accepts_retry_policy_kwarg(cls: type[BaseProvider]) -> None:
+    """``Provider(api_key=..., retry_policy=p)`` must not raise.
+
+    Connectors that override ``__init__`` must forward ``retry_policy=`` to
+    ``super().__init__``; otherwise per-instance retry tuning is broken.
+    Using a recognizable preset so a forwarding bug surfaces as a value
+    mismatch rather than a silent default.
+    """
+    from genblaze_core.providers import RetryPolicy
+
+    custom = RetryPolicy.conservative()
+    provider = _instantiate(cls, retry_policy=custom)
+    assert provider.retry_policy is custom, (
+        f"{cls.__name__} ignored the retry_policy= kwarg — forward it to super().__init__()."
+    )
+
+
 # --- Method-presence contracts ----------------------------------------------
 
 _HOOKS = (

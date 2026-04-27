@@ -67,8 +67,9 @@ class NvidiaAudioProvider(SyncProvider):
         output_dir: Path | str | None = None,
         http_client: httpx.Client | None = None,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
-        super().__init__(models=models)
+        super().__init__(models=models, retry_policy=retry_policy)
         self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
         self._nvcf_timeout = nvcf_timeout
         self._client = NvidiaClient(

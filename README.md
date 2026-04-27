@@ -24,7 +24,7 @@ A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, Elev
 
 Genblaze sits between "call a single video API" and "run a media pipeline in production." The differentiators:
 
-- **Provenance by default.** Every run yields a canonical, SHA-256–verified manifest — no bolt-on signing, no homegrown audit log. Embed into `.mp4 / .png / .jpg / .webp / .mp3 / .wav` or persist alongside the asset.
+- **Provenance by default.** Every run yields a canonical, SHA-256-bound manifest — deterministic, embeddable into `.mp4 / .png / .jpg / .webp / .mp3 / .wav`, or persisted alongside the asset. Tamper-evident in trusted storage; pair with your own signer or C2PA when adversarial verification matters. See [trust modes](docs/features/trust-modes.md).
 - **One pipeline, many providers.** Eleven adapters across video, image, audio, and chat behind a single `Pipeline` / `Step` API. Swap Sora → Runway → Veo by changing one line; chain text → image → video without re-plumbing.
 - **Storage is first-class.** `S3StorageBackend.for_backblaze("bucket")` ships durable, credential-free asset URLs and content-addressable layouts. Designed for Backblaze B2; works against any S3-compatible store (AWS S3, Cloudflare R2, MinIO).
 - **Fallback chains and conformance.** `fallback_models=[...]` retries on `MODEL_ERROR`; CI-grade `probe_models` and provider-contract tests catch upstream drift before users do.
