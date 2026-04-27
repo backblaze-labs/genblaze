@@ -29,6 +29,7 @@ from genblaze_core.providers import (
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
+    RetryPolicy,
     by_param,
 )
 from genblaze_core.providers.base import BaseProvider

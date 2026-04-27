@@ -16,7 +16,7 @@ from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers.base import BaseProvider, SubmitResult
 from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.providers.probe import ProbeResult
-from genblaze_core.providers.retry import retry_after_from_response
+from genblaze_core.providers.retry import RetryPolicy, retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from ._errors import map_gmicloud_error

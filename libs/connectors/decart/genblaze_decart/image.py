@@ -25,6 +25,7 @@ from genblaze_core.providers import (
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
+    RetryPolicy,
     SyncProvider,
     per_unit,
 )

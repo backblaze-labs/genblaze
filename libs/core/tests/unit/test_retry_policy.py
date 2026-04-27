@@ -12,7 +12,6 @@ import statistics
 from typing import Any
 
 import pytest
-
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers.retry import MAX_RETRY_AFTER_SEC, RetryPolicy
@@ -48,8 +47,10 @@ def test_default_policy_matches_pre_policy_behavior() -> None:
 
 def test_policy_is_frozen() -> None:
     """Frozen dataclass — mutating after construction raises."""
+    from dataclasses import FrozenInstanceError
+
     p = RetryPolicy()
-    with pytest.raises(Exception):  # FrozenInstanceError, but the type is implementation-detail
+    with pytest.raises(FrozenInstanceError):
         p.max_attempts = 99  # type: ignore[misc]
 
 
