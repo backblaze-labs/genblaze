@@ -51,6 +51,11 @@
       "type": "string",
       "description": "Model slug."
     },
+    "request_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Upstream provider's prediction/job id if submit completed before failure."
+    },
     "elapsed_sec": {
       "type": "number",
       "minimum": 0,

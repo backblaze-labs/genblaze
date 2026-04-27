@@ -348,6 +348,44 @@ class S3StorageBackend(StorageBackend):
         endpoint = (self._client.meta.endpoint_url or "").rstrip("/")
         return f"{endpoint}/{self._bucket}/{encoded}"
 
+    def key_from_url(self, url: str) -> str | None:
+        """Inverse of :meth:`get_durable_url` — None for foreign URLs.
+
+        Recognizes both URL shapes the backend can emit:
+
+        * ``{public_url_base}/{key}`` (Cloudflare CDN / friendly-URL setups)
+        * ``{endpoint}/{bucket}/{key}`` (raw S3-compatible endpoint)
+
+        Both shapes are tried regardless of the current ``public_url_base``
+        setting — a URL written when ``public_url_base`` was set still
+        round-trips after it's been removed (and vice versa), as long as
+        host+bucket still match.
+
+        Returns ``None`` for URLs that clearly belong elsewhere (different
+        host, different bucket, malformed) so callers can route across
+        backends without try/except gymnastics.
+        """
+        from urllib.parse import unquote, urlparse
+
+        # Public-base shape — tried first because public_url_base may have
+        # been set when the URL was written even if it's None now.
+        if self._public_url_base and url.startswith(self._public_url_base + "/"):
+            return unquote(url[len(self._public_url_base) + 1 :])
+
+        # Raw endpoint shape: {endpoint}/{bucket}/{key}.
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        self._ensure_region_verified()
+        endpoint_host = urlparse(self._client.meta.endpoint_url or "").netloc
+        if parsed.netloc != endpoint_host:
+            return None
+        path = parsed.path.lstrip("/")
+        bucket_prefix = self._bucket + "/"
+        if not path.startswith(bucket_prefix):
+            return None
+        return unquote(path[len(bucket_prefix) :])
+
     def _ensure_region_verified(self) -> None:
         """Lazy-verify the bucket region on first use; follow redirect if wrong.
 

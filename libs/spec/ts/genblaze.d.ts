@@ -452,6 +452,10 @@ export interface StepProgressEvent {
    */
   model: string;
   /**
+   * Upstream provider's prediction/job id, populated as soon as submit() returns.
+   */
+  request_id?: string | null;
+  /**
    * Progress ratio in [0.0, 1.0], if the provider reports one.
    */
   progress_pct?: number | null;
@@ -564,6 +568,10 @@ export interface StepCompletedEvent {
    */
   model: string;
   /**
+   * Upstream provider's prediction/job id, mirrored from step.metadata['upstream_id'].
+   */
+  request_id?: string | null;
+  /**
    * Wall-clock seconds from step start to completion.
    */
   elapsed_sec: number;
@@ -608,6 +616,10 @@ export interface StepFailedEvent {
    * Model slug.
    */
   model: string;
+  /**
+   * Upstream provider's prediction/job id if submit completed before failure.
+   */
+  request_id?: string | null;
   /**
    * Wall-clock seconds from step start to failure.
    */

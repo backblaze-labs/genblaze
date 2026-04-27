@@ -32,6 +32,11 @@
       "type": "string",
       "description": "Model slug."
     },
+    "request_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Upstream provider's prediction/job id, populated as soon as submit() returns."
+    },
     "progress_pct": {
       "type": ["number", "null"],
       "minimum": 0.0,

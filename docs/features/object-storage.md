@@ -100,6 +100,12 @@ Everything for a run lives in one folder — easy to browse and manage.
 
 The tenant segment is omitted when `tenant_id` is not set on the run.
 
+> **Note on `prefix="runs"`:** the `runs/` segment between `{prefix}` and
+> the per-run folder is fixed under HIERARCHICAL. Passing `prefix="runs"`
+> therefore produces `runs/runs/...` keys. The doubled segment is intended
+> behavior — pick a different `prefix` (the default is `"genblaze"`) if it
+> reads as a typo.
+
 ### CONTENT_ADDRESSABLE (deduped)
 
 Assets are keyed by SHA-256 hash. Identical files across runs are stored once.
@@ -110,6 +116,46 @@ Assets are keyed by SHA-256 hash. Identical files across runs are stored once.
 {prefix}/manifests/
   {run_id}.json
 ```
+
+## Looking up a stored manifest
+
+`ObjectStorageSink` exposes three helpers so app code never has to
+re-implement the layout rules or parse `manifest.manifest_uri`:
+
+```python
+key = sink.manifest_key_for(run)            # storage key (pure function)
+url = sink.manifest_url_for(run)            # durable, credential-free URL
+manifest = sink.read_manifest(run)          # fetch + parse + verify()
+```
+
+`read_manifest` defaults to `verify=True` (raises `ManifestError` on hash
+mismatch) — pass `verify=False` to skip the rehash on a manifest you just
+wrote yourself. Downloads are capped at 16 MiB to bound OOM blast.
+
+After `write_run` returns, `manifest.manifest_uri` is also populated on
+the in-memory object — including on retries that hit an already-existing
+key. Pointer-mode embedders rely on this, so it is set unconditionally
+whenever the manifest exists in the backend.
+
+## Round-tripping a durable URL to a key
+
+`StorageBackend.key_from_url(url)` is the inverse of `get_durable_url(key)`.
+The S3 backend handles both URL shapes it can emit (raw S3-endpoint and
+`public_url_base` CDN), and returns `None` for URLs that don't belong to
+this backend (different host, different bucket, malformed) so callers can
+route across backends without `try/except`:
+
+```python
+key = backend.key_from_url(asset.url)
+if key is None:
+    ...  # foreign URL — route elsewhere
+else:
+    backend.delete(key)
+```
+
+Backends that don't implement an inverse raise `NotImplementedError` from
+the default — distinct from the "URL isn't mine" `None` signal so the two
+conditions can't be confused.
 
 ## Compose pattern: cloud + local
 

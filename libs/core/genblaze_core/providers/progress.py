@@ -20,6 +20,9 @@ class ProgressEvent:
         preview_url: Optional URL to an intermediate preview (e.g. draft frame,
             waveform thumbnail). Providers set this opportunistically when the
             underlying API exposes in-progress artifacts.
+        request_id: Upstream provider's prediction/job id, available once submit
+            returns. Lets dashboards show debug info (e.g. a "view in
+            Replicate" link) live, instead of waiting for step completion.
     """
 
     step_id: str
@@ -30,3 +33,4 @@ class ProgressEvent:
     elapsed_sec: float
     message: str | None = None
     preview_url: str | None = None
+    request_id: str | None = None

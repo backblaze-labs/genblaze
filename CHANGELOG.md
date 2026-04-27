@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `genblaze-core`: `request_id` field on `StepProgressEvent`, `StepCompletedEvent`,
+  and `StepFailedEvent` carries the upstream provider's prediction/job id
+  (e.g. Replicate prediction id, Runway task id) on the wire. `BaseProvider`
+  stashes the id in `step.metadata["upstream_id"]` as soon as `submit()`
+  returns, then `_fire_progress` and the streaming-event translators thread
+  it through. Lets dashboards render live debug links ("view in
+  Replicate") without waiting for step completion. Available from any
+  progress tick fired after submit; pre-submit ticks carry `null` (id
+  doesn't exist yet). Schemas updated; TypeScript types regenerated.
 - `genblaze-core`: `RetryPolicy` frozen dataclass in `genblaze_core.providers.retry`
   with seven knobs (`max_attempts`, `initial_backoff_sec`, `max_backoff_sec`,
   `backoff_multiplier`, `jitter`, `respect_retry_after`, `retryable_codes`,
@@ -49,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   / C2PA), threat model table, asset-binding caveat.
 - Docs: `docs/features/manifest-provenance.md` — explicit hash-payload-vs-canonical-JSON
   documentation for third-party verifiers.
+- `genblaze-core`: `ObjectStorageSink.manifest_key_for(run)` /
+  `manifest_url_for(run)` / `read_manifest(run, *, verify=True)` — public
+  helpers so app code can locate, link to, and re-fetch a stored manifest
+  without re-implementing `_build_manifest_key` or parsing
+  `manifest.manifest_uri`. `read_manifest` enforces the `MAX_MANIFEST_BYTES`
+  cap and verifies the canonical hash by default.
+- `genblaze-core`: `StorageBackend.key_from_url(url)` — inverse of
+  `get_durable_url`. Default raises `NotImplementedError` so backends opt
+  in explicitly; the S3 implementation handles both raw-endpoint and
+  `public_url_base` URL shapes and returns `None` for foreign URLs
+  (different host, different bucket, malformed) so callers can route
+  across backends without `try/except`.
 
 ### Changed
 - All 11 provider connectors (`genblaze-openai`, `genblaze-google`,
@@ -67,6 +88,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `genblaze_core.providers` in 0.2.5 will now find it.
 
 ### Fixed
+- `genblaze-core`: `ObjectStorageSink.write_run` now populates
+  `manifest.manifest_uri` even when the manifest object already exists in
+  the backend. Previously the assignment was inside the `if not exists:`
+  branch, so retries (or any second `write_run` call against the same
+  run) left the in-memory `Manifest.manifest_uri` as `None`, breaking
+  pointer-mode embedders downstream. The durable URL is now set
+  unconditionally whenever the manifest is present in storage.
 - `genblaze-core`: `StepRetriedEvent` now reaches `Pipeline.stream()` /
   `astream()` consumers. `_install_progress_tracer` previously wrapped only
   `on_progress`, so retry events fired by `BaseProvider._emit_retry` never

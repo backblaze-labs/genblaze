@@ -139,6 +139,11 @@ class StepProgressEvent(StreamEvent):
     step_id: str = Field(description="Step identifier (UUID).")
     provider: str = Field(description="Provider name.")
     model: str = Field(description="Model slug.")
+    request_id: str | None = Field(
+        default=None,
+        description="Upstream provider's prediction/job id (e.g. Replicate prediction id). "
+        "Populated as soon as submit() returns; useful for live debug links.",
+    )
     progress_pct: float | None = Field(
         default=None,
         description="Progress ratio in [0.0, 1.0], if the provider reports one.",
@@ -195,6 +200,11 @@ class StepCompletedEvent(StreamEvent):
     total_steps: int = Field(description="Total number of steps in the pipeline.", ge=0)
     provider: str = Field(description="Provider name.")
     model: str = Field(description="Model slug.")
+    request_id: str | None = Field(
+        default=None,
+        description="Upstream provider's prediction/job id, mirrored from "
+        "``step.metadata['upstream_id']`` for wire-format consumers.",
+    )
     elapsed_sec: float = Field(
         description="Wall-clock seconds from step start to completion.", ge=0
     )
@@ -217,6 +227,10 @@ class StepFailedEvent(StreamEvent):
     total_steps: int = Field(description="Total number of steps in the pipeline.", ge=0)
     provider: str = Field(description="Provider name.")
     model: str = Field(description="Model slug.")
+    request_id: str | None = Field(
+        default=None,
+        description="Upstream provider's prediction/job id if submit completed before failure.",
+    )
     elapsed_sec: float = Field(description="Wall-clock seconds from step start to failure.", ge=0)
     error: str | None = Field(default=None, description="Failure reason surfaced from the step.")
     step_status: str | None = Field(

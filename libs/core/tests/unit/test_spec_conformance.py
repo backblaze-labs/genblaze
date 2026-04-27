@@ -320,10 +320,13 @@ def test_step_progress_roundtrip_validates():
         step_id="s1",
         provider="p",
         model="m",
+        request_id="pred-abc123",
         progress_pct=0.5,
         preview_url="https://preview.test/f.jpg",
     )
-    _event_validator("step-progress.schema.json").validate(ev.to_dict())
+    d = ev.to_dict()
+    assert d["request_id"] == "pred-abc123"
+    _event_validator("step-progress.schema.json").validate(d)
 
 
 def test_step_completed_roundtrip_validates():
@@ -334,10 +337,13 @@ def test_step_completed_roundtrip_validates():
         total_steps=1,
         provider="p",
         model="m",
+        request_id="pred-abc123",
         elapsed_sec=1.23,
         step_status="succeeded",
     )
-    _event_validator("step-completed.schema.json").validate(ev.to_dict())
+    d = ev.to_dict()
+    assert d["request_id"] == "pred-abc123"
+    _event_validator("step-completed.schema.json").validate(d)
 
 
 def test_step_failed_roundtrip_validates():
@@ -348,11 +354,14 @@ def test_step_failed_roundtrip_validates():
         total_steps=1,
         provider="p",
         model="m",
+        request_id="pred-abc123",
         elapsed_sec=1.0,
         error="safety filter",
         step_status="failed",
     )
-    _event_validator("step-failed.schema.json").validate(ev.to_dict())
+    d = ev.to_dict()
+    assert d["request_id"] == "pred-abc123"
+    _event_validator("step-failed.schema.json").validate(d)
 
 
 def test_agent_events_roundtrip_validate():

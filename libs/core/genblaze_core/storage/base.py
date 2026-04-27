@@ -147,6 +147,23 @@ class StorageBackend(ABC):
         """
         ...
 
+    def key_from_url(self, url: str) -> str | None:
+        """Inverse of :meth:`get_durable_url` — extract a storage key.
+
+        Returns:
+            The key when ``url`` was produced by this backend (round-trips
+            with :meth:`get_durable_url`). Returns ``None`` for URLs that
+            clearly belong to a different backend (different host, different
+            bucket, or unparseable) — that's the "not mine" signal, distinct
+            from "not implemented".
+
+        Raises:
+            NotImplementedError: in the default implementation. Backends that
+                lack a well-defined inverse must opt in; ``None`` is reserved
+                for foreign URLs only, never for missing implementations.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement key_from_url")
+
     def copy(self, src_key: str, dst_key: str) -> None:
         """Copy an object from src_key to dst_key.
 

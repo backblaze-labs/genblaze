@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from genblaze_core._utils import MAX_MANIFEST_BYTES
+from genblaze_core.exceptions import ManifestError, SinkError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import RunStatus, StepStatus
 from genblaze_core.models.manifest import Manifest
@@ -847,3 +849,144 @@ class TestObjectLockConfig:
         with caplog.at_level(logging.WARNING, logger="genblaze.storage.object_lock"):
             ObjectLockConfig(retain_until=past)
         assert any("in the past" in rec.message for rec in caplog.records)
+
+
+class TestManifestHelpers:
+    """Public manifest_key_for / manifest_url_for / read_manifest helpers
+    let app code locate, link to, and re-fetch a stored manifest without
+    re-implementing the layout rules or parsing manifest.manifest_uri.
+    """
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_manifest_key_for_matches_written_key_cas(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        # Helper-derived key is the same key actually present in storage.
+        derived = sink.manifest_key_for(run)
+        assert derived == f"p/manifests/{run.run_id}.json"
+        assert derived in backend.store
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_manifest_key_for_matches_written_key_hierarchical(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.HIERARCHICAL)
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        date_str = run.created_at.strftime("%Y-%m-%d")
+        derived = sink.manifest_key_for(run)
+        assert derived == f"p/runs/{date_str}/{run.run_id}/manifest.json"
+        assert derived in backend.store
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_manifest_key_for_includes_tenant_in_hierarchical(self, mock_urlopen, _mock_dns):
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", key_strategy=KeyStrategy.HIERARCHICAL)
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="test-run", status=RunStatus.COMPLETED, steps=[step], tenant_id="acme")
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+
+        date_str = run.created_at.strftime("%Y-%m-%d")
+        assert sink.manifest_key_for(run) == f"p/runs/acme/{date_str}/{run.run_id}/manifest.json"
+
+    def test_manifest_url_for_round_trips_with_get_durable_url(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run, _ = _make_run_and_manifest()
+
+        expected_key = sink.manifest_key_for(run)
+        assert sink.manifest_url_for(run) == backend.get_durable_url(expected_key)
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_read_manifest_round_trip(self, mock_urlopen, _mock_dns):
+        """Write then read returns an equal Manifest that verifies."""
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        loaded = sink.read_manifest(run)
+        assert loaded.canonical_hash == manifest.canonical_hash
+        assert loaded.verify()
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_read_manifest_size_cap_enforced(self, mock_urlopen, _mock_dns):
+        """An oversize stored manifest raises SinkError, not OOMs the process."""
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        # Replace the stored bytes with an oversize payload (still valid JSON
+        # parse-shape doesn't matter — size check fires first).
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b"x" * (MAX_MANIFEST_BYTES + 1)
+        with pytest.raises(SinkError, match="exceeds MAX_MANIFEST_BYTES"):
+            sink.read_manifest(run)
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_read_manifest_verify_default_catches_tamper(self, mock_urlopen, _mock_dns):
+        """verify=True (default) catches a manifest whose payload was tampered."""
+        import json
+
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run, manifest = _make_run_and_manifest()
+        sink.write_run(run, manifest)
+
+        # Tamper: change the run name without recomputing canonical_hash.
+        key = sink.manifest_key_for(run)
+        body = json.loads(backend.store[key])
+        body["run"]["name"] = "tampered"
+        backend.store[key] = json.dumps(body).encode("utf-8")
+
+        with pytest.raises(ManifestError, match="canonical_hash verification"):
+            sink.read_manifest(run)
+        # verify=False parses without rehash — useful for trusted/just-written.
+        loaded = sink.read_manifest(run, verify=False)
+        assert loaded.run.name == "tampered"
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_manifest_uri_set_when_object_already_exists(self, mock_urlopen, _mock_dns):
+        """Regression for S-01: second write with the same run must populate
+        manifest_uri on the in-memory Manifest, not leave it None just because
+        the object existed in the backend already."""
+        mock_urlopen.return_value = _mock_urlopen()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run, manifest = _make_run_and_manifest()
+
+        # First write populates everything as before.
+        sink.write_run(run, manifest)
+        first_uri = manifest.manifest_uri
+        assert first_uri is not None
+
+        # Simulate a fresh in-memory Manifest object on a retry — the bucket
+        # already has the JSON, so the put is skipped, but pointer-mode
+        # embedders downstream still need a populated manifest_uri.
+        manifest.manifest_uri = None
+        sink.write_run(run, manifest)
+        assert manifest.manifest_uri == first_uri
+        assert manifest.manifest_uri == backend.get_durable_url(sink.manifest_key_for(run))

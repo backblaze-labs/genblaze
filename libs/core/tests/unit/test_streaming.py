@@ -452,6 +452,77 @@ def test_step_retried_event_reaches_stream() -> None:
     assert retry_ev.error is not None
 
 
+# --- request_id propagation --------------------------------------------------
+
+
+class _ProgressBeforeAndAfterSubmitProvider(BaseProvider):
+    """Fires one progress tick mid-poll so we can assert request_id on it."""
+
+    name = "req-id"
+
+    def submit(self, step, config=None) -> Any:
+        return "pred-xyz789"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        return step
+
+
+def test_request_id_propagates_to_completed_event() -> None:
+    """submit() return value lands on step.completed.request_id."""
+    events = list(
+        Pipeline("t").step(_ProgressBeforeAndAfterSubmitProvider(), model="m", prompt="p").stream()
+    )
+    completed = next(e for e in events if e.type == "step.completed")
+    assert completed.request_id == "pred-xyz789"
+
+
+def test_request_id_persists_in_step_metadata() -> None:
+    """Step.metadata['upstream_id'] is the canonical home for the prediction id."""
+    events = list(
+        Pipeline("t").step(_ProgressBeforeAndAfterSubmitProvider(), model="m", prompt="p").stream()
+    )
+    completed = next(e for e in events if e.type == "step.completed")
+    # In-process consumers can also read it off the Step
+    assert completed.step is not None
+    assert completed.step.metadata["upstream_id"] == "pred-xyz789"
+
+
+class _PreviewWithSubmitProvider(BaseProvider):
+    """Emits a progress tick AFTER submit so request_id is available."""
+
+    name = "preview-after-submit"
+
+    def submit(self, step, config=None) -> Any:
+        return "pred-mid-1"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        # Provider-emitted progress with a preview, simulating mid-flight tick
+        # in connectors that override poll() to fire progress with a preview.
+        return True
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(Asset(url="https://x.test/final.png", media_type="image/png"))
+        return step
+
+
+def test_request_id_on_progress_after_submit() -> None:
+    """Progress events fired after submit carry request_id from step.metadata."""
+    progress_events: list[StepProgressEvent] = []
+    pipe = Pipeline("t").step(_PreviewWithSubmitProvider(), model="m", prompt="p")
+    for ev in pipe.stream():
+        if ev.type == "step.progress":
+            progress_events.append(ev)
+    # The base provider's "succeeded" tick fires post-submit and post-fetch,
+    # so it must carry request_id.
+    succeeded_ticks = [e for e in progress_events if e.data.get("status") == "succeeded"]
+    assert succeeded_ticks, "expected at least one succeeded progress tick"
+    assert all(e.request_id == "pred-mid-1" for e in succeeded_ticks)
+
+
 def test_step_retried_event_user_callback_still_fires() -> None:
     """Wiring on_retry into the stream must not swallow user-supplied on_retry."""
     from unittest.mock import patch

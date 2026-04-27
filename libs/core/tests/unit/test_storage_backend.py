@@ -107,3 +107,31 @@ class TestStorageBackendABC:
 
         backend = Minimal()
         backend.close()  # should not raise
+
+    def test_key_from_url_default_raises_not_implemented(self):
+        """Default key_from_url raises so 'backend doesn't implement' is
+        distinct from 'this URL doesn't belong to me' (None). Conflating
+        the two would make foreign-URL routing silently swallow bugs."""
+
+        class Minimal(StorageBackend):
+            def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
+                return ""
+
+            def get(self, key):
+                return b""
+
+            def exists(self, key):
+                return False
+
+            def delete(self, key):
+                pass
+
+            def get_url(self, key, *, expires_in=3600):
+                return ""
+
+            def get_durable_url(self, key):
+                return ""
+
+        backend = Minimal()
+        with pytest.raises(NotImplementedError, match="key_from_url"):
+            backend.key_from_url("https://example.com/k")

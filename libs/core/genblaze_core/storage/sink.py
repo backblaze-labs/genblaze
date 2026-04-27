@@ -8,14 +8,15 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as _futures_wait
 from typing import TYPE_CHECKING
 
-from genblaze_core.exceptions import SinkError
+from genblaze_core._utils import MAX_MANIFEST_BYTES
+from genblaze_core.exceptions import ManifestError, SinkError
 from genblaze_core.models.enums import StepStatus
+from genblaze_core.models.manifest import Manifest
 from genblaze_core.sinks.base import BaseSink
 from genblaze_core.storage.base import KeyStrategy
 from genblaze_core.storage.transfer import AssetTransfer
 
 if TYPE_CHECKING:
-    from genblaze_core.models.manifest import Manifest
     from genblaze_core.models.run import Run
     from genblaze_core.models.step import Step
     from genblaze_core.sinks.parquet import ParquetSink
@@ -46,6 +47,26 @@ class ObjectStorageSink(BaseSink):
         pipelined_transfer: bool = False,
         eager_transfer: bool = False,
     ):
+        """Construct an ObjectStorageSink.
+
+        Args:
+            backend: S3-compatible storage backend.
+            prefix: Root prefix for all keys. Default ``"genblaze"``. Note:
+                under :class:`KeyStrategy.HIERARCHICAL` the layout always
+                nests under a fixed ``runs/`` segment (``{prefix}/runs/...``),
+                so ``prefix="runs"`` produces ``runs/runs/...``. The doubled
+                segment is intentional — see the layout diagram in
+                ``docs/features/object-storage.md`` — but pick a different
+                prefix if it reads as a typo.
+            key_strategy: HIERARCHICAL groups everything per-run; the default
+                CONTENT_ADDRESSABLE deduplicates assets by SHA-256.
+            parquet_sink: Optional structured-data sibling sink.
+            max_upload_workers: Max parallel asset uploads per ``write_run``.
+            manifest_lock: Optional Object Lock retention applied to manifests.
+            pipelined_transfer: Pipelined CAS transfer (temp → copy → rename).
+            eager_transfer: Start asset uploads from ``on_step_complete``
+                instead of waiting for ``write_run``.
+        """
         self._backend = backend
         self._prefix = prefix
         self._key_strategy = key_strategy
@@ -126,8 +147,13 @@ class ObjectStorageSink(BaseSink):
                 )
                 self._eager_pending[asset.asset_id] = fut
 
-    def _build_manifest_key(self, run: Run) -> str:
-        """Build the storage key for the manifest based on key strategy."""
+    def manifest_key_for(self, run: Run) -> str:
+        """Storage key where this run's manifest is (or would be) written.
+
+        Pure function of ``run`` + sink config — does not touch the backend.
+        Public so app code can locate or precompute the manifest URL/key
+        without re-implementing the layout rules.
+        """
         if self._key_strategy == KeyStrategy.HIERARCHICAL:
             parts = [self._prefix, "runs"]
             if run.tenant_id:
@@ -137,6 +163,47 @@ class ObjectStorageSink(BaseSink):
             parts.append("manifest.json")
             return "/".join(parts)
         return f"{self._prefix}/manifests/{run.run_id}.json"
+
+    # Internal alias kept so existing call sites don't churn in this PR.
+    _build_manifest_key = manifest_key_for
+
+    def manifest_url_for(self, run: Run) -> str:
+        """Durable, credential-free URL for this run's manifest.
+
+        Equivalent to ``self._backend.get_durable_url(self.manifest_key_for(run))``.
+        Useful when the caller wants a publishable link without first having
+        called ``write_run`` (or when the in-memory ``manifest.manifest_uri``
+        is unavailable).
+        """
+        return self._backend.get_durable_url(self.manifest_key_for(run))
+
+    def read_manifest(self, run: Run, *, verify: bool = True) -> Manifest:
+        """Fetch and parse the stored manifest for this run.
+
+        Args:
+            run: The run whose manifest to load. Only ``run_id`` /
+                ``tenant_id`` / ``created_at`` are used (to derive the key).
+            verify: When True (default), checks ``manifest.verify()`` and
+                raises :class:`ManifestError` on hash mismatch. Pass
+                ``verify=False`` to skip the rehash on a manifest you
+                trust (e.g. one you just wrote).
+
+        Raises:
+            SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
+                Bounds OOM blast from a malicious or corrupt object.
+            ManifestError: when ``verify=True`` and the hash doesn't match.
+        """
+        key = self.manifest_key_for(run)
+        data = self._backend.get(key)
+        if len(data) > MAX_MANIFEST_BYTES:
+            raise SinkError(
+                f"Stored manifest at {key} is {len(data)} bytes, exceeds "
+                f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
+            )
+        manifest = Manifest.model_validate_json(data)
+        if verify and not manifest.verify():
+            raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
+        return manifest
 
     def _manifest_cache_control(self) -> str:
         """Cache-Control for manifest uploads.
@@ -221,7 +288,7 @@ class ObjectStorageSink(BaseSink):
         # silently accrues versions (the per-run noncurrent-expire lifecycle
         # rule ultimately cleans them up, but we'd rather not create churn in
         # the first place). The manifest is treated as immutable once written.
-        manifest_key = self._build_manifest_key(run)
+        manifest_key = self.manifest_key_for(run)
         with self._manifest_lock:
             if not self._backend.exists(manifest_key):
                 manifest_json = manifest.to_canonical_json()
@@ -234,11 +301,16 @@ class ObjectStorageSink(BaseSink):
                     content_type="application/json",
                     extra_args=manifest_extra,
                 )
-                # Durable URL — manifest_uri is itself persisted (in pointer-
-                # mode embeds and in the parquet sink), so it must not carry
-                # a SigV4 signature or expiry.
-                manifest.manifest_uri = self._backend.get_durable_url(manifest_key)
                 logger.info("Manifest uploaded: %s", manifest_key)
+
+        # Durable URL — manifest_uri is itself persisted (in pointer-mode
+        # embeds and in the parquet sink), so it must not carry a SigV4
+        # signature or expiry. Set unconditionally outside the lock: pointer-
+        # mode embedders fail if it's None, and the previous version skipped
+        # this assignment when the object already existed (e.g. on retries
+        # against the same run). get_durable_url is idempotent and takes its
+        # own region-verification lock, so calling it here is safe.
+        manifest.manifest_uri = self._backend.get_durable_url(manifest_key)
 
         # 5. Optionally write to ParquetSink
         if self._parquet_sink is not None:

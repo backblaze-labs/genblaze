@@ -39,6 +39,7 @@ def progress_to_stream_event(ev: ProgressEvent, run_id: str | None = None) -> St
         step_id=ev.step_id,
         provider=ev.provider,
         model=ev.model,
+        request_id=ev.request_id,
         progress_pct=ev.progress_pct,
         elapsed_sec=ev.elapsed_sec,
         preview_url=ev.preview_url,
@@ -53,6 +54,9 @@ def step_complete_to_stream_event(ev: StepCompleteEvent, run_id: str | None = No
 
     failed = ev.step.status == StepStatus.FAILED
     step_status = str(ev.step.status)
+    # Mirror the upstream prediction id onto the wire-format event so
+    # consumers reading the JSON surface (no in-process Step) still see it.
+    request_id = ev.step.metadata.get("upstream_id")
     if failed:
         return StepFailedEvent(
             run_id=run_id,
@@ -61,6 +65,7 @@ def step_complete_to_stream_event(ev: StepCompleteEvent, run_id: str | None = No
             total_steps=ev.total_steps,
             provider=ev.step.provider,
             model=ev.step.model,
+            request_id=request_id,
             elapsed_sec=ev.elapsed_sec,
             step=ev.step,
             step_status=step_status,
@@ -73,6 +78,7 @@ def step_complete_to_stream_event(ev: StepCompleteEvent, run_id: str | None = No
         total_steps=ev.total_steps,
         provider=ev.step.provider,
         model=ev.step.model,
+        request_id=request_id,
         elapsed_sec=ev.elapsed_sec,
         step=ev.step,
         step_status=step_status,

@@ -700,3 +700,77 @@ class TestForBackblaze:
         assert config_kwargs["max_pool_connections"] == 20
         assert config_kwargs["request_checksum_calculation"] == "when_required"
         assert config_kwargs["response_checksum_validation"] == "when_required"
+
+
+class TestKeyFromUrl:
+    """Inverse of get_durable_url — extract the storage key from a durable URL.
+
+    Handles both URL shapes the backend can emit (public_url_base CDN and
+    raw {endpoint}/{bucket}/{key}), and returns None for foreign URLs so
+    callers don't need to wrap calls in try/except just to route across
+    backends.
+    """
+
+    _ENDPOINT = "https://s3.us-west-004.backblazeb2.com"
+
+    def _make_backend(self, mock_boto3_mod, **kwargs):
+        from genblaze_s3.backend import S3StorageBackend
+
+        mock_client = MagicMock()
+        # meta.endpoint_url is read by key_from_url; default MagicMock
+        # would return another MagicMock, so set it explicitly.
+        mock_client.meta.endpoint_url = self._ENDPOINT
+        mock_boto3_mod.client.return_value = mock_client
+        defaults = {
+            "bucket": "my-bucket",
+            "endpoint_url": self._ENDPOINT,
+            "region": "us-west-004",
+        }
+        defaults.update(kwargs)
+        backend = S3StorageBackend(**defaults)
+        backend._region_verified = True
+        return backend
+
+    def test_public_base_round_trip(self, mock_boto3):
+        """Durable URL built with public_url_base round-trips back to its key."""
+        backend = self._make_backend(mock_boto3, public_url_base="https://cdn.example.com")
+        url = backend.get_durable_url("genblaze/runs/2026/some-id/manifest.json")
+        assert backend.key_from_url(url) == "genblaze/runs/2026/some-id/manifest.json"
+
+    def test_public_base_round_trip_special_chars(self, mock_boto3):
+        """Percent-encoded keys round-trip through unquote."""
+        backend = self._make_backend(mock_boto3, public_url_base="https://cdn.example.com")
+        key = "assets/my file (1).png"
+        url = backend.get_durable_url(key)
+        assert backend.key_from_url(url) == key
+
+    def test_raw_endpoint_round_trip(self, mock_boto3):
+        """Without public_url_base, durable URL is {endpoint}/{bucket}/{key}."""
+        backend = self._make_backend(mock_boto3)
+        url = backend.get_durable_url("genblaze/manifests/abc123.json")
+        assert backend.key_from_url(url) == "genblaze/manifests/abc123.json"
+
+    def test_foreign_host_returns_none(self, mock_boto3):
+        """A URL on a different host clearly isn't ours — return None, don't raise."""
+        backend = self._make_backend(mock_boto3)
+        assert backend.key_from_url("https://other-host.example.com/my-bucket/k") is None
+
+    def test_foreign_bucket_returns_none(self, mock_boto3):
+        """Right host, wrong bucket — None signals 'not mine'."""
+        backend = self._make_backend(mock_boto3)
+        url = f"{self._ENDPOINT}/some-other-bucket/genblaze/manifests/x.json"
+        assert backend.key_from_url(url) is None
+
+    def test_malformed_url_returns_none(self, mock_boto3):
+        """Non-URL strings produce None instead of an exception."""
+        backend = self._make_backend(mock_boto3)
+        assert backend.key_from_url("not a url at all") is None
+        assert backend.key_from_url("") is None
+
+    def test_public_base_set_now_but_url_was_raw_endpoint(self, mock_boto3):
+        """A URL written under raw-endpoint shape still round-trips after
+        public_url_base is added later (and vice versa)."""
+        backend = self._make_backend(mock_boto3, public_url_base="https://cdn.example.com")
+        # A URL produced by get_durable_url WITHOUT public_url_base.
+        raw_url = f"{self._ENDPOINT}/my-bucket/genblaze/manifests/old.json"
+        assert backend.key_from_url(raw_url) == "genblaze/manifests/old.json"

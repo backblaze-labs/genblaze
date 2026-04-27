@@ -534,6 +534,11 @@ class BaseProvider(Runnable[Step, Step]):
                     elapsed_sec=time.monotonic() - start_time,
                     message=message,
                     preview_url=preview_url,
+                    # Surface the upstream prediction id once submit() has set
+                    # it on the step. Pre-submit ticks ("submitted" status
+                    # fired before submit returns) carry None — that's
+                    # accurate, the id doesn't exist yet.
+                    request_id=step.metadata.get("upstream_id"),
                 )
             )
 
@@ -782,6 +787,12 @@ class BaseProvider(Runnable[Step, Step]):
         else:
             prediction_id = raw
             estimated_seconds = None
+
+        # Stash on the step so subsequent progress events (and the wire-side
+        # request_id field) can surface the upstream id. Stored under
+        # metadata to keep it out of the canonical manifest hash payload.
+        if prediction_id is not None:
+            step.metadata["upstream_id"] = str(prediction_id)
 
         # Fire checkpoint callback so callers can persist prediction_id before polling
         on_submit = (config or {}).get("on_submit")
@@ -1091,6 +1102,12 @@ class BaseProvider(Runnable[Step, Step]):
         else:
             prediction_id = raw
             estimated_seconds = None
+
+        # Stash on the step so subsequent progress events (and the wire-side
+        # request_id field) can surface the upstream id. Stored under
+        # metadata to keep it out of the canonical manifest hash payload.
+        if prediction_id is not None:
+            step.metadata["upstream_id"] = str(prediction_id)
 
         # Fire checkpoint callback so callers can persist prediction_id before polling
         on_submit = (config or {}).get("on_submit")
