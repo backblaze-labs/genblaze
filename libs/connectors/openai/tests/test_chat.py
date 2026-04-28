@@ -82,6 +82,61 @@ def test_messages_dicts_passthrough(mock_client):
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
 
 
+def test_multimodal_list_content_dumped_as_blocks(mock_client):
+    """list[ContentBlock] content lands as a list of dicts with `type` discriminator."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef, TextContent
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                TextContent(text="What's in this image?"),
+                ImageURLContent(image_url=ImageURLRef(url="https://x/y.png", detail="high")),
+            ],
+        )
+    ]
+    chat("gpt-4o", messages=msgs, client=mock_client)
+    payload = mock_client.chat.completions.create.call_args[1]
+    assert payload["messages"][0]["content"] == [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://x/y.png", "detail": "high"}},
+    ]
+
+
+def test_string_content_stays_string_on_wire(mock_client):
+    """str content keeps the cheaper string wire shape — no auto-wrap to list."""
+    msgs = [ChatMessage(role="user", content="hi")]
+    chat("gpt-4o", messages=msgs, client=mock_client)
+    payload = mock_client.chat.completions.create.call_args[1]
+    assert payload["messages"][0]["content"] == "hi"  # str, not [{type: text, ...}]
+
+
+def test_response_format_pydantic_class_wired(mock_client):
+    """response_format=BaseModel auto-generates the json_schema envelope."""
+    from pydantic import BaseModel
+
+    class Summary(BaseModel):
+        title: str
+
+    chat("gpt-4o", prompt="x", response_format=Summary, client=mock_client)
+    payload = mock_client.chat.completions.create.call_args[1]
+    rf = payload["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "Summary"
+
+
+def test_response_format_dict_passthrough(mock_client):
+    chat("gpt-4o", prompt="x", response_format={"type": "json_object"}, client=mock_client)
+    payload = mock_client.chat.completions.create.call_args[1]
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_response_format_omitted_when_none(mock_client):
+    chat("gpt-4o", prompt="x", client=mock_client)
+    payload = mock_client.chat.completions.create.call_args[1]
+    assert "response_format" not in payload
+
+
 def test_requires_messages_or_prompt(mock_client):
     with pytest.raises(ProviderError) as exc:
         chat("gpt-4o", client=mock_client)

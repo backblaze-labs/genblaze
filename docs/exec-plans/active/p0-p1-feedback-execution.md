@@ -196,6 +196,12 @@ Covers: **P1-12, P1-14, P1-19, P1-20, P1-21.**
    `Asset`. Default implementation writes via `backend.put()`; `LocalFilesystemSink`
    writes to disk; `ObjectStorageSink` uploads to the configured bucket.
 
+   **Returned `Asset` MUST have `sha256` and `media_type` populated** (clarification
+   C.1 from `multimodal-chat-provider.md`). Without this, `step_cache_key`'s
+   `a.sha256 or a.url` branch falls back to the rotating presigned URL and breaks
+   cache stability for user-uploaded inputs across runs. CAS callers and the
+   NVIDIA chat workflow both depend on this guarantee.
+
 4. **P1-14 — `LocalFilesystemSink`.**
    ```python
    class LocalFilesystemSink(BaseSink):
@@ -343,6 +349,11 @@ below decisions before code lands.
    `LocalFilesystemSink` (from Wave 2). A string URL (`https://`) becomes an Asset
    with `url=`; a local path becomes an Asset with `url="file://..."` and auto-computed
    `sha256`.
+
+   **Asset passthrough must be cleanly chainable** (clarification C.2 from
+   `multimodal-chat-provider.md`): `Pipeline.input(sink.emit_bytes(bytes, media_type=...))`
+   should work end-to-end without wrapping or copy. The Asset variant is the
+   primary path for user-uploaded multimodal inputs feeding chat / analysis steps.
 
 ### Implementation steps
 

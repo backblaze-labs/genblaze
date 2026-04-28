@@ -64,6 +64,13 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ChatMessage": ("genblaze_core.models.chat", "ChatMessage"),
     "ChatResponse": ("genblaze_core.models.chat", "ChatResponse"),
     "ToolCall": ("genblaze_core.models.chat", "ToolCall"),
+    "TextContent": ("genblaze_core.models.chat", "TextContent"),
+    "ImageURLContent": ("genblaze_core.models.chat", "ImageURLContent"),
+    "ImageURLRef": ("genblaze_core.models.chat", "ImageURLRef"),
+    "VideoURLContent": ("genblaze_core.models.chat", "VideoURLContent"),
+    "VideoURLRef": ("genblaze_core.models.chat", "VideoURLRef"),
+    "AudioURLContent": ("genblaze_core.models.chat", "AudioURLContent"),
+    "AudioURLRef": ("genblaze_core.models.chat", "AudioURLRef"),
     # enums
     "Modality": ("genblaze_core.models.enums", "Modality"),
     "StepType": ("genblaze_core.models.enums", "StepType"),

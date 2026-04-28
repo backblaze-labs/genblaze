@@ -9,7 +9,7 @@ import asyncio
 from typing import Any
 
 from genblaze_core.exceptions import ProviderError
-from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall
+from genblaze_core.models.chat import ChatMessage, ChatResponse, TextContent, ToolCall
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers.retry import retry_after_from_response
 
@@ -76,15 +76,42 @@ def _normalize_to_gemini(
 
     for m in iter_msgs:
         msg = m if isinstance(m, ChatMessage) else ChatMessage(**m)
+        text = _gemini_text_only(msg.content)
         # Gemini takes a separate system_instruction; pull the first system msg out.
         if msg.role == "system":
             if system_instruction is None:
-                system_instruction = msg.content
+                system_instruction = text
             continue
         role = _ROLE_MAP.get(msg.role, "user")
-        contents.append({"role": role, "parts": [{"text": msg.content}]})
+        contents.append({"role": role, "parts": [{"text": text}]})
 
     return contents, system_instruction
+
+
+def _gemini_text_only(content: Any) -> str:
+    """Reduce ChatMessage.content to plain text; raise on non-text blocks.
+
+    Gemini's chat API does not accept the OpenAI-vision wire shape — media
+    requires `inline_data` (base64) or `file_data` (File API URI). Until the
+    Google connector grows native multimodal block translation, refuse
+    Image/Video blocks at construction with a precise message rather than
+    erroring mid-runtime.
+    """
+    if isinstance(content, str):
+        return content
+    text_parts: list[str] = []
+    for block in content:
+        if isinstance(block, TextContent):
+            text_parts.append(block.text)
+            continue
+        raise ProviderError(
+            f"Gemini does not accept {type(block).__name__}. Pass media as "
+            "inline_data (base64) or file_data (File API URI) via raw dict messages, "
+            "or wait for genblaze-google's typed multimodal support (tracked in "
+            "framework-dx-recommendations.md).",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+    return "".join(text_parts)
 
 
 def _parse_response(model: str, raw: Any) -> ChatResponse:

@@ -7,6 +7,7 @@ via entry points; the ``chat`` / ``achat`` helpers sit alongside for LLM calls.
 
 from genblaze_nvidia.audio import NvidiaAudioProvider
 from genblaze_nvidia.chat import achat, chat
+from genblaze_nvidia.chat_provider import NvidiaChatProvider
 from genblaze_nvidia.image import NvidiaImageProvider
 from genblaze_nvidia.video import NvidiaVideoProvider
 
@@ -14,6 +15,7 @@ __all__ = [
     "NvidiaVideoProvider",
     "NvidiaImageProvider",
     "NvidiaAudioProvider",
+    "NvidiaChatProvider",
     "chat",
     "achat",
 ]

@@ -50,6 +50,54 @@ def mock_client():
     return client
 
 
+def test_image_block_refused_with_clear_message(mock_client):
+    """Gemini does not accept OpenAI-vision shape — raise INVALID_INPUT, not mid-runtime."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef, TextContent
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                TextContent(text="describe"),
+                ImageURLContent(image_url=ImageURLRef(url="https://x/y.png")),
+            ],
+        )
+    ]
+    with pytest.raises(ProviderError) as info:
+        chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    assert info.value.error_code == ProviderErrorCode.INVALID_INPUT
+    assert "ImageURLContent" in str(info.value)
+    assert "inline_data" in str(info.value) or "file_data" in str(info.value)
+
+
+def test_video_block_refused_with_clear_message(mock_client):
+    from genblaze_core.models.chat import VideoURLContent, VideoURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user", content=[VideoURLContent(video_url=VideoURLRef(url="https://x/y.mp4"))]
+        )
+    ]
+    with pytest.raises(ProviderError) as info:
+        chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    assert info.value.error_code == ProviderErrorCode.INVALID_INPUT
+    assert "VideoURLContent" in str(info.value)
+
+
+def test_text_only_list_content_translated(mock_client):
+    """All-text list content translates cleanly to Gemini's parts shape."""
+    from genblaze_core.models.chat import TextContent
+
+    msgs = [
+        ChatMessage(role="user", content=[TextContent(text="hello"), TextContent(text=" world")])
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    call = mock_client.models.generate_content.call_args.kwargs
+    # first user content's parts text should join the blocks.
+    parts = call["contents"][0]["parts"]
+    assert parts == [{"text": "hello world"}]
+
+
 def test_prompt_shorthand(mock_client):
     resp = chat("gemini-2.5-flash", prompt="hi", client=mock_client)
     payload = mock_client.models.generate_content.call_args[1]

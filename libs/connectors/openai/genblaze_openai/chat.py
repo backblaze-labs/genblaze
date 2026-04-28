@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 from genblaze_core.exceptions import ProviderError
-from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall
+from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall, coerce_response_format
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers.retry import retry_after_from_response
 
@@ -74,7 +74,14 @@ def _normalize_messages(
     if messages is not None:
         for m in messages:
             if isinstance(m, ChatMessage):
-                msg: dict[str, Any] = {"role": m.role, "content": m.content}
+                # str content stays as str on the wire (cheaper, avoids array-content
+                # quirks on system messages); list content gets dumped as a list of
+                # block dicts via pydantic — discriminator type tag is preserved.
+                if isinstance(m.content, str):
+                    wire_content: Any = m.content
+                else:
+                    wire_content = [b.model_dump(exclude_none=True) for b in m.content]
+                msg: dict[str, Any] = {"role": m.role, "content": wire_content}
                 if m.name is not None:
                     msg["name"] = m.name
                 if m.tool_call_id is not None:
@@ -145,6 +152,7 @@ def chat(
     tools: list[dict] | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    response_format: dict | type | None = None,
     api_key: str | None = None,
     base_url: str | None = None,
     timeout: float = 60.0,
@@ -160,6 +168,9 @@ def chat(
         system: System instruction prepended when set.
         tools: Tool/function definitions in OpenAI's native shape.
         temperature, max_tokens: Standard sampling controls (passed through if set).
+        response_format: Structured-output spec. Accepts a Pydantic ``BaseModel``
+            subclass (auto-generates the JSON schema) or a pre-formed dict (e.g.
+            ``{"type": "json_object"}`` or ``{"type": "json_schema", ...}``).
         api_key: API key override; otherwise OPENAI_API_KEY env var.
         base_url: Override the OpenAI API base URL — use for Azure OpenAI or
             OpenAI-compatible endpoints. Ignored when ``client`` is supplied.
@@ -201,6 +212,8 @@ def chat(
         payload["temperature"] = temperature
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    if response_format is not None:
+        payload["response_format"] = coerce_response_format(response_format)
     payload.update(kwargs)
 
     try:

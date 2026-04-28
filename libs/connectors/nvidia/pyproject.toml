@@ -39,6 +39,7 @@ chat = [
 nvidia-video = "genblaze_nvidia:NvidiaVideoProvider"
 nvidia-image = "genblaze_nvidia:NvidiaImageProvider"
 nvidia-audio = "genblaze_nvidia:NvidiaAudioProvider"
+nvidia-chat = "genblaze_nvidia:NvidiaChatProvider"
 
 [tool.hatch.build.targets.wheel]
 packages = ["genblaze_nvidia"]

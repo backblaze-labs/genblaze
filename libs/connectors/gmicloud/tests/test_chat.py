@@ -67,6 +67,29 @@ def test_messages_chat_message_objects(mock_client):
     assert body["messages"] == [{"role": "user", "content": "hi"}]
 
 
+def test_response_format_pydantic_class_wired(mock_client):
+    from pydantic import BaseModel
+
+    class Summary(BaseModel):
+        title: str
+
+    chat("deepseek-ai/DeepSeek-V3", prompt="x", response_format=Summary, client=mock_client)
+    body = mock_client.post.call_args[1]["json"]
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["name"] == "Summary"
+
+
+def test_response_format_dict_passthrough(mock_client):
+    chat(
+        "deepseek-ai/DeepSeek-V3",
+        prompt="x",
+        response_format={"type": "json_object"},
+        client=mock_client,
+    )
+    body = mock_client.post.call_args[1]["json"]
+    assert body["response_format"] == {"type": "json_object"}
+
+
 def test_requires_messages_or_prompt(mock_client):
     with pytest.raises(ProviderError) as exc:
         chat("deepseek-ai/DeepSeek-V3", client=mock_client)

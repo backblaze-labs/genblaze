@@ -131,6 +131,65 @@ async def main():
 asyncio.run(main())
 ```
 
+### Structured outputs
+
+Pass a Pydantic class to `response_format=` and the JSON Schema is generated
+automatically (NIM, OpenAI, GMICloud all speak the same `json_schema` envelope).
+
+```python
+from pydantic import BaseModel
+from genblaze_nvidia import chat
+
+class Summary(BaseModel):
+    title: str
+    key_points: list[str]
+
+resp = chat(
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    prompt="Summarize: NVIDIA shipped a 30B-A3B omnimodal model.",
+    response_format=Summary,
+)
+import json; obj = Summary.model_validate(json.loads(resp.text))
+```
+
+## Chat as a Pipeline step — `NvidiaChatProvider`
+
+Drop NIM chat into a Pipeline alongside generation steps. Multimodal input
+flows through `step.inputs[Asset]` — each asset becomes the right OpenAI-vision
+content block based on its `media_type`. Verified against the Nemotron 3 Nano
+Omni model card on build.nvidia.com.
+
+```python
+from genblaze_core import Asset, Pipeline
+from genblaze_nvidia import NvidiaChatProvider
+
+# Eyes-and-ears: image + audio + video in one step.
+inputs = [
+    Asset(url="https://example.com/scene.png",  media_type="image/png"),
+    Asset(url="https://example.com/voice.wav",  media_type="audio/wav"),
+    Asset(url="https://example.com/clip.mp4",   media_type="video/mp4"),
+]
+
+pipe = Pipeline().input(*inputs).step(
+    NvidiaChatProvider(reasoning=False),  # turn off thinking for a fast perception pass
+    model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    prompt="Describe what's happening across these inputs.",
+    input_from=[-1],
+)
+result = pipe.run()
+print(result.steps[-1].assets[0].metadata["text"])
+```
+
+`reasoning` is tri-state: `None` (default) lets the server pick based on the
+model checkpoint, `True`/`False` overrides explicitly via
+`extra_body["chat_template_kwargs"]["enable_thinking"]`. Tuning fields like
+`media_io_kwargs={"video": {"fps": 3.0}}` and
+`mm_processor_kwargs={"max_num_tiles": 3}` are passed through to NIM untouched.
+
+PDFs are not natively supported — Nemotron Omni processes documents as
+multi-page image sequences upstream, so callers must rasterize pages
+client-side and pass each one as `Asset(media_type="image/png")`.
+
 ## Models
 
 Curated entries encode per-model behavior (SDXL's `text_prompts` shape,
