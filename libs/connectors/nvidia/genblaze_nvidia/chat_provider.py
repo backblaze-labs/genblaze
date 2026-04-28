@@ -39,7 +39,7 @@ from genblaze_core.runnable.config import RunnableConfig
 
 from ._base import resolve_api_key
 from ._errors import map_nvidia_error
-from .chat import _resolve_chat_base_url, _normalize_messages, _parse_response
+from .chat import _normalize_messages, _parse_response, _resolve_chat_base_url
 from .models.chat import build_chat_registry
 
 

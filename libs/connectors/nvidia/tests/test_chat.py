@@ -159,9 +159,8 @@ def test_chat_reads_nvidia_chat_base_url_env(monkeypatch):
 
 def test_response_format_pydantic_class_wired_to_nim():
     """NIM is OpenAI-wire-compat; response_format=BaseModel produces json_schema envelope."""
-    from pydantic import BaseModel
-
     from genblaze_nvidia import chat
+    from pydantic import BaseModel
 
     class Summary(BaseModel):
         title: str
