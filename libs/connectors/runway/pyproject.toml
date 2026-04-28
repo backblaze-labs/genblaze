@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-runway"
-version = "0.2.2"
+version = "0.2.3"
 description = "Runway Gen video provider adapter for genblaze"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-s3"
-version = "0.2.3"
+version = "0.2.4"
 description = "S3-compatible storage backend for genblaze (B2, R2, MinIO, AWS)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"

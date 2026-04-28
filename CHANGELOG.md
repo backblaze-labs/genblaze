@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-04-24
+
+### Released package versions
+- `genblaze-core` 0.2.6, `genblaze-gmicloud` 0.2.6, `genblaze-google` 0.2.4,
+  `genblaze-openai` 0.2.4, `genblaze-nvidia` 0.2.1, `genblaze-s3` 0.2.4,
+  `genblaze-runway` 0.2.3, `genblaze-luma` 0.2.3.
+- `@genblaze/spec` (npm) 0.3.3 — adds `step-queued` event schema +
+  queued/heartbeat/ETA/request_id fields on existing event schemas.
+- Untouched (no republish): `genblaze-replicate` 0.2.2, `genblaze-decart`
+  0.2.2, `genblaze-elevenlabs` 0.2.2, `genblaze-lmnt` 0.2.2,
+  `genblaze-stability-audio` 0.2.2, `genblaze-langsmith` 0.2.1,
+  `genblaze-cli` 0.2.0, `genblaze` (umbrella) 0.3.1.
+
+### Fixed
+- `genblaze-core`: `StepRetriedEvent` now actually reaches `Pipeline.stream()`
+  / `astream()` consumers. The schema shipped in `@genblaze/spec` 0.3.2 but
+  the `_install_progress_tracer` composite only wrapped `on_progress`, so
+  `BaseProvider._emit_retry` events fired into a void — UIs subscribed to
+  the stream saw silence between attempt 1 and attempt N. Adds
+  `QueueEmitter.on_retry`, extends the tracer-install composite to wrap
+  `on_retry` with the same user-callback-then-emit pattern as `on_progress`,
+  and exposes `on_retry=` as a kwarg on `Pipeline.run()` / `arun()`.
+
+### Added
+- `genblaze-core`: typed multimodal `ChatMessage.content` — accepts
+  structured content parts (text + image) instead of plain strings, plus a
+  `response_format` helper for JSON-mode / structured-output across
+  providers. The four chat-bearing connectors (`gmicloud`, `google`,
+  `openai`, `nvidia`) all wire to the new shape.
+- `genblaze-nvidia`: new `chat_provider.py` (272 lines) and `models/chat.py`
+  surface the multimodal contract end-to-end. Includes 269 lines of new
+  test coverage.
+- `genblaze-core`: streaming events gain `queued` lifecycle state,
+  heartbeats, and ETA propagation. `BaseProvider` plumbing emits these from
+  any connector that overrides the new hooks; `Runway` and `Luma`
+  connectors implement the emission code in this release. Spec gains
+  `events/v1/step-queued.schema.json` and adds the relevant fields on
+  step-started / step-progress / step-completed / step-failed.
+- `genblaze-s3`: `request_id` / upstream prediction tracking on the storage
+  backend (38 lines + 74 lines of tests) for end-to-end traceability from
+  manifest → upstream provider request.
+- `genblaze-core`: every media handler updated (jpeg, png, mp3, wav, webp,
+  mp4, flac, aac, embedder, sidecar) plus comprehensive new test coverage
+  for the media pipeline.
+
 ### Added
 - `genblaze-core`: `BaseProvider.poll_progress(prediction_id)` hook —
   connectors return mid-poll signals (`preview_url`, `progress_pct`,
