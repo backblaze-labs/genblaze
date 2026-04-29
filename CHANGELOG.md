@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `genblaze-s3`: ``S3StorageBackend.put`` no longer returns a presigned URL.
+  The previous return shape leaked the access-key-id
+  (``X-Amz-Credential`` query parameter) into anything that persisted the
+  value — logs, manifests, DB rows — and broke canonical-hash stability
+  for content-addressable layouts because the signature rotates per call.
+  ``put`` now returns the storage key (a ``str``); compose with
+  :meth:`S3StorageBackend.get_durable_url` for a credential-free,
+  persistable URL, or call :meth:`get_url` for an explicit presigned
+  URL when one is genuinely needed (Phase 1B forthcoming
+  ``presigned_get``/``presigned_put``/``presigned_post`` methods will
+  return a redaction-safe :class:`PresignedURL` value object).
+  No deprecation shim — every internal caller in the monorepo discards
+  ``put``'s return value already (verified across ``ObjectStorageSink``
+  and ``AssetTransfer``); the only callers affected are external code
+  paths that were persisting the leaked URL, which was itself the
+  vulnerability. Closes bug #1 in the storage-backend-hardening
+  tranche.
+
+### Changed
+- `genblaze-s3`: ``S3StorageBackend.for_backblaze(auto_lifecycle=...)``
+  now defaults to ``False`` (was ``True``). Construction no longer
+  silently mutates bucket-wide lifecycle configuration. Callers that
+  want the historic behavior pass ``auto_lifecycle=True`` explicitly,
+  or call :meth:`ensure_lifecycle_defaults` after construction with
+  intentional opt-in. Closes bug #4 in the storage-backend-hardening
+  tranche.
+- `genblaze-s3`: ``for_backblaze`` preflight failures now **raise**
+  instead of warning-and-returning a half-broken backend. Placeholder
+  credentials surface immediately at construction time rather than
+  failing on every subsequent operation with a stale "preflight
+  skipped" warning. Use ``preflight=False`` (see ``### Added``) for
+  offline tests that legitimately want to defer verification.
+- `genblaze-s3`: ``examples/quickstart.py`` and
+  ``examples/b2_storage_pipeline.py`` updated to pass
+  ``auto_lifecycle=True`` explicitly so the runnable examples preserve
+  their historic behavior under the new default.
+
+### Added
+- `genblaze-s3`: ``S3StorageBackend.for_backblaze(preflight=...)`` —
+  set ``preflight=False`` to skip the construction-time HeadBucket
+  call. Useful for offline tests with placeholder credentials. Cannot
+  be combined with ``auto_lifecycle=True`` (lifecycle requires a
+  verified region) — passing both raises ``ValueError``. Closes the
+  ``preflight=False`` half of bug #4.
+
+- `genblaze-s3`: storage-backend hardening Phase 1A — additive value
+  objects for the upcoming P0 bug fixes. None are wired into backend
+  methods yet (Phases 1B/1D); shipping the public API first lets
+  callers build on top while we land behavior changes behind deprecation
+  shims. Three new symbols, one back-compatible kwarg alias.
+  - `genblaze_s3.URLPolicy` (`StrEnum` — `AUTO` / `PUBLIC` /
+    `PRESIGNED`) and `genblaze_s3.URLPolicyError`. Replaces the silent
+    `expires_in`-vs-`public_url_base` precedence in `get_url` (bug #2).
+    `AUTO` matches today's behavior; `PUBLIC` and `PRESIGNED` force the
+    flavor. Wiring lands in Phase 1D — Phase 1A is the value-object
+    foundation only.
+  - `genblaze_s3.Encryption` — symmetric SSE config accepted by
+    `put`/`get`/`copy`/`head` (bug #3). Frozen dataclass with three
+    construction modes: `Encryption.sse_s3()`, `Encryption.sse_kms(key_id)`,
+    `Encryption.sse_c(key_bytes)` (auto-computes key MD5). Each mode
+    serializes to the right boto3 wire shape via `to_put_extra_args` /
+    `to_get_extra_args` / `to_head_extra_args` / `to_copy_extra_args`.
+    SSE-C customer keys are redacted in `__repr__` AND `__str__` —
+    only direct attribute access reveals the raw bytes. Wiring lands
+    in Phase 1D.
+  - `genblaze_s3.PresignedURL` — credential-bearing URL with
+    redaction-safe formatting. `__repr__` and `__str__` strip
+    `X-Amz-Signature` / `X-Amz-Credential` / `X-Amz-Security-Token`
+    (and legacy SigV2 equivalents) so `f"...{url}..."` log lines no
+    longer leak transient credentials. The `.url` attribute returns
+    the unredacted form for handing to HTTP clients — every leak
+    site becomes a conscious decision rather than a default
+    string-interpolation accident. Foundation for the Phase 1B
+    `presigned_get`/`presigned_put`/`presigned_post` methods.
+  - `genblaze_s3.S3StorageBackend` accepts `access_key_id` and
+    `secret_access_key` as kwarg aliases of `aws_access_key_id` and
+    `aws_secret_access_key` (bug #10). The README quickstart already
+    used the short form; both names now work. Passing both names for
+    the same credential raises `TypeError` — no silent precedence.
+
+- `genblaze-core`: storage-backend hardening Phase 0 foundation modules.
+  Additive only — no behavior change for end-users; downstream phases land
+  the P0 bug fixes and missing primitives (range/stream/list/head/etc.) on
+  top of these. Net: 6 new symbols, 7 inherited async method pairs on every
+  `StorageBackend` subclass.
+  - `genblaze_core.StorageConfig` — frozen `@dataclass(frozen=True, slots=True)`
+    with 8 tunable knobs (`max_pool_connections`, `connect_timeout_sec`,
+    `read_timeout_sec`, `multipart_threshold`, `multipart_chunk_size`,
+    `retries`, `user_agent_extra`, `signing_addressing_style`). Defaults
+    preserve the historic `S3StorageBackend` values; `StorageConfig()` is a
+    no-op upgrade. Mirrors the `RetryPolicy` precedent from
+    `genblaze_core.providers.retry`.
+  - `genblaze_core.StorageErrorCode` — typed enum (`NOT_FOUND`,
+    `ACCESS_DENIED`, `AUTH_FAILURE`, `REGION_REDIRECT`, `RATE_LIMIT`,
+    `SERVER_ERROR`, `NETWORK`, `TIMEOUT`, `INVALID_INPUT`,
+    `ENCRYPTION_REQUIRED`, `OBJECT_LOCKED`, `UNKNOWN`) and
+    `RETRYABLE_STORAGE_CODES` frozenset. Mirrors `ProviderErrorCode` shape
+    so retry classification and observability tooling share vocabulary
+    across the provider and storage subsystems.
+  - `genblaze_core.classify_botocore_error(exc, *, operation, key=None)` —
+    maps a `botocore.ClientError` (or any boto exception) to a populated
+    `StorageError` with `error_code`, `request_id`, `status_code`,
+    `retry_after`, `is_retriable`, and `operation` set. Lazy-imports
+    `botocore` so core stays minimal-install clean.
+  - `genblaze_core.exceptions.StorageError.__init__` extended with optional
+    keyword args `error_code`, `request_id`, `status_code`, `retry_after`,
+    `is_retriable`, `operation` — full parity with `ProviderError`.
+    Backwards-compatible: every existing `StorageError(message)` call site
+    in the 11 connectors works unchanged.
+  - `genblaze_core.storage.base.StorageBackend` — async pairs for all 6
+    existing sync abstract methods (`aput`, `aget`, `aexists`, `adelete`,
+    `aget_url`, `aget_durable_url`) plus `acopy` for the concrete `copy`
+    method. Default impls delegate via `asyncio.to_thread`; backends with
+    native async (e.g. `aioboto3`) override directly. Streaming primitives
+    (`alist`, `astream`) are deliberately deferred to a later phase — sync
+    iterators threadpool-wrapped into async iterators lie about
+    back-pressure and buffer the entire result.
+  - Internal: `genblaze_core.storage._tracer.traced(op_name)` decorator —
+    OTel-instrumentation primitive for backend methods. Returns the wrapped
+    function unchanged when `opentelemetry` isn't installed (zero-overhead
+    no-op). Not yet wired to the S3 backend (Phase 1+).
+
 ## [0.2.8] - 2026-04-28
 
 ### Released package versions

@@ -231,7 +231,56 @@ class BatchPipelineError(GenblazeError):
 
 
 class StorageError(GenblazeError):
-    """Raised when an object storage operation fails."""
+    """Raised when an object storage operation fails.
+
+    Mirrors :class:`ProviderError`'s shape so retry classification and
+    observability tooling can reuse the same field vocabulary across the
+    provider and storage subsystems.
+
+    Attributes:
+        error_code: Typed classification (see
+            :class:`genblaze_core.storage.errors.StorageErrorCode`). ``None``
+            on errors raised before classification (e.g. local bookkeeping).
+        request_id: Upstream request-id for the failed call. Extracted from
+            ``ResponseMetadata.RequestId`` for boto3 errors when present.
+        status_code: HTTP status code when the failure originated from an
+            HTTP response.
+        retry_after: Server-provided ``Retry-After`` hint in seconds. The
+            retry helper honors it over computed backoff (clamped to
+            ``MAX_RETRY_AFTER_SEC``).
+        is_retriable: Whether the retry helper should attempt this call
+            again; derived from ``error_code`` via
+            :data:`genblaze_core.storage.errors.RETRYABLE_STORAGE_CODES`.
+        operation: The backend method name that raised, e.g. ``"put"``,
+            ``"head"``, ``"presigned_get"``. Useful for logs and tracing.
+
+    Backwards-compatible: existing call sites of ``StorageError(message)``
+    continue to work unchanged — every new field is keyword-only with a
+    safe default.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: Any = None,
+        request_id: str | None = None,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+        is_retriable: bool = False,
+        operation: str | None = None,
+    ):
+        super().__init__(message)
+        # ``error_code`` is typed as ``Any`` here to avoid a top-level import
+        # cycle (``StorageErrorCode`` lives in ``storage/errors.py`` which
+        # transitively imports this module). Callers should pass a
+        # ``StorageErrorCode`` member; the field is documented as such.
+        self.error_code = error_code
+        self.request_id = request_id
+        self.status_code = status_code
+        self.retry_after = retry_after
+        self.is_retriable = is_retriable
+        self.operation = operation
 
 
 class WebhookError(GenblazeError):

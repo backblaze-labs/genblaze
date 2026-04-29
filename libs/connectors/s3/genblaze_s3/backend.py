@@ -79,6 +79,11 @@ class S3StorageBackend(StorageBackend):
             If set, get_url() returns {public_url_base}/{key} instead of pre-signed URLs.
         aws_access_key_id: Override credentials (else uses boto3 defaults).
         aws_secret_access_key: Override credentials.
+        access_key_id: Alias of ``aws_access_key_id``. Accepts either name —
+            the README and several ecosystem examples use the unprefixed
+            form, but boto3's native kwarg uses the ``aws_`` prefix. Passing
+            both raises ``TypeError``; no silent precedence.
+        secret_access_key: Alias of ``aws_secret_access_key`` (same rules).
     """
 
     def __init__(
@@ -90,7 +95,25 @@ class S3StorageBackend(StorageBackend):
         public_url_base: str | None = None,
         aws_access_key_id: str | None = None,
         aws_secret_access_key: str | None = None,
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
     ):
+        # Resolve aliases. Both names refer to the same boto3 credential —
+        # passing both is a sign of caller confusion (which one wins?), so
+        # we raise rather than silently picking one. Closes bug #10.
+        resolved_access_key = self._resolve_alias(
+            "aws_access_key_id",
+            aws_access_key_id,
+            "access_key_id",
+            access_key_id,
+        )
+        resolved_secret_key = self._resolve_alias(
+            "aws_secret_access_key",
+            aws_secret_access_key,
+            "secret_access_key",
+            secret_access_key,
+        )
+
         self._bucket = bucket
         self._public_url_base = public_url_base.rstrip("/") if public_url_base else None
         # Region may be updated later by auto-detection (see _ensure_region_verified).
@@ -108,8 +131,8 @@ class S3StorageBackend(StorageBackend):
         # boto3's Config object does NOT hold credentials (they live in the
         # session's resolver), so we can't recover them from self._client
         # after construction — persist them explicitly for _reconfigure_for_region.
-        self._aws_access_key_id = aws_access_key_id
-        self._aws_secret_access_key = aws_secret_access_key
+        self._aws_access_key_id = resolved_access_key
+        self._aws_secret_access_key = resolved_secret_key
         self._endpoint_url = endpoint_url
 
         try:
@@ -122,6 +145,28 @@ class S3StorageBackend(StorageBackend):
 
         self._client = boto3.client("s3", **self._client_kwargs())
         self._transfer_config = self._build_transfer_config()
+
+    @staticmethod
+    def _resolve_alias(
+        primary_name: str,
+        primary_value: str | None,
+        alias_name: str,
+        alias_value: str | None,
+    ) -> str | None:
+        """Resolve a kwarg + its alias; raise if both passed.
+
+        ``access_key_id`` is documented as an alias of ``aws_access_key_id``
+        (the README uses the short form; boto3 expects the ``aws_`` prefix).
+        Accept either, but raise ``TypeError`` when both are passed —
+        silent precedence between two names for the same value is a
+        debugging trap.
+        """
+        if primary_value is not None and alias_value is not None:
+            raise TypeError(
+                f"S3StorageBackend received both {primary_name}= and {alias_name}=; "
+                f"these are aliases — pass only one."
+            )
+        return primary_value if primary_value is not None else alias_value
 
     @property
     def _is_b2(self) -> bool:
@@ -162,7 +207,7 @@ class S3StorageBackend(StorageBackend):
         metadata: dict[str, str] | None = None,
         extra_args: dict[str, Any] | None = None,
     ) -> str:
-        """Upload an object to S3. Returns the storage URL.
+        """Upload an object to S3. Returns the storage key.
 
         Uses boto3's managed ``upload_fileobj`` so large payloads are
         automatically split into multipart uploads (16 MB parts, 4-way
@@ -175,6 +220,13 @@ class S3StorageBackend(StorageBackend):
         that need whole-object verification on large payloads should
         compute and pass it with a ``bytes`` payload under the multipart
         threshold, or omit and rely on the per-part default.
+
+        **Return shape changed in 0.3.0:** previously returned a presigned
+        URL via :meth:`get_url` for the just-uploaded object. That shape
+        leaked the access-key-id into anything that persisted the value
+        and broke canonical-hash stability for CAS layouts. The current
+        return is the storage key — call :meth:`get_durable_url` on it
+        to get a credential-free URL safe to persist.
         """
         try:
             self._ensure_region_verified()
@@ -189,7 +241,7 @@ class S3StorageBackend(StorageBackend):
                 ExtraArgs=merged,
                 Config=self._transfer_config,
             )
-            return self.get_url(key)
+            return key
         except StorageError:
             raise
         except Exception as exc:
@@ -203,7 +255,7 @@ class S3StorageBackend(StorageBackend):
     ) -> str:
         """Single-PUT path used when the caller pinned a whole-object checksum."""
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data, **extra_args)
-        return self.get_url(key)
+        return key
 
     @staticmethod
     def _build_extra_args(
@@ -520,7 +572,8 @@ class S3StorageBackend(StorageBackend):
         key_id: str | None = None,
         app_key: str | None = None,
         public_url_base: str | None = None,
-        auto_lifecycle: bool = True,
+        auto_lifecycle: bool = False,
+        preflight: bool = True,
     ) -> S3StorageBackend:
         """Construct an S3StorageBackend preconfigured for Backblaze B2.
 
@@ -538,6 +591,16 @@ class S3StorageBackend(StorageBackend):
         must still be specified — auto-detect can't read a header that isn't
         sent.
 
+        **Default change in 0.3.0:** ``auto_lifecycle`` now defaults to
+        ``False``. The previous default applied bucket-wide lifecycle rules
+        on every construction — a hidden side effect that could surprise
+        callers managing lifecycle out-of-band (Terraform, console, IaC).
+        Pass ``auto_lifecycle=True`` explicitly to opt in, or call
+        :meth:`ensure_lifecycle_defaults` after construction for the same
+        effect with explicit intent. Preflight failures now raise instead
+        of warning-and-continuing — placeholder credentials no longer
+        construct a "working" backend that fails on first I/O.
+
         Args:
             bucket: B2 bucket name. Defaults to ``$B2_BUCKET``.
             region: B2 region slug (e.g. "us-west-004", "us-east-005",
@@ -549,20 +612,35 @@ class S3StorageBackend(StorageBackend):
             public_url_base: Optional B2 friendly-URL base for public buckets,
                 e.g. ``"https://f004.backblazeb2.com/file/my-bucket"``. When
                 set, :meth:`get_url` returns these instead of pre-signed URLs.
-            auto_lifecycle: When True (default), apply recommended lifecycle
-                rules on construction — cancel orphaned multipart uploads
-                after 7 days and expire noncurrent manifest versions after
-                30 days. Set False if lifecycle is managed out-of-band
-                (Terraform, console, IaC).
+            auto_lifecycle: When True, apply recommended lifecycle rules on
+                construction — cancel orphaned multipart uploads after 7
+                days and expire noncurrent manifest versions after 30
+                days. **Default False as of 0.3.0** (was True). Requires
+                ``preflight=True``.
+            preflight: When True (default), verify bucket region on
+                construction and raise on auth/region failure. Set False
+                for offline tests or placeholder credentials — defers
+                the verify to the first real I/O call. Cannot be
+                combined with ``auto_lifecycle=True`` (lifecycle requires
+                a verified region).
 
         Example::
 
             # All config from environment (B2_BUCKET, B2_REGION, B2_KEY_ID, B2_APP_KEY)
             backend = S3StorageBackend.for_backblaze()
-            # Or pass explicitly
-            backend = S3StorageBackend.for_backblaze("my-bucket", region="us-east-005")
+            # Or pass explicitly + opt into lifecycle defaults:
+            backend = S3StorageBackend.for_backblaze(
+                "my-bucket", region="us-east-005", auto_lifecycle=True,
+            )
             sink = ObjectStorageSink(backend, key_strategy=KeyStrategy.CONTENT_ADDRESSABLE)
         """
+        if not preflight and auto_lifecycle:
+            raise ValueError(
+                "for_backblaze: preflight=False and auto_lifecycle=True are "
+                "incompatible — lifecycle application requires a verified region. "
+                "Either keep preflight=True, or apply lifecycle later via "
+                "backend.ensure_lifecycle_defaults() once the bucket is reachable."
+            )
         resolved_bucket = bucket or os.environ.get("B2_BUCKET")
         if not resolved_bucket:
             raise ValueError(
@@ -586,15 +664,14 @@ class S3StorageBackend(StorageBackend):
             aws_access_key_id=resolved_key,
             aws_secret_access_key=resolved_secret,
         )
+        if not preflight:
+            # Caller opted out — leave the verify-on-first-use machinery
+            # alone so a real I/O call later still surfaces auth/region
+            # failures with the usual error path.
+            return backend
+        # preflight=True: verify region (raises StorageError on failure
+        # instead of warn-and-continue) and optionally apply lifecycle.
+        backend._ensure_region_verified()
         if auto_lifecycle:
-            # Region may still be wrong here — ensure_lifecycle_defaults calls
-            # put_bucket_lifecycle_configuration which surfaces 301 cleanly
-            # via the normal region-redirect path. Verify first so the
-            # lifecycle call lands on the right region.
-            try:
-                backend._ensure_region_verified()
-            except StorageError as exc:
-                logger.warning("auto_lifecycle skipped — bucket preflight failed: %s", exc)
-                return backend
             backend.ensure_lifecycle_defaults()
         return backend

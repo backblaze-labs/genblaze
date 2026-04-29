@@ -1,43 +1,14 @@
-"""Tests for S3StorageBackend — uses mock boto3."""
+"""Tests for S3StorageBackend — uses mock boto3 (see ``conftest.py``)."""
 
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from genblaze_core.exceptions import StorageError
 
-
-class _FakeClientError(Exception):
-    """Real exception subclass so backend code can `except ClientError` as usual."""
-
-    def __init__(self, response, operation_name):
-        super().__init__(operation_name)
-        self.response = response
-        self.operation_name = operation_name
-
-
-@pytest.fixture(autouse=True)
-def mock_boto3():
-    """Mock boto3 module before importing S3StorageBackend."""
-    mock_mod = MagicMock()
-    mock_botocore = MagicMock()
-    # botocore.exceptions.ClientError must be a real exception class — the
-    # backend does `except ClientError`, which requires a real type.
-    mock_botocore.exceptions.ClientError = _FakeClientError
-    modules = {
-        "boto3": mock_mod,
-        # boto3.s3.transfer.TransferConfig is imported at backend init time;
-        # exposing the submodule path satisfies the `from ... import` form.
-        "boto3.s3": mock_mod.s3,
-        "boto3.s3.transfer": mock_mod.s3.transfer,
-        "botocore": mock_botocore,
-        "botocore.config": mock_botocore.config,
-        "botocore.exceptions": mock_botocore.exceptions,
-    }
-    with patch.dict(sys.modules, modules):
-        yield mock_mod
+from tests.conftest import _FakeClientError
 
 
 class TestS3StorageBackend:
@@ -76,6 +47,33 @@ class TestS3StorageBackend:
         assert extra["ChecksumAlgorithm"] == "SHA256"
         # put_object is no longer used for the body path.
         mock_client.put_object.assert_not_called()
+
+    def test_put_returns_storage_key_not_url(self, mock_boto3):
+        """**0.3.0 contract change:** put() returns the storage key.
+
+        Previously returned a presigned URL string — which leaked the
+        access-key-id (X-Amz-Credential) into anything that persisted
+        the value (logs, manifests, DB rows) and broke canonical-hash
+        stability for content-addressable layouts since the signature
+        rotates per call. Callers wanting a URL now compose with
+        :meth:`get_durable_url` (credential-free, persistable) or
+        :meth:`get_url` (presigned, transient).
+        """
+        backend, mock_client = self._make_backend(mock_boto3)
+        result = backend.put("test/key.png", b"data")
+        # The key, not a URL — no scheme, no signature, no credential.
+        assert result == "test/key.png"
+        # Crucial: put() does NOT call generate_presigned_url anymore. A
+        # subsequent get_url() would, but put() itself stays signature-free.
+        mock_client.generate_presigned_url.assert_not_called()
+
+    def test_put_single_returns_storage_key_not_url(self, mock_boto3):
+        """Single-PUT path (caller-pinned checksum) shares the same return contract."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        result = backend.put("test/key.bin", b"data", extra_args={"ChecksumSHA256": "abc=="})
+        assert result == "test/key.bin"
+        mock_client.put_object.assert_called_once()
+        mock_client.generate_presigned_url.assert_not_called()
 
     def test_put_passes_extra_args(self, mock_boto3):
         """extra_args passthrough lets callers set Cache-Control, SSE, etc."""
@@ -648,8 +646,15 @@ class TestForBackblaze:
         with pytest.raises(ValueError, match="B2_BUCKET"):
             S3StorageBackend.for_backblaze()
 
-    def test_auto_lifecycle_applies_defaults(self, mock_boto3, monkeypatch):
-        """auto_lifecycle=True (default) calls put_bucket_lifecycle_configuration."""
+    def test_auto_lifecycle_default_does_not_apply(self, mock_boto3, monkeypatch):
+        """**0.3.0 default change:** ``auto_lifecycle`` is False by default.
+
+        Previously a hidden side effect on construction; bucket-wide
+        lifecycle rules were silently applied without explicit caller
+        intent. New default: do nothing — caller must opt in via
+        ``auto_lifecycle=True`` or call
+        :meth:`ensure_lifecycle_defaults` directly.
+        """
         from genblaze_s3.backend import S3StorageBackend
 
         monkeypatch.setenv("B2_KEY_ID", "k")
@@ -659,10 +664,10 @@ class TestForBackblaze:
 
         S3StorageBackend.for_backblaze("my-bucket")
 
-        mock_client.put_bucket_lifecycle_configuration.assert_called_once()
+        mock_client.put_bucket_lifecycle_configuration.assert_not_called()
 
-    def test_auto_lifecycle_opt_out(self, mock_boto3, monkeypatch):
-        """Users managing lifecycle in Terraform/IaC can disable the helper."""
+    def test_auto_lifecycle_opt_in_applies_defaults(self, mock_boto3, monkeypatch):
+        """Explicit ``auto_lifecycle=True`` still applies the helper rules."""
         from genblaze_s3.backend import S3StorageBackend
 
         monkeypatch.setenv("B2_KEY_ID", "k")
@@ -670,9 +675,68 @@ class TestForBackblaze:
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
 
-        S3StorageBackend.for_backblaze("my-bucket", auto_lifecycle=False)
+        S3StorageBackend.for_backblaze("my-bucket", auto_lifecycle=True)
 
-        mock_client.put_bucket_lifecycle_configuration.assert_not_called()
+        mock_client.put_bucket_lifecycle_configuration.assert_called_once()
+
+    def test_preflight_false_skips_head_bucket(self, mock_boto3, monkeypatch):
+        """``preflight=False`` defers region verify to first real I/O.
+
+        Useful for offline tests with placeholder credentials that would
+        otherwise fail the construction-time HeadBucket call.
+        """
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        backend = S3StorageBackend.for_backblaze("my-bucket", preflight=False)
+
+        # No HeadBucket issued at construction time.
+        mock_client.head_bucket.assert_not_called()
+        # Backend remains unverified — first I/O still triggers the verify.
+        assert backend._region_verified is False
+
+    def test_preflight_failure_raises_instead_of_warn(self, mock_boto3, monkeypatch):
+        """Preflight 403 / auth failure must raise on construction.
+
+        Previous behavior warned and returned a backend that would then
+        fail on every subsequent call. Loud failure at construction is
+        a better debugging signal — placeholder credentials surface
+        immediately.
+        """
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        mock_client.head_bucket.side_effect = _FakeClientError(
+            {"Error": {"Code": "403"}, "ResponseMetadata": {"HTTPStatusCode": 403}},
+            "HeadBucket",
+        )
+
+        with pytest.raises(StorageError, match="preflight failed"):
+            S3StorageBackend.for_backblaze("my-bucket")
+
+    def test_preflight_false_with_auto_lifecycle_true_raises(self, mock_boto3, monkeypatch):
+        """Combining ``preflight=False`` with ``auto_lifecycle=True`` is incoherent.
+
+        Lifecycle application targets a specific region; without preflight
+        we don't know which. Surface this as a build-time error rather
+        than letting the lifecycle call later land on a wrong-region
+        endpoint.
+        """
+        from genblaze_s3.backend import S3StorageBackend
+
+        monkeypatch.setenv("B2_KEY_ID", "k")
+        monkeypatch.setenv("B2_APP_KEY", "s")
+        mock_boto3.client.return_value = MagicMock()
+
+        with pytest.raises(ValueError, match="incompatible"):
+            S3StorageBackend.for_backblaze("my-bucket", preflight=False, auto_lifecycle=True)
 
     def test_boto_config_carries_b2_essentials(self, mock_boto3, monkeypatch):
         """BotoConfig must carry user_agent_extra (B2 attribution), adaptive retries,

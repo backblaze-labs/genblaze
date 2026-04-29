@@ -38,7 +38,11 @@ def main() -> None:
         # Default region is us-west-004. Override with region="us-east-005"
         # (or whatever region your bucket was created in) to skip the
         # one-time redirect when the hint doesn't match.
-        S3StorageBackend.for_backblaze("my-bucket"),
+        # auto_lifecycle=True opts in to recommended lifecycle rules
+        # (cancel orphaned multipart uploads, expire noncurrent versions);
+        # default in 0.3.0+ is False so callers managing lifecycle
+        # out-of-band aren't surprised by hidden bucket mutations.
+        S3StorageBackend.for_backblaze("my-bucket", auto_lifecycle=True),
         key_strategy=KeyStrategy.HIERARCHICAL,
     )
 

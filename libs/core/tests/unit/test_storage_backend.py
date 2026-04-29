@@ -61,7 +61,8 @@ class TestStorageBackendABC:
 
         class Complete(StorageBackend):
             def put(self, key, data, *, content_type=None, metadata=None, extra_args=None):
-                return f"url://{key}"
+                # Contract change: put() returns the storage key, not a URL.
+                return key
 
             def get(self, key):
                 return b""
@@ -79,7 +80,9 @@ class TestStorageBackendABC:
                 return f"url://{key}"
 
         backend = Complete()
-        assert backend.put("k", b"data") == "url://k"
+        # put() returns the storage key (not a URL) — callers compose with
+        # get_durable_url for the persistable URL form.
+        assert backend.put("k", b"data") == "k"
         assert backend.exists("k") is False
         assert backend.get_durable_url("k") == "url://k"
 

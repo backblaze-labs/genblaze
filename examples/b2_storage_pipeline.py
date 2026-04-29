@@ -30,10 +30,15 @@ def main() -> None:
     # auto-correct the region on first use either way.
     # Pass public_url_base only for public buckets; otherwise get_url()
     # returns pre-signed URLs.
+    # auto_lifecycle=True applies recommended bucket-wide lifecycle rules
+    # (cancel orphaned multipart uploads, expire noncurrent manifest
+    # versions). Default in 0.3.0+ is False; opt out for buckets where
+    # lifecycle is managed via Terraform/console/IaC.
     backend = S3StorageBackend.for_backblaze(
         "my-genblaze-bucket",
         region="us-west-004",
         public_url_base="https://f004.backblazeb2.com/file/my-genblaze-bucket",
+        auto_lifecycle=True,
     )
 
     # Content-addressable keys deduplicate identical assets automatically.

@@ -91,6 +91,10 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "AssetTransfer": ("genblaze_core.storage.transfer", "AssetTransfer"),
     "KeyStrategy": ("genblaze_core.storage.base", "KeyStrategy"),
     "ObjectLockConfig": ("genblaze_core.storage.base", "ObjectLockConfig"),
+    "StorageConfig": ("genblaze_core.storage.config", "StorageConfig"),
+    "StorageErrorCode": ("genblaze_core.storage.errors", "StorageErrorCode"),
+    "RETRYABLE_STORAGE_CODES": ("genblaze_core.storage.errors", "RETRYABLE_STORAGE_CODES"),
+    "classify_botocore_error": ("genblaze_core.storage.errors", "classify_botocore_error"),
     # testing
     "MockProvider": ("genblaze_core.testing", "MockProvider"),
     "MockVideoProvider": ("genblaze_core.testing", "MockVideoProvider"),
