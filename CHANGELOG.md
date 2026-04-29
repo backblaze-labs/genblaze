@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-04-28
+
+### Released package versions
+- Code-change bump: `genblaze-core` 0.2.7.
+- Untouched (no republish): every other Python and npm package.
+
 ### Added
 - `genblaze-core`: `Pipeline.step(external_inputs=[Asset, ...])` — caller-held
   Assets seed `Step.inputs` directly, without going through `input_from=` (which
