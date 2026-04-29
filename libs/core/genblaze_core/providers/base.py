@@ -72,7 +72,10 @@ class ProviderCapabilities:
 
     supported_modalities: list[Modality] | None = field(default=None)
     supported_inputs: list[str] | None = field(default=None)  # e.g. ["text", "image", "video"]
-    accepts_chain_input: bool = field(default=False)  # True if provider reads step.inputs
+    # True if provider reads step.inputs (whether seeded directly via
+    # external_inputs=, resolved via input_from=, or chained from a prior step).
+    # Name retained for back-compat; flag covers all three input mechanisms.
+    accepts_chain_input: bool = field(default=False)
     max_duration: float | None = field(default=None)  # seconds
     resolutions: list[str] | None = field(default=None)  # e.g. ["720p", "1080p", "4k"]
     output_formats: list[str] | None = field(default=None)  # e.g. ["video/mp4", "audio/mpeg"]

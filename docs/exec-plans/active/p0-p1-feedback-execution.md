@@ -318,6 +318,12 @@ below decisions before code lands.
 ### Scope
 
 - **P0-04** — `Pipeline.input(asset_or_path)` / `Pipeline.from_asset(path)`.
+  **Note (2026-04-28):** the `Asset`-passthrough subset of P0-04 shipped early
+  as `Pipeline.step(external_inputs=[Asset, ...])` to unblock multimodal
+  first-step calls into `NvidiaChatProvider`. `Pipeline.input(asset_or_path)`
+  remains in scope as **sugar over the primitive** that adds `str | Path`
+  acceptance via `LocalFilesystemSink` (Wave 2A). Both APIs will coexist; the
+  fluent form is the discoverable entry point, the kwarg is the explicit one.
 - **P0-05** — `StepType.{INGEST, TRANSCRIBE, CLASSIFY, ANALYZE, EXTRACT, MODERATE}`.
 - **P0-06** — `Step.output: dict | None` + `Asset.text: str | None`
   (mutually exclusive with `url`).

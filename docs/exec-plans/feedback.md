@@ -86,6 +86,25 @@ discriminated union + JSON Schemas under `libs/spec/schemas/events/` + TS
 
 ## Inbox
 
+### 2026-04-28 — multimodal-chat sample-app feedback
+
+While building the first end-to-end NvidiaChatProvider sample, the author hit
+one real gap and verified it against the upstream mechanism:
+
+- **F-2026-04-28-01** — `Pipeline.step(inputs=...)` not exposed. `NvidiaChatProvider`
+  reads from `step.inputs[Asset]` (`chat_provider.py:202,208,214`) but the
+  public `step()` signature had no kwarg to seed it from a caller-held Asset.
+  Workarounds required throwaway upstream `SyncProvider` shims (the P0-04
+  anti-pattern) or reaching into private `_PipelineStep` state. Same gap blocks
+  any image-edit / vision-analysis / video-transform step that wants to consume
+  a caller-held Asset on step 0. **RESOLVED IN THIS RELEASE** as
+  `Pipeline.step(external_inputs=[Asset, ...])` — see `[Unreleased]` CHANGELOG.
+  Renamed from the literal `inputs=` to avoid (a) collision with the wire-field
+  `Step.inputs`, (b) collision with `Step.seed`/`step()` `**params` swallow, and
+  (c) ambiguity with `input_from=`. Reserved-name guard rejects `inputs=` /
+  `input=` with a friendly "did you mean external_inputs=?" pointer. Move to
+  Resolved as **R-19** once `[Unreleased]` ships.
+
 ### 2026-04-25 (batch 2) — sample-app builder hits GMICloud + retry-policy regressions
 
 A second sample-app builder reported 9 items against `genblaze-core` /

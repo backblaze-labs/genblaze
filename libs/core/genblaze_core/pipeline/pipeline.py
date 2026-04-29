@@ -181,6 +181,10 @@ class _PipelineStep:
     step_type: StepType
     fallback_models: list[str] = field(default_factory=list)
     input_from: list[int] | None = None
+    # Caller-supplied Assets to seed step.inputs from outside the pipeline graph
+    # (e.g., user-uploaded media for a multimodal chat step). Mutually exclusive
+    # with input_from at construction. Defensive copy is taken in step().
+    external_inputs: list[Asset] | None = None
     # Caller-supplied ETA hint surfaced on StepStartedEvent so consumers can
     # render meaningful progress UIs without hard-coding per-model duration.
     expected_duration_sec: float | None = None
@@ -302,22 +306,72 @@ class Pipeline(Runnable[None, PipelineResult]):
         step_type: StepType = StepType.GENERATE,
         fallback_models: list[str] | None = None,
         input_from: list[int] | int | None = None,
+        external_inputs: list[Asset] | None = None,
         expected_duration_sec: float | None = None,
         **params,
     ) -> Pipeline:
         """Add a step to the pipeline.
 
         Args:
+            external_inputs: Caller-held Assets to seed ``Step.inputs`` from
+                outside the pipeline graph (e.g., user-uploaded media for a
+                multimodal chat step on position 0). Mutually exclusive with
+                ``input_from``. Pass an Asset with ``sha256`` populated for
+                stable cache keys and manifest canonical hashes; otherwise
+                rotating URLs (e.g., presigned) will cause both to drift.
+                Provider must declare ``accepts_chain_input=True`` in its
+                ``ProviderCapabilities``.
             expected_duration_sec: Caller-supplied ETA hint (seconds), echoed
                 on the ``step.started`` event so consumers can render progress
                 UIs. The SDK does not synthesize this — supply your own median
                 from observed runs. Stale values produce worse UX than
                 omitting the field; treat as informational.
         """
+        # Reject reserved param names that would silently land in **params.
+        # `inputs=` / `input=` is the natural-but-wrong name a user trying to
+        # seed Step.inputs would reach for; without this guard they get
+        # swallowed by **params, normalized as a model param, and either
+        # rejected by the upstream provider or — worse — embedded in the
+        # manifest as part of Step.params, drifting the canonical hash.
+        for reserved in ("inputs", "input"):
+            if reserved in params:
+                raise GenblazeError(
+                    f"'{reserved}=' is not a valid step() kwarg — did you mean "
+                    f"'external_inputs=' (a list of caller-held Assets)? See "
+                    f"docs/features/pipelines.md for the three input mechanisms."
+                )
         # Normalize scalar index to list for uniform handling
         normalized_from: list[int] | None = None
         if input_from is not None:
             normalized_from = [input_from] if isinstance(input_from, int) else list(input_from)
+        # external_inputs / input_from are mutually exclusive at construction.
+        # Single use case is "step 0 has no prior step to reference," which
+        # doesn't compose with input_from. Easy to relax later (append
+        # semantics) if a real composition use case shows up.
+        if external_inputs and normalized_from is not None:
+            raise GenblazeError(
+                "external_inputs= and input_from= are mutually exclusive. "
+                "Use external_inputs= to inject caller-held Assets; use "
+                "input_from= to reference assets from a prior step."
+            )
+        # Defensive copy so post-construction mutation of the caller's list
+        # (e.g. assets.append(...)) doesn't bleed into the deferred step.
+        normalized_external: list[Asset] | None = None
+        if external_inputs:
+            normalized_external = list(external_inputs)
+            # Cache stability + manifest canonical-hash both depend on
+            # Asset.sha256. Without it, cache.py falls back to the asset URL,
+            # which rotates for presigned URLs — silently degrading dedup AND
+            # drifting the manifest canonical hash across reruns. Warn loud.
+            for a in normalized_external:
+                if not getattr(a, "sha256", None):
+                    logger.warning(
+                        "external_inputs Asset has no sha256 (url=%s); "
+                        "step cache key and manifest canonical hash will "
+                        "be unstable across reruns if the URL rotates "
+                        "(e.g., presigned). Compute sha256 before passing.",
+                        getattr(a, "url", "<unknown>"),
+                    )
         self._steps.append(
             _PipelineStep(
                 provider=provider,
@@ -328,6 +382,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 step_type=step_type,
                 fallback_models=fallback_models or [],
                 input_from=normalized_from,
+                external_inputs=normalized_external,
                 expected_duration_sec=expected_duration_sec,
             )
         )
@@ -349,13 +404,18 @@ class Pipeline(Runnable[None, PipelineResult]):
                 )
                 raise GenblazeError(msg)
 
-            # In chain mode, downstream steps must accept chain inputs
-            receives_chain = (self._chain and i > 0) or ps.input_from is not None
+            # In chain mode, downstream steps must accept chain inputs.
+            # external_inputs= bypasses chain mode (the caller is supplying
+            # Assets directly) but still reads from step.inputs at runtime,
+            # so the provider must declare it accepts that surface.
+            has_external = bool(ps.external_inputs)
+            receives_chain = has_external or (self._chain and i > 0) or ps.input_from is not None
             if receives_chain and not caps.accepts_chain_input:
                 msg = (
-                    f"Step {i} ({ps.provider.name}): receives chained inputs but provider"
-                    f" does not accept chain input. Set accepts_chain_input=True in"
-                    f" ProviderCapabilities or remove this step from the chain."
+                    f"Step {i} ({ps.provider.name}): receives inputs (external_inputs,"
+                    f" input_from, or chain mode) but provider does not accept input"
+                    f" assets. Set accepts_chain_input=True in ProviderCapabilities or"
+                    f" remove the input source."
                 )
                 raise GenblazeError(msg)
 
@@ -366,7 +426,16 @@ class Pipeline(Runnable[None, PipelineResult]):
         completed_steps: list[Step],
         prev_assets: list[Asset],
     ) -> list[Asset] | None:
-        """Determine inputs for a step based on input_from, chain mode, or neither."""
+        """Determine inputs for a step.
+
+        Precedence: external_inputs > input_from > chain mode > none.
+        external_inputs short-circuits both input_from (rejected at construction)
+        and chain mode (the caller is supplying Assets directly, overriding the
+        implicit chain).
+        """
+        if ps.external_inputs:
+            # Defensive copy was already taken at step() time; return as-is.
+            return ps.external_inputs
         if ps.input_from is not None:
             for idx in ps.input_from:
                 if idx < 0 or idx >= step_index:
@@ -1371,8 +1440,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                         if fail_fast:
                             break
             else:
-                # Concurrent: use as_completed + cancel on failure when fail_fast
-                steps_and_models = [(ps, self._build_step(ps)) for ps in self._steps]
+                # Concurrent: use as_completed + cancel on failure when fail_fast.
+                # external_inputs is the only input source legal in concurrent mode
+                # (input_from / chain force sequential — see has_input_from check
+                # earlier); thread it through so multimodal first-step calls work.
+                steps_and_models = [
+                    (ps, self._build_step(ps, ps.external_inputs)) for ps in self._steps
+                ]
                 for idx, (ps, step) in enumerate(steps_and_models):
                     self._emit_step_start(
                         _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
@@ -1495,7 +1569,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         """Create a FAILED step from an unhandled exception."""
         from genblaze_core.providers.base import _sanitize_error, classify_api_error
 
-        step = self._build_step(ps)
+        # Preserve external_inputs on the failed-step record so the manifest
+        # shows what the step was supposed to consume.
+        step = self._build_step(ps, ps.external_inputs)
         step.status = StepStatus.FAILED
         step.error = _sanitize_error(str(exc))
         step.error_code = classify_api_error(exc)
@@ -1573,7 +1649,8 @@ class Pipeline(Runnable[None, PipelineResult]):
             if idx in results:
                 continue
             if t.cancelled():
-                step = self._build_step(task_ps[t])
+                ps_cancelled = task_ps[t]
+                step = self._build_step(ps_cancelled, ps_cancelled.external_inputs)
                 step.status = StepStatus.FAILED
                 step.error = "Step cancelled due to fail-fast after prior step failure"
                 results[idx] = step
@@ -1848,8 +1925,24 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Returns a PipelineTemplate that can be saved to JSON and
         instantiated later with different providers.
+
+        Raises:
+            GenblazeError: If any step uses ``external_inputs=`` — templates
+                describe a static pipeline shape and cannot carry runtime
+                Asset payloads. Re-add ``external_inputs=`` after
+                ``PipelineTemplate.instantiate(...)``.
         """
         from genblaze_core.pipeline.template import PipelineTemplate, StepTemplate
+
+        for i, ps in enumerate(self._steps):
+            if ps.external_inputs:
+                raise GenblazeError(
+                    f"Step {i}: external_inputs= cannot be serialized to a "
+                    f"PipelineTemplate (templates describe pipeline shape, not "
+                    f"runtime Asset payloads). Build the template without "
+                    f"external_inputs=, then re-add them on the instantiated "
+                    f"pipeline."
+                )
 
         steps = [
             StepTemplate(

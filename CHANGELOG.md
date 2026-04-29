@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `genblaze-core`: `Pipeline.step(external_inputs=[Asset, ...])` — caller-held
+  Assets seed `Step.inputs` directly, without going through `input_from=` (which
+  only references prior pipeline steps) or `chain=True`. Closes the gap that
+  blocked multimodal first-step calls into `NvidiaChatProvider` and any future
+  chat / vision-analysis / image-edit step that needs a user-uploaded asset on
+  step 0. Mutually exclusive with `input_from=`. Provider must declare
+  `accepts_chain_input=True` in its `ProviderCapabilities` (the existing flag
+  covers all three input mechanisms; docstring updated). Pass an `Asset` with
+  `sha256` populated for stable cache keys and manifest canonical hashes —
+  `WARNING` is logged otherwise. Defensive copy of the input list is taken at
+  construction so post-construction caller mutation doesn't bleed into the
+  deferred step. Reserved kwargs `inputs=` / `input=` raise a friendly
+  `GenblazeError` pointing at the right name (prevents silent `**params`
+  swallow). `Pipeline.to_template()` raises when any step uses
+  `external_inputs=` (templates describe pipeline shape, not runtime Asset
+  payloads). Stable additive API; Wave 4's planned `Pipeline.input(asset_or_path)`
+  will be sugar over this primitive that adds local-path acceptance via
+  `LocalFilesystemSink` — both APIs will coexist.
+
 ## [0.2.7] - 2026-04-24
 
 ### Released package versions

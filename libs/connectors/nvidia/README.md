@@ -170,11 +170,11 @@ inputs = [
     Asset(url="https://example.com/clip.mp4",   media_type="video/mp4"),
 ]
 
-pipe = Pipeline().input(*inputs).step(
+pipe = Pipeline().step(
     NvidiaChatProvider(reasoning=False),  # turn off thinking for a fast perception pass
     model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
     prompt="Describe what's happening across these inputs.",
-    input_from=[-1],
+    external_inputs=inputs,  # caller-held Assets seeded directly into step.inputs
 )
 result = pipe.run()
 print(result.steps[-1].assets[0].metadata["text"])

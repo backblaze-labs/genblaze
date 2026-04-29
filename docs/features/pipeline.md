@@ -36,6 +36,19 @@ Fluent API for building and executing multi-step generative media workflows with
 - `on_step_complete`: Callable[[StepCompleteEvent], None] | None — Callback fired after each step finishes (success or failure)
 - `on_submit`: Callable[[str, Any], None] | None — Callback fired after provider `submit()` with `(step_id, prediction_id)` for checkpoint persistence
 - `input_from`: list[int] | int | None — Route inputs from specific prior steps by index (overrides chain mode)
+- `external_inputs`: list[Asset] | None — Seed `Step.inputs` from caller-held Assets (e.g., user-uploaded media for a multimodal first step). Mutually exclusive with `input_from`. Provider must declare `accepts_chain_input=True`.
+
+## Step input mechanisms — when to use which
+
+| Source | Use when | Example |
+|---|---|---|
+| `external_inputs=[asset]` | You hold the Asset already (user upload, prior pipeline output loaded from a manifest, B2 object). Works on step 0. | `step(chat, model="...", external_inputs=[uploaded_image])` |
+| `input_from=[N]` | Step needs assets produced by step `N` of *this* pipeline run. Forces sequential execution. | `step(compose, ..., input_from=[0, 1])` |
+| `chain=True` (Pipeline-level) | Every step consumes the previous step's outputs implicitly. | `Pipeline("chain", chain=True).step(gen).step(refine)` |
+
+Precedence inside `_resolve_inputs`: **external_inputs > input_from > chain mode > none**.
+
+`external_inputs` and `input_from` are mutually exclusive at construction (raises `GenblazeError`). Pass an Asset with `sha256` populated; without it, both the step cache key and the manifest canonical hash will drift across reruns when the URL rotates (e.g., presigned). The reserved kwargs `inputs=` and `input=` raise a friendly error pointing at `external_inputs=`.
 
 ## Outputs
 - `PipelineResult` — Contains `.run` (Run) and `.manifest` (Manifest)

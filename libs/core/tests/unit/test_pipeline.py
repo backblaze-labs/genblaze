@@ -1274,7 +1274,7 @@ def test_capability_validation_rejects_chain_without_accepts() -> None:
         .step(p2, model="m2", prompt="b")
     )
 
-    with pytest.raises(GenblazeError, match="does not accept chain input"):
+    with pytest.raises(GenblazeError, match="does not accept input"):
         pipe.run()
 
 
