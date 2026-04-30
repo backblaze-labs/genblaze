@@ -6,12 +6,21 @@ import io
 import logging
 import os
 import threading
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from botocore.exceptions import ClientError
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
-from genblaze_core.storage.base import StorageBackend
+from genblaze_core.storage.base import ObjectLockConfig, StorageBackend
+from genblaze_core.storage.types import (
+    DeleteError,
+    DeleteResult,
+    FileEntry,
+    ListPage,
+    ObjectMetadata,
+    TransferProgress,
+)
 
 from genblaze_s3.encryption import Encryption
 from genblaze_s3.presigned import PresignedURL
@@ -49,6 +58,79 @@ _MAX_POOL_CONNECTIONS = 20
 # indefinitely — a real cost vector once the multipart path is the default.
 _DEFAULT_CANCEL_MULTIPART_DAYS = 7
 _DEFAULT_NONCURRENT_EXPIRE_DAYS = 30
+
+
+def _data_size(data: bytes | BinaryIO) -> int | None:
+    """Best-effort total-size determination for a put payload.
+
+    Returns the **remaining** byte count from the current read position
+    onward — what boto3 will actually upload. ``None`` for arbitrary
+    streams where the total would require a draining pass.
+
+    Subtleties:
+
+    * ``bytes`` / ``bytearray``: full length (no read position).
+    * ``io.BytesIO``: ``len(buffer) - tell()`` so a pre-seeked buffer
+      reports the accurate upload size. Pre-fix this returned
+      ``getbuffer().nbytes`` (full buffer) regardless of position —
+      callers seeking the BytesIO before passing it to ``put`` saw
+      ``total_bytes`` overstated, breaking percentage UIs.
+    * Other ``BinaryIO``: no portable way to know remaining without
+      draining; return ``None``.
+    """
+    if isinstance(data, (bytes, bytearray)):
+        return len(data)
+    if isinstance(data, io.BytesIO):
+        try:
+            position = data.tell()
+        except (OSError, ValueError):
+            # tell() can raise on closed/non-seekable streams.
+            return None
+        return max(0, data.getbuffer().nbytes - position)
+    return None
+
+
+def _adapt_progress_to_boto3_callback(
+    progress: Callable[[TransferProgress], None],
+    *,
+    operation: str,
+    key: str,
+    total_bytes: int | None,
+) -> Callable[[int], None]:
+    """Adapt a :class:`TransferProgress` callback to boto3's ``Callback=`` shape.
+
+    boto3's Callback receives **delta** bytes per chunk uploaded;
+    ``TransferProgress`` callers expect **cumulative** counts. Accumulate
+    in a closure cell and forward the running total.
+
+    boto3's S3 transfer manager runs ``upload_fileobj`` with
+    ``max_concurrency`` part workers (default 4); each worker invokes
+    the Callback on its own thread. CPython's ``+=`` compiles to
+    LOAD/BINARY_ADD/STORE and the GIL releases between bytecodes —
+    concurrent workers can interleave a load with a store and
+    silently drop deltas. The lock serializes the read-modify-write
+    so cumulative is always consistent. The user callback is
+    invoked outside the lock to avoid blocking the next worker on a
+    slow callback (logging, queue publish, etc).
+    """
+    cumulative = 0
+    lock = threading.Lock()
+
+    def boto_callback(delta: int) -> None:
+        nonlocal cumulative
+        with lock:
+            cumulative += delta
+            snapshot = cumulative
+        progress(
+            TransferProgress(
+                bytes_transferred=snapshot,
+                total_bytes=total_bytes,
+                operation=operation,
+                key=key,
+            )
+        )
+
+    return boto_callback
 
 
 def _build_boto_config() -> Any:
@@ -219,6 +301,8 @@ class S3StorageBackend(StorageBackend):
         metadata: dict[str, str] | None = None,
         extra_args: dict[str, Any] | None = None,
         encryption: Encryption | None = None,
+        object_lock: ObjectLockConfig | None = None,
+        progress: Callable[[TransferProgress], None] | None = None,
     ) -> str:
         """Upload an object to S3. Returns the storage key.
 
@@ -234,6 +318,18 @@ class S3StorageBackend(StorageBackend):
         compute and pass it with a ``bytes`` payload under the multipart
         threshold, or omit and rely on the per-part default.
 
+        ``object_lock`` applies per-put Object Lock retention (see
+        :class:`ObjectLockConfig`). Useful when most uploads to a bucket
+        don't need retention but a specific manifest does — finer
+        granularity than the sink-wide ``manifest_lock``. Conflicts
+        with overlapping ``extra_args`` keys raise ``ValueError`` (same
+        guard pattern as ``encryption=`` vs. SSE keys).
+
+        ``progress`` is invoked synchronously on the transfer thread
+        with cumulative byte counts. **Only fires on the multipart
+        path** — when the caller pins ``ChecksumSHA256`` we route to
+        ``put_object`` which doesn't accept a progress callback.
+
         **Return shape changed in 0.3.0:** previously returned a presigned
         URL via :meth:`get_url` for the just-uploaded object. That shape
         leaked the access-key-id into anything that persisted the value
@@ -247,18 +343,27 @@ class S3StorageBackend(StorageBackend):
         # overlapping ``extra_args``). API misuse should propagate as
         # ``ValueError``, not get masked as ``StorageError`` — those have
         # different debugging semantics for the caller.
-        merged = self._build_extra_args(content_type, metadata, extra_args, encryption)
+        merged = self._build_extra_args(
+            content_type, metadata, extra_args, encryption, object_lock
+        )
         try:
             self._ensure_region_verified()
             if "ChecksumSHA256" in merged:
                 return self._put_single(key, data, merged)
             stream: BinaryIO = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
+            boto_callback: Callable[[int], None] | None = None
+            if progress is not None:
+                total = _data_size(data)
+                boto_callback = _adapt_progress_to_boto3_callback(
+                    progress, operation="put", key=key, total_bytes=total
+                )
             self._client.upload_fileobj(
                 stream,
                 self._bucket,
                 key,
                 ExtraArgs=merged,
                 Config=self._transfer_config,
+                Callback=boto_callback,
             )
             return key
         except StorageError:
@@ -294,6 +399,13 @@ class S3StorageBackend(StorageBackend):
         }
     )
 
+    # Boto3 keys that participate in the Object Lock envelope. Same guard
+    # pattern as SSE — silently overriding one half of the envelope produces
+    # a different retention than the caller intended.
+    _OBJECT_LOCK_KEYS_FROZEN: frozenset[str] = frozenset(
+        {"ObjectLockMode", "ObjectLockRetainUntilDate", "ObjectLockLegalHoldStatus"}
+    )
+
     @classmethod
     def _build_extra_args(
         cls,
@@ -301,21 +413,22 @@ class S3StorageBackend(StorageBackend):
         metadata: dict[str, str] | None,
         extra_args: dict[str, Any] | None,
         encryption: Encryption | None = None,
+        object_lock: ObjectLockConfig | None = None,
     ) -> dict[str, Any]:
         """Merge kwargs into a boto3-style ExtraArgs dict, honoring caller overrides.
 
-        Precedence (low → high): encryption value-object → caller
-        ``extra_args`` → built-in defaults (ContentType / Metadata /
-        ChecksumAlgorithm). The high end winning matches the historic
-        contract for non-SSE keys: an explicit
+        Precedence (low → high): encryption + object_lock value objects →
+        caller ``extra_args`` → built-in defaults (ContentType / Metadata
+        / ChecksumAlgorithm). The high end winning matches the historic
+        contract for non-envelope keys: an explicit
         ``extra_args={"CacheControl": "..."}`` continues to override.
 
-        **SSE keys are special**: an ``encryption=`` value object plus an
-        overlapping ``extra_args`` SSE key produces a mismatched envelope
-        (wrong KMS key, partial customer-key state, etc.). Rather than
-        silently encrypting with the wrong material, this path raises
-        ``ValueError`` so the caller can pick exactly one source of
-        truth for the SSE envelope.
+        **SSE and Object Lock keys are special**: passing ``encryption=``
+        OR ``object_lock=`` plus an overlapping ``extra_args`` envelope
+        key produces a partial mismatch (wrong KMS key, mismatched
+        retention date) which still succeeds at the API level so the
+        caller wouldn't notice. Both raise ``ValueError`` upfront so
+        the caller picks exactly one source of truth.
         """
         if encryption is not None and extra_args:
             overlap = cls._SSE_KEYS_FROZEN & extra_args.keys()
@@ -327,15 +440,28 @@ class S3StorageBackend(StorageBackend):
                     "the SSE envelope; mixing them silently encrypts with "
                     "the wrong material on partial-override scenarios."
                 )
+        if object_lock is not None and extra_args:
+            overlap = cls._OBJECT_LOCK_KEYS_FROZEN & extra_args.keys()
+            if overlap:
+                raise ValueError(
+                    "S3StorageBackend.put: Object Lock envelope conflict — "
+                    f"`object_lock=` is set AND `extra_args` overlaps "
+                    f"Object Lock keys {sorted(overlap)}. Pass exactly one "
+                    "source; mixing them produces a different retention "
+                    "than the caller intended."
+                )
         merged: dict[str, Any] = {}
         if encryption is not None:
             merged.update(encryption.to_put_extra_args())
+        if object_lock is not None:
+            merged.update(object_lock.to_extra_args())
         if content_type:
             merged["ContentType"] = content_type
         if metadata:
             merged["Metadata"] = metadata
-        # Caller-provided non-SSE keys win (e.g. ChecksumAlgorithm,
-        # CacheControl, CopySource — anything not in the SSE frozen set).
+        # Caller-provided non-envelope keys win (e.g. ChecksumAlgorithm,
+        # CacheControl, CopySource — anything not in the SSE / Object
+        # Lock frozen sets).
         if extra_args:
             merged.update(extra_args)
         # Default to SHA-256 per-part integrity unless caller pinned a checksum.
@@ -343,16 +469,33 @@ class S3StorageBackend(StorageBackend):
             merged["ChecksumAlgorithm"] = "SHA256"
         return merged
 
-    def get(self, key: str, *, encryption: Encryption | None = None) -> bytes:
+    # Chunk size used when ``get()`` fires progress callbacks. Smaller
+    # than ``stream``'s 8 MiB default because progress granularity wins
+    # over per-iteration overhead for the unloaded-into-RAM case.
+    _GET_PROGRESS_CHUNK_SIZE = 1024 * 1024
+
+    def get(
+        self,
+        key: str,
+        *,
+        encryption: Encryption | None = None,
+        progress: Callable[[TransferProgress], None] | None = None,
+    ) -> bytes:
         """Download an object from S3.
 
         ``encryption`` is required for SSE-C-encrypted objects (the
         same customer key + MD5 the put used). SSE-S3 / SSE-KMS objects
         decrypt server-side and don't need anything on the read path.
 
-        Phase 1D adds the kwarg to close bug #3's read-side asymmetry —
-        previously SSE-C uploads silently failed to round-trip because
-        ``get_object`` was never plumbed with the customer key.
+        ``progress``, when set, switches ``get`` to a chunked-read path
+        that fires the callback with cumulative byte counts (1 MiB
+        granularity). Without ``progress``, the historic single-call
+        ``body.read()`` fast path is preserved.
+
+        Phase 1D adds the ``encryption`` kwarg to close bug #3's
+        read-side asymmetry — previously SSE-C uploads silently failed
+        to round-trip because ``get_object`` was never plumbed with
+        the customer key.
         """
         extra: dict[str, Any] = {}
         if encryption is not None:
@@ -360,7 +503,60 @@ class S3StorageBackend(StorageBackend):
         try:
             self._ensure_region_verified()
             resp = self._client.get_object(Bucket=self._bucket, Key=key, **extra)
-            return resp["Body"].read()
+            body = resp["Body"]
+            if progress is None:
+                return body.read()
+            total = resp.get("ContentLength")
+            # Pre-allocate when ContentLength is known. Avoids the
+            # `list[bytes]` + `b"".join(...)` pattern which had ~2× peak
+            # memory (intermediate chunks list + final bytes copy) and
+            # one Python object per chunk. With pre-allocation, peak
+            # memory is one bytearray sized to the object plus the
+            # final ``bytes()`` conversion (matching the fast path's
+            # transient cost).
+            if total is not None:
+                buf = bytearray(total)
+                pos = 0
+                cumulative = 0
+                while True:
+                    chunk = body.read(self._GET_PROGRESS_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    end = pos + len(chunk)
+                    buf[pos:end] = chunk
+                    pos = end
+                    cumulative += len(chunk)
+                    progress(
+                        TransferProgress(
+                            bytes_transferred=cumulative,
+                            total_bytes=total,
+                            operation="get",
+                            key=key,
+                        )
+                    )
+                # Defensive truncate: if Content-Length overstated the
+                # body, return only the bytes actually read.
+                return bytes(buf if pos == total else buf[:pos])
+            # Total unknown — grow a bytearray. Same allocation profile
+            # as the fast path's growing buffer; no per-chunk Python
+            # object overhead.
+            buf = bytearray()
+            cumulative = 0
+            while True:
+                chunk = body.read(self._GET_PROGRESS_CHUNK_SIZE)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                cumulative += len(chunk)
+                progress(
+                    TransferProgress(
+                        bytes_transferred=cumulative,
+                        total_bytes=None,
+                        operation="get",
+                        key=key,
+                    )
+                )
+            return bytes(buf)
         except StorageError:
             raise
         except Exception as exc:
@@ -440,6 +636,375 @@ class S3StorageBackend(StorageBackend):
             raise
         except Exception as exc:
             raise StorageError(f"S3 copy failed for {src_key} -> {dst_key}: {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # Phase 2A read primitives
+    # ------------------------------------------------------------------
+
+    def head(self, key: str, *, encryption: Encryption | None = None) -> ObjectMetadata | None:
+        """HEAD an object. Returns ``None`` for missing or inaccessible keys.
+
+        Tolerates 404 AND 403 the same way :meth:`exists` does — scoped
+        application keys (B2/AWS least-privilege) commonly get 403 on
+        non-existent reads, and surfacing that as "missing" is more
+        useful than as "permission error" for the typical
+        check-before-write pattern.
+
+        Args:
+            key: Storage key.
+            encryption: Required for SSE-C-encrypted objects (same
+                customer key the put used). SSE-S3 / SSE-KMS objects
+                need nothing on the read side.
+        """
+        extra: dict[str, Any] = {}
+        if encryption is not None:
+            extra.update(encryption.to_head_extra_args())
+        try:
+            self._ensure_region_verified()
+            resp = self._client.head_object(Bucket=self._bucket, Key=key, **extra)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey"):
+                return None
+            if code in ("403", "AccessDenied"):
+                logger.debug(
+                    "head_object %s returned 403/AccessDenied — treating as not-exist. "
+                    "If the key should be visible, check bucket/prefix permissions.",
+                    key,
+                )
+                return None
+            raise StorageError(f"S3 head failed for {key}: {exc}") from exc
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 head failed for {key}: {exc}") from exc
+
+        return ObjectMetadata(
+            key=key,
+            size=resp.get("ContentLength", 0),
+            last_modified=resp["LastModified"],
+            etag=resp.get("ETag", ""),
+            content_type=resp.get("ContentType"),
+            storage_class=resp.get("StorageClass"),
+            metadata=dict(resp.get("Metadata") or {}),
+        )
+
+    def list(
+        self,
+        prefix: str = "",
+        *,
+        max_keys: int = 1000,
+        continuation_token: str | None = None,
+    ) -> ListPage:
+        """List object keys via S3 ``ListObjectsV2``.
+
+        Pagination follows the S3 wire protocol: pass
+        ``page.next_token`` from a prior call as ``continuation_token``
+        on the next call. ``page.next_token`` is ``None`` when the
+        listing is exhausted (``IsTruncated=False``).
+
+        ``max_keys`` is capped at 1000 by S3 even if a higher value is
+        passed; backends that know a stricter limit may further reduce.
+        """
+        if max_keys < 1:
+            raise ValueError(f"list: max_keys must be ≥ 1, got {max_keys}")
+
+        kwargs: dict[str, Any] = {"Bucket": self._bucket, "MaxKeys": max_keys}
+        if prefix:
+            kwargs["Prefix"] = prefix
+        if continuation_token:
+            kwargs["ContinuationToken"] = continuation_token
+
+        try:
+            self._ensure_region_verified()
+            resp = self._client.list_objects_v2(**kwargs)
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 list failed for prefix {prefix!r}: {exc}") from exc
+
+        entries = tuple(
+            FileEntry(
+                key=item["Key"],
+                size=item.get("Size", 0),
+                last_modified=item["LastModified"],
+                etag=item.get("ETag", ""),
+                storage_class=item.get("StorageClass"),
+            )
+            for item in (resp.get("Contents") or [])
+        )
+        next_token = resp.get("NextContinuationToken") if resp.get("IsTruncated") else None
+        return ListPage(entries=entries, next_token=next_token)
+
+    def get_range(
+        self,
+        key: str,
+        *,
+        offset: int,
+        length: int,
+        encryption: Encryption | None = None,
+    ) -> bytes:
+        """Download a byte range via the HTTP ``Range`` header.
+
+        Args:
+            key: Storage key.
+            offset: Byte offset (inclusive). Must be ≥ 0.
+            length: Number of bytes. Must be ≥ 0; ``0`` returns ``b""``
+                without contacting the backend.
+            encryption: Required for SSE-C-encrypted objects.
+        """
+        if offset < 0:
+            raise ValueError(f"get_range: offset must be ≥ 0, got {offset}")
+        if length < 0:
+            raise ValueError(f"get_range: length must be ≥ 0, got {length}")
+        if length == 0:
+            return b""
+
+        # HTTP Range is inclusive on both ends — bytes=0-9 returns 10
+        # bytes (offsets 0..9). Subtract one from offset+length to land
+        # on the right last-byte index.
+        range_header = f"bytes={offset}-{offset + length - 1}"
+        extra: dict[str, Any] = {"Range": range_header}
+        if encryption is not None:
+            extra.update(encryption.to_get_extra_args())
+        try:
+            self._ensure_region_verified()
+            resp = self._client.get_object(Bucket=self._bucket, Key=key, **extra)
+            return resp["Body"].read()
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 get_range failed for {key}: {exc}") from exc
+
+    def stream(
+        self,
+        key: str,
+        *,
+        chunk_size: int = 8 * 1024 * 1024,
+        encryption: Encryption | None = None,
+        progress: Callable[[TransferProgress], None] | None = None,
+    ) -> Iterator[bytes]:
+        """Lazily download an object, yielding ``chunk_size`` chunks.
+
+        Use for objects too large to load in memory at once (long-form
+        video, multi-GB audio renders). Each chunk is one ``read()``
+        on the underlying ``StreamingBody``; the HTTP connection is
+        held open until the iterator exhausts or is closed.
+
+        ``progress`` fires per yielded chunk with cumulative byte
+        counts. ``total_bytes`` comes from the response's
+        ``Content-Length`` when present.
+
+        **Connection lifecycle on early exit:** when the caller stops
+        iterating mid-stream (``gen.close()``, ``break`` out of a
+        ``for``-loop, exception inside the loop body), the underlying
+        HTTP connection is discarded rather than returned to the
+        urllib3 pool. botocore's ``StreamingBody.close()`` issues a
+        socket teardown without draining remaining bytes, and urllib3
+        only recycles connections after a full response read. The
+        cost is one extra connection establish on the next call to
+        the same backend; under the default pool size of 20 this is
+        negligible for typical workloads but worth knowing about for
+        high-fanout consumers that frequently abort streams. Iterating
+        to exhaustion (or to a deliberate sentinel) returns the
+        connection cleanly.
+
+        Args:
+            key: Storage key.
+            chunk_size: Bytes per chunk. Must be ≥ 1. Default 8 MiB
+                balances per-iteration overhead against peak memory.
+            encryption: Required for SSE-C-encrypted objects.
+            progress: Optional callback invoked per yielded chunk with
+                cumulative byte counts.
+        """
+        if chunk_size < 1:
+            raise ValueError(f"stream: chunk_size must be ≥ 1, got {chunk_size}")
+        extra: dict[str, Any] = {}
+        if encryption is not None:
+            extra.update(encryption.to_get_extra_args())
+        try:
+            self._ensure_region_verified()
+            resp = self._client.get_object(Bucket=self._bucket, Key=key, **extra)
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 stream failed for {key}: {exc}") from exc
+
+        body = resp["Body"]
+        total = resp.get("ContentLength")
+        cumulative = 0
+        try:
+            while True:
+                chunk = body.read(chunk_size)
+                if not chunk:
+                    return
+                cumulative += len(chunk)
+                if progress is not None:
+                    progress(
+                        TransferProgress(
+                            bytes_transferred=cumulative,
+                            total_bytes=total,
+                            operation="stream",
+                            key=key,
+                        )
+                    )
+                yield chunk
+        finally:
+            # Best-effort release of the underlying HTTP connection. boto3's
+            # StreamingBody exposes .close() which returns the connection to
+            # the pool; without it, a partially-consumed stream would hold
+            # the connection until GC.
+            close = getattr(body, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001, S110 — release is best-effort
+                    pass
+
+    # ------------------------------------------------------------------
+    # Phase 2B bulk-delete primitives
+    # ------------------------------------------------------------------
+
+    # S3 ``DeleteObjects`` caps at 1000 keys per request. Larger batches
+    # must be chunked client-side; the cap matches AWS and B2 alike.
+    _DELETE_BATCH_MAX = 1000
+
+    def delete_many(self, keys: Sequence[str], *, dry_run: bool = False) -> DeleteResult:
+        """Bulk-delete a list of keys via S3 ``DeleteObjects``.
+
+        Chunks the input at 1000 keys per call (S3's hard cap). Each
+        per-key delete fails independently — partial failures land in
+        ``result.errors`` and don't abort the rest of the batch.
+
+        ``dry_run=True`` returns a result listing every key in
+        ``deleted`` without contacting the backend.
+        """
+        keys_list = list(keys)
+        if not keys_list:
+            return DeleteResult(deleted=(), errors=(), dry_run=dry_run)
+
+        if dry_run:
+            return DeleteResult(deleted=tuple(keys_list), errors=(), dry_run=True)
+
+        try:
+            self._ensure_region_verified()
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 delete_many preflight failed: {exc}") from exc
+
+        deleted: list[str] = []
+        errors: list[DeleteError] = []
+        for batch in self._chunked(keys_list, self._DELETE_BATCH_MAX):
+            try:
+                resp = self._client.delete_objects(
+                    Bucket=self._bucket,
+                    Delete={"Objects": [{"Key": k} for k in batch], "Quiet": False},
+                )
+            except StorageError:
+                raise
+            except Exception as exc:
+                # Whole-batch failure — attribute to every key in the batch
+                # so the caller's per-key bookkeeping stays consistent.
+                code = exc.__class__.__name__
+                msg = str(exc)
+                errors.extend(DeleteError(key=k, code=code, message=msg) for k in batch)
+                continue
+            deleted.extend(d["Key"] for d in resp.get("Deleted") or [])
+            errors.extend(
+                DeleteError(
+                    key=err.get("Key", ""),
+                    code=err.get("Code", ""),
+                    message=err.get("Message", ""),
+                )
+                for err in (resp.get("Errors") or [])
+            )
+        return DeleteResult(deleted=tuple(deleted), errors=tuple(errors), dry_run=False)
+
+    def delete_prefix(self, prefix: str, *, dry_run: bool = True) -> DeleteResult:
+        """Walk ``list(prefix=…)`` pages and bulk-delete each page.
+
+        Streams deletes per page (each page = one ``DeleteObjects``
+        call) so memory stays bounded for prefixes matching millions
+        of keys. Empty / whitespace-only prefix raises ``ValueError``
+        — passing ``""`` would match every object in the bucket,
+        virtually always a bug.
+
+        Default ``dry_run=True`` is the safety asymmetry. When
+        actually deleting, emits an INFO log per-page so accidental
+        large deletes leave a breadcrumb.
+
+        **Mid-walk failure recovery:** if ``self.list`` fails on page
+        N (network blip, throttle), pages 1..N-1 may already be
+        deleted. Rather than raising and discarding the partial
+        progress, this method returns a ``DeleteResult`` with the
+        already-deleted keys plus a synthetic
+        ``DeleteError(key="", code="list_failed", message=…)``. The
+        caller can inspect ``result.errors`` to detect the case and
+        decide whether to retry the prefix walk or accept the partial
+        delete.
+        """
+        if not prefix or not prefix.strip():
+            raise ValueError(
+                "delete_prefix requires a non-empty prefix; pass an explicit "
+                "list of keys to delete_many() if a bucket-wide delete is "
+                "genuinely intended."
+            )
+
+        deleted: list[str] = []
+        errors: list[DeleteError] = []
+        token: str | None = None
+        page_count = 0
+        while True:
+            try:
+                page = self.list(prefix=prefix, continuation_token=token)
+            except StorageError as exc:
+                # Partial-progress recovery: surface what was already
+                # deleted plus a synthetic per-prefix error so the caller
+                # can detect the case without losing track of completed
+                # work.
+                logger.warning(
+                    "delete_prefix(%r): list failed on page %d after %d "
+                    "keys deleted; returning partial result: %s",
+                    prefix,
+                    page_count + 1,
+                    len(deleted),
+                    exc,
+                )
+                errors.append(
+                    DeleteError(
+                        key="",
+                        code="list_failed",
+                        message=f"list() raised on page {page_count + 1}: {exc}",
+                    )
+                )
+                break
+            page_count += 1
+            if page.entries:
+                page_keys = [e.key for e in page.entries]
+                if dry_run:
+                    deleted.extend(page_keys)
+                else:
+                    logger.info(
+                        "delete_prefix(%r): deleting page %d (%d keys)",
+                        prefix,
+                        page_count,
+                        len(page_keys),
+                    )
+                    page_result = self.delete_many(page_keys, dry_run=False)
+                    deleted.extend(page_result.deleted)
+                    errors.extend(page_result.errors)
+            if page.next_token is None:
+                break
+            token = page.next_token
+
+        return DeleteResult(deleted=tuple(deleted), errors=tuple(errors), dry_run=dry_run)
+
+    @staticmethod
+    def _chunked(seq: Sequence[str], size: int) -> Iterator[list[str]]:
+        """Yield successive ``size``-sized slices of ``seq``."""
+        for i in range(0, len(seq), size):
+            yield seq[i : i + size]
 
     def get_url(
         self,

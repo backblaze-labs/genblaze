@@ -8,6 +8,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `genblaze-s3`: ``_adapt_progress_to_boto3_callback`` now lock-protects
+  the cumulative-byte counter. boto3 invokes the ``Callback=`` from
+  multiple part workers concurrently (default ``max_concurrency=4``);
+  the closure's ``nonlocal cumulative += delta`` compiled to
+  LOAD/BINARY_ADD/STORE bytecodes, and the GIL releases between
+  bytecodes — concurrent threads could load the same stale value and
+  silently drop deltas. Cumulative byte counts under stress now match
+  the sum of all reported deltas. Surfaced during the Phase 2 final
+  review; my docstring's claim that boto3 serializes Callback
+  invocations was wrong.
+- `genblaze-s3`: ``_data_size`` now honors ``BytesIO.tell()`` so a
+  partially-consumed buffer reports the correct *remaining* byte
+  count for ``TransferProgress.total_bytes``. Pre-fix:
+  ``data.getbuffer().nbytes`` returned the full allocated buffer
+  regardless of read position, so callers who seeked or partially-read
+  the BytesIO before passing it to ``put`` saw ``total_bytes``
+  overstated — progress UIs hit 100% well before the upload finished.
+  Surfaced during the Phase 2 final review.
+- `genblaze-s3`: ``S3StorageBackend.get(progress=…)`` chunked path now
+  pre-allocates a ``bytearray(ContentLength)`` when the total is known
+  and writes chunks into it directly. Pre-fix: the impl appended each
+  chunk to ``parts: list[bytes]`` and called ``b"".join(parts)`` at
+  the end — ~2× peak memory (intermediate list + final bytes) plus
+  one Python object per chunk. Defensive truncate when Content-Length
+  overstates the actual body length. The fast path
+  (``progress=None``) is unchanged. Surfaced during the Phase 2
+  final review.
+- `genblaze-s3`: ``S3StorageBackend.delete_prefix`` now surfaces
+  partial-progress state on a mid-walk ``list()`` failure. Pre-fix:
+  if ``list()`` raised on page N, the ``StorageError`` propagated
+  uncaught and the already-deleted keys from pages 1..N-1 were
+  invisible to the caller. Post-fix: the exception is captured into
+  a synthetic ``DeleteError(key="", code="list_failed", message=…)``
+  on the returned ``DeleteResult``; ``result.deleted`` carries the
+  keys actually removed before the failure. Caller can detect and
+  recover. Surfaced during the Phase 2 final review.
+- `genblaze-s3`: ``S3StorageBackend.stream`` docstring documents the
+  early-exit connection-lifecycle cost (``gen.close()`` mid-iteration
+  discards the underlying HTTP connection rather than returning it
+  to the urllib3 pool — botocore ``StreamingBody.close()`` doesn't
+  drain). Negligible for typical full-stream consumers; worth
+  knowing for high-fanout consumers that frequently abort streams.
+  Surfaced during the Phase 2 final review.
+
+### Added
+- `genblaze-core` / `genblaze-s3`: storage-backend hardening **Phase 2C**
+  progress callbacks + per-put Object Lock — closes the last two
+  missing-primitive rows for synchronous Phase 2.
+  - New ``TransferProgress(bytes_transferred, total_bytes, operation,
+    key)`` frozen dataclass. ``total_bytes=None`` is the documented
+    "unknown total" signal for stream sources where the size would
+    require a draining pass to determine.
+  - ``backend.put(progress=…)`` adapts boto3's ``Callback=`` (delta
+    bytes per multipart chunk) to a cumulative ``TransferProgress``
+    via a closure-cell accumulator. ``total_bytes`` is inferred
+    automatically for ``bytes`` and ``io.BytesIO`` payloads;
+    arbitrary ``BinaryIO`` streams pass ``None`` (boto3's transfer
+    manager can't report the total without draining). The
+    single-PUT path (caller pinned ``ChecksumSHA256``) silently
+    skips progress because ``put_object`` doesn't accept a
+    ``Callback`` parameter.
+  - ``backend.get(progress=…)`` switches to a 1 MiB chunked-read
+    loop that fires the callback with cumulative totals. Without
+    ``progress=``, the historic single-call ``body.read()`` fast
+    path is preserved — no allocation overhead for callers who
+    don't need progress.
+  - ``backend.stream(progress=…)`` fires per yielded chunk
+    (``chunk_size`` defaults to 8 MiB).
+  - ``backend.put(object_lock=ObjectLockConfig(...))`` applies
+    per-put Object Lock retention. Useful when most uploads to a
+    bucket don't need retention but a specific manifest does —
+    finer granularity than the sink-wide ``manifest_lock``.
+  - ``_build_extra_args`` adds an Object Lock conflict guard mirroring
+    the SSE pattern: passing both ``object_lock=`` and an overlapping
+    ``extra_args`` key (``ObjectLockMode``, ``ObjectLockRetainUntilDate``,
+    or ``ObjectLockLegalHoldStatus``) raises ``ValueError`` rather
+    than silently merging mismatched envelopes.
+  - ``TransferProgress`` re-exported via ``genblaze_core.__all__``.
+
+- `genblaze-core` / `genblaze-s3`: storage-backend hardening **Phase 2B**
+  bulk-delete primitives — ``delete_many`` and ``delete_prefix``, plus
+  two new value-object types (``DeleteError``, ``DeleteResult``).
+  - ``backend.delete_many(keys: Sequence[str], *, dry_run=False) ->
+    DeleteResult`` issues batched ``DeleteObjects`` calls (chunked at
+    1000 keys, S3's hard cap). Per-key failures land in
+    ``result.errors`` rather than aborting the batch — partial-success
+    callers can salvage what worked. ``dry_run=True`` returns a
+    preview without contacting the backend.
+  - ``backend.delete_prefix(prefix: str, *, dry_run=True) ->
+    DeleteResult`` walks ``list()`` pages and deletes per-page (memory
+    bounded for prefixes matching millions of keys; no all-keys-in-RAM
+    buffer). **Defaults to dry-run** — caller passes ``dry_run=False``
+    to actually delete. The asymmetry vs. ``delete_many``
+    (``dry_run=False`` default) is intentional: an explicit list of
+    keys is much harder to fat-finger than a prefix that could match
+    more than the caller expects. Empty / whitespace prefix raises
+    ``ValueError`` rather than matching every object in the bucket.
+    Loud INFO log per-page when actually deleting so accidental large
+    operations leave a breadcrumb.
+  - ``DeleteResult`` exposes ``.total`` and ``.all_succeeded``
+    properties for the common partial-failure inspection patterns;
+    ``deleted`` and ``errors`` are tuples (truly immutable + hashable
+    so a result can land in a cache).
+  - ``DeleteError`` mirrors S3's per-key wire shape (``key``,
+    ``code``, ``message``).
+  - ``adelete_many`` / ``adelete_prefix`` async pairs delegate via
+    ``asyncio.to_thread``. Native async lands in Phase 3.
+  - ``DeleteError`` and ``DeleteResult`` re-exported via
+    ``genblaze_core.__all__``.
+
+- `genblaze-core` / `genblaze-s3`: storage-backend hardening **Phase 2A**
+  read primitives — ``head``, ``list``, ``get_range``, ``stream``, plus
+  three new value-object types (``ObjectMetadata``, ``FileEntry``,
+  ``ListPage``). Closes four of the missing-primitive rows in the
+  storage-backend-hardening tranche.
+  - ``backend.head(key, *, encryption=None) -> ObjectMetadata | None``
+    returns full per-object metadata (size, last_modified, etag,
+    content_type, storage_class, user metadata dict). ``None`` for
+    missing keys; tolerates 404 AND 403 the same way ``exists`` does
+    (scoped application keys legitimately get 403 on non-existent
+    reads). ``encryption=`` accepts the same SSE-C envelope as ``get`` —
+    closes the head-side asymmetry that completed bug #3.
+  - ``backend.list(prefix="", *, max_keys=1000, continuation_token=None)
+    -> ListPage`` walks ``ListObjectsV2`` with explicit pagination.
+    ``ListPage.entries`` is a ``tuple[FileEntry, ...]`` (truly
+    immutable, hashable); ``ListPage.next_token`` is ``None`` once the
+    listing is exhausted. ``FileEntry`` is the cheap shape that S3's
+    ``ListObjectsV2`` returns natively — no per-key HEAD round-trip
+    required to populate it.
+  - ``backend.get_range(key, *, offset, length, encryption=None) ->
+    bytes`` downloads a byte range via the HTTP ``Range`` header.
+    Validates ``offset >= 0`` and ``length >= 0``;
+    ``length=0`` short-circuits without contacting the backend. Useful
+    for partial-file reads of multi-GB video / long-form audio.
+  - ``backend.stream(key, *, chunk_size=8MiB, encryption=None) ->
+    Iterator[bytes]`` lazily yields chunks via ``StreamingBody.read``.
+    Best-effort ``body.close()`` on iterator exhaustion or
+    ``gen.close()`` returns the HTTP connection to the pool.
+  - ``backend.ahead`` / ``backend.aget_range`` async pairs delegate
+    via ``asyncio.to_thread``. ``alist`` and ``astream`` are
+    deliberately omitted from the ABC — threadpool-wrapping a sync
+    iterator into an ``AsyncIterator`` either buffers the full result
+    (defeating streaming) or spins up a queue per call. Phase 3
+    introduces native async via ``aioboto3`` for these specifically.
+  - ``StorageBackend`` ABC defaults raise ``NotImplementedError`` for
+    the 4 new sync methods — existing third-party subclasses that
+    predate Phase 2A keep working at import time and opt in by
+    overriding.
+- `genblaze-core`: ``ObjectMetadata``, ``FileEntry``, ``ListPage``
+  re-exported via ``genblaze_core.__all__`` (lazy, like the other
+  storage value objects).
+
+### Fixed
 - `genblaze-s3`: ``S3StorageBackend`` preflight no longer permanently
   bricks the backend on a transient upstream failure. Pre-fix, any
   non-redirect ``ClientError`` from ``HeadBucket`` (including 5xx,

@@ -1,3 +1,4 @@
+<!-- last_verified: 2026-04-29 -->
 # Object Storage
 
 Upload run assets and manifests to any S3-compatible bucket. **Backblaze B2 is
@@ -23,11 +24,12 @@ from genblaze_s3 import S3StorageBackend
 # Reads B2_KEY_ID / B2_APP_KEY from env; override with key_id=/app_key= if needed.
 # Bucket and region can also come from B2_BUCKET / B2_REGION — useful when all
 # B2 config lives in .env and you want `for_backblaze()` with no arguments.
-# Auto-applies recommended lifecycle rules (cancel orphaned multipart uploads
-# after 7 days; expire noncurrent manifest versions after 30 days). Pass
-# auto_lifecycle=False if lifecycle is managed out-of-band.
+# Pass auto_lifecycle=True to opt in to recommended lifecycle rules (cancel
+# orphaned multipart uploads after 7 days, expire noncurrent manifest
+# versions after 30 days). Default 0.3.0+ is False; the prior default
+# silently mutated bucket-wide config on every construction.
 storage = ObjectStorageSink(
-    S3StorageBackend.for_backblaze("my-bucket"),
+    S3StorageBackend.for_backblaze("my-bucket", auto_lifecycle=True),
     key_strategy=KeyStrategy.HIERARCHICAL,
 )
 
@@ -46,6 +48,16 @@ bucket is on B2 — it encodes the B2-specific tuning so you don't have to:
   each fall back to `B2_BUCKET` / `B2_REGION` / `B2_KEY_ID` / `B2_APP_KEY`,
   so `S3StorageBackend.for_backblaze()` with no arguments works when the
   environment is set. Explicit arguments always win.
+- **Preflight verification** — `preflight=True` (default) issues one
+  `HeadBucket` to verify region + credentials at construction. Any
+  permanent failure (auth, missing bucket, signature mismatch) raises a
+  typed `StorageError` immediately so placeholder credentials surface up
+  front instead of failing on every subsequent operation. Transient
+  failures (5xx, throttle, network blip) re-raise without caching, so
+  the next call retries — a one-time hiccup at construction doesn't
+  brick the backend forever. Pass `preflight=False` to defer verification
+  to the first real I/O call (useful for offline tests with placeholder
+  creds; cannot be combined with `auto_lifecycle=True`).
 - **Region hint with auto-correct** — `region=` (or `$B2_REGION`) defaults
   to `us-west-004`. If your bucket lives elsewhere (e.g. `us-east-005`,
   `eu-central-003`), set it explicitly:
@@ -58,9 +70,16 @@ bucket is on B2 — it encodes the B2-specific tuning so you don't have to:
   endpoint. Some regions (notably `us-east-005`) reject cross-region
   requests with **403** instead of a 301 redirect — the backend can't
   auto-correct those, so the region must be set correctly up front.
-- **Lifecycle defaults** — applies `AbortIncompleteMultipartUpload` after 7
-  days and noncurrent-version expiry after 30 days. Prevents orphaned
-  multipart uploads from silently accruing storage cost.
+- **Lifecycle (opt-in)** — pass `auto_lifecycle=True` to apply
+  `AbortIncompleteMultipartUpload` after 7 days and noncurrent-version
+  expiry after 30 days. **Default in 0.3.0+ is False** — bucket-wide
+  config mutation is no longer a hidden side effect. Equivalent post-
+  construction call: `backend.ensure_lifecycle_defaults()`.
+- **Credential kwarg aliases** — both `aws_access_key_id` (boto3 native)
+  and `access_key_id` (short form, used in the README and most
+  ecosystem examples) work. Same for `aws_secret_access_key` /
+  `secret_access_key`. Passing both names for the same credential
+  raises `TypeError`; no silent precedence.
 - **Multipart uploads** — any asset larger than 16 MB is split into
   16 MB parts uploaded 4-way in parallel. Each part is individually
   retryable on transient failures.
@@ -100,11 +119,15 @@ Everything for a run lives in one folder — easy to browse and manage.
 
 The tenant segment is omitted when `tenant_id` is not set on the run.
 
-> **Note on `prefix="runs"`:** the `runs/` segment between `{prefix}` and
-> the per-run folder is fixed under HIERARCHICAL. Passing `prefix="runs"`
-> therefore produces `runs/runs/...` keys. The doubled segment is intended
-> behavior — pick a different `prefix` (the default is `"genblaze"`) if it
-> reads as a typo.
+> **`prefix="runs"` no longer doubles in 0.3.0+:** the strategy's hardcoded
+> `runs/` segment is collapsed against a prefix that already ends in `runs`
+> via the new `KeyBuilder` seam-dedupe. Pre-0.3.0 the double was preserved
+> ("intentional"); the bug-tracker reclassified it as bug #5 because no
+> real caller used the layout intentionally. Caller-intentional doubles
+> *within* the prefix (e.g. `prefix="archive/archive"`) or *within* the
+> strategy segments are still preserved — the dedupe is seam-only, not
+> global. See "Migrating from 0.2.x" below if you have existing buckets
+> written under the old key layout.
 
 ### CONTENT_ADDRESSABLE (deduped)
 
@@ -156,6 +179,179 @@ else:
 Backends that don't implement an inverse raise `NotImplementedError` from
 the default — distinct from the "URL isn't mine" `None` signal so the two
 conditions can't be confused.
+
+## URL flavors: public vs. presigned
+
+`S3StorageBackend` produces three kinds of URL. Pick the right one for the
+job:
+
+| URL flavor | Method | Carries credentials? | Persistable? | Expires? |
+|---|---|---|---|---|
+| **Durable** | `backend.get_durable_url(key)` | No | **Yes** — write to manifests / logs / DB | No |
+| **Public** | `backend.get_url(key, policy=URLPolicy.PUBLIC)` | No | Yes — relies on `public_url_base` config | No |
+| **Presigned** | `backend.presigned_get(key)` / `.presigned_put(key)` | **Yes** (`X-Amz-Signature`) | **No** — leak risk | Yes |
+
+### `URLPolicy` — strict vs. permissive `get_url`
+
+`get_url(key, *, expires_in=…, policy=URLPolicy.AUTO)` accepts a
+`URLPolicy` enum to pick the flavor explicitly:
+
+```python
+from genblaze_s3 import S3StorageBackend, URLPolicy, URLPolicyError
+
+backend = S3StorageBackend.for_backblaze(
+    "my-bucket",
+    public_url_base="https://media.example.com",
+)
+
+# AUTO (default) — public when public_url_base is set, presigned otherwise.
+# Permissive: silently ignores expires_in when public is selected. Matches
+# pre-0.3.0 behavior; preserved for backward compat.
+url = backend.get_url("img.png")
+
+# PUBLIC — force the public-URL form. Raises URLPolicyError if
+# public_url_base isn't configured, or if expires_in is also passed
+# (conflict — public URLs don't carry an expiry).
+url = backend.get_url("img.png", policy=URLPolicy.PUBLIC)
+
+# PRESIGNED — force a SigV4 URL even when public_url_base is set. Useful
+# for paid-feed / time-limited fetches against a public-bucket backend.
+url = backend.get_url("paid-feed.mp4", policy=URLPolicy.PRESIGNED, expires_in=900)
+```
+
+`URLPolicy.AUTO` is the default for backward compatibility. Use
+`URLPolicy.PUBLIC` when your code path **requires** a public URL and
+should fail loudly if the configuration is wrong (e.g. you accidentally
+deployed without `public_url_base` set).
+
+### `presigned_get` / `presigned_put` — typed, redaction-safe
+
+For credential-bearing URLs handed to HTTP clients, prefer the dedicated
+methods over `get_url(policy=URLPolicy.PRESIGNED)`. They return a
+`PresignedURL` value object whose `__repr__` and `__str__` redact the
+SigV4 signature — so accidental log-line interpolation no longer leaks
+the access-key-id or signature:
+
+```python
+from genblaze_s3 import PresignedURL
+
+# GET — for downloads
+download = backend.presigned_get("k", expires_in=3600)
+print(f"link: {download}")
+# → link: PresignedURL(method='GET', bucket='my-bucket', key='k', ...
+#    url='...?X-Amz-Signature=redacted&X-Amz-Credential=redacted...')
+
+requests.get(download.url)  # explicit .url accessor for the unredacted form
+
+# PUT — for direct browser/client uploads. content_type binds into the
+# signature so the upload MUST send the same Content-Type header.
+upload = backend.presigned_put("k", expires_in=600, content_type="image/png")
+```
+
+Every leak site becomes a deliberate `.url` access rather than a default
+string interpolation. Pre-0.3.0, `put()` itself returned a presigned URL —
+and anything that persisted it (logs, manifests, DB rows) leaked
+transient credentials. **`put()` now returns the storage key** (a plain
+`str`); compose with `get_durable_url` for the persistable form, or use
+the methods above for an explicit credential-bearing URL.
+
+> **`presigned_post` is intentionally deferred.** S3 POST policies return a
+> `{"url", "fields"}` shape that doesn't fit `PresignedURL`. Tracked for a
+> later phase that ships a separate `PresignedPost` value object.
+
+## Server-side encryption (SSE)
+
+`Encryption` is a typed value object accepted symmetrically by `put`,
+`get`, and `copy`. Three modes:
+
+```python
+from genblaze_s3 import Encryption
+
+# SSE-S3 — server-managed AES-256 keys. No extra config required.
+backend.put("k", data, encryption=Encryption.sse_s3())
+
+# SSE-KMS — KMS-managed keys (ARN, alias, or short id).
+backend.put("k", data, encryption=Encryption.sse_kms("alias/my-app"))
+
+# SSE-C — caller-managed keys. Exactly 32 bytes (AES-256). The MD5 of the
+# key is computed automatically; pass `key_md5_b64=` if you already have it.
+key = secrets.token_bytes(32)
+enc = Encryption.sse_c(key)
+
+backend.put("k", data, encryption=enc)
+backend.get("k", encryption=enc)             # SAME key required on read
+backend.copy("k", "k.copy", encryption=enc)  # source + dest re-encrypted
+```
+
+**SSE-C uploads were not round-tripping cleanly pre-0.3.0** — `get` and
+`copy` silently dropped the customer-key envelope, so encrypted objects
+4xx'd on download. The symmetric `encryption=` plumbing closes that
+asymmetry.
+
+`Encryption.sse_c(...)` redacts the customer key in `__repr__` and
+`__str__`; only direct `enc.customer_key` access exposes the raw bytes.
+**Don't pass an `Encryption` instance through `dataclasses.asdict()`** —
+that recurses into all fields and leaks the raw key. Use the
+`to_put_extra_args()` / `to_get_extra_args()` / `to_copy_extra_args()`
+helpers when you need the boto3 wire shape.
+
+> **SSE keys + `extra_args`:** if both `encryption=Encryption.sse_kms(A)`
+> and `extra_args={"SSEKMSKeyId": "B"}` are passed, `put()` raises
+> `ValueError` with a "SSE envelope conflict" message. Pre-fix, the
+> caller's `extra_args` overrode the value object piecewise — silently
+> encrypting the object with the wrong material. Pick exactly one
+> source for the SSE envelope.
+
+## Tuning the backend: `StorageConfig`
+
+`StorageConfig` is a frozen dataclass exposing the eight knobs the S3
+backend bakes in by default. The defaults preserve historic behavior;
+override one knob at a time without subclassing:
+
+```python
+from genblaze_core import StorageConfig
+
+cfg = StorageConfig(
+    max_pool_connections=40,        # default 20 — bump for high-fan-out workloads
+    multipart_threshold=64 * 1024 * 1024,  # default 16 MiB
+    user_agent_extra="my-app/1.2",  # appended to b2ai-genblaze/<version>
+)
+# Phase 2+ wires StorageConfig through `S3StorageBackend(...)` directly.
+# Until then, callers passing one is no-op; the values document the
+# Phase 2 surface.
+```
+
+## Typed errors: `StorageError` and `classify_botocore_error`
+
+Failures from any backend method raise `StorageError` (subclass of
+`GenblazeError`). 0.3.0+ extends `StorageError` with structured fields
+that mirror `ProviderError`:
+
+| Field | Type | Description |
+|---|---|---|
+| `error_code` | `StorageErrorCode \| None` | Typed classification (NOT_FOUND / ACCESS_DENIED / RATE_LIMIT / SERVER_ERROR / NETWORK / TIMEOUT / …) |
+| `request_id` | `str \| None` | Upstream request id (`x-amz-request-id`) |
+| `status_code` | `int \| None` | HTTP status when applicable |
+| `retry_after` | `float \| None` | Server `Retry-After` hint |
+| `is_retriable` | `bool` | Derived from `error_code` via `RETRYABLE_STORAGE_CODES` |
+| `operation` | `str \| None` | Backend method that raised — `"put"`, `"get"`, etc. |
+
+For connector authors: `genblaze_core.classify_botocore_error(exc, *, operation, key=None)`
+maps a `botocore.ClientError` (or any boto exception) to a populated
+`StorageError`. Use it in connector implementations to surface a
+typed shape for the retry helper and observability tooling.
+
+## Migrating from 0.2.x
+
+Phase 1 of the storage-backend hardening tranche introduced four
+intentional behavior changes. Each is independently visible:
+
+| Change | Migration |
+|---|---|
+| `put()` returns the storage key (not a presigned URL) | Compose with `get_durable_url(key)` for the persistable URL form, or `presigned_get(key)` for an explicit credential-bearing URL. Internal callers in this monorepo all discard `put()`'s return value already; only external code persisting it is affected — and those callers were leaking credentials. |
+| `for_backblaze(auto_lifecycle=...)` defaults `False` | Pass `auto_lifecycle=True` explicitly to keep historic behavior, or call `backend.ensure_lifecycle_defaults()` after construction. |
+| `for_backblaze` preflight failures raise (was warn-and-continue) | Placeholder/invalid credentials now fail loudly at construction. Use `preflight=False` for offline tests with placeholder creds. |
+| `prefix="runs"` no longer produces `runs/runs/...` | If you have existing buckets written under the old layout, the new manifest/asset key for an upcoming write will diverge. Two paths: (a) keep the old keys readable via `read_manifest(run)` (the layout function is determined by sink config — old keys still resolve from old config), or (b) re-key the existing data via `backend.copy(old_key, new_key)`. Most callers using the documented `prefix="genblaze"` (or any prefix not in the dup case) are unaffected. |
 
 ## Compose pattern: cloud + local
 

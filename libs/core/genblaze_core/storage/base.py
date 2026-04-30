@@ -5,12 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, BinaryIO, Literal
 
 from genblaze_core._utils import utc_now
+from genblaze_core.storage.types import (  # noqa: F401
+    DeleteError,
+    DeleteResult,
+    FileEntry,
+    ListPage,
+    ObjectMetadata,
+)
 
 _lock_logger = logging.getLogger("genblaze.storage.object_lock")
 
@@ -192,6 +200,141 @@ class StorageBackend(ABC):
         """Release any held resources. Override if needed."""
 
     # ------------------------------------------------------------------
+    # Phase 2A read primitives — head / list / get_range / stream.
+    #
+    # All four are concrete-with-NotImplementedError defaults so existing
+    # third-party ``StorageBackend`` subclasses that predate Phase 2A
+    # don't break at import. Backends opt in by overriding. The S3
+    # backend implements all four natively.
+    # ------------------------------------------------------------------
+
+    def head(self, key: str) -> ObjectMetadata | None:
+        """Return per-object metadata, or ``None`` if the key is missing.
+
+        Tolerant of 404 AND 403 (parity with :meth:`exists` for scoped
+        application keys that get 403 on non-existent reads). Other
+        errors raise :class:`StorageError`.
+
+        Default impl raises :class:`NotImplementedError`. Backends that
+        support HEAD-style introspection override.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement head()")
+
+    def list(
+        self,
+        prefix: str = "",
+        *,
+        max_keys: int = 1000,
+        continuation_token: str | None = None,
+    ) -> ListPage:
+        """List keys under ``prefix`` (one page).
+
+        Pagination is opt-in via ``continuation_token``; pass
+        ``page.next_token`` from a prior call to fetch the next page.
+        ``page.next_token`` is ``None`` when the listing is exhausted.
+
+        Default impl raises :class:`NotImplementedError`. Backends with
+        native list APIs (S3 ``ListObjectsV2``, B2 ``b2_list_file_names``)
+        override.
+
+        Args:
+            prefix: Only return keys starting with this prefix.
+            max_keys: Page size cap. S3 silently caps at 1000; backends
+                may reduce further.
+            continuation_token: Cursor from a prior page. ``None`` for
+                the first page.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement list()")
+
+    def get_range(self, key: str, *, offset: int, length: int) -> bytes:
+        """Download a byte range from the object.
+
+        Args:
+            key: Storage key.
+            offset: Byte offset (inclusive). Must be ≥ 0.
+            length: Number of bytes to read. Must be ≥ 0; ``0`` returns
+                an empty bytes string without contacting the backend.
+
+        Default impl raises :class:`NotImplementedError`. A correctness-
+        preserving fallback (``self.get(key)[offset:offset+length]``)
+        would download the whole object — defeating the point — so
+        backends must explicitly opt in by implementing range reads.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement get_range()")
+
+    def stream(self, key: str, *, chunk_size: int = 8 * 1024 * 1024) -> Iterator[bytes]:
+        """Lazily download an object, yielding ``chunk_size``-sized chunks.
+
+        Use this for objects too large to load into memory in one call.
+        The iterator must be consumed (or closed) to release the
+        underlying response — most backends keep an HTTP connection in
+        the pool until exhaustion.
+
+        Default impl raises :class:`NotImplementedError` — same reasoning
+        as :meth:`get_range`: a fallback chunking ``self.get`` would
+        defeat the streaming contract.
+
+        Args:
+            key: Storage key.
+            chunk_size: Bytes per yielded chunk. Must be ≥ 1. Larger
+                chunks reduce per-iteration overhead; smaller chunks
+                reduce peak memory.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement stream()")
+
+    # ------------------------------------------------------------------
+    # Phase 2B bulk-delete primitives.
+    # ------------------------------------------------------------------
+
+    def delete_many(self, keys: Sequence[str], *, dry_run: bool = False) -> DeleteResult:
+        """Delete a batch of keys.
+
+        Backends are expected to issue a single bulk-delete API call per
+        chunk (S3 ``DeleteObjects`` is capped at 1000 keys per request);
+        the per-key wire shape lets each delete fail independently —
+        partial-failure callers inspect ``result.errors``.
+
+        Args:
+            keys: Keys to delete. Empty list returns an empty result
+                without contacting the backend.
+            dry_run: When ``True``, no upstream calls are made;
+                the returned :class:`DeleteResult` lists every key in
+                ``deleted`` so the caller can preview the operation.
+                Default ``False`` — caller passes the keys explicitly,
+                so dry-run-by-default would be more friction than
+                safety.
+
+        Default impl raises :class:`NotImplementedError`.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement delete_many()")
+
+    def delete_prefix(self, prefix: str, *, dry_run: bool = True) -> DeleteResult:
+        """Delete every key under a prefix. **Defaults to dry-run.**
+
+        Walks :meth:`list` pages and issues bulk deletes per page, so
+        memory stays bounded even for prefixes matching millions of
+        keys. The default ``dry_run=True`` is the safety asymmetry:
+        ``delete_many(keys)`` takes an explicit list (caller knows what
+        they're deleting) while ``delete_prefix(prefix)`` takes a
+        pattern that could match more than the caller intended — so
+        the SDK demands an explicit ``dry_run=False`` to actually
+        delete.
+
+        Args:
+            prefix: Non-empty key prefix. Empty / whitespace-only
+                prefixes raise ``ValueError`` — passing ``""`` would
+                match every object in the bucket, which is virtually
+                always a bug. Callers who genuinely want bucket-wide
+                deletes should iterate :meth:`list` themselves and
+                feed the keys into :meth:`delete_many`.
+            dry_run: ``True`` (default) walks the listing without
+                deleting; ``False`` actually deletes.
+
+        Default impl raises :class:`NotImplementedError`.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement delete_prefix()")
+
+    # ------------------------------------------------------------------
     # Async surface — every sync method has a coroutine pair.
     #
     # Default implementations delegate to the sync method via
@@ -267,3 +410,32 @@ class StorageBackend(ABC):
     async def acopy(self, src_key: str, dst_key: str) -> None:
         """Async pair of :meth:`copy`. Default delegates to the sync impl."""
         await asyncio.to_thread(self.copy, src_key, dst_key)
+
+    async def ahead(self, key: str) -> ObjectMetadata | None:
+        """Async pair of :meth:`head`. Default delegates to the sync impl."""
+        return await asyncio.to_thread(self.head, key)
+
+    async def aget_range(self, key: str, *, offset: int, length: int) -> bytes:
+        """Async pair of :meth:`get_range`. Default delegates to the sync impl."""
+        return await asyncio.to_thread(self.get_range, key, offset=offset, length=length)
+
+    # ``alist`` and ``astream`` are deliberately omitted from the ABC.
+    # Threadpool-wrapping a sync iterator into an ``AsyncIterator`` either
+    # buffers the entire result (defeating streaming back-pressure) or
+    # spins up a queue per call (overkill for a default). Phase 3 of the
+    # storage-backend hardening tranche introduces native async via
+    # ``aioboto3`` for these specifically.
+
+    async def adelete_many(self, keys: Sequence[str], *, dry_run: bool = False) -> DeleteResult:
+        """Async pair of :meth:`delete_many`. Default delegates to sync."""
+        return await asyncio.to_thread(self.delete_many, keys, dry_run=dry_run)
+
+    async def adelete_prefix(self, prefix: str, *, dry_run: bool = True) -> DeleteResult:
+        """Async pair of :meth:`delete_prefix`. Default delegates to sync.
+
+        Note: ``delete_prefix`` itself walks ``list()`` pages, so a native
+        async backend (Phase 3) gets a free win by overriding ``alist``
+        and re-using a generic page-walker rather than threadpool-wrapping
+        the whole walk.
+        """
+        return await asyncio.to_thread(self.delete_prefix, prefix, dry_run=dry_run)
