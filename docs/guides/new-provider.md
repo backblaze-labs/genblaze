@@ -112,6 +112,7 @@ from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     ModelRegistry,
+    RetryPolicy,
     SyncProvider,
     validate_asset_url,
 )
@@ -126,11 +127,13 @@ class MyProvider(SyncProvider):
         api_key: str | None = None,
         *,
         models: ModelRegistry | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
-        # Forward `models` so users can pass a forked/customized registry
-        # without subclassing. Always call super().__init__() — it sets up
-        # poll caching, retry policy, preflight gates, and the registry.
-        super().__init__(models=models)
+        # Forward `models` and `retry_policy` so users can override the
+        # registry or tune retry behavior without subclassing. Always call
+        # super().__init__() — it sets up poll caching, retry policy,
+        # preflight gates, and the registry.
+        super().__init__(models=models, retry_policy=retry_policy)
         self._api_key = api_key
         self._client: Any = None
 
@@ -178,7 +181,7 @@ class MyProvider(SyncProvider):
 Only use this if your API returns a job ID and requires polling:
 
 ```python
-from genblaze_core.providers.base import BaseProvider
+from genblaze_core.providers import BaseProvider
 
 class MyAsyncProvider(BaseProvider):
     name = "myprovider"
@@ -208,7 +211,7 @@ class MyAsyncProvider(BaseProvider):
 Override `get_capabilities()` to declare what your provider supports. This enables upfront validation in Pipeline before any API calls are made.
 
 ```python
-from genblaze_core.providers.base import ProviderCapabilities
+from genblaze_core.providers import ProviderCapabilities
 
 def get_capabilities(self) -> ProviderCapabilities:
     return ProviderCapabilities(
@@ -219,7 +222,7 @@ def get_capabilities(self) -> ProviderCapabilities:
     )
 ```
 
-Set `accepts_chain_input=True` if your provider reads `step.inputs` (image-to-video, audio-to-audio, etc.).
+Set `accepts_chain_input=True` if your provider reads `step.inputs`. (The flag's name is back-compat — it now covers all three input mechanisms: `external_inputs=`, `input_from=`, and chained outputs from a prior step.)
 
 ## 5. Parameter normalization
 
@@ -246,7 +249,7 @@ Standard parameter names to map: `duration`, `resolution`, `aspect_ratio`, `voic
 If your provider accepts `step.inputs` (chain inputs from prior pipeline steps), **always** validate URLs before forwarding them to external APIs:
 
 ```python
-from genblaze_core.providers.base import validate_chain_input_url
+from genblaze_core.providers import validate_chain_input_url
 
 if step.inputs:
     for inp in step.inputs:
@@ -255,6 +258,8 @@ if step.inputs:
 ```
 
 This prevents SSRF — only `https://` and `file://` URLs are allowed.
+
+> **Shortcut:** if your provider uses a `ModelSpec` with `input_mapping` declared, call `self.prepare_payload(step, base_params=...)` instead. It runs the full ModelSpec pipeline (aliases → transformer → chain inputs → coercers → defaults → schemas → required → constraints → allowlist) **and** SSRF-validates every `step.inputs` URL automatically. See [`model-registry.md`](../features/model-registry.md) for the pipeline order.
 
 ## 7. Error classification
 
@@ -328,6 +333,14 @@ from genblaze_core.models.asset import VideoMetadata
 asset.video = VideoMetadata(has_audio=False, codec="h264")
 ```
 
+**Audio (TTS / music) — voice catalog.** Override `list_voices(model=, language=)` so apps can build voice pickers and downstream tooling can resolve voice IDs. Filters are advisory — return only voices matching both `model` (when supplied) and `language` (BCP 47 prefix match, e.g. `"en"` matches `"en-US"`). Reference implementations: ElevenLabs/LMNT (live API + cache), GMI / OpenAI TTS / NVIDIA Riva (curated static catalog). Non-audio connectors leave the default empty list in place.
+
+```python
+def list_voices(self, *, model=None, language=None):
+    voices = self._client.voices.list()  # or a cached static catalog
+    return [Voice(...) for v in voices if _matches(v, model, language)]
+```
+
 ## 11. Cost tracking
 
 Pricing is declared **per model** on `ModelSpec.pricing`. The base class runs the strategy after `fetch_output()` and sets `step.cost_usd` — your connector doesn't compute cost itself. Expose your specs via `create_registry()`:
@@ -363,10 +376,13 @@ Packaged pricing helpers cover the common shapes:
 | Single-param lookup | `by_param("resolution", {"480p": 0.04, "720p": 0.08})` |
 | `(model, param) → price` | `by_model_and_param("duration", {...})` |
 | Pull from response | `per_response_metric(lambda ctx: ctx.provider_payload[...])` |
+| Try strategies in order, first non-`None` wins | `first_match(table_strategy, per_unit_fallback)` |
 
 For anything else, write a `PricingStrategy` callable — `Callable[[PricingContext], float | None]`. Keep it pure and synchronous (no I/O).
 
 **Unknown models** (newly-released, snapshots, aliases) fall back to the permissive default spec — the request goes through, `cost_usd=None`. Users can add pricing at runtime via `MyProvider.models_default().fork().register_pricing(...)` — no provider release required.
+
+**Free upfront estimate** — once `pricing` is wired, callers get `provider.estimate_cost(model, params, n=1) -> Decimal | None` for free. It synthesizes a fake step + asset(s) so per-unit / per-second / param-based strategies work without an API call. Returns `None` for response-only strategies (e.g. `per_response_metric`) — callers fall back to "varies."
 
 See [`docs/features/model-registry.md`](../features/model-registry.md) for the full `ModelSpec` surface (param aliases, schemas, input routing).
 
@@ -396,7 +412,7 @@ def fetch_output(self, prediction_id, step):
 If your provider knows roughly how long a generation will take, return a `SubmitResult` from `submit()` instead of a plain prediction ID. The base class will delay the first poll, reducing unnecessary API calls.
 
 ```python
-from genblaze_core.providers.base import SubmitResult
+from genblaze_core.providers import SubmitResult
 
 def submit(self, step, config=None):
     job = client.create_job(prompt=step.prompt)
@@ -439,7 +455,21 @@ config = {"on_progress": on_progress}
 result = provider.invoke(step, config)
 ```
 
-`SyncProvider` subclasses get this for free. `BaseProvider` subclasses get it automatically during polling. No provider code is needed — the lifecycle orchestration handles it.
+`SyncProvider` subclasses get this for free. `BaseProvider` subclasses get status events (`submitted`, `processing`, `succeeded`, `failed`) automatically during polling — no provider code needed.
+
+**Richer poll signals (optional)** — to surface `progress_pct`, `preview_url`, or human-readable `message` between polls, override `poll_progress(prediction_id)` and return a dict. The base class merges it into the `processing` event. Reference implementations: Runway (preview frames), Luma (intermediate stills), Replicate (streamed logs). Reuse the cached poll result via `self._get_cached_poll_result` to avoid an extra API call.
+
+```python
+def poll_progress(self, prediction_id):
+    job = self._get_cached_poll_result(prediction_id)
+    if job is None:
+        return None
+    return {
+        "progress_pct": job.progress / 100.0,
+        "preview_url": job.preview_url,  # validated by base class
+        "message": job.status_message,
+    }
+```
 
 ## 16. Optional: preflight + probe hooks
 
@@ -458,11 +488,11 @@ Reference: `libs/connectors/gmicloud/genblaze_gmicloud/_base.py::preflight_auth`
 
 ### `probe_model(model_id) -> ProbeResult`
 
-Liveness probe for one model ID. `tools/probe_models.py` runs this in CI to detect when a registered model has been removed upstream. Use `ProbeResult.ok()`, `not_found()`, `auth()`, `unknown()`, or `skipped()`. Default is `skipped()` — opt in only if you have a cheap, idempotent way to ask "does this model exist?".
+Liveness probe for one model ID. [`tools/probe_models.py`](../../tools/probe_models.py) runs this in CI to detect when a registered model has been removed upstream. Use `ProbeResult.ok()`, `not_found()`, `auth()`, `unknown()`, or `skipped()`. Default is `skipped()` — opt in only if you have a cheap, idempotent way to ask "does this model exist?".
 
 ## 17. Optional: tune retry behavior
 
-The default `RetryPolicy` (5 attempts, 1s exponential base, full jitter, 30s cap, retries `TIMEOUT` / `RATE_LIMIT` / `SERVER_ERROR`) suits most connectors. Override when the SDK has unusual transient-failure semantics or the provider charges per submission.
+The default `RetryPolicy` (6 attempts — 1 initial + 5 retries, 1s exponential base, full jitter, 30s cap, retries `TIMEOUT` / `RATE_LIMIT` / `SERVER_ERROR`) suits most connectors. Override when the SDK has unusual transient-failure semantics or the provider charges per submission.
 
 ```python
 from genblaze_core.providers import RetryPolicy
@@ -557,6 +587,7 @@ pip install -e "libs/connectors/myprovider[dev]"
 **Tests + CI**
 - [ ] Compliance harness subclassed (`ProviderComplianceTests`)
 - [ ] Provider-specific tests for error mapping and any custom param logic
+- [ ] Connector added to `Makefile` `install`, `install-dev`, **and** `test` targets — without this, CI never runs your tests
 - [ ] `make test` passes from repo root
 - [ ] `make lint` passes
 - [ ] `make typecheck` passes

@@ -1,13 +1,13 @@
 <!-- created: 2026-04-29 -->
 # PyPI and docs coherence
 
-**Status:** active · **Owner:** docs subagent (can start NOW, parallel with all code plans) · **Target releases:** every published Python package patch-bumped; docs-only npm `@genblaze/spec` no-op · **Shape:** D (docs) + A (small additive code: version helper, umbrella `__getattr__` fix) · **Feedback refs:** P1-18 (docs cliff), P3-14 (PyPI metadata, partly R-10), version-drift bug (8 reports), umbrella `__getattr__` walks into pyarrow
+**Status:** Phases 1A/1B/1C/2 complete (2026-04-30); Phase 3 dropped (no hosted docs site); Phase 4 mostly absorbed elsewhere — see red-team below · **Owner:** docs subagent · **Target releases:** every published Python package patch-bumped; docs-only npm `@genblaze/spec` no-op · **Shape:** D (docs) + A (small additive code: version helper, umbrella `__getattr__` fix) · **Feedback refs:** P1-18 (docs cliff), P3-14 (PyPI metadata, partly R-10), version-drift bug (8 reports), umbrella `__getattr__` walks into pyarrow
 
 ## Goal
 
-Eliminate every "first-impression trap" between `pip install genblaze` and a working pipeline. Single source of `__version__`, no version skew. Every PyPI page renders the README. Hosted docs site at `https://backblaze-labs.github.io/genblaze/`. Every README/docs example matches runtime. B2 SLA / region / cost / compliance copy on the storage page.
+Eliminate every "first-impression trap" between `pip install genblaze` and a working pipeline. Single source of `__version__`, no version skew. Every PyPI page renders the README cleanly with full metadata. `from genblaze import ParquetSink` fails with an actionable error rather than a bare ImportError.
 
-**Done when:** `genblaze.__version__ == importlib.metadata.version("genblaze") == user-agent version` for every published package; PyPI pages render long descriptions, project URLs, classifiers, CHANGELOG link; `mkdocs serve` runs locally and `gh-pages` is auto-deployed via GitHub Actions; `from genblaze import ParquetSink` raises `OptionalDependencyError("install genblaze[parquet]")` instead of `ModuleNotFoundError: pyarrow`; `make docs-check` parses every example in the docs.
+**Done when:** `genblaze.__version__ == importlib.metadata.version("genblaze") == user-agent version` for every published package; PyPI pages render long descriptions, project URLs, classifiers, keywords, CHANGELOG link; `from genblaze import ParquetSink` raises `OptionalDependencyError("install genblaze[parquet]")` instead of `ModuleNotFoundError: pyarrow`; `make pypi-metadata-check` is green.
 
 ## Subagent brief
 
@@ -33,7 +33,7 @@ You are an expert technical writer + Python packaging specialist working on a 14
 - **Duplication**: do not fork content between README and docs site — README is the canonical short version, docs site links to expanded recipes. CHANGELOG is single source for release notes.
 - **Performance**: docs site builds in <30s; PyPI pages don't pull in giant assets.
 - **Scalability**: doc structure scales to 20+ connectors without restructuring; per-connector pages template from a shared layout.
-- **Pattern-fit**: mkdocs-material is standard for Python OSS (LangChain, FastAPI, Pydantic). Don't invent a custom static-site generator.
+- **Pattern-fit**: standard Python packaging idioms (`importlib.metadata` for versions, classifier set every PyPI consumer expects). Don't invent novel infrastructure.
 
 ## Phase 1 — Code coherence (Wk 1, parallelizable with all code work) [SMALL]
 
@@ -78,58 +78,61 @@ For each of 14 published packages (`genblaze-core`, `genblaze` umbrella, `genbla
 | `tools/check_pypi_metadata.py` | **NEW.** CI script asserts every published package has the required fields, consistent shape |
 | `.github/workflows/ci.yml` | Add `pypi-metadata-check` job |
 
-## Phase 3 — Hosted docs site (Wk 2) [DOCS]
+## Phase 3 — Hosted docs site **[DROPPED 2026-04-30]**
 
-| File | Change |
-|------|--------|
-| `mkdocs.yml` | **NEW.** mkdocs-material config; nav covers Getting Started → Concepts → Features → Connectors → API Reference → Migrations → Changelog |
-| `docs/index.md` | **NEW.** Landing — value prop, quickstart, links into the rest |
-| `docs/getting-started/{install,first-pipeline,storage-only}.md` | **NEW.** Includes new "storage-only quickstart" — use `genblaze-s3` as a standalone B2 client without any Pipeline |
-| `docs/connectors/{openai,google,…}.md` (×11) | Per-connector page: PyPI install, env vars, supported models, modalities, capability matrix, example |
-| `docs/compliance/{hipaa,sse-kms,phi-baa}.md` | **NEW.** B2 BAA availability; SSE-C/SSE-KMS configuration recipes; PHI handling guidance; what genblaze does and doesn't do for compliance |
-| `docs/storage/{regions,sla,cost-guidance}.md` | **NEW.** B2 vs S3 region matrix; B2 SLA; B2 lacks S3 storage classes (no Glacier/IA tiers — different cost model); throughput/cost guidance |
-| `.github/workflows/docs.yml` | **NEW.** Build mkdocs on every PR; deploy to `gh-pages` on merge to main |
-| `tools/docs_check.py` | **NEW.** Parses every Python code block in `docs/**/*.md` with `ast.parse` to catch silent breakage; runs in CI |
+We will **not** ship a `mkdocs`-hosted docs site at `https://backblaze-labs.github.io/genblaze/`. The README + per-feature docs in `docs/features/*.md` rendered on GitHub remain the canonical user-facing docs surface. All references to `mkdocs.yml`, `docs/index.md`, `docs/connectors/*.md`, `docs/compliance/*.md`, `docs/storage/*.md`, `docs/getting-started/*.md`, `.github/workflows/docs.yml`, and `tools/docs_check.py` (mkdocs build helper) are removed.
 
-## Phase 4 — README + runtime drift sweep (Wk 2) [DOCS]
+The compliance / region / SLA / storage-only-quickstart content that was queued for the docs site can land as new pages under `docs/features/` if and when the demand materializes — but is **not** in scope for this tranche.
 
-| File | Change |
-|------|--------|
-| `README.md` | Audit every code block against runtime; fix `access_key_id` → `aws_access_key_id` drift; inline 5–6 most-referenced recipes (overlaps with master Wave 7B — coordinate); resolve cross-links to absolute GitHub URLs (so PyPI renders them) |
-| `libs/core/MANIFEST.in` (or `pyproject.toml` `include`) | Ship `examples/` and `docs/features/` inside the wheel per master P1-18 |
-| `tools/docs_runtime_drift.py` | **NEW.** Walks every example in `examples/` + every code block in README/docs, ensures `inspect.signature` matches the call sites |
+## Phase 4 — README + runtime drift sweep **[RED-TEAMED 2026-04-30 — most items dropped]**
+
+The original Phase 4 proposed five workstreams. After auditing the current state of the code and per-package READMEs, four are stale, wrong-premise, or net-negative. Verdicts:
+
+### Item 1 — README code-block audit; fix `access_key_id` → `aws_access_key_id` drift
+**VERDICT: DROP.** Already fixed. `S3StorageBackend.__init__` accepts both `aws_access_key_id` and `access_key_id` as aliases (`backend.py:181-207`, landed during Plan 1 storage hardening). Spot-checked: README:92 imports match `examples/quickstart.py:27-29` exactly. Existing `ruff check libs/ cli/ examples/` (`.github/workflows/ci.yml:24`) catches any drift past a public symbol on every PR.
+
+### Item 2 — Inline 5–6 most-referenced recipes into README
+**VERDICT: DROP.** README is already 435 lines with ~13 code blocks (Quickstart + Storage + 4 More-examples + Iteration + Embed + CLI + Custom-models). Inlining more would bloat first-screen value and *increase* drift surface. The pattern at README:123 — `> Runnable copy: examples/quickstart.py` — is the right one: keep README scannable, link to runnable files.
+
+### Item 3 — Resolve cross-links to absolute GitHub URLs (so PyPI renders them)
+**VERDICT: DROP — wrong premise.** PyPI pages for `genblaze` and `genblaze-core` render `libs/meta/README.md` and `libs/core/README.md` respectively, NOT the root README. Both per-package READMEs already use absolute URLs only (every link verified — all `https://github.com/…`, `https://pypi.org/…`, or `https://www.backblaze.com/…`). The root README's relative links render correctly on GitHub, the only place it's shown.
+
+### Item 4 — Ship `examples/` and `docs/features/` inside the wheel
+**VERDICT: DROP — anti-pattern.** No major Python SDK does this (boto3, openai, anthropic, langchain, pydantic — all link to GitHub-hosted content; none bundle docs in wheels). Bloats every install by ~3–400 KB of files 99% of users never read, and freezes docs at install time so they drift from the live README on GitHub — the *opposite* of "coherence." The "P1-18 docs cliff" this cited was about README accuracy + PyPI metadata; both addressed by Phases 1A/1B/2.
+
+### Item 5 — `tools/docs_runtime_drift.py` (inspect.signature drift detector)
+**VERDICT: DROP the proposed implementation.** The pipeline (extract markdown blocks → AST parse → resolve imports symbolically → bind literals to parameter names → handle fluent chains) is fragile and high-maintenance, for a class of drift that already gets caught by `ruff check libs/ cli/ examples/` on every PR (since `examples/*.py` are real Python files). Optional cheap follow-up — file under "nice-to-have, not blocking":
+
+| File | Optional change (only if a real failure motivates it) |
+|------|--------------------------------------------------------|
+| `Makefile` | New `smoke-examples` target: `python -m py_compile examples/*.py` plus run the three offline examples (`quickstart_local.py`, `streaming_local.py`, `agent_loop_local.py`) which require no network access |
+
+That's the entire delta worth considering. **Recommendation:** close Phase 4 with no further work unless a concrete README/docs drift incident surfaces.
 
 ## Cross-plan dependencies
 
-- **Phase 1 (code coherence) blocks on** master-plan Wave 0.2 (minimal-install CI smoke).
-- **Phase 1 user-agent helper used by** Plan 1's `StorageConfig.user_agent_extra` default.
-- **Phase 4 `examples/` wheel inclusion overlaps with** master Wave 7B — coordinate to land once.
-- **Compliance/SSE docs (Phase 3)** reference Plan 1's symmetric `Encryption` value object — write the docs after Plan 1 ships, or reference the planned shape with a "0.3.0+" callout.
+- **Phase 1 (code coherence) blocks on** master-plan Wave 0.2 (minimal-install CI smoke). _Done._
+- **Phase 1 user-agent helper used by** Plan 1's `StorageConfig.user_agent_extra` default. _Done._
 
 ## Acceptance gates
 
-- [ ] `tools/check_pypi_metadata.py` passes for all 14 packages
-- [ ] `tools/docs_check.py` passes (every code block parses)
-- [ ] `tools/docs_runtime_drift.py` passes (every signature matches runtime)
-- [ ] `mkdocs serve` runs cleanly; site deployed to `gh-pages`
-- [ ] `from genblaze import ParquetSink` raises `OptionalDependencyError` not `ModuleNotFoundError`
-- [ ] `genblaze.__version__ == importlib.metadata.version("genblaze")` for every package (test asserts)
-- [ ] PyPI pages render README content (manual check across all 14 pages)
-- [ ] `make test && make lint && make typecheck` green
+- [x] `tools/check_pypi_metadata.py` passes for all 16 published pyprojects
+- [x] `from genblaze import ParquetSink` raises `OptionalDependencyError` not `ModuleNotFoundError`
+- [x] `genblaze.__version__ == importlib.metadata.version("genblaze")` for every package (asserted by `test_version_coherence.py` for core + umbrella + 13 connectors)
+- [ ] PyPI pages render the per-package README content (manual check across all 14 pages — pending next release)
+- [x] `make test && make lint && make typecheck` green
 
 ## Risks & mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| 14-package metadata drifts again | CI gate `pypi-metadata-check` enforces consistency on every PR |
-| Hosted docs site becomes stale | `last_verified` headers + monthly `verify-docs` skill run |
-| `OptionalDependencyError` is a behavioral break for callers expecting `ImportError` | `OptionalDependencyError(ImportError)` — subclass of ImportError so `except ImportError:` still catches |
-| README inline-recipe copy diverges from docs site | Single source: code blocks in `examples/` are canonical; both render from there |
-| Subagent over-writes existing docs unnecessarily | Review gate: only edit pages flagged in the audit; do not rewrite stable pages without justification |
+| 14-package metadata drifts again | CI gate `make pypi-metadata-check` enforces consistency on every PR |
+| `OptionalDependencyError` is a behavioral break for callers expecting `ImportError` | `OptionalDependencyError(ImportError)` — subclass of `ImportError`, so `except ImportError:` still catches |
+| Future contributor adds a 14th connector with hardcoded `__version__` | `TestConnectorVersionCoherence` parametrizes over every `genblaze-*` distribution — adding a connector that drifts fails CI |
 
 ## Out of scope
 
-- Hosted docs custom domain — `gh-pages` default URL is fine for v1
-- API reference auto-generation — Phase 5 follow-up via `mkdocstrings`
-- Translated docs — single English version is enough
+- Hosted docs site (mkdocs / gh-pages) — explicitly dropped above
+- API reference auto-generation
+- Translated docs
 - B2 management API docs — depend on the future `b2-management-surface.md` plan

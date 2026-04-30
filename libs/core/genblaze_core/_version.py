@@ -1,18 +1,19 @@
-"""``genblaze-core`` package version — single source of truth.
+"""``genblaze-core`` package version — runtime view of the installed wheel.
 
-Plan 5 Phase 1A — closes the "version drift" footgun (bug #9 in the
-storage tranche): pre-fix, ``genblaze_core.__version__`` was a
-hardcoded constant that drifted out of sync with the wheel's
-``importlib.metadata.version("genblaze-core")`` and the
-``b2ai-genblaze/{version}`` user-agent header. After every release
-bump, three places needed editing; mistakes silently shipped wrong
-versions to logs and B2 attribution.
+The version is authored once in ``libs/core/pyproject.toml`` (``[project]
+version = "X.Y.Z"``). Hatchling propagates it into the wheel's
+``METADATA``; ``importlib.metadata.version("genblaze-core")`` reads it
+back, and ``__version__`` mirrors that. So ``genblaze_core.__version__``,
+``pip show genblaze-core``, and the ``b2ai-genblaze/{version}``
+user-agent header always agree with each other and with whatever wheel
+is actually installed — closing the version-drift footgun (storage
+tranche bug #9) where a hardcoded constant here used to drift out of
+sync with the published wheel.
 
-Now ``__version__`` reads from ``importlib.metadata`` so it's
-always whatever the installed wheel reports. The fallback string
-``"0.0.0+unknown"`` covers editable installs without metadata
-(e.g. mid-development ``pip install -e .`` from a fresh clone
-before the package is built).
+The ``"0.0.0+unknown"`` fallback only fires when the package isn't
+installed at all (e.g. ``PYTHONPATH``-style imports from an unbuilt
+source tree). Editable installs (``pip install -e .``) do populate
+metadata.
 """
 
 from __future__ import annotations

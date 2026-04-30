@@ -28,12 +28,11 @@ Run through every item. Mark `[x]` when verified, `[!]` when a problem is found.
 - [ ] `queue-integration.md` — patterns are accurate
 - [ ] `video-params.md` — metadata fields match code
 
-## User-Facing Docs (docs_site/)
-- [ ] Installation guide works step-by-step
-- [ ] Quickstart guide produces expected output
-- [ ] API reference matches current public API
-- [ ] Concepts docs match actual behavior
-- [ ] Navigation (mkdocs.yml) covers all pages
+## User-Facing Docs (README + docs/features/)
+- [ ] README quickstart produces expected output
+- [ ] Concepts docs in `docs/features/*.md` match actual behavior
+- [ ] Per-package READMEs (`libs/*/README.md`, `cli/README.md`) only use absolute URLs (PyPI doesn't rewrite relative links)
+- [ ] Public API surface in code matches what README and feature docs describe
 
 ## Code Examples
 - [ ] All examples in `examples/` have docstrings explaining what they do

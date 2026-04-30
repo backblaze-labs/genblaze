@@ -86,6 +86,42 @@ jobs:
             exit 1
           fi
 
+  build:
+    # Smoke-build every published package on every PR so packaging
+    # regressions (e.g. broken hatch dynamic-version sources, missing
+    # README, malformed classifiers) are caught here, not at release
+    # time when .github/workflows/release.yml runs the same `python -m
+    # build` + `twine check` pipeline against PyPI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: "**/pyproject.toml"
+      - run: pip install build twine
+      - name: Build and twine-check every package
+        # Failures are collected explicitly so one broken package
+        # doesn't mask the others — useful when a refactor touches
+        # multiple packaging configs at once. ``rm -rf dist/`` per
+        # iteration matters because GitHub's "Re-run failed jobs"
+        # button reuses the workspace; without it, a re-run would
+        # ``twine check`` stale wheels from the prior attempt.
+        run: |
+          failed=""
+          for pkg in libs/core cli libs/meta libs/connectors/*/; do
+            pkg="${pkg%/}"
+            echo "=== Building $pkg ==="
+            if ! (cd "$pkg" && rm -rf dist && python -m build && twine check dist/*); then
+              failed="$failed $pkg"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::Build/twine-check failed for:$failed"
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
     strategy:

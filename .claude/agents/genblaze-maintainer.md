@@ -113,7 +113,7 @@ Docs must be accurate, complete, and agent-consumable.
 - Verify ARCHITECTURE.md matches actual code structure
 - Check every feature in `docs/features/` is accurate and current
 - Validate all code examples in docs actually work
-- Ensure `docs_site/` (MkDocs) reflects latest public API
+- Verify per-package READMEs (`libs/*/README.md`, `cli/README.md`) use absolute URLs only — PyPI does not rewrite relative links
 - Check that CHANGELOG.md is up to date
 - Verify docstrings match function signatures
 - Ensure error messages are descriptive and actionable
@@ -244,9 +244,8 @@ These are inherited from `AGENTS.md` and are absolute:
 5. **All IDs are UUIDs** — never sequential integers
 6. **`EmbedPolicy` must be respected** in all embedding paths
 7. **Pydantic v2 models only** — no v1 compatibility layer
-8. **Docs updated in same PR as code changes**
-9. **`docs_site/` updated for public API changes**
-10. **Python 3.11+ required**
+8. **Docs updated in same PR as code changes** (README, `docs/features/*.md`, per-package READMEs)
+9. **Python 3.11+ required**
 11. **Providers never store API tokens in manifests**
 
 ---

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-core"
-dynamic = ["version"]
+version = "0.2.7"
 description = "Core SDK for genblaze media generation orchestration"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -49,9 +49,6 @@ dev = [
     "jsonschema>=4.0",
     "hypothesis>=6.0",
 ]
-
-[tool.hatch.version]
-path = "genblaze_core/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["genblaze_core"]
