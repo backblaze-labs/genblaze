@@ -1006,8 +1006,12 @@ class S3StorageBackend(StorageBackend):
         return DeleteResult(deleted=tuple(deleted), errors=tuple(errors), dry_run=dry_run)
 
     @staticmethod
-    def _chunked(seq: Sequence[str], size: int) -> Iterator[list[str]]:
-        """Yield successive ``size``-sized slices of ``seq``."""
+    def _chunked(seq: Sequence[str], size: int) -> Iterator[Sequence[str]]:
+        # Return annotation is ``Sequence[str]`` rather than ``list[str]``
+        # because the class defines a ``list`` method (S3 ListObjectsV2 wrapper)
+        # that shadows the builtin in mypy's class-scope name resolution —
+        # ``Iterator[list[str]]`` resolves to the method type and breaks
+        # iteration inference for callers.
         for i in range(0, len(seq), size):
             yield seq[i : i + size]
 
