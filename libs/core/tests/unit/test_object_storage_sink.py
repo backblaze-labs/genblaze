@@ -904,6 +904,50 @@ class TestManifestHelpers:
         date_str = run.created_at.strftime("%Y-%m-%d")
         assert sink.manifest_key_for(run) == f"p/runs/acme/{date_str}/{run.run_id}/manifest.json"
 
+    def test_bug5_prefix_runs_no_longer_doubles_hierarchical(self):
+        """**Phase 1C bug #5 regression:** prefix='runs' under HIERARCHICAL
+        used to produce ``runs/runs/{date}/{run_id}/manifest.json``. The
+        seam-dedupe in :class:`KeyBuilder` collapses the duplicate.
+
+        Documented as "intentional" in the previous sink docstring; the
+        plan reclassified as bug #5 because no real caller used the
+        layout intentionally — it was almost always a typo when picking
+        a top-level prefix."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="runs", key_strategy=KeyStrategy.HIERARCHICAL)
+        run = Run(name="t", status=RunStatus.COMPLETED, steps=[])
+        date_str = run.created_at.strftime("%Y-%m-%d")
+        key = sink.manifest_key_for(run)
+        # Single "runs/" at the top, then date/run_id/manifest.json — not
+        # the historic doubled "runs/runs/" prefix.
+        assert key == f"runs/{date_str}/{run.run_id}/manifest.json"
+        assert "runs/runs" not in key
+
+    def test_bug5_prefix_runs_no_longer_doubles_asset_keys(self):
+        """Asset keys also went through the prefix-dup path via the
+        ``asset_prefix = f"{prefix}/runs"`` line in the sink constructor.
+        Verify the seam-dedupe extends to the asset side."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="runs", key_strategy=KeyStrategy.HIERARCHICAL)
+        # The transfer's prefix is the deduped form — KeyBuilder collapsed
+        # the seam at construction time. Spot-check the public attribute
+        # the transfer carries.
+        assert sink._transfer._prefix == "runs"
+        assert sink._transfer._kb.prefix == "runs"
+
+    def test_intentional_prefix_double_segment_preserved(self):
+        """A caller who *intentionally* doubles a segment within their
+        prefix (e.g. `archive/archive`) is not subject to the dedupe —
+        the seam check only fires at the prefix↔strategy boundary."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend, prefix="archive/archive", key_strategy=KeyStrategy.HIERARCHICAL
+        )
+        run = Run(name="t", status=RunStatus.COMPLETED, steps=[])
+        date_str = run.created_at.strftime("%Y-%m-%d")
+        key = sink.manifest_key_for(run)
+        assert key == f"archive/archive/runs/{date_str}/{run.run_id}/manifest.json"
+
     def test_manifest_url_for_round_trips_with_get_durable_url(self):
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="p")

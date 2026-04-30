@@ -95,6 +95,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "StorageErrorCode": ("genblaze_core.storage.errors", "StorageErrorCode"),
     "RETRYABLE_STORAGE_CODES": ("genblaze_core.storage.errors", "RETRYABLE_STORAGE_CODES"),
     "classify_botocore_error": ("genblaze_core.storage.errors", "classify_botocore_error"),
+    "KeyBuilder": ("genblaze_core.storage.key_builder", "KeyBuilder"),
     # testing
     "MockProvider": ("genblaze_core.testing", "MockProvider"),
     "MockVideoProvider": ("genblaze_core.testing", "MockVideoProvider"),

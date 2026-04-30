@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `genblaze-s3`: ``S3StorageBackend`` preflight no longer permanently
+  bricks the backend on a transient upstream failure. Pre-fix, any
+  non-redirect ``ClientError`` from ``HeadBucket`` (including 5xx,
+  throttle, network blips) was cached as ``_preflight_error`` and
+  re-raised on every subsequent call until the process restarted.
+  Post-fix, the new ``_preflight_classify.is_sticky_preflight_error``
+  helper consults Phase 0's ``RETRYABLE_STORAGE_CODES`` to decide:
+  retriable codes (``RATE_LIMIT`` / ``SERVER_ERROR`` / ``NETWORK`` /
+  ``TIMEOUT``) re-raise without caching so the next call retries the
+  HeadBucket; sticky codes (auth, missing bucket, signature mismatch)
+  cache as before. Surfaced during the Phase 1 final review.
+- `genblaze-s3`: ``S3StorageBackend.put`` now detects SSE envelope
+  conflicts between ``encryption=`` and overlapping ``extra_args``
+  keys and raises ``ValueError`` instead of silently encrypting the
+  object with whichever side wins on a per-key basis. Mismatched
+  envelopes (e.g. ``encryption=Encryption.sse_kms("A")`` plus
+  ``extra_args={"SSEKMSKeyId": "B"}``) silently encrypted with the
+  wrong material — S3 accepted the request, so callers wouldn't
+  notice until they tried to decrypt. The ``ValueError`` is raised
+  before the network try/except wrapper so caller API misuse
+  propagates with its native exception type rather than being
+  masked as ``StorageError``. Surfaced during the Phase 1 final
+  review.
+- `genblaze-core`: ``StorageBackend.aget_url`` exposes ``policy=`` and
+  other backend-specific kwargs to async callers via ``**kwargs``
+  forwarding. The async surface now reaches feature parity with the
+  sync ``S3StorageBackend.get_url`` — ``await
+  backend.aget_url(key, policy=URLPolicy.PUBLIC)`` and the conflict
+  detection from Phase 1D both work. Default ``expires_in`` flipped
+  from ``3600`` to ``None`` (sentinel meaning "don't pass") so
+  backends that distinguish unset-vs-default see "caller didn't
+  pass" rather than "caller passed 3600". Surfaced during the
+  Phase 1 final review.
+- `genblaze-s3`: ``URLPolicy.AUTO`` docstring corrected. Pre-fix, the
+  docstring claimed AUTO raises on explicit ``expires_in`` while
+  ``public_url_base`` is set; the implementation is actually
+  permissive (preserves historic silent-ignore for backward compat).
+  Aligned the docstring with the implementation: callers wanting
+  strict raise-on-conflict semantics pass
+  ``policy=URLPolicy.PUBLIC`` explicitly. Surfaced during the
+  Phase 1 final review.
+- `genblaze-s3`: ``S3StorageBackend.get_url(expires_in=...)`` no longer
+  silently ignored when ``public_url_base`` is configured. The
+  historic ``URLPolicy.AUTO`` behavior (default — public when
+  ``public_url_base`` set, presigned otherwise) is preserved for
+  backward compat, but explicit ``policy=URLPolicy.PUBLIC`` with an
+  ``expires_in=`` argument now raises :class:`URLPolicyError` instead
+  of returning a never-expiring URL. Closes bug #2 in the
+  storage-backend-hardening tranche.
+- `genblaze-s3`: ``S3StorageBackend.get(key)`` and
+  ``S3StorageBackend.copy(src, dst)`` accept ``encryption=`` and plumb
+  the customer-key / KMS-key envelope through to the boto3 call. SSE-C
+  uploads now round-trip cleanly — the previous read path silently
+  dropped the customer key, so encrypted objects 4xx'd on download.
+  Closes bug #3.
+- `genblaze-s3`: ``S3StorageBackend.get_url`` no longer issues a
+  ``HeadBucket`` on the public-URL path. Public URL rendering is pure
+  string concat against ``public_url_base`` and never needed the
+  region verify; offline dev / CI flows that just want to compute a
+  URL no longer require a reachable bucket. The presigned-URL path
+  still verifies (signing endpoint must match the bucket region).
+  Closes bug #7.
+
+### Added
+- `genblaze-s3`: ``S3StorageBackend.get_url(policy=URLPolicy.AUTO)``
+  kwarg. Members: ``AUTO`` (default — preserves today's behavior),
+  ``PUBLIC`` (force public, requires ``public_url_base``,
+  conflict-with-expires_in raises :class:`URLPolicyError`), and
+  ``PRESIGNED`` (force a SigV4 URL even when ``public_url_base`` is
+  configured — useful for paid-feed / time-limited fetches off a
+  public bucket). Backwards-compatible — every existing caller passing
+  no policy or only ``expires_in`` continues to work.
+- `genblaze-s3`: ``S3StorageBackend.put(encryption=...)``,
+  ``.get(encryption=...)``, ``.copy(encryption=...)`` —
+  :class:`Encryption` value object accepted symmetrically across the
+  three operations. Replaces the historic ``extra_args={"ServerSide…":
+  …}`` escape hatch with typed construction; ``extra_args`` still
+  wins on conflict so callers retain raw boto3 control when they
+  need it.
+- `genblaze-s3`: ``S3StorageBackend.presigned_get(key, *,
+  expires_in=3600) -> PresignedURL`` and
+  ``S3StorageBackend.presigned_put(key, *, expires_in=3600,
+  content_type=None) -> PresignedURL`` — typed presigned-URL methods
+  returning the redaction-safe value object from Phase 1A. The URL
+  defaults to redacted in ``repr`` / ``str`` / ``f"{...}"``; access
+  the unredacted value via the ``.url`` attribute. Use these instead
+  of ``get_url(policy=URLPolicy.PRESIGNED)`` when you want default
+  redaction in logs. ``presigned_post`` deferred to a later phase
+  (different return shape — needs a separate :class:`PresignedPost`
+  value object covering both URL and POST-policy form fields).
+
+
+- `genblaze-core`: ``ObjectStorageSink(prefix="runs", key_strategy=HIERARCHICAL)``
+  no longer produces ``runs/runs/{tenant}/{date}/{run_id}/...`` keys.
+  The strategy's hardcoded ``runs/`` segment is now collapsed against
+  prefixes that already end in ``runs`` via the new ``KeyBuilder``
+  primitive — same fix applies to the asset-key path through
+  ``AssetTransfer``. Closes bug #5 in the storage-backend-hardening
+  tranche. Caller-intentional duplicates within the prefix
+  (``"archive/archive"``) or within the strategy segments are
+  preserved — the dedupe is seam-only, never global.
+
+### Added
+- `genblaze-core`: ``genblaze_core.KeyBuilder`` — pure value-object for
+  storage-key construction. Use ``KeyBuilder.from_prefix(s)`` to
+  normalize a prefix (strips leading/trailing slashes, collapses
+  consecutive separators), ``.append(*segments)`` to extend it
+  (returns a new ``KeyBuilder``), and ``.build(*segments)`` for a
+  terminal key string. Both ``append`` and ``build`` apply the
+  seam-dedupe rule. Frozen ``@dataclass`` for parity with
+  :class:`StorageConfig` and :class:`RetryPolicy`. Used internally
+  by :class:`ObjectStorageSink` and :class:`AssetTransfer`; exposed
+  publicly so downstream backends and custom sinks can reuse the
+  same normalization rules.
+
 ### Security
 - `genblaze-s3`: ``S3StorageBackend.put`` no longer returns a presigned URL.
   The previous return shape leaked the access-key-id

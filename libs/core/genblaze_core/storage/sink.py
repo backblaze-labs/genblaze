@@ -14,6 +14,7 @@ from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.sinks.base import BaseSink
 from genblaze_core.storage.base import KeyStrategy
+from genblaze_core.storage.key_builder import KeyBuilder
 from genblaze_core.storage.transfer import AssetTransfer
 
 if TYPE_CHECKING:
@@ -51,13 +52,16 @@ class ObjectStorageSink(BaseSink):
 
         Args:
             backend: S3-compatible storage backend.
-            prefix: Root prefix for all keys. Default ``"genblaze"``. Note:
-                under :class:`KeyStrategy.HIERARCHICAL` the layout always
-                nests under a fixed ``runs/`` segment (``{prefix}/runs/...``),
-                so ``prefix="runs"`` produces ``runs/runs/...``. The doubled
-                segment is intentional — see the layout diagram in
-                ``docs/features/object-storage.md`` — but pick a different
-                prefix if it reads as a typo.
+            prefix: Root prefix for all keys. Default ``"genblaze"``.
+                **Phase 1C (0.3.0):** ``prefix="runs"`` no longer doubles the
+                ``runs/`` segment under :class:`KeyStrategy.HIERARCHICAL`.
+                Previously the strategy's hardcoded ``runs/`` was concatenated
+                onto a prefix that already ended in ``runs``, producing
+                ``runs/runs/{tenant}/{date}/{run_id}/...`` — a typo-shaped
+                layout most callers actually wanted to avoid. Path
+                normalization happens at the prefix↔strategy seam only;
+                callers who intentionally double a segment within the
+                prefix (e.g. ``"archive/archive"``) keep that behavior.
             key_strategy: HIERARCHICAL groups everything per-run; the default
                 CONTENT_ADDRESSABLE deduplicates assets by SHA-256.
             parquet_sink: Optional structured-data sibling sink.
@@ -70,11 +74,15 @@ class ObjectStorageSink(BaseSink):
         self._backend = backend
         self._prefix = prefix
         self._key_strategy = key_strategy
+        # Single source of key normalization for both manifest and asset
+        # paths — the seam-dedupe rule lives in KeyBuilder, not in ad-hoc
+        # f-strings spread across sink + transfer.
+        self._kb = KeyBuilder.from_prefix(prefix)
         is_hierarchical = key_strategy == KeyStrategy.HIERARCHICAL
-        asset_prefix = f"{prefix}/runs" if is_hierarchical else f"{prefix}/assets"
+        asset_kb = self._kb.append("runs" if is_hierarchical else "assets")
         self._transfer = AssetTransfer(
             backend,
-            prefix=asset_prefix,
+            prefix=asset_kb.prefix,
             key_strategy=key_strategy,
             pipelined_transfer=pipelined_transfer,
         )
@@ -155,14 +163,14 @@ class ObjectStorageSink(BaseSink):
         without re-implementing the layout rules.
         """
         if self._key_strategy == KeyStrategy.HIERARCHICAL:
-            parts = [self._prefix, "runs"]
+            parts = ["runs"]
             if run.tenant_id:
                 parts.append(run.tenant_id)
             parts.append(run.created_at.strftime("%Y-%m-%d"))
             parts.append(run.run_id)
             parts.append("manifest.json")
-            return "/".join(parts)
-        return f"{self._prefix}/manifests/{run.run_id}.json"
+            return self._kb.build(*parts)
+        return self._kb.build("manifests", f"{run.run_id}.json")
 
     # Internal alias kept so existing call sites don't churn in this PR.
     _build_manifest_key = manifest_key_for

@@ -13,10 +13,22 @@ from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import StorageBackend
 
+from genblaze_s3.encryption import Encryption
+from genblaze_s3.presigned import PresignedURL
+from genblaze_s3.url_policy import URLPolicy, URLPolicyError
+
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger("genblaze.s3")
+
+# Sentinel used by ``get_url`` to distinguish "caller passed the default
+# value 3600" from "caller didn't pass anything". The PUBLIC URLPolicy
+# branch needs the distinction so passing ``expires_in`` *explicitly*
+# while requesting a public URL raises (URLs from public_url_base
+# don't carry an expiry); leaving it unset is the no-conflict case.
+_EXPIRES_IN_UNSET: Any = object()
+_DEFAULT_EXPIRES_IN_SEC = 3600
 
 # User agent for B2/S3 API tracking
 _USER_AGENT = f"b2ai-genblaze/{__version__}"
@@ -206,6 +218,7 @@ class S3StorageBackend(StorageBackend):
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
         extra_args: dict[str, Any] | None = None,
+        encryption: Encryption | None = None,
     ) -> str:
         """Upload an object to S3. Returns the storage key.
 
@@ -228,9 +241,15 @@ class S3StorageBackend(StorageBackend):
         return is the storage key — call :meth:`get_durable_url` on it
         to get a credential-free URL safe to persist.
         """
+        # Validate caller kwargs BEFORE the network try/except wrapper.
+        # ``_build_extra_args`` may raise ``ValueError`` for caller API
+        # misuse (e.g. SSE envelope conflict between ``encryption=`` and
+        # overlapping ``extra_args``). API misuse should propagate as
+        # ``ValueError``, not get masked as ``StorageError`` — those have
+        # different debugging semantics for the caller.
+        merged = self._build_extra_args(content_type, metadata, extra_args, encryption)
         try:
             self._ensure_region_verified()
-            merged = self._build_extra_args(content_type, metadata, extra_args)
             if "ChecksumSHA256" in merged:
                 return self._put_single(key, data, merged)
             stream: BinaryIO = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
@@ -257,19 +276,66 @@ class S3StorageBackend(StorageBackend):
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data, **extra_args)
         return key
 
-    @staticmethod
+    # Boto3 keys that participate in the SSE envelope. Any overlap between
+    # an ``Encryption`` value object and a caller's ``extra_args`` produces a
+    # mismatched envelope (e.g. wrong KMS key, missing customer-key MD5)
+    # which silently encrypts the object with the wrong material — the
+    # request still succeeds at the API level, so callers wouldn't notice
+    # until they try to decrypt. Detect the overlap and raise upfront.
+    _SSE_KEYS_FROZEN: frozenset[str] = frozenset(
+        {
+            "ServerSideEncryption",
+            "SSEKMSKeyId",
+            "SSEKMSEncryptionContext",
+            "SSECustomerAlgorithm",
+            "SSECustomerKey",
+            "SSECustomerKeyMD5",
+            "BucketKeyEnabled",
+        }
+    )
+
+    @classmethod
     def _build_extra_args(
+        cls,
         content_type: str | None,
         metadata: dict[str, str] | None,
         extra_args: dict[str, Any] | None,
+        encryption: Encryption | None = None,
     ) -> dict[str, Any]:
-        """Merge kwargs into a boto3-style ExtraArgs dict, honoring caller overrides."""
+        """Merge kwargs into a boto3-style ExtraArgs dict, honoring caller overrides.
+
+        Precedence (low → high): encryption value-object → caller
+        ``extra_args`` → built-in defaults (ContentType / Metadata /
+        ChecksumAlgorithm). The high end winning matches the historic
+        contract for non-SSE keys: an explicit
+        ``extra_args={"CacheControl": "..."}`` continues to override.
+
+        **SSE keys are special**: an ``encryption=`` value object plus an
+        overlapping ``extra_args`` SSE key produces a mismatched envelope
+        (wrong KMS key, partial customer-key state, etc.). Rather than
+        silently encrypting with the wrong material, this path raises
+        ``ValueError`` so the caller can pick exactly one source of
+        truth for the SSE envelope.
+        """
+        if encryption is not None and extra_args:
+            overlap = cls._SSE_KEYS_FROZEN & extra_args.keys()
+            if overlap:
+                raise ValueError(
+                    "S3StorageBackend.put: SSE envelope conflict — "
+                    f"`encryption=` is set AND `extra_args` overlaps SSE "
+                    f"keys {sorted(overlap)}. Pass exactly one source for "
+                    "the SSE envelope; mixing them silently encrypts with "
+                    "the wrong material on partial-override scenarios."
+                )
         merged: dict[str, Any] = {}
+        if encryption is not None:
+            merged.update(encryption.to_put_extra_args())
         if content_type:
             merged["ContentType"] = content_type
         if metadata:
             merged["Metadata"] = metadata
-        # Caller-provided keys win (including overriding ChecksumAlgorithm).
+        # Caller-provided non-SSE keys win (e.g. ChecksumAlgorithm,
+        # CacheControl, CopySource — anything not in the SSE frozen set).
         if extra_args:
             merged.update(extra_args)
         # Default to SHA-256 per-part integrity unless caller pinned a checksum.
@@ -277,11 +343,23 @@ class S3StorageBackend(StorageBackend):
             merged["ChecksumAlgorithm"] = "SHA256"
         return merged
 
-    def get(self, key: str) -> bytes:
-        """Download an object from S3."""
+    def get(self, key: str, *, encryption: Encryption | None = None) -> bytes:
+        """Download an object from S3.
+
+        ``encryption`` is required for SSE-C-encrypted objects (the
+        same customer key + MD5 the put used). SSE-S3 / SSE-KMS objects
+        decrypt server-side and don't need anything on the read path.
+
+        Phase 1D adds the kwarg to close bug #3's read-side asymmetry —
+        previously SSE-C uploads silently failed to round-trip because
+        ``get_object`` was never plumbed with the customer key.
+        """
+        extra: dict[str, Any] = {}
+        if encryption is not None:
+            extra.update(encryption.to_get_extra_args())
         try:
             self._ensure_region_verified()
-            resp = self._client.get_object(Bucket=self._bucket, Key=key)
+            resp = self._client.get_object(Bucket=self._bucket, Key=key, **extra)
             return resp["Body"].read()
         except StorageError:
             raise
@@ -326,13 +404,18 @@ class S3StorageBackend(StorageBackend):
         except Exception as exc:
             raise StorageError(f"S3 delete failed for {key}: {exc}") from exc
 
-    def copy(self, src_key: str, dst_key: str) -> None:
+    def copy(self, src_key: str, dst_key: str, *, encryption: Encryption | None = None) -> None:
         """Server-side copy — bytes never transit the client.
 
         Used by the pipelined CAS transfer path to promote a temp upload
         to its content-addressed final key once the hash is known. B2's
         S3 API supports this natively and charges nothing for server-side
         bandwidth (just two transaction class-C calls).
+
+        ``encryption`` re-applies the same SSE config to the destination.
+        For SSE-C the value object also supplies the
+        ``CopySourceSSECustomerKey``-shaped kwargs that S3 needs to read
+        the source object (see :meth:`Encryption.to_copy_extra_args`).
 
         Note: single-call ``copy_object`` has a **5 GB source limit**
         per AWS S3 semantics (B2 matches). Objects larger than that
@@ -342,31 +425,112 @@ class S3StorageBackend(StorageBackend):
         HIERARCHICAL key strategy with pipelined_transfer, which
         skips the copy step entirely.
         """
+        copy_kwargs: dict[str, Any] = {}
+        if encryption is not None:
+            copy_kwargs.update(encryption.to_copy_extra_args())
         try:
             self._ensure_region_verified()
             self._client.copy_object(
                 Bucket=self._bucket,
                 Key=dst_key,
                 CopySource={"Bucket": self._bucket, "Key": src_key},
+                **copy_kwargs,
             )
         except StorageError:
             raise
         except Exception as exc:
             raise StorageError(f"S3 copy failed for {src_key} -> {dst_key}: {exc}") from exc
 
-    def get_url(self, key: str, *, expires_in: int = 3600) -> str:
-        """Get a short-lived URL — pre-signed unless ``public_url_base`` is set.
+    def get_url(
+        self,
+        key: str,
+        *,
+        expires_in: int = _EXPIRES_IN_UNSET,  # type: ignore[assignment]
+        policy: URLPolicy = URLPolicy.AUTO,
+    ) -> str:
+        """Get a short-lived URL for the object — flavor selected by ``policy``.
 
-        Do NOT persist the result. Presigned URLs leak the access key ID
-        (``X-Amz-Credential``) and grant a time-limited fetch capability;
-        they also break canonical-hash stability if hashed. For anything
-        landing in a manifest, parquet sink, or embedded media payload,
-        call :meth:`get_durable_url` instead.
+        Args:
+            key: The storage key.
+            expires_in: Seconds until the presigned URL expires. Default
+                is 3600 in the PRESIGNED and AUTO-presigned paths.
+                Cannot be passed explicitly when ``policy=URLPolicy.PUBLIC``
+                — public URLs don't carry an expiry; the conflict raises
+                :class:`URLPolicyError` rather than silently being
+                ignored.
+            policy: One of :class:`URLPolicy.AUTO` (default — public when
+                ``public_url_base`` is set, presigned otherwise),
+                :class:`URLPolicy.PUBLIC` (force public; requires
+                ``public_url_base``), or :class:`URLPolicy.PRESIGNED`
+                (force a SigV4 presigned URL even if ``public_url_base``
+                is configured).
+
+        Returns:
+            URL string. Do NOT persist the result if it's a presigned URL —
+            presigned URLs embed the access-key-id in ``X-Amz-Credential``
+            and break canonical-hash stability if hashed. Use
+            :meth:`get_durable_url` for the persistable form.
+
+        **Phase 1D fixes for bug #2** (silent precedence) **and bug #7**
+        (HeadBucket on every public URL): the public-URL path no longer
+        triggers a region-verify, and the conflict between an explicit
+        ``expires_in`` and a public URL is now a typed error.
         """
-        if self._public_url_base:
-            from urllib.parse import quote
+        explicit_expires = expires_in is not _EXPIRES_IN_UNSET
+        resolved_expires = expires_in if explicit_expires else _DEFAULT_EXPIRES_IN_SEC
 
-            return f"{self._public_url_base}/{quote(key, safe='/')}"
+        # ----- Resolve effective branch ----------------------------------
+        if policy is URLPolicy.PUBLIC:
+            if not self._public_url_base:
+                raise URLPolicyError(
+                    "URLPolicy.PUBLIC requires public_url_base on the backend; "
+                    "none configured. Pass policy=URLPolicy.PRESIGNED or omit "
+                    "policy= to fall back to AUTO."
+                )
+            if explicit_expires:
+                raise URLPolicyError(
+                    "URLPolicy.PUBLIC does not honor expires_in — public URLs "
+                    "served via public_url_base do not carry an expiry. Drop "
+                    "expires_in= or use policy=URLPolicy.PRESIGNED if you need "
+                    "a time-limited URL."
+                )
+            return self._build_public_url(key)
+
+        if policy is URLPolicy.PRESIGNED:
+            return self._build_presigned_url(key, resolved_expires)
+
+        # AUTO
+        if self._public_url_base:
+            # Historical behavior preserved: AUTO ignores expires_in when
+            # public_url_base is set. Callers that want a strict
+            # honor-expires-in error should pass policy=URLPolicy.PUBLIC
+            # (raises on conflict) or policy=URLPolicy.PRESIGNED (always
+            # honors).
+            return self._build_public_url(key)
+        return self._build_presigned_url(key, resolved_expires)
+
+    def _build_public_url(self, key: str) -> str:
+        """Render ``{public_url_base}/{key}`` with safe URL-encoding.
+
+        No region-verify call here — that was the bug #7 hot-path
+        regression; signing public URLs is pure string concatenation.
+        """
+        # Both call sites in ``get_url`` already guard ``_public_url_base``
+        # before reaching here. The redundant check is intentional: an
+        # ``assert`` would be stripped by ``python -O`` and a future
+        # refactor that bypasses one of the call-site guards would
+        # silently produce ``None/key`` URLs.
+        if self._public_url_base is None:
+            raise URLPolicyError(
+                "_build_public_url reached without public_url_base set; "
+                "this is a bug in the call-site dispatch logic."
+            )
+        from urllib.parse import quote
+
+        return f"{self._public_url_base}/{quote(key, safe='/')}"
+
+    def _build_presigned_url(self, key: str, expires_in: int) -> str:
+        """Render a SigV4 GET URL via boto3."""
         try:
             self._ensure_region_verified()
             return self._client.generate_presigned_url(
@@ -378,6 +542,86 @@ class S3StorageBackend(StorageBackend):
             raise
         except Exception as exc:
             raise StorageError(f"S3 get_url failed for {key}: {exc}") from exc
+
+    def presigned_get(
+        self, key: str, *, expires_in: int = _DEFAULT_EXPIRES_IN_SEC
+    ) -> PresignedURL:
+        """Return a typed, redaction-safe presigned GET URL for ``key``.
+
+        Use this instead of ``get_url(policy=URLPolicy.PRESIGNED)`` when
+        you want the URL value to default-redact in logs / repr / str
+        (the :class:`PresignedURL` value object strips
+        ``X-Amz-Signature`` / ``X-Amz-Credential`` from its formatted
+        output). Access the unredacted URL via the ``.url`` attribute
+        when handing it to an HTTP client — that makes every
+        unredacted-leak site a deliberate decision rather than a default
+        string interpolation.
+
+        Args:
+            key: The storage key to sign a fetch URL for.
+            expires_in: Seconds until expiry. Defaults to 3600 (1h).
+        """
+        try:
+            self._ensure_region_verified()
+            url = self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 presigned_get failed for {key}: {exc}") from exc
+        return PresignedURL(
+            url=url,
+            method="GET",
+            key=key,
+            bucket=self._bucket,
+            expires_in=expires_in,
+        )
+
+    def presigned_put(
+        self,
+        key: str,
+        *,
+        expires_in: int = _DEFAULT_EXPIRES_IN_SEC,
+        content_type: str | None = None,
+    ) -> PresignedURL:
+        """Return a typed, redaction-safe presigned PUT URL for ``key``.
+
+        SigV4 binds the ``Content-Type`` header into the signature when
+        present in ``Params`` — the upload must send the same value or
+        the signature check fails. Pass ``content_type=`` here to lock
+        it in; omit to let the upload pick.
+
+        Args:
+            key: The storage key to sign an upload URL for.
+            expires_in: Seconds until expiry. Defaults to 3600 (1h).
+            content_type: Optional Content-Type to bind into the
+                signature. If set, the upload MUST send this exact
+                ``Content-Type`` header.
+        """
+        params: dict[str, Any] = {"Bucket": self._bucket, "Key": key}
+        if content_type is not None:
+            params["ContentType"] = content_type
+        try:
+            self._ensure_region_verified()
+            url = self._client.generate_presigned_url(
+                "put_object",
+                Params=params,
+                ExpiresIn=expires_in,
+            )
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"S3 presigned_put failed for {key}: {exc}") from exc
+        return PresignedURL(
+            url=url,
+            method="PUT",
+            key=key,
+            bucket=self._bucket,
+            expires_in=expires_in,
+        )
 
     def get_durable_url(self, key: str) -> str:
         """Return a credential-free, never-expiring URL safe to persist.
@@ -471,6 +715,8 @@ class S3StorageBackend(StorageBackend):
                 self._region_verified = True
                 return
             except ClientError as exc:
+                from genblaze_s3._preflight_classify import is_sticky_preflight_error
+
                 actual = (
                     exc.response.get("ResponseMetadata", {})
                     .get("HTTPHeaders", {})
@@ -488,16 +734,29 @@ class S3StorageBackend(StorageBackend):
                     self._reconfigure_for_region(actual)
                     self._region_verified = True
                     return
-                # Sticky failure: cache once and re-raise the same helpful
-                # message on every subsequent call. Avoids both the repeated
-                # HEAD cost and the inconsistent (helpful-on-call-1, raw-on-
-                # call-2+) error the previous implementation produced.
                 err = StorageError(
                     f"Bucket {self._bucket!r} preflight failed: {exc}. "
                     "Check bucket name, region, and credentials."
                 )
-                self._preflight_error = err
-                self._region_verified = True
+                if is_sticky_preflight_error(exc):
+                    # Sticky failure (bad creds, missing bucket, sig mismatch):
+                    # cache once and re-raise the same helpful message on every
+                    # subsequent call. Avoids the repeated HEAD cost and the
+                    # inconsistent (helpful-on-call-1, raw-on-call-2+) error
+                    # the previous implementation produced.
+                    self._preflight_error = err
+                    self._region_verified = True
+                else:
+                    # Transient failure (5xx, throttle, network blip): do NOT
+                    # cache — the next call will retry the HeadBucket and may
+                    # succeed. The retry helper / outer ObjectStorageSink
+                    # thread pool gets a fair shot at the upstream recovery.
+                    logger.info(
+                        "Bucket %s preflight got transient %r — leaving "
+                        "unverified so the next call retries.",
+                        self._bucket,
+                        code,
+                    )
                 raise err from exc
 
     def _reconfigure_for_region(self, region: str) -> None:

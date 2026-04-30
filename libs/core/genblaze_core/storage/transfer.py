@@ -17,6 +17,7 @@ from genblaze_core._utils import ALLOWED_FILE_ROOTS, check_ssrf
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import KeyStrategy
+from genblaze_core.storage.key_builder import KeyBuilder
 
 if TYPE_CHECKING:
     from genblaze_core.models.asset import Asset
@@ -196,7 +197,7 @@ def _guess_extension(url: str, content_type: str | None) -> str:
 
 def _build_key(
     strategy: KeyStrategy,
-    prefix: str,
+    key_builder: KeyBuilder,
     asset: Asset,
     sha256: str,
     ext: str,
@@ -205,11 +206,16 @@ def _build_key(
     date_str: str | None = None,
     run_id: str | None = None,
 ) -> str:
-    """Build storage key based on strategy."""
+    """Build storage key based on strategy.
+
+    All path normalization (leading/trailing slashes, prefix↔strategy
+    seam-dedupe) happens inside ``key_builder.build`` — this function
+    just supplies the per-strategy segments.
+    """
     if strategy == KeyStrategy.CONTENT_ADDRESSABLE:
-        return f"{prefix}/{sha256[:2]}/{sha256[2:4]}/{sha256}{ext}"
+        return key_builder.build(sha256[:2], sha256[2:4], f"{sha256}{ext}")
     # HIERARCHICAL — group assets under run folder
-    parts = [prefix]
+    parts: list[str] = []
     if tenant:
         parts.append(tenant)
     if date_str:
@@ -218,7 +224,7 @@ def _build_key(
         parts.append(run_id)
     parts.append("assets")
     parts.append(f"{asset.asset_id}{ext}")
-    return "/".join(parts)
+    return key_builder.build(*parts)
 
 
 def _read_local_file(
@@ -275,6 +281,10 @@ class AssetTransfer:
         self._backend = backend
         self._prefix = prefix
         self._strategy = key_strategy
+        # Single source of seam-dedupe + path normalization for every key
+        # this transfer emits — replaces the inline f-string concatenations
+        # that produced ``runs/runs/...`` for prefix='runs' callers.
+        self._kb = KeyBuilder.from_prefix(prefix)
         self._allowed_roots = allowed_roots
         self._max_download_bytes = max_download_bytes
         self._download_timeout = download_timeout
@@ -305,7 +315,7 @@ class AssetTransfer:
 
             key = _build_key(
                 self._strategy,
-                self._prefix,
+                self._kb,
                 asset,
                 sha256,
                 ext,
@@ -386,7 +396,7 @@ class AssetTransfer:
 
                     key = _build_key(
                         self._strategy,
-                        self._prefix,
+                        self._kb,
                         asset,
                         sha256,
                         ext,
@@ -472,7 +482,7 @@ class AssetTransfer:
                 # Key known upfront — stream directly.
                 key = _build_key(
                     self._strategy,
-                    self._prefix,
+                    self._kb,
                     asset,
                     "",  # unused for HIERARCHICAL
                     ext,
@@ -488,7 +498,7 @@ class AssetTransfer:
                 )
             else:
                 # CAS: upload to temp key, then promote based on hash.
-                temp_key = f"{self._prefix}/.tmp/{asset.asset_id}{ext}"
+                temp_key = self._kb.build(".tmp", f"{asset.asset_id}{ext}")
                 self._backend.put(
                     temp_key,
                     cast(BinaryIO, reader),
@@ -497,7 +507,7 @@ class AssetTransfer:
                 )
                 final_key = _build_key(
                     self._strategy,
-                    self._prefix,
+                    self._kb,
                     asset,
                     reader.sha256_hex,
                     ext,

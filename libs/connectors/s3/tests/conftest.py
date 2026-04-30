@@ -33,6 +33,28 @@ class _FakeClientError(Exception):
         self.operation_name = operation_name
 
 
+# These are real Exception subclasses — the storage error classifier in
+# ``genblaze_core.storage.errors.classify_botocore_error`` does
+# ``isinstance(exc, ConnectTimeoutError)`` etc. against the imported
+# botocore types. With ``MagicMock`` substitutions ``isinstance`` raises
+# ``TypeError: isinstance() arg 2 must be a type, …``. Providing real
+# subclasses keeps the classifier's lazy-import path working under the
+# mocked-botocore test environment.
+class _FakeConnectTimeoutError(Exception):
+    def __init__(self, *, endpoint_url=""):
+        super().__init__(f"connect timeout for {endpoint_url}")
+
+
+class _FakeReadTimeoutError(Exception):
+    def __init__(self, *, endpoint_url=""):
+        super().__init__(f"read timeout for {endpoint_url}")
+
+
+class _FakeBotoConnectionError(Exception):
+    def __init__(self, *, error=""):
+        super().__init__(f"connection error: {error}")
+
+
 @pytest.fixture(autouse=True)
 def mock_boto3():
     """Mock ``boto3`` / ``botocore`` for the duration of every test.
@@ -47,9 +69,13 @@ def mock_boto3():
     """
     mock_mod = MagicMock()
     mock_botocore = MagicMock()
-    # botocore.exceptions.ClientError must be a real exception class —
-    # the backend does ``except ClientError``, which requires a real type.
+    # botocore.exceptions.* must be real exception classes — the backend
+    # and the storage error classifier do ``except ClientError`` and
+    # ``isinstance(exc, ConnectTimeoutError)`` checks.
     mock_botocore.exceptions.ClientError = _FakeClientError
+    mock_botocore.exceptions.ConnectTimeoutError = _FakeConnectTimeoutError
+    mock_botocore.exceptions.ReadTimeoutError = _FakeReadTimeoutError
+    mock_botocore.exceptions.ConnectionError = _FakeBotoConnectionError
 
     modules = {
         "boto3": mock_mod,

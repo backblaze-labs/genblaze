@@ -10,6 +10,7 @@ import pytest
 from genblaze_core.exceptions import StorageError
 from genblaze_core.models.asset import Asset
 from genblaze_core.storage.base import KeyStrategy, StorageBackend
+from genblaze_core.storage.key_builder import KeyBuilder
 from genblaze_core.storage.transfer import (
     AssetTransfer,
     _build_key,
@@ -120,14 +121,20 @@ class TestValidateUrl:
 class TestBuildKey:
     def test_content_addressable(self):
         asset = Asset(url="https://x.com/img.png", media_type="image/png")
-        key = _build_key(KeyStrategy.CONTENT_ADDRESSABLE, "assets", asset, "abcdef1234", ".png")
+        key = _build_key(
+            KeyStrategy.CONTENT_ADDRESSABLE,
+            KeyBuilder.from_prefix("assets"),
+            asset,
+            "abcdef1234",
+            ".png",
+        )
         assert key == "assets/ab/cd/abcdef1234.png"
 
     def test_hierarchical(self):
         asset = Asset(url="https://x.com/img.png", media_type="image/png")
         key = _build_key(
             KeyStrategy.HIERARCHICAL,
-            "assets",
+            KeyBuilder.from_prefix("assets"),
             asset,
             "abcdef1234",
             ".png",
@@ -135,6 +142,9 @@ class TestBuildKey:
             date_str="2026-03-11",
             run_id="run-123",
         )
+        # Note: the trailing "assets/" segment comes from the strategy itself,
+        # not the prefix — so even though prefix=="assets", the seam dedupe
+        # only collapses one of the duplicates between prefix and strategy.
         assert key == f"assets/acme/2026-03-11/run-123/assets/{asset.asset_id}.png"
 
     def test_hierarchical_no_tenant(self):
@@ -142,7 +152,7 @@ class TestBuildKey:
         asset = Asset(url="https://x.com/img.png", media_type="image/png")
         key = _build_key(
             KeyStrategy.HIERARCHICAL,
-            "pfx",
+            KeyBuilder.from_prefix("pfx"),
             asset,
             "abcdef1234",
             ".png",

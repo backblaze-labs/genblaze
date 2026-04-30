@@ -235,14 +235,26 @@ class StorageBackend(ABC):
         """Async pair of :meth:`delete`. Default delegates to the sync impl."""
         await asyncio.to_thread(self.delete, key)
 
-    async def aget_url(self, key: str, *, expires_in: int = 3600) -> str:
+    async def aget_url(self, key: str, *, expires_in: int | None = None, **kwargs: Any) -> str:
         """Async pair of :meth:`get_url`. Default delegates to the sync impl.
+
+        ``expires_in`` defaults to ``None`` (NOT 3600) so that backends
+        using a sentinel-based default (e.g. :class:`S3StorageBackend`'s
+        ``URLPolicy.PUBLIC`` conflict detection) see "caller didn't pass"
+        rather than "caller passed 3600". Pass an int to force an explicit
+        value through.
+
+        ``**kwargs`` forwards backend-specific options (e.g.
+        ``policy=URLPolicy.PUBLIC`` on the S3 backend) without coupling
+        the ABC to connector-side types.
 
         Note: presigned-URL signing is local crypto in boto3, so threadpool
         wrapping is overkill — backends with native async signing should
         override and skip the dispatch.
         """
-        return await asyncio.to_thread(self.get_url, key, expires_in=expires_in)
+        if expires_in is None:
+            return await asyncio.to_thread(self.get_url, key, **kwargs)
+        return await asyncio.to_thread(self.get_url, key, expires_in=expires_in, **kwargs)
 
     async def aget_durable_url(self, key: str) -> str:
         """Async pair of :meth:`get_durable_url`.
