@@ -124,6 +124,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   review.
 
 ### Documentation
+- `docs/features/ingest-workflows.md`: NEW. Full feature doc for the
+  ingest tranche covering Pipeline.ingest API, the four canonical
+  use cases (podcast hosting, UGC upload, archival/DAM bulk import,
+  cross-system/cross-tenant transfers, RTMP-style live ingest),
+  reverse-lookup pattern via read_manifest_for_asset, manifest
+  determinism gate (hash invariance under permuted input order),
+  INGEST vs IMPORT semantics, composition with the generative
+  Pipeline.step() builder, and cross-links to object-storage.md
+  / manifest-provenance.md / moderation.md.
+- `examples/ingest_podcast_episode.py`: NEW runnable. Pulls episode
+  list, ingests into B2 with CONTENT_ADDRESSABLE dedup, prints
+  per-asset attribution + manifest hash, demonstrates reverse
+  lookup. Notes Wave 6 Whisper transcribe chain at the bottom.
+- `examples/ingest_ugc_upload.py`: NEW runnable. Synthesizes a
+  user-uploaded PNG, ingests via Pipeline.ingest with full
+  uploader source_metadata (uploader_id / session_id / ip /
+  user_agent), demonstrates reverse lookup, sketches the
+  ModerationHook integration.
+
 - `docs/features/object-storage.md`: added Phase 2 (read primitives,
   bulk deletes, progress callbacks, per-put Object Lock) and Phase 3
   (``AsyncS3StorageBackend``, native async vs threadpool-delegated
