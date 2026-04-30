@@ -20,6 +20,8 @@ classifiers = [
     "Topic :: Multimedia",
     "Topic :: Software Development :: Libraries",
 ]
+keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "umbrella"]
+
 dependencies = [
     "genblaze-core>=0.2.2,<0.3",
     "genblaze-s3>=0.2.3,<0.3",

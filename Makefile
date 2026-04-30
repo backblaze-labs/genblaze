@@ -85,3 +85,10 @@ ts-types:
 ts-types-check: ts-types
 	@git diff --exit-code libs/spec/ts/ \
 		|| (echo "ERROR: libs/spec/ts/ is out of date. Run 'make ts-types' and commit." && exit 1)
+
+# CI gate: every published Python package has consistent PyPI metadata.
+# A release-prep PR that adds a new package whose pyproject.toml is
+# missing classifiers / authors / project_urls / keywords / etc. fails
+# loudly here rather than rendering empty on PyPI later.
+pypi-metadata-check:
+	@python tools/check_pypi_metadata.py --strict

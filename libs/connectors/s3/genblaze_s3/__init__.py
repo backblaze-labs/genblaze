@@ -5,6 +5,8 @@ from genblaze_s3.encryption import Encryption, EncryptionMode
 from genblaze_s3.presigned import PresignedURL
 from genblaze_s3.url_policy import URLPolicy, URLPolicyError
 
+from ._version import __version__  # noqa: F401 — re-exported
+
 # AsyncS3StorageBackend is exposed from this module via lazy ``__getattr__``
 # so the bare ``import genblaze_s3`` doesn't pay the import cost (or
 # fail with ImportError) on minimal installs without the ``[async]``

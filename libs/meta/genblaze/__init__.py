@@ -25,9 +25,18 @@ Not mirrored by the shim:
 from __future__ import annotations
 
 import importlib
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING
 
-__version__ = "0.3.0"
+# ``__version__`` reads from ``importlib.metadata`` so the umbrella
+# always reports whatever wheel is actually installed. Plan 5 Phase
+# 1A closes the version-drift footgun where the umbrella string was
+# manually edited per release and silently drifted out of sync with
+# ``pip show genblaze`` / ``pip install genblaze==0.X.Y``.
+try:
+    __version__: str = version("genblaze")
+except PackageNotFoundError:  # pragma: no cover — editable dev installs
+    __version__ = "0.0.0+unknown"
 
 _core = importlib.import_module("genblaze_core")
 __all__ = list(_core.__all__)

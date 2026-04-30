@@ -7,7 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **All 13 connectors**: ``__version__`` now reads from
+  ``importlib.metadata`` (``genblaze-{slug}``) rather than being a
+  hardcoded string — same drift class as the core/umbrella fix below,
+  rolled across ``genblaze-s3``, ``genblaze-openai``,
+  ``genblaze-google``, ``genblaze-replicate``, ``genblaze-runway``,
+  ``genblaze-luma``, ``genblaze-decart``, ``genblaze-elevenlabs``,
+  ``genblaze-lmnt``, ``genblaze-stability-audio``, ``genblaze-nvidia``,
+  ``genblaze-gmicloud``, and ``genblaze-langsmith``. Pinned by
+  ``TestConnectorVersionCoherence`` in
+  ``test_version_coherence.py`` — adding a 14th connector that
+  hardcodes its ``__version__`` will fail CI.
+- `genblaze-core`: ``__version__`` now reads from ``importlib.metadata``
+  rather than a hardcoded string. Closes the version-drift footgun
+  (storage tranche bug #9): pre-fix the constant was edited per
+  release and silently drifted out of sync with
+  ``importlib.metadata.version("genblaze-core")`` and the
+  ``b2ai-genblaze/{version}`` user-agent header. The smoke check
+  on the migration confirmed the prior hardcoded ``"0.2.7"`` was
+  already drifted from the actual installed wheel ``"0.2.3"`` —
+  exactly the bug the plan flagged. Same fix applied to the
+  umbrella ``genblaze`` package's ``__version__``. Test
+  ``test_version_coherence.py`` pins the invariant going forward.
+- `genblaze-core`: optional-dependency import errors now raise
+  :class:`OptionalDependencyError` with the install incantation in
+  the message (``pip install 'genblaze[parquet]'``) — not a bare
+  ``ModuleNotFoundError``. Closes storage tranche bug #8.
+  ``OptionalDependencyError`` subclasses ``ImportError`` so legacy
+  ``except ImportError:`` callers continue to catch it without code
+  changes; new callers can be more specific via
+  ``except OptionalDependencyError:``. Wired into
+  ``ParquetSink``'s pyarrow gate; future optional-extra modules
+  (``aioboto3`` for AsyncS3StorageBackend, etc.) can adopt the same
+  pattern.
+
 ### Added
+- `genblaze-s3`: ``genblaze_s3._user_agent.build_user_agent(*,
+  base=None, extra=None)`` helper. Default base is
+  ``b2ai-genblaze/{genblaze_core.__version__}`` so the user-agent
+  always tracks the installed core wheel — no more two-step "bump
+  core, then bump the connector's hardcoded UA" dance. ``base`` lets
+  forks override the prefix; ``extra`` composes with
+  ``StorageConfig.user_agent_extra`` so application identifiers
+  append cleanly. ``backend.py`` now wires
+  ``_USER_AGENT = build_user_agent()`` and the legacy
+  f-string-on-import has been removed. Pinned by
+  ``test_user_agent.py``.
+- **CI gate**: ``tools/check_pypi_metadata.py`` audits every published
+  ``pyproject.toml`` (``libs/**`` plus ``cli/``) for the metadata
+  fields PyPI search and project pages render — ``description``,
+  ``readme``, ``authors``, ``license``, ``requires-python>=3.11``,
+  classifier groups (``License`` / ``Programming Language :: Python ::
+  3.1*`` / ``Topic`` / ``Development Status``), ``project.urls``
+  (Homepage / Documentation / Repository / Issues), and ``keywords``.
+  Wired as ``make pypi-metadata-check`` (``--strict`` mode exits 1 on
+  any miss) so a release-prep PR that adds a new package missing
+  classifiers/keywords/etc. fails loudly rather than rendering empty
+  on PyPI.
+- `genblaze-core`: ``genblaze_core._optional`` module with
+  :class:`OptionalDependencyError` and a :func:`require(extra,
+  package, symbol=None)` helper for module-top-level use in
+  optional-extra-gated code.
+
 - `genblaze-core` / `@genblaze/spec`: ingest-sink tranche **Phase 2** —
   ``Pipeline.ingest()`` factory for non-generative bulk imports. Closes
   the "podcast hosting / DAM bulk import / RSS pull / UGC upload"
@@ -42,6 +104,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remain in Wave 4 scope).
 
 ### Changed
+- **PyPI metadata sweep**: every published package's
+  ``pyproject.toml`` now carries the full classifier set
+  (``License :: OSI Approved :: MIT License``, ``Programming Language
+  :: Python :: 3.{11,12,13}``, ``Topic :: Multimedia`` + ``Topic ::
+  Software Development :: Libraries``, ``Development Status``,
+  ``Typing :: Typed``), per-package ``keywords`` (common base —
+  genblaze / ai / media / manifest / provenance / c2pa-ready / genai
+  / pipeline — plus provider-specific tags), and a complete
+  ``project.urls`` block. The ``cli`` package gained the
+  ``Documentation`` URL it was missing. PyPI search and project
+  pages now render rich previews instead of blank metadata.
 - `genblaze-core` / `@genblaze/spec`: ``Step.provider`` is now
   ``str | None``. A new model validator requires ``provider`` to be
   set unless ``step_type ∈ {INGEST, IMPORT}`` — non-generative step

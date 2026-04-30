@@ -14,7 +14,14 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia",
+    "Topic :: Software Development :: Libraries",
 ]
+keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "stability", "audio"]
+
 dependencies = [
     "genblaze-core>=0.2.0,<0.3",
     "httpx>=0.24",

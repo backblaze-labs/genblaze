@@ -5,4 +5,6 @@ from genblaze_openai.dalle import DalleProvider
 from genblaze_openai.provider import SoraProvider
 from genblaze_openai.tts import OpenAITTSProvider
 
+from ._version import __version__  # noqa: F401 — re-exported
+
 __all__ = ["SoraProvider", "DalleProvider", "OpenAITTSProvider", "chat", "achat"]

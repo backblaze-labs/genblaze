@@ -14,9 +14,12 @@ try:
     import pyarrow as pa
     import pyarrow.parquet as pq
 except ImportError as _exc:
-    raise ImportError(
-        "pyarrow is required for ParquetSink. "
-        'Install it with: pip install "genblaze-core[parquet]"'
+    from genblaze_core._optional import OptionalDependencyError
+
+    raise OptionalDependencyError(
+        extra="parquet",
+        package="pyarrow",
+        symbol="ParquetSink",
     ) from _exc
 
 import re

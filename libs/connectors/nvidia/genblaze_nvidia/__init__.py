@@ -11,6 +11,8 @@ from genblaze_nvidia.chat_provider import NvidiaChatProvider
 from genblaze_nvidia.image import NvidiaImageProvider
 from genblaze_nvidia.video import NvidiaVideoProvider
 
+from ._version import __version__  # noqa: F401 — re-exported
+
 __all__ = [
     "NvidiaVideoProvider",
     "NvidiaImageProvider",

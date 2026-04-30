@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from botocore.exceptions import ClientError
-from genblaze_core._version import __version__
+from genblaze_core._version import __version__  # noqa: F401 — re-exported elsewhere
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import ObjectLockConfig, StorageBackend
 from genblaze_core.storage.errors import classify_botocore_error
@@ -23,6 +23,7 @@ from genblaze_core.storage.types import (
     TransferProgress,
 )
 
+from genblaze_s3._user_agent import build_user_agent
 from genblaze_s3.encryption import Encryption
 from genblaze_s3.presigned import PresignedURL
 from genblaze_s3.url_policy import URLPolicy, URLPolicyError
@@ -40,8 +41,11 @@ logger = logging.getLogger("genblaze.s3")
 _EXPIRES_IN_UNSET: Any = object()
 _DEFAULT_EXPIRES_IN_SEC = 3600
 
-# User agent for B2/S3 API tracking
-_USER_AGENT = f"b2ai-genblaze/{__version__}"
+# User-agent prefix for B2/S3 API tracking. Built once at import time via
+# ``build_user_agent`` so the version stays coherent with the installed
+# wheel; callers append app-specific attribution via ``extra`` on the
+# ``build_user_agent`` helper or via :attr:`StorageConfig.user_agent_extra`.
+_USER_AGENT = build_user_agent()
 
 # Single-PUT vs multipart cutoff. Above this, boto3 splits into 16 MB parts
 # and uploads up to _MAX_CONCURRENCY in parallel — each part individually

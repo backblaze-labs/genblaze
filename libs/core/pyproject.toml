@@ -21,6 +21,8 @@ classifiers = [
     "Topic :: Multimedia",
     "Topic :: Software Development :: Libraries",
 ]
+keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "sdk"]
+
 dependencies = [
     "pydantic>=2.0,<3",
     "pillow>=10.0",
