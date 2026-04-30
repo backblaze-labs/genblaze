@@ -7,7 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-04-30
+
+### Released package versions
+- Code-change bumps: `genblaze-core` 0.2.8, `genblaze-s3` **0.3.0** (minor —
+  near-total backend rewrite with async, encryption, presigned URLs).
+- Metadata + version-source bumps: `genblaze` (umbrella) 0.3.2 — switches
+  `__version__` to `importlib.metadata`, adds keywords, widens
+  `genblaze-s3` pin to `<0.4` so it can resolve the new minor.
+- `@genblaze/spec` (npm) 0.4.0 — `step.schema.json` contract change
+  (already bumped locally; ready to publish).
+- Untouched (no republish): `genblaze-stability-audio` 0.2.2 (only
+  internal version-source refactor, no behavior change), and every other
+  connector + cli at their current versions.
+
+### Added
+- `genblaze-core`: net-new public modules — `_optional.py` (84 lines,
+  optional-import framework), `pipeline/ingest.py` (223 lines, ingest
+  orchestration for standalone asset writes), `storage/config.py`,
+  `storage/errors.py`, `storage/types.py`, `storage/key_builder.py`,
+  `storage/_tracer.py`. `storage/base.py` and `storage/sink.py` grew
+  substantially (+292 / +158 lines); `transfer.py` extended.
+- `genblaze-s3`: full async backend (`async_backend.py`, 476 lines),
+  end-to-end encryption (`encryption.py`, 211 lines), presigned URL
+  support (`presigned.py`, 117 lines), preflight-classification
+  (`_preflight_classify.py`), URL-policy enforcement (`url_policy.py`),
+  user-agent module (`_user_agent.py`). `backend.py` grew by 1018 lines
+  to support these. Comprehensive new test coverage across phase 2A/2B/2C
+  regression suites.
+- Tooling: `tools/check_pypi_metadata.py` (180 lines) for catching
+  metadata drift before publish.
+
 ### Fixed
+- **Build-time / runtime version drift** (Plan 5 Phase 1A/1B):
+  `pyproject.toml`'s literal `version = "X.Y.Z"` is now the single source
+  of truth. Hatchling propagates it into the wheel METADATA;
+  `_version.py` reads it back via `importlib.metadata.version(...)`. So
+  `genblaze_core.__version__`, `pip show genblaze-core`, and the
+  `b2ai-genblaze/{version}` user-agent header always agree with the
+  installed wheel. No more manual edits to `_version.py` per release.
+  Applied to `genblaze-core`, `genblaze-s3`, `genblaze-stability-audio`,
+  and `genblaze` (umbrella). Removed all `[tool.hatch.version]` blocks
+  and `dynamic = ["version"]` declarations.
 - **All 13 connectors**: ``__version__`` now reads from
   ``importlib.metadata`` (``genblaze-{slug}``) rather than being a
   hardcoded string — same drift class as the core/umbrella fix below,

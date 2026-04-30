@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze"
-version = "0.3.1"
+version = "0.3.2"
 description = "Umbrella package for genblaze — installs genblaze-core + genblaze-s3 and re-exports the core API; use extras for provider bundles"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -24,7 +24,7 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.2.2,<0.3",
-    "genblaze-s3>=0.2.3,<0.3",
+    "genblaze-s3>=0.2.3,<0.4",
 ]
 
 [project.urls]

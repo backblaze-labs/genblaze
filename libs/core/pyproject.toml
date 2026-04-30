@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-core"
-version = "0.2.7"
+version = "0.2.8"
 description = "Core SDK for genblaze media generation orchestration"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
