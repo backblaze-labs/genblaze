@@ -1034,3 +1034,202 @@ class TestManifestHelpers:
         sink.write_run(run, manifest)
         assert manifest.manifest_uri == first_uri
         assert manifest.manifest_uri == backend.get_durable_url(sink.manifest_key_for(run))
+
+
+# ---------------------------------------------------------------------------
+# Plan 4 Phase 1 — standalone asset writes
+# ---------------------------------------------------------------------------
+
+
+class _AssetIndexBackend(MemoryBackend):
+    """Memory backend with ``key_from_url`` so reverse-lookup tests work.
+
+    The plain ``MemoryBackend`` inherits the ABC default which raises
+    ``NotImplementedError`` for ``key_from_url`` — fine for sink tests
+    that don't touch the inverse, but ``read_manifest_for_asset``
+    needs to round-trip a stored ``manifest_uri`` back to a key.
+    """
+
+    def key_from_url(self, url: str) -> str | None:
+        prefix = "https://mem/"
+        if not url.startswith(prefix):
+            return None
+        return url[len(prefix) :]
+
+
+class TestPutAsset:
+    """``BaseSink.put_asset`` — single-asset writes without a Run wrapper."""
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_put_asset_uploads_and_mutates_in_place(self, mock_urlopen, _mock_dns):
+        """The asset's url, sha256, and size_bytes are populated after put_asset."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"png-bytes", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend, prefix="dam", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE
+        )
+        asset = Asset(url="https://cdn.example.com/cat.png", media_type="image/png")
+
+        result = sink.put_asset(asset)
+
+        # In-place mutation — the same object is returned.
+        assert result is asset
+        # URL was rewritten to the durable URL (no presigned signature).
+        assert asset.url.startswith("https://mem/")
+        assert "X-Amz-Signature" not in asset.url
+        # Size + hash populated.
+        assert asset.size_bytes == len(b"png-bytes")
+        assert asset.sha256 is not None
+        assert len(asset.sha256) == 64
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_put_asset_cas_dedupes_identical_payloads(self, mock_urlopen, _mock_dns):
+        """Two assets with identical content land at the same CAS key —
+        the second put is skipped."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"same-bytes", b"", b"same-bytes", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend, prefix="dam", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE
+        )
+
+        a1 = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        a2 = Asset(url="https://cdn.example.com/b.png", media_type="image/png")
+        sink.put_asset(a1)
+        sink.put_asset(a2)
+
+        # Same hash → same final URL.
+        assert a1.url == a2.url
+        # Only one object actually in the backend store (CAS dedup).
+        assert len(backend.store) == 1
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_put_assets_parallel_preserves_order(self, mock_urlopen, _mock_dns):
+        """``put_assets`` runs writes in parallel but the returned list
+        preserves input order regardless of completion order."""
+        mock_resp = MagicMock()
+        # Each download returns distinct content.
+        mock_resp.read.side_effect = [b"a", b"", b"b", b"", b"c", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend, prefix="dam", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE
+        )
+        inputs = [
+            Asset(url=f"https://cdn.example.com/{i}.png", media_type="image/png") for i in range(3)
+        ]
+        results = sink.put_assets(inputs)
+
+        # Order matches input order.
+        assert [r.asset_id for r in results] == [a.asset_id for a in inputs]
+        # All three landed in the backend (distinct CAS keys, distinct content).
+        assert len(backend.store) == 3
+
+    def test_put_assets_empty_list_short_circuits(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        assert sink.put_assets([]) == []
+        assert backend.store == {}
+
+
+class TestReadManifestForAsset:
+    """``BaseSink.read_manifest_for_asset`` — reverse lookup via sidecar index."""
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_read_manifest_for_asset_round_trip(self, mock_urlopen, _mock_dns):
+        """put_asset(asset, manifest_uri=...) writes a sidecar; reverse-lookup
+        recovers the manifest from that pointer."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"png-bytes", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(
+            backend, prefix="dam", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE
+        )
+
+        # Pre-populate a manifest in the backend so the reverse lookup
+        # has somewhere to land. Build it minimally.
+        run = Run(name="r", status=RunStatus.COMPLETED, steps=[])
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+        manifest_key = sink.manifest_key_for(run)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        manifest_uri = backend.get_durable_url(manifest_key)
+
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        sink.put_asset(asset, manifest_uri=manifest_uri)
+
+        # Reverse lookup recovers the same manifest hash.
+        recovered = sink.read_manifest_for_asset(asset.asset_id)
+        assert recovered is not None
+        assert recovered.canonical_hash == manifest.canonical_hash
+
+    def test_read_manifest_for_asset_missing_returns_none(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        # No put_asset call — index entry doesn't exist.
+        assert sink.read_manifest_for_asset("never-put") is None
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_put_asset_without_manifest_uri_skips_index(self, mock_urlopen, _mock_dns):
+        """When manifest_uri= is omitted, no sidecar is written and
+        reverse lookup returns None."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"bytes", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(
+            backend, prefix="dam", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE
+        )
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        sink.put_asset(asset)  # no manifest_uri
+
+        assert sink.read_manifest_for_asset(asset.asset_id) is None
+        # And no _index/* keys were written.
+        assert all(not k.startswith("dam/_index/") for k in backend.store)
+
+
+class TestBaseSinkPutAssetDefaults:
+    """Sinks that don't override the ABC defaults raise NotImplementedError —
+    the existing ``ParquetSink`` and any user-defined non-storage-backed
+    sinks keep working without changes."""
+
+    def test_parquet_sink_raises_on_put_asset(self, tmp_path):
+        from genblaze_core.sinks.parquet import ParquetSink
+
+        sink = ParquetSink(str(tmp_path))
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        with pytest.raises(NotImplementedError, match="put_asset"):
+            sink.put_asset(asset)
+        with pytest.raises(NotImplementedError, match="put_assets"):
+            sink.put_assets([asset])
+        with pytest.raises(NotImplementedError, match="read_manifest_for_asset"):
+            sink.read_manifest_for_asset("x")

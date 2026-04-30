@@ -205,7 +205,7 @@ class OTelTracer(Tracer):
         span.set_attribute("genblaze.run_id", run_id)
         span.set_attribute("genblaze.step_id", step.step_id)
         span.set_attribute("genblaze.step_index", step_index)
-        span.set_attribute("genblaze.provider", step.provider)
+        span.set_attribute("genblaze.provider", step.provider or "")
         span.set_attribute("genblaze.model", step.model)
         self._step_spans[step.step_id] = span
 

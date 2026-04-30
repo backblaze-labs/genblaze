@@ -73,7 +73,10 @@ class ParquetSink(BaseSink):
         tenant = self._sanitize(run.tenant_id or "default")
         modalities = {str(s.modality) for s in run.steps}
         modality_str = self._sanitize("_".join(sorted(modalities)) or "unknown")
-        providers = {s.provider for s in run.steps}
+        # Filter None — INGEST/IMPORT steps have no upstream provider; the
+        # partition path replaces them with the modality-default sentinel
+        # rather than the literal string "None".
+        providers = {s.provider for s in run.steps if s.provider is not None}
         provider_str = self._sanitize("_".join(sorted(providers)) or "unknown")
         return f"dt={date_str}/tenant_id={tenant}/modality={modality_str}/provider={provider_str}"
 

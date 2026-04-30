@@ -4,7 +4,7 @@
   "title": "Step",
   "description": "A single generation step within a run.",
   "type": "object",
-  "required": ["step_id", "provider", "model", "status"],
+  "required": ["step_id", "model", "status"],
   "properties": {
     "step_id": {
       "type": "string",
@@ -16,8 +16,9 @@
       "default": null
     },
     "provider": {
-      "type": "string",
-      "description": "Provider name (e.g. replicate, runway, elevenlabs)."
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Provider name (e.g. replicate, runway, elevenlabs). Required for generative step types; null only when step_type is ingest or import (non-generative — no upstream service)."
     },
     "model": {
       "type": "string",
@@ -25,9 +26,9 @@
     },
     "step_type": {
       "type": "string",
-      "enum": ["generate", "upscale", "transcode", "mix", "edit", "custom"],
+      "enum": ["generate", "upscale", "transcode", "mix", "edit", "custom", "ingest", "import"],
       "default": "generate",
-      "description": "Type of operation performed in this step."
+      "description": "Type of operation performed in this step. ingest/import are non-generative (no provider required)."
     },
     "model_version": {
       "type": ["string", "null"],

@@ -89,17 +89,17 @@ export interface Step {
   step_id: string;
   run_id?: string | null;
   /**
-   * Provider name (e.g. replicate, runway, elevenlabs).
+   * Provider name (e.g. replicate, runway, elevenlabs). Required for generative step types; null only when step_type is ingest or import (non-generative — no upstream service).
    */
-  provider: string;
+  provider?: string | null;
   /**
    * Model identifier (e.g. black-forest-labs/flux-schnell).
    */
   model: string;
   /**
-   * Type of operation performed in this step.
+   * Type of operation performed in this step. ingest/import are non-generative (no provider required).
    */
-  step_type?: "generate" | "upscale" | "transcode" | "mix" | "edit" | "custom";
+  step_type?: "generate" | "upscale" | "transcode" | "mix" | "edit" | "custom" | "ingest" | "import";
   /**
    * Specific model version identifier.
    */

@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `genblaze-core` / `@genblaze/spec`: ingest-sink tranche **Phase 2** —
+  ``Pipeline.ingest()`` factory for non-generative bulk imports. Closes
+  the "podcast hosting / DAM bulk import / RSS pull / UGC upload"
+  use cases the plan called out as forced to fabricate
+  ``SyncProvider`` shims today.
+  - ``Pipeline.ingest(assets, *, source, source_metadata=None, sink=None,
+    name=None, tenant_id=None, step_type=StepType.INGEST) ->
+    PipelineResult`` — classmethod factory. Each asset becomes a
+    :class:`Step` with ``step_type=StepType.INGEST`` (or ``IMPORT``),
+    ``provider=None``, ``model=source``, ``modality`` inferred from
+    ``asset.media_type``, ``status=StepStatus.SUCCEEDED``. Step
+    metadata carries ``{"source": source, **source_metadata}``. The
+    factory orders assets by ``asset_id`` before building steps so
+    the resulting manifest's canonical hash is **invariant under
+    permuted input order** — a podcast app calling ``ingest`` with
+    feed entries in any order produces a byte-identical manifest.
+  - When a sink is supplied, ``put_asset`` is called for each asset
+    with a derived ``manifest_uri`` so
+    :meth:`BaseSink.read_manifest_for_asset` can later discover the
+    manifest from any asset_id. Sinks that don't implement
+    ``put_asset`` (e.g. ``ParquetSink``) emit a warning and skip
+    the upload — manifest still produced for in-memory consumers.
+  - New module ``genblaze_core.pipeline.ingest`` houses the
+    orchestration; ``Pipeline.ingest`` is a thin classmethod
+    wrapper so the fluent ``.step(...)`` builder surface stays
+    focused on generation.
+
+- `genblaze-core` / `@genblaze/spec`: **StepType.INGEST and
+  StepType.IMPORT** — non-generative step type values. Added as the
+  Plan 4 Phase 2 slice of the master plan's Wave 4 enum extension
+  (``StepType.{TRANSCRIBE, CLASSIFY, ANALYZE, EXTRACT, MODERATE}``
+  remain in Wave 4 scope).
+
+### Changed
+- `genblaze-core` / `@genblaze/spec`: ``Step.provider`` is now
+  ``str | None``. A new model validator requires ``provider`` to be
+  set unless ``step_type ∈ {INGEST, IMPORT}`` — non-generative step
+  types may have null provider (no upstream service to attribute);
+  every other step type continues to require provider as before.
+  Wire schema (``manifest/v1/step.schema.json``) reflects the
+  change: ``provider`` is now nullable and removed from the
+  ``required`` array; the ``step_type`` enum gains ``"ingest"`` and
+  ``"import"`` values. ``@genblaze/spec`` bumped 0.3.3 → 0.4.0
+  (additive minor for the enum; field-relaxation is also
+  forward-compatible since older consumers expecting non-null
+  provider only break for the new step types they wouldn't have
+  emitted anyway).
+- `genblaze-core`: three internal call sites that read
+  ``step.provider`` and forward it through a non-Optional surface
+  (``StepFailedEvent`` / ``StepCompletedEvent`` provider field, OTel
+  span attribute, ``ParquetSink`` partition path) now coerce ``None``
+  to a sentinel. The wire / observability shape is preserved for
+  generative steps; ingest steps emit ``provider=""`` on the wire
+  and skip the partition-path provider segment (filtered out before
+  ``sorted``).
+
+### Added
+- `genblaze-core`: ingest-sink tranche **Phase 1** — standalone asset
+  writes via :class:`BaseSink`. Closes the "non-generative workflow"
+  gap where DAM, archival, podcast-hosting, and UGC apps had to
+  fabricate `SyncProvider` shims to seed assets through the
+  generation-shaped pipeline.
+  - ``BaseSink.put_asset(asset, *, manifest_uri=None) -> Asset`` —
+    write a single asset's bytes via the sink's storage backend
+    (no Run wrapper required). Mutates the asset in place: rewrites
+    ``url`` to the durable backend URL, populates ``sha256`` and
+    ``size_bytes``. Source bytes resolved from the asset's existing
+    URL (``file://`` allowlisted dirs, or SSRF-protected ``https://``).
+    Default impl on the ABC raises ``NotImplementedError`` so
+    non-storage-backed sinks (``ParquetSink`` etc.) keep working.
+  - ``BaseSink.put_assets(assets, *, manifest_uri=None) ->
+    list[Asset]`` — bulk variant, parallelizes via
+    ``ThreadPoolExecutor`` sized at ``min(max_upload_workers,
+    len(assets))``. Returned list preserves input order.
+  - ``BaseSink.read_manifest_for_asset(asset_id) -> Manifest |
+    None`` — reverse-lookup. When ``put_asset`` is called with
+    ``manifest_uri=``, the sink writes a sidecar index entry at
+    ``{prefix}/_index/{asset_id}.json`` so future callers can
+    discover the manifest from just the asset_id. Manifests for
+    assets put without ``manifest_uri=`` are not discoverable
+    via this method (by design — opt-in). Returns ``None`` for
+    unknown asset_ids and for foreign-backend manifest URIs that
+    don't round-trip through ``key_from_url``.
+  - ``ObjectStorageSink`` is the concrete implementation; reuses
+    the existing ``AssetTransfer`` machinery (download, hash,
+    KeyBuilder-routed put). Phase 2 (``Pipeline.ingest()``
+    factory) blocks on the master plan's Wave 4 ``StepType.INGEST``
+    enum addition.
+
 ### Fixed
 - `genblaze-s3`: every ``S3StorageBackend`` and
   ``AsyncS3StorageBackend`` operation now wraps unexpected exceptions

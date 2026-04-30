@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
+from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as _futures_wait
 from typing import TYPE_CHECKING
 
 from genblaze_core._utils import MAX_MANIFEST_BYTES
-from genblaze_core.exceptions import ManifestError, SinkError
+from genblaze_core.exceptions import ManifestError, SinkError, StorageError
+from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.sinks.base import BaseSink
@@ -323,6 +326,127 @@ class ObjectStorageSink(BaseSink):
         # 5. Optionally write to ParquetSink
         if self._parquet_sink is not None:
             self._parquet_sink.write_run(run, manifest)
+
+    # ------------------------------------------------------------------
+    # Plan 4 Phase 1 — standalone asset writes
+    # ------------------------------------------------------------------
+
+    def put_asset(
+        self,
+        asset: Asset,
+        *,
+        manifest_uri: str | None = None,
+    ) -> Asset:
+        """Write a single asset to the backend (no Run wrapper required).
+
+        Reuses the existing :class:`AssetTransfer` machinery to download
+        the source bytes (``file://`` or ``https://``), hash them, build
+        the storage key per the sink's ``key_strategy``, and upload.
+        After success the asset is mutated: ``url`` becomes the
+        backend's durable URL and ``sha256`` / ``size_bytes`` /
+        ``media_type`` are populated when missing.
+
+        When ``manifest_uri`` is supplied, a sidecar index entry is
+        written at ``{prefix}/_index/{asset_id}.json`` so
+        :meth:`read_manifest_for_asset` can discover the manifest
+        later. Pass ``manifest_uri`` for assets that ARE referenced by
+        a manifest; omit for one-off uploads (DAM ingest with no
+        manifest).
+        """
+        # Drive the existing transfer pipeline. No tenant/date/run_id —
+        # under HIERARCHICAL the strategy degrades to {prefix}/runs/assets/...
+        # which is fine for standalone writes; under CAS the layout is
+        # hash-keyed and tenant/date/run_id were always ignored anyway.
+        self._transfer.transfer(asset)
+        if manifest_uri is not None:
+            self._write_asset_index(asset.asset_id, manifest_uri)
+        return asset
+
+    def put_assets(
+        self,
+        assets: Sequence[Asset],
+        *,
+        manifest_uri: str | None = None,
+    ) -> list[Asset]:
+        """Bulk variant of :meth:`put_asset`.
+
+        Parallelizes via a fresh ``ThreadPoolExecutor`` sized at
+        ``min(max_upload_workers, len(assets))``. Returned list
+        preserves input order regardless of completion order; if any
+        per-asset transfer fails, the exception propagates after the
+        pool drains (as opposed to ``write_run`` which records
+        ``transfer_failures`` on the manifest — there's no manifest
+        here).
+        """
+        assets_list = list(assets)
+        if not assets_list:
+            return []
+        workers = min(self._max_upload_workers, len(assets_list))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Preserve input order: index → future.
+            futures = [
+                pool.submit(self.put_asset, asset, manifest_uri=manifest_uri)
+                for asset in assets_list
+            ]
+            return [fut.result() for fut in futures]
+
+    def read_manifest_for_asset(self, asset_id: str) -> Manifest | None:
+        """Reverse lookup: ``asset_id`` → :class:`Manifest`.
+
+        Reads the sidecar index at ``{prefix}/_index/{asset_id}.json``
+        written by :meth:`put_asset` (when ``manifest_uri=`` was
+        supplied), then fetches and parses the manifest from the
+        recorded URI. Returns ``None`` when no index entry exists.
+
+        Manifests for assets put without ``manifest_uri=`` are not
+        discoverable via this method — by design. Callers needing
+        guaranteed discoverability MUST pass ``manifest_uri=`` to
+        :meth:`put_asset`.
+        """
+        index_key = self._asset_index_key(asset_id)
+        if not self._backend.exists(index_key):
+            return None
+        try:
+            raw = self._backend.get(index_key)
+        except StorageError:
+            return None
+        try:
+            entry = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SinkError(f"Asset index at {index_key!r} is not valid JSON: {exc}") from exc
+        manifest_uri = entry.get("manifest_uri")
+        if not manifest_uri:
+            return None
+        # The index points at a manifest_uri — the manifest itself was
+        # written at the corresponding key. Round-trip via the backend.
+        manifest_key = self._backend.key_from_url(manifest_uri)
+        if manifest_key is None:
+            # Foreign URL — not on this backend. Caller can fetch
+            # themselves; this method only discovers same-backend
+            # manifests.
+            return None
+        data = self._backend.get(manifest_key)
+        if len(data) > MAX_MANIFEST_BYTES:
+            raise SinkError(
+                f"Stored manifest at {manifest_key} is {len(data)} bytes, "
+                f"exceeds MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
+            )
+        return Manifest.model_validate_json(data)
+
+    def _asset_index_key(self, asset_id: str) -> str:
+        """Storage key for the asset_id → manifest_uri sidecar."""
+        return self._kb.build("_index", f"{asset_id}.json")
+
+    def _write_asset_index(self, asset_id: str, manifest_uri: str) -> None:
+        """Write the sidecar index entry. Idempotent — re-writes
+        the same key on repeat calls (for the same asset, the
+        manifest_uri is expected to be stable)."""
+        payload = json.dumps({"manifest_uri": manifest_uri}).encode("utf-8")
+        self._backend.put(
+            self._asset_index_key(asset_id),
+            payload,
+            content_type="application/json",
+        )
 
     def close(self, timeout: float | None = None) -> None:
         """Release storage backend resources.

@@ -41,6 +41,15 @@ class StepType(StrEnum):
     MIX = "mix"
     EDIT = "edit"  # extend, inpaint, outpaint, style-transfer
     CUSTOM = "custom"
+    # Non-generative step types — added as Plan 4 Phase 2's slice of
+    # the master plan's Wave 4. ``INGEST`` covers external-source
+    # imports (RSS feed pull, UGC upload, DAM bulk import); ``IMPORT``
+    # covers cross-system transfers (re-importing a manifest from
+    # another tenancy). Both are characterized by having no
+    # ``Provider`` — the bytes already exist; the step records
+    # provenance for the act of bringing them into the system.
+    INGEST = "ingest"
+    IMPORT = "import"
 
 
 class ProviderErrorCode(StrEnum):

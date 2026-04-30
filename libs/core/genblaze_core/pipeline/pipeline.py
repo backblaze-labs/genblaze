@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -277,6 +277,54 @@ class Pipeline(Runnable[None, PipelineResult]):
         """
         self._parent_run_id = result.run.run_id
         return self
+
+    @classmethod
+    def ingest(
+        cls,
+        assets: Sequence[Asset],
+        *,
+        source: str,
+        source_metadata: dict[str, Any] | None = None,
+        sink: BaseSink | None = None,
+        name: str | None = None,
+        tenant_id: str | None = None,
+        step_type: StepType = StepType.INGEST,
+    ) -> PipelineResult:
+        """Ingest a batch of assets and produce a provenance-complete manifest.
+
+        Thin wrapper around :func:`genblaze_core.pipeline.ingest.ingest_assets`.
+        Designed for non-generative workflows — DAM bulk import, RSS feed
+        pull, UGC upload, podcast hosting, archival cross-tenancy moves —
+        that need a manifest documenting the ingest event without going
+        through the generation-shaped fluent ``.step(provider=…)`` API.
+
+        Example::
+
+            result = Pipeline.ingest(
+                assets=[Asset(url="https://feed/ep1.mp3", media_type="audio/mp3")],
+                source="rss",
+                source_metadata={"feed_url": "https://example.com/feed.xml"},
+                sink=storage_sink,
+            )
+            # result.manifest.canonical_hash documents the ingest event.
+
+        Returns:
+            :class:`PipelineResult` with one :class:`Step` per ingested
+            asset (``step_type=INGEST``, ``provider=None``,
+            ``model=source``) and a canonical-hashable manifest. The
+            hash is stable across permuted input orders.
+        """
+        from genblaze_core.pipeline.ingest import ingest_assets
+
+        return ingest_assets(
+            assets,
+            source=source,
+            source_metadata=source_metadata,
+            sink=sink,
+            name=name,
+            tenant_id=tenant_id,
+            step_type=step_type,
+        )
 
     def estimated_cost(self) -> Decimal | None:
         """Sum the upfront USD estimate across every configured step.
