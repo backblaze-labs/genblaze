@@ -182,6 +182,81 @@ See the [main feature doc](https://github.com/backblaze-labs/genblaze/blob/main/
 for SSE-C key handling, KMS configuration, and migration notes from
 0.2.x.
 
+## Read primitives (`head` / `list` / `get_range` / `stream`)
+
+```python
+# head — per-object metadata, None for missing/inaccessible.
+meta = backend.head("path/to/key")
+
+# list — paginated walk via continuation_token.
+page = backend.list(prefix="run-", max_keys=1000)
+for entry in page.entries:
+    ...
+if page.next_token is not None:
+    page = backend.list(prefix="run-", continuation_token=page.next_token)
+
+# get_range — partial-file via HTTP Range header.
+header = backend.get_range("big.mp4", offset=0, length=4096)
+
+# stream — chunked download, no full-file RAM load.
+for chunk in backend.stream("big.mp4", chunk_size=8 * 1024 * 1024):
+    ...
+```
+
+## Bulk deletes (`delete_many` / `delete_prefix`)
+
+```python
+# Explicit-key delete: dry_run=False default.
+result = backend.delete_many(["k1", "k2"])
+
+# Prefix delete: dry_run=True default — see what would go before deleting.
+preview = backend.delete_prefix("temp/")
+result = backend.delete_prefix("temp/", dry_run=False)
+```
+
+`delete_prefix` streams page-by-page (memory bounded for huge
+prefixes) and surfaces partial progress on a mid-walk failure.
+
+## Progress callbacks
+
+```python
+from genblaze_core import TransferProgress
+
+backend.put("big.mp4", data, progress=lambda p: print(p.bytes_transferred))
+backend.get("big.mp4", progress=...)
+for chunk in backend.stream("big.mp4", progress=...):
+    ...
+```
+
+The `put` callback is thread-safe across boto3's multipart workers.
+See the [main feature doc](https://github.com/backblaze-labs/genblaze/blob/main/docs/features/object-storage.md)
+for the full progress contract.
+
+## Native async via `aioboto3` (optional)
+
+```bash
+pip install 'genblaze-s3[async]'
+```
+
+```python
+import asyncio
+from genblaze_s3 import AsyncS3StorageBackend
+
+async def main():
+    async with AsyncS3StorageBackend.from_sync(my_sync_backend) as ab:
+        data = await ab.aget("k")
+        async for chunk in ab.astream("big.mp4"):
+            ...
+        result = await ab.aput("k", data)
+
+asyncio.run(main())
+```
+
+`aget` and `astream` are native (real `AsyncIterator[bytes]` for
+streaming); other methods threadpool-delegate to the sync backend.
+`from_sync` carries the sync backend's verified-region state forward
+so no redundant `HeadBucket` round-trip happens on the async path.
+
 ## Object Lock for immutable manifests (Backblaze B2)
 
 Genblaze can apply Object Lock retention to uploaded manifests, producing tamper-evident provenance suitable for compliance, legal, and content-authenticity workflows. See the main repo docs for the [Object Lock guide](https://github.com/backblaze-labs/genblaze/tree/main/docs/features).

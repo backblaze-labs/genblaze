@@ -122,7 +122,7 @@ Ten production-grade bugs (security, correctness, performance) and twelve missin
 | `delete_prefix(prefix, *, dry_run=True) -> DeleteResult` | sync + async | **`dry_run=True` default** — caller must explicitly opt out. Walks `list()` pages, batches deletes. |
 | `get_range(key, *, offset, length) -> bytes` | sync + async | HTTP `Range:` header. |
 | `stream(key, *, chunk_size=8MiB)` | sync (`Iterator[bytes]`) + async (`AsyncIterator[bytes]`) | Lazy chunked download. |
-| `presigned_get/put/post(...)` | sync + async | Returns `PresignedURL`. |
+| `presigned_get/put(...)` | sync + async | Returns `PresignedURL`. **`presigned_post` deferred** — its boto3 wire shape (`{"url", "fields"}` POST policy) doesn't fit `PresignedURL` and needs a separate `PresignedPost` value object with similar redaction. Tracked as a follow-up sub-phase; not a tranche acceptance gate. |
 | `progress` callback | added to `put`, `get`, `stream` | `progress: Callable[[TransferProgress], None] \| None`. Emits `storage.progress` event when set. |
 | `Encryption` accepted on `put/get/copy/head` | sync + async | Closes SSE-C asymmetry. |
 | `ObjectLock` per-put | sync + async | Per-put Object Lock; defaults to bucket-level config. |

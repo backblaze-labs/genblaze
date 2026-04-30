@@ -8,6 +8,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `genblaze-s3`: every ``S3StorageBackend`` and
+  ``AsyncS3StorageBackend`` operation now wraps unexpected exceptions
+  via ``classify_botocore_error`` so the resulting ``StorageError``
+  carries populated ``error_code`` / ``status_code`` /
+  ``is_retriable`` / ``operation`` / ``request_id`` fields. Pre-fix
+  every operation raised a bare ``StorageError(f"...failed: {exc}")``
+  with all structured fields ``None`` — defeating the plan's primary
+  observability acceptance gate ("StorageError round-trips
+  request_id, status_code, is_retriable, operation, error_code"). 13
+  call sites updated across ``put`` / ``get`` / ``exists`` /
+  ``delete`` / ``copy`` / ``head`` / ``list`` / ``get_range`` /
+  ``stream`` / ``delete_many`` / ``get_url`` / ``presigned_get`` /
+  ``presigned_put`` (sync) and ``aget`` / ``astream`` (native
+  async). Surfaced during the cross-phase final review.
+- `genblaze-core`: ``StorageBackend`` ABC async pairs accept
+  ``**kwargs`` for connector-specific options. ``aput`` /
+  ``acopy`` / ``aget`` / ``ahead`` / ``aget_range`` now forward
+  arbitrary kwargs through ``asyncio.to_thread`` to the matching
+  sync method. Pre-fix the ABC defaults silently dropped
+  ``encryption=`` / ``object_lock=`` / ``progress=`` for callers
+  typed against the ABC — e.g. an SSE-C HEAD via the ABC async
+  surface would treat the encrypted object's 403 as not-exist
+  instead of decrypting. Surfaced during the cross-phase final
+  review.
+
+### Documentation
+- `docs/features/object-storage.md`: added Phase 2 (read primitives,
+  bulk deletes, progress callbacks, per-put Object Lock) and Phase 3
+  (``AsyncS3StorageBackend``, native async vs threadpool-delegated
+  methods, ``from_sync`` pattern) sections plus callouts for the
+  ``aput``-progress-fires-on-thread-not-event-loop caveat and the
+  SSE/Object Lock conflict-guard ``ValueError`` (raised before the
+  network try/except, so distinct from ``StorageError``).
+- `libs/connectors/s3/README.md`: matching Phase 2/3 quickstart
+  sections.
+- `docs/exec-plans/active/storage-backend-hardening-tranche.md`:
+  inline annotation that ``presigned_post`` is intentionally
+  deferred (separate ``PresignedPost`` value object needed).
+
+### Fixed
+- `genblaze-s3`: ``AsyncS3StorageBackend`` async client now passes an
+  ``AioConfig`` mirroring the sync ``BotoConfig`` —
+  ``request_checksum_calculation="when_required"`` (B2 CRC32-trailer
+  fix), ``connect_timeout=30``, ``read_timeout=300``,
+  ``max_pool_connections=20``, ``user_agent_extra="b2ai-genblaze/…"``.
+  Pre-fix the async path inherited aiobotocore's defaults, which on
+  boto3 >= 1.36 inject the same trailer that broke async ``aget`` /
+  ``astream`` on B2 endpoints. Surfaced during the Phase 3 final
+  review (BLOCKING).
+- `genblaze-s3`: ``AsyncS3StorageBackend.__aexit__`` reorders cleanup
+  so a failed inner ``__aexit__`` (aiohttp connector teardown
+  exception) doesn't leave the backend holding a stale client ctx.
+  The references are cleared upfront on a local snapshot; any
+  exception from the inner exit propagates naturally without
+  preventing future ``async with`` re-enters from succeeding.
+  Surfaced during the Phase 3 final review (IMPORTANT).
+- `genblaze-s3`: ``AsyncS3StorageBackend.from_sync`` now carries
+  forward ``_region_verified``, the (possibly auto-corrected)
+  ``_region`` / ``_endpoint_url``, and ``_preflight_error`` from the
+  source sync backend. Pre-fix the new internal sync delegate ran
+  another preflight ``HeadBucket`` even when the source was already
+  verified — a redundant round-trip on every ``from_sync`` call.
+  Aio kwargs are rebuilt after the copy so endpoint/region rewrites
+  flow through. Surfaced during the Phase 3 final review (IMPORTANT).
+
+### Changed
+- `genblaze-s3`: ``AsyncS3StorageBackend.astream`` return annotation
+  refined from ``AsyncIterator[bytes]`` to ``AsyncGenerator[bytes,
+  None]`` so the type system signals "iterate, don't await" — callers
+  who write ``await ab.astream(...)`` get a clearer error. ``progress``
+  parameter typing tightened on ``aget`` and ``astream`` from
+  ``Any`` to ``Callable[[TransferProgress], None] | None``. Surfaced
+  during the Phase 3 final review.
+
+### Added
+- `genblaze-s3`: storage-backend hardening **Phase 3** native async via
+  ``aioboto3`` — closes the long-deferred async-iterator gap that
+  Phase 0 explicitly punted to here.
+  - New ``AsyncS3StorageBackend`` class (concrete, not an ABC). Use
+    as an async context manager::
+
+        async with AsyncS3StorageBackend.from_sync(my_sync_backend) as ab:
+            data = await ab.aget("k")
+            async for chunk in ab.astream("big.mp4"):
+                ...
+
+    The wrapped sync backend is exposed at ``ab.sync`` for callers
+    who need the historical surface (lifecycle helpers, key utils)
+    without leaving the async context.
+  - **Native async**: ``aget`` (single-shot or chunked-progress
+    download via ``await Body.read()``) and ``astream`` (genuine
+    ``AsyncIterator[bytes]`` via aioboto3's ``Body.iter_chunks``).
+    The streaming path is the headline win — Phase 0's threadpool
+    wrap couldn't faithfully adapt a sync iterator into an
+    ``AsyncIterator`` without buffering the whole body.
+  - **Threadpool-delegated** (current sub-phase): ``aput``, ``ahead``,
+    ``alist``, ``aexists``, ``adelete``, ``acopy``, ``adelete_many``,
+    ``adelete_prefix``, ``aget_range``, ``aget_url``,
+    ``aget_durable_url``. These dispatch to the wrapped sync backend
+    via ``asyncio.to_thread``. Native versions are tracked as a
+    follow-up sub-phase — ``aput`` in particular needs aioboto3-native
+    multipart support which is more involved.
+  - **Optional dependency**: install via ``pip install
+    'genblaze-s3[async]'`` (or ``aioboto3>=12,<13`` directly).
+    ``import genblaze_s3`` works without the extra; only
+    ``async with AsyncS3StorageBackend(...) as ab:`` requires it,
+    and raises ``ImportError`` with the extras hint when missing.
+  - ``AsyncS3StorageBackend.from_sync(sync_backend)`` constructs an
+    async backend that shares an existing sync backend's settings
+    (bucket / region / credentials) — common pattern for apps
+    adding async to an established setup.
+
+### Fixed
 - `genblaze-s3`: ``_adapt_progress_to_boto3_callback`` now lock-protects
   the cumulative-byte counter. boto3 invokes the ``Callback=`` from
   multiple part workers concurrently (default ``max_concurrency=4``);

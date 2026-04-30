@@ -96,7 +96,7 @@ class TestHead:
         mock_client.head_object.side_effect = _FakeClientError(
             {"Error": {"Code": "InternalError"}}, "HeadObject"
         )
-        with pytest.raises(StorageError, match="head failed"):
+        with pytest.raises(StorageError, match=r"head.*failed"):
             backend.head("k")
 
     def test_encryption_kwarg_passes_sse_c_envelope(self, mock_boto3):
@@ -203,7 +203,7 @@ class TestList:
         mock_client.list_objects_v2.side_effect = _FakeClientError(
             {"Error": {"Code": "AccessDenied"}}, "ListObjectsV2"
         )
-        with pytest.raises(StorageError, match="list failed"):
+        with pytest.raises(StorageError, match=r"list.*failed"):
             backend.list(prefix="x")
 
 
@@ -312,7 +312,7 @@ class TestStream:
         mock_client.get_object.side_effect = _FakeClientError(
             {"Error": {"Code": "AccessDenied"}}, "GetObject"
         )
-        with pytest.raises(StorageError, match="stream failed"):
+        with pytest.raises(StorageError, match=r"stream.*failed"):
             list(backend.stream("k"))
 
     def test_encryption_passes_to_get_object(self, mock_boto3):

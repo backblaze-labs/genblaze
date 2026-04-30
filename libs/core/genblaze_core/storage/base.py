@@ -355,8 +355,15 @@ class StorageBackend(ABC):
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
         extra_args: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> str:
-        """Async pair of :meth:`put`. Default delegates to the sync impl."""
+        """Async pair of :meth:`put`. Default delegates to the sync impl.
+
+        ``**kwargs`` forwards backend-specific options (e.g. the
+        ``encryption=`` / ``object_lock=`` / ``progress=`` kwargs that
+        :class:`S3StorageBackend` accepts) without coupling the ABC to
+        connector-side types.
+        """
         return await asyncio.to_thread(
             self.put,
             key,
@@ -364,11 +371,17 @@ class StorageBackend(ABC):
             content_type=content_type,
             metadata=metadata,
             extra_args=extra_args,
+            **kwargs,
         )
 
-    async def aget(self, key: str) -> bytes:
-        """Async pair of :meth:`get`. Default delegates to the sync impl."""
-        return await asyncio.to_thread(self.get, key)
+    async def aget(self, key: str, **kwargs: Any) -> bytes:
+        """Async pair of :meth:`get`. Default delegates to the sync impl.
+
+        ``**kwargs`` forwards backend-specific options (e.g. the
+        ``encryption=`` / ``progress=`` kwargs on
+        :class:`S3StorageBackend`).
+        """
+        return await asyncio.to_thread(self.get, key, **kwargs)
 
     async def aexists(self, key: str) -> bool:
         """Async pair of :meth:`exists`. Default delegates to the sync impl."""
@@ -407,17 +420,34 @@ class StorageBackend(ABC):
         """
         return await asyncio.to_thread(self.get_durable_url, key)
 
-    async def acopy(self, src_key: str, dst_key: str) -> None:
-        """Async pair of :meth:`copy`. Default delegates to the sync impl."""
-        await asyncio.to_thread(self.copy, src_key, dst_key)
+    async def acopy(self, src_key: str, dst_key: str, **kwargs: Any) -> None:
+        """Async pair of :meth:`copy`. Default delegates to the sync impl.
 
-    async def ahead(self, key: str) -> ObjectMetadata | None:
-        """Async pair of :meth:`head`. Default delegates to the sync impl."""
-        return await asyncio.to_thread(self.head, key)
+        ``**kwargs`` forwards backend-specific options (e.g. ``encryption=``
+        on :class:`S3StorageBackend.copy`) without coupling the ABC to
+        connector types.
+        """
+        await asyncio.to_thread(self.copy, src_key, dst_key, **kwargs)
 
-    async def aget_range(self, key: str, *, offset: int, length: int) -> bytes:
-        """Async pair of :meth:`get_range`. Default delegates to the sync impl."""
-        return await asyncio.to_thread(self.get_range, key, offset=offset, length=length)
+    async def ahead(self, key: str, **kwargs: Any) -> ObjectMetadata | None:
+        """Async pair of :meth:`head`. Default delegates to the sync impl.
+
+        ``**kwargs`` forwards backend-specific options (e.g.
+        ``encryption=`` on :class:`S3StorageBackend.head`). Without this
+        forwarding, an SSE-C HEAD via the ABC async surface would silently
+        drop the customer-key envelope and return ``None`` (treating the
+        403 from the encrypted object as not-exist) — a cross-phase
+        review-fix.
+        """
+        return await asyncio.to_thread(self.head, key, **kwargs)
+
+    async def aget_range(self, key: str, *, offset: int, length: int, **kwargs: Any) -> bytes:
+        """Async pair of :meth:`get_range`. Default delegates to the sync impl.
+
+        ``**kwargs`` forwards backend-specific options (e.g.
+        ``encryption=`` on :class:`S3StorageBackend.get_range`).
+        """
+        return await asyncio.to_thread(self.get_range, key, offset=offset, length=length, **kwargs)
 
     # ``alist`` and ``astream`` are deliberately omitted from the ABC.
     # Threadpool-wrapping a sync iterator into an ``AsyncIterator`` either

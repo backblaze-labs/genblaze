@@ -27,6 +27,13 @@ Repository = "https://github.com/backblaze-labs/genblaze"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
+async = [
+    # Phase 3 of the storage-backend hardening tranche — native async via
+    # aiobotocore-backed aioboto3. Keep the upper bound conservative so
+    # an aioboto3 major bump doesn't silently land breaking changes for
+    # users with floating extras pins.
+    "aioboto3>=12,<13",
+]
 dev = [
     "pytest>=7.0",
 ]

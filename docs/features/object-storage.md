@@ -301,6 +301,13 @@ helpers when you need the boto3 wire shape.
 > caller's `extra_args` overrode the value object piecewise — silently
 > encrypting the object with the wrong material. Pick exactly one
 > source for the SSE envelope.
+>
+> The check fires **before** the network try/except wrapper, so it
+> propagates as `ValueError` (caller API misuse) rather than being
+> masked as `StorageError` (transport failure). `try/except StorageError`
+> blocks won't catch it — and shouldn't; the two have different
+> debugging semantics. Same pattern applies to the per-put Object
+> Lock conflict guard.
 
 ## Tuning the backend: `StorageConfig`
 
@@ -340,6 +347,272 @@ For connector authors: `genblaze_core.classify_botocore_error(exc, *, operation,
 maps a `botocore.ClientError` (or any boto exception) to a populated
 `StorageError`. Use it in connector implementations to surface a
 typed shape for the retry helper and observability tooling.
+
+## Read primitives: `head` / `list` / `get_range` / `stream`
+
+Phase 2 ships four read-side primitives that replace the
+"manifest-is-the-DB" workaround pattern (where apps were reaching
+into `_client.list_objects_v2` directly):
+
+```python
+# head — per-object metadata, or None for missing/inaccessible.
+meta = backend.head("path/to/key")
+if meta is None:
+    print("missing")
+else:
+    print(f"{meta.size} bytes, content_type={meta.content_type}, etag={meta.etag}")
+
+# list — paginated walk via continuation_token.
+token = None
+while True:
+    page = backend.list(prefix="run-", max_keys=1000, continuation_token=token)
+    for entry in page.entries:
+        print(entry.key, entry.size, entry.last_modified)
+    if page.next_token is None:
+        break
+    token = page.next_token
+
+# get_range — partial-file reads via HTTP Range header.
+header = backend.get_range("big.mp4", offset=0, length=4096)
+
+# stream — chunked download for objects too large to fit in memory.
+with open("/tmp/big.mp4", "wb") as out:
+    for chunk in backend.stream("big.mp4", chunk_size=8 * 1024 * 1024):
+        out.write(chunk)
+```
+
+`head()` returns `None` for both 404 AND 403 (parity with `exists()` —
+B2/AWS scoped application keys legitimately get 403 on non-existent
+reads). Other errors surface as typed `StorageError`.
+
+`list()` returns a `ListPage(entries: tuple[FileEntry, ...], next_token:
+str | None)`. `FileEntry` is the cheap shape S3's `ListObjectsV2` returns
+natively (key, size, last_modified, etag, storage_class) — populating a
+full `ObjectMetadata` for each entry would require N extra HEAD round-
+trips and defeat pagination. Call `head(entry.key)` when you need the
+content_type or user metadata for a specific entry.
+
+`get_range()` validates `offset >= 0` and `length >= 0`; `length=0`
+short-circuits without contacting the backend (useful for callers
+whose offset/length arithmetic may collapse to nothing).
+
+`stream()` holds an HTTP connection until the iterator exhausts. If
+you `break` out of the iteration mid-stream, the connection is
+discarded rather than recycled — see the docstring caveat. Iterating
+to exhaustion is always cheap; aborting frequently in a hot loop
+exhausts the connection pool faster than expected.
+
+## Bulk deletes: `delete_many` / `delete_prefix`
+
+```python
+# Delete an explicit list of keys. dry_run=False default — caller
+# passed the keys so safety-by-default would just be friction.
+result = backend.delete_many(["k1", "k2", "k3"])
+print(f"{len(result.deleted)} deleted, {len(result.errors)} failed")
+for err in result.errors:
+    print(f"  {err.key}: {err.code} — {err.message}")
+
+# Delete every key under a prefix. dry_run=True default — see what
+# would be removed before actually removing it.
+preview = backend.delete_prefix("temp/", dry_run=True)
+print(f"would delete {len(preview.deleted)} keys")
+
+# Then actually delete:
+result = backend.delete_prefix("temp/", dry_run=False)
+```
+
+Two safety asymmetries make these primitives boring-to-use:
+
+- `delete_many` defaults `dry_run=False`. The caller already typed
+  out the key list — adding dry-run-by-default would just be friction.
+- `delete_prefix` defaults `dry_run=True`. A prefix can match more
+  than the caller intended; the SDK demands an explicit
+  `dry_run=False` to actually delete. Empty / whitespace-only prefix
+  raises `ValueError` (a `prefix=""` would match every object in the
+  bucket, virtually always a typo).
+
+`delete_prefix` **streams page-by-page** rather than collecting all
+matched keys into memory. Each page (up to 1000 keys, S3's hard cap)
+issues one `DeleteObjects` call. Memory stays bounded for prefixes
+matching millions of keys.
+
+`delete_prefix` also surfaces partial progress on a mid-walk `list()`
+failure — the returned `DeleteResult` carries the keys actually
+deleted from prior pages plus a synthetic
+`DeleteError(key="", code="list_failed", message=…)`. Caller sees
+the partial state and can retry from the failed page.
+
+## Progress callbacks
+
+`put` / `get` / `stream` accept a `progress: Callable[[TransferProgress], None]`
+callback that fires with cumulative byte counts:
+
+```python
+from genblaze_core import TransferProgress
+
+def emit_pct(p: TransferProgress) -> None:
+    if p.total_bytes is not None:
+        pct = 100 * p.bytes_transferred / p.total_bytes
+        print(f"{p.operation} {p.key} — {pct:.1f}%")
+    else:
+        print(f"{p.operation} {p.key} — {p.bytes_transferred} bytes")
+
+backend.put("big.mp4", data, progress=emit_pct)
+backend.get("big.mp4", progress=emit_pct)
+for chunk in backend.stream("big.mp4", progress=emit_pct):
+    ...
+```
+
+`TransferProgress.total_bytes` is `None` when the total is genuinely
+unknown — e.g. uploading from an arbitrary `BinaryIO` whose remaining
+size would require a draining pass to determine. For `bytes` and
+`io.BytesIO` payloads the total is computed automatically (and honors
+the BytesIO's current `tell()` position, so partially-consumed buffers
+report accurate remaining bytes).
+
+**Thread safety:** the `put` progress callback is invoked from boto3's
+multipart workers (`max_concurrency=4` by default) — the SDK
+serializes the cumulative-byte counter under a lock so concurrent
+workers don't drop deltas. The callback itself is invoked outside the
+lock, so a slow callback (e.g. queue publish) doesn't block the next
+worker.
+
+**Single-PUT carve-out:** when the caller pins `extra_args={"ChecksumSHA256": …}`,
+`put` routes through boto3's `put_object` (single-PUT) which does not
+accept a progress `Callback`. The progress callback is silently
+skipped on that path — only fires when the multipart-managed
+`upload_fileobj` path is in use.
+
+**Async caveat (`AsyncS3StorageBackend.aput`):** the progress callback
+fires on a boto3 worker thread, not the asyncio event loop, because
+`aput` is currently threadpool-delegated (native multipart-aware
+`aput` is a follow-up sub-phase). **Do not `await` inside an `aput`
+progress callback** — it will not be executed in an event-loop
+context. Use a thread-safe handoff (e.g. `loop.call_soon_threadsafe`,
+a `queue.Queue`, or a synchronization primitive) to publish progress
+to the event loop. Native async paths (`aget` / `astream` on
+`AsyncS3StorageBackend`) fire the callback on the event loop thread —
+no thread-bridge needed.
+
+## Per-put Object Lock
+
+Apply Object Lock retention on a single `put()` without configuring
+the sink-wide `manifest_lock`:
+
+```python
+from datetime import datetime, timedelta, timezone
+from genblaze_core import ObjectLockConfig
+
+backend.put(
+    "audit/critical-manifest.json",
+    data,
+    object_lock=ObjectLockConfig(
+        retain_until=datetime.now(timezone.utc) + timedelta(days=2555),  # 7y
+        mode="GOVERNANCE",
+    ),
+)
+```
+
+The same conflict-guard pattern as SSE: passing both `object_lock=`
+and an overlapping `extra_args` key
+(`ObjectLockMode` / `ObjectLockRetainUntilDate` / `ObjectLockLegalHoldStatus`)
+raises `ValueError` rather than silently merging mismatched envelopes.
+Pick exactly one source.
+
+## Async surface: `AsyncS3StorageBackend`
+
+Phase 3 ships a native-async backend wrapping the sync one. Install
+the optional dep:
+
+```bash
+pip install 'genblaze-s3[async]'
+```
+
+Use as an async context manager:
+
+```python
+import asyncio
+from genblaze_s3 import AsyncS3StorageBackend
+
+async def main():
+    async with AsyncS3StorageBackend(
+        bucket="my-bucket",
+        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+        region="us-west-004",
+    ) as ab:
+        # Native async download
+        data = await ab.aget("path/to/key")
+
+        # Native async streaming (real AsyncIterator[bytes])
+        async for chunk in ab.astream("big.mp4", chunk_size=8 * 1024 * 1024):
+            ...
+
+        # Other ops delegate to the sync backend via asyncio.to_thread.
+        result = await ab.aput("k", data)
+        meta = await ab.ahead("k")
+        page = await ab.alist(prefix="run-")
+
+asyncio.run(main())
+```
+
+### `from_sync` — borrow an existing backend's settings
+
+A common pattern is starting with a sync backend (e.g. via
+`for_backblaze`) and adding async to an existing app. `from_sync`
+constructs an async backend that **shares** the sync backend's
+verified-region state — no redundant preflight `HeadBucket` on the
+async path:
+
+```python
+sync = S3StorageBackend.for_backblaze("my-bucket", auto_lifecycle=True)
+async with AsyncS3StorageBackend.from_sync(sync) as ab:
+    data = await ab.aget("k")  # no extra HeadBucket — sync was already verified
+```
+
+The wrapped sync backend is exposed at `ab.sync` for callers who need
+non-async helpers (lifecycle, key utilities) without leaving the async
+context.
+
+### Native vs. threadpool-delegated methods
+
+Currently:
+
+| Method | Surface |
+|---|---|
+| `aget`, `astream` | **Native** via aioboto3 (`Body.read()` / `Body.iter_chunks`) |
+| `aput`, `ahead`, `alist`, `aexists`, `adelete`, `acopy`, `adelete_many`, `adelete_prefix`, `aget_range`, `aget_url`, `aget_durable_url` | Threadpool-delegated to the sync backend via `asyncio.to_thread` |
+
+Native versions of the threadpool-delegated methods are tracked as a
+follow-up sub-phase. `aput` in particular needs aioboto3-native
+multipart support, which is more involved.
+
+The native paths are configured with the same B2-critical knobs as
+sync: `request_checksum_calculation="when_required"` (the boto3 ≥
+1.36 CRC32-trailer fix), `connect_timeout=30`, `read_timeout=300`,
+`max_pool_connections=20`, and the `b2ai-genblaze/<version>`
+user-agent. Without these, async calls to B2 endpoints would hit the
+same trailer breakage Phase 1B fixed for sync.
+
+### When to use sync `aget`/`aput`/etc. vs `AsyncS3StorageBackend`
+
+The sync `S3StorageBackend` already exposes `aput`/`aget`/etc. — but
+those threadpool-wrap the sync impl. For most workloads that's fine.
+Pick `AsyncS3StorageBackend` when:
+
+- You want **true async streaming** (`async for` over `astream`) without
+  buffering into a queue. The threadpool wrapper of `stream` would
+  defeat back-pressure.
+- You're running **many concurrent downloads** in the same event loop;
+  native aioboto3 doesn't pin a thread per call, so you avoid GIL
+  contention at high concurrency.
+- You want consistent async-ness across the surface (everything
+  `await`-able, no mixed sync calls inside an async function).
+
+Stick with `S3StorageBackend.aget`/etc. when:
+
+- You only need occasional async dispatch from sync code; the
+  threadpool wrap is fine.
+- You don't want the `aioboto3` optional dep.
 
 ## Migrating from 0.2.x
 

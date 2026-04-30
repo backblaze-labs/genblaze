@@ -192,7 +192,7 @@ class TestS3StorageBackend:
         mock_client.head_object.side_effect = _FakeClientError(
             {"Error": {"Code": "500"}}, "HeadObject"
         )
-        with pytest.raises(StorageError, match="exists check failed"):
+        with pytest.raises(StorageError, match=r"exists.*failed"):
             backend.exists("some/key")
 
     def test_copy_uses_server_side_copy_object(self, mock_boto3):
@@ -214,7 +214,7 @@ class TestS3StorageBackend:
     def test_copy_wraps_errors_as_storage_error(self, mock_boto3):
         backend, mock_client = self._make_backend(mock_boto3)
         mock_client.copy_object.side_effect = RuntimeError("permission denied")
-        with pytest.raises(StorageError, match="copy failed"):
+        with pytest.raises(StorageError, match=r"copy.*failed"):
             backend.copy("src/key", "dst/key")
 
 

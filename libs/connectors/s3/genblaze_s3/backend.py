@@ -13,6 +13,7 @@ from botocore.exceptions import ClientError
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import ObjectLockConfig, StorageBackend
+from genblaze_core.storage.errors import classify_botocore_error
 from genblaze_core.storage.types import (
     DeleteError,
     DeleteResult,
@@ -369,7 +370,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 put failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="put", key=key) from exc
 
     def _put_single(
         self,
@@ -560,7 +561,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 get failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="get", key=key) from exc
 
     def exists(self, key: str) -> bool:
         """Check if an object exists in S3.
@@ -586,7 +587,7 @@ class S3StorageBackend(StorageBackend):
                     key,
                 )
                 return False
-            raise StorageError(f"S3 exists check failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="exists", key=key) from exc
         except StorageError:
             raise
 
@@ -598,7 +599,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 delete failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="delete", key=key) from exc
 
     def copy(self, src_key: str, dst_key: str, *, encryption: Encryption | None = None) -> None:
         """Server-side copy — bytes never transit the client.
@@ -635,7 +636,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 copy failed for {src_key} -> {dst_key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="copy", key=dst_key) from exc
 
     # ------------------------------------------------------------------
     # Phase 2A read primitives
@@ -673,11 +674,11 @@ class S3StorageBackend(StorageBackend):
                     key,
                 )
                 return None
-            raise StorageError(f"S3 head failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="head", key=key) from exc
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 head failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="head", key=key) from exc
 
         return ObjectMetadata(
             key=key,
@@ -721,7 +722,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 list failed for prefix {prefix!r}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="list", key=prefix) from exc
 
         entries = tuple(
             FileEntry(
@@ -774,7 +775,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 get_range failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="get_range", key=key) from exc
 
     def stream(
         self,
@@ -828,7 +829,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 stream failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="stream", key=key) from exc
 
         body = resp["Body"]
         total = resp.get("ContentLength")
@@ -891,7 +892,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 delete_many preflight failed: {exc}") from exc
+            raise classify_botocore_error(exc, operation="delete_many") from exc
 
         deleted: list[str] = []
         errors: list[DeleteError] = []
@@ -1106,7 +1107,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 get_url failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="get_url", key=key) from exc
 
     def presigned_get(
         self, key: str, *, expires_in: int = _DEFAULT_EXPIRES_IN_SEC
@@ -1136,7 +1137,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 presigned_get failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="presigned_get", key=key) from exc
         return PresignedURL(
             url=url,
             method="GET",
@@ -1179,7 +1180,7 @@ class S3StorageBackend(StorageBackend):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"S3 presigned_put failed for {key}: {exc}") from exc
+            raise classify_botocore_error(exc, operation="presigned_put", key=key) from exc
         return PresignedURL(
             url=url,
             method="PUT",
