@@ -1,31 +1,58 @@
 """ModelRegistry — layered, thread-safe store of ``ModelSpec`` entries.
 
-Lookup order: user overrides → package defaults → fallback spec. User reads
-are lockless (CPython dict reads are atomic); writes take an ``RLock``.
+Lookup order (post-decoupling, V2):
+1. user spec        — exact-match registration via ``register(spec)``
+2. user family      — ``register_family(family)``, prepended (highest priority)
+3. provider family  — connector-shipped ``provider_families=(...)`` tuple
+4. legacy defaults  — transitional ``defaults={}`` shim (removed in PR #13)
+5. discovery cache  — peek-only here (no fetch); NATIVE providers consult it
+6. fallback spec    — permissive pass-through
+
+User reads through the family scan are lock-free against the immutable
+``_provider_families`` tuple; the user-family list is RLock-guarded with
+snapshot reads.
 
 Intended use:
 - Each provider class exposes a ``create_registry()`` classmethod returning
-  the package defaults.
-- Users register extra models or pricing overrides either globally (mutate
-  the default) or per-instance (``fork()`` → ``ReplicateProvider(models=...)``).
-- Built-in ``prepare_payload(step)`` runs the full parameter pipeline and
-  returns the dict to submit.
+  a registry built with ``provider_families=(...)`` and (during the
+  migration window) optionally ``defaults={...}``.
+- Users register extra slugs / families / pricing either globally (mutate
+  the cached default) or per-instance (``fork()`` → ``Provider(models=...)``).
+- Built-in ``prepare_payload(step)`` runs the full parameter pipeline.
+
+See ``docs/exec-plans/active/model-registry-decoupling.md``.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import warnings
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.models.step import Step
+from genblaze_core.providers.discovery import DiscoveryStatus, _DiscoveryCache
+from genblaze_core.providers.family import (
+    MAX_PROVIDER_FAMILIES,
+    DiscoverySupport,
+    FamilyMatch,
+    ModelFamily,
+)
 from genblaze_core.providers.pricing import PricingStrategy
 from genblaze_core.providers.spec import FALLBACK_SPEC, ModelSpec
+from genblaze_core.providers.validation import (
+    ValidationOutcome,
+    ValidationResult,
+    ValidationSource,
+)
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger("genblaze.provider.registry")
 
@@ -34,9 +61,20 @@ class ModelRegistry:
     """Layered per-provider registry.
 
     Args:
-        defaults: Package-supplied specs keyed by ``model_id``.
+        defaults: **Transitional shim** (removed in PR #13). Connector-shipped
+            specs keyed by ``model_id``. Resolves between provider families
+            and the discovery cache. New connectors should use
+            ``provider_families=`` instead.
         fallback: Returned from ``get()`` when a model is unknown. Defaults to
             the permissive ``FALLBACK_SPEC`` (no pricing, pass everything).
+        provider_families: Connector-shipped pattern-keyed param-shape rules.
+            Frozen post-construction; ordered from most-specific to
+            least-specific (first-match-wins). Capped at
+            :data:`~genblaze_core.providers.family.MAX_PROVIDER_FAMILIES`.
+        discovery_cache: Optional ``_DiscoveryCache`` for connectors that
+            implement ``BaseProvider.discover_models()``. The registry
+            consults the cache via :meth:`peek` only — it never issues
+            fetches itself; that is the provider's responsibility.
         strict_params: If True, unknown keys raise instead of being silently
             dropped when an allowlist is set.
     """
@@ -46,10 +84,21 @@ class ModelRegistry:
         defaults: Mapping[str, ModelSpec] | None = None,
         fallback: ModelSpec = FALLBACK_SPEC,
         *,
+        provider_families: Sequence[ModelFamily] = (),
+        discovery_cache: _DiscoveryCache | None = None,
         strict_params: bool = False,
     ) -> None:
+        if len(provider_families) > MAX_PROVIDER_FAMILIES:
+            raise ValueError(
+                f"Provider shipped {len(provider_families)} families; cap is "
+                f"{MAX_PROVIDER_FAMILIES}. Consolidate patterns or split the "
+                f"registry by modality."
+            )
         self._defaults: dict[str, ModelSpec] = dict(defaults or {})
         self._user: dict[str, ModelSpec] = {}
+        self._provider_families: tuple[ModelFamily, ...] = tuple(provider_families)
+        self._user_families: list[ModelFamily] = []
+        self._discovery_cache: _DiscoveryCache | None = discovery_cache
         self._alias_index: dict[str, str] = {}
         self._deprecated_alias_index: dict[str, str] = {}
         # Tracks deprecated slugs already warned about — one warning per slug
@@ -93,27 +142,49 @@ class ModelRegistry:
                 self._user[spec.model_id] = spec
             self._rebuild_alias_index()
 
+    def register_family(self, family: ModelFamily) -> None:
+        """Prepend a user-defined family to the resolution chain.
+
+        User families are checked before provider families, so callers can
+        override or extend connector-shipped patterns without forking the
+        registry. Order within ``_user_families`` is insertion order with
+        the most-recent registration at position 0 (highest priority).
+        """
+        with self._lock:
+            self._user_families.insert(0, family)
+
     def fork(self) -> ModelRegistry:
         """Shallow copy-on-write clone — per-instance overrides don't touch the parent."""
         with self._lock:
             clone = ModelRegistry(
                 defaults={**self._defaults, **self._user},
                 fallback=self._fallback,
+                provider_families=self._provider_families,
+                discovery_cache=self._discovery_cache,
                 strict_params=self._strict,
             )
+            # User families are part of the user layer — copy them over.
+            clone._user_families = list(self._user_families)
             return clone
 
     # --- read ---------------------------------------------------------------
 
     def get(self, model_id: str) -> ModelSpec:
-        """Return the matching spec; falls back to alias then ``fallback``.
+        """Return the matching spec; falls back to family → alias → ``fallback``.
 
-        Emits ``DeprecationWarning`` when the lookup resolves via a
-        ``deprecated_aliases`` entry. Never returns None.
+        Resolution order: user spec → legacy defaults shim → user family →
+        provider family → alias → deprecated alias → fallback. Emits
+        ``DeprecationWarning`` when the lookup resolves via a
+        ``deprecated_aliases`` entry. Never returns ``None``.
         """
         spec = self._user.get(model_id) or self._defaults.get(model_id)
         if spec is not None:
             return spec
+        # Family resolution — second tier; pattern match returns the
+        # spec_template with model_id substituted.
+        match = self.match_family(model_id)
+        if match is not None:
+            return match.spec
         canonical = self._alias_index.get(model_id)
         if canonical is not None:
             spec = self._user.get(canonical) or self._defaults.get(canonical)
@@ -134,6 +205,113 @@ class ModelRegistry:
                 return spec
         return self._fallback
 
+    def match_family(self, model_id: str) -> FamilyMatch | None:
+        """Return the first matching family or ``None``.
+
+        User families take precedence over provider families. Within each
+        layer, families are scanned in order — connectors must list their
+        families from most-specific to least-specific.
+        """
+        # Snapshot the user list under the lock so concurrent registration
+        # doesn't tear our scan. Provider families are an immutable tuple,
+        # so a lock-free read is safe there.
+        with self._lock:
+            user_snapshot = list(self._user_families)
+        for family in user_snapshot:
+            if family.matches(model_id):
+                return FamilyMatch(family=family, spec=family.resolve(model_id))
+        for family in self._provider_families:
+            if family.matches(model_id):
+                return FamilyMatch(family=family, spec=family.resolve(model_id))
+        return None
+
+    @property
+    def families(self) -> tuple[ModelFamily, ...]:
+        """All registered families (user first, then provider). Snapshot copy."""
+        with self._lock:
+            return (*self._user_families, *self._provider_families)
+
+    def validate(
+        self,
+        model_id: str,
+        *,
+        discovery_support: DiscoverySupport = DiscoverySupport.NONE,
+    ) -> ValidationResult:
+        """Non-network validation — what the SDK can say without a fetch.
+
+        The provider's ``validate_model()`` orchestrates network operations
+        (discovery refresh, family probe) and may call this method again
+        afterwards for the post-network answer. Use directly when you want
+        a fast, deterministic check without round-trips.
+
+        See :class:`~genblaze_core.providers.family.DiscoverySupport` for
+        the full outcome matrix.
+        """
+        # 1. user spec — strongest signal regardless of provider class.
+        if model_id in self._user:
+            return ValidationResult.ok_authoritative(ValidationSource.USER)
+        if model_id in self._defaults:
+            # Legacy defaults shim: a connector author's curated spec is
+            # treated as authoritative — it's the same shape user
+            # registration takes after migration.
+            return ValidationResult.ok_authoritative(
+                ValidationSource.USER,
+                detail="from legacy defaults shim (transitional)",
+            )
+
+        # 2. Family match → consult discovery cache (peek, no fetch).
+        match = self.match_family(model_id)
+        cached = self._discovery_cache.peek() if self._discovery_cache else None
+        if match is not None:
+            family_name = match.family.name
+            if (
+                discovery_support is DiscoverySupport.NATIVE
+                and cached is not None
+                and cached.status is DiscoveryStatus.OK
+            ):
+                if model_id in cached.slugs:
+                    return ValidationResult.ok_authoritative(
+                        ValidationSource.DISCOVERY,
+                        family_name=family_name,
+                    )
+                return ValidationResult.not_found(
+                    ValidationSource.DISCOVERY,
+                    family_name=family_name,
+                    detail=f"slug not present in fresh upstream catalog",
+                    suggested_slugs=_nearest_slugs(model_id, cached.slugs),
+                )
+            # PARTIAL/NONE without a probe (registry can't probe — provider
+            # does that): provisional. The mark-dead unstable_examples
+            # signal also lands here so callers see it before the wire.
+            detail: str | None = None
+            if model_id in match.family.unstable_examples:
+                detail = "known_unstable; verify with discover_models()"
+            return ValidationResult.ok_provisional(
+                family_name=family_name,
+                detail=detail,
+            )
+
+        # 3. No family match. NATIVE provider with a fresh catalog can
+        # still answer NOT_FOUND.
+        if (
+            discovery_support is DiscoverySupport.NATIVE
+            and cached is not None
+            and cached.status is DiscoveryStatus.OK
+        ):
+            if model_id in cached.slugs:
+                return ValidationResult.ok_authoritative(
+                    ValidationSource.DISCOVERY,
+                    detail="discovered without family match",
+                )
+            return ValidationResult.not_found(
+                ValidationSource.DISCOVERY,
+                detail="slug not present in fresh upstream catalog",
+                suggested_slugs=_nearest_slugs(model_id, cached.slugs),
+            )
+
+        # 4. Permissive fallback — we can't say anything authoritative.
+        return ValidationResult.unknown_permissive()
+
     def resolve_canonical(self, model_id: str) -> str:
         """Return the canonical id the upstream API expects.
 
@@ -149,18 +327,45 @@ class ModelRegistry:
         return spec.model_id
 
     def known(self) -> list[str]:
-        """All registered model IDs (user ∪ defaults), sorted."""
-        seen = set(self._defaults) | set(self._user)
+        """All registered / discoverable model IDs, sorted.
+
+        Includes:
+        - user-registered slugs and legacy defaults,
+        - ``example_slugs`` from every registered family (documentation hint),
+        - the most-recent discovery cache snapshot (if any).
+
+        **Documentation grade, not a contract.** Family-matched slugs not
+        in any of these sources still resolve through ``get()`` and
+        ``validate()``; this method exists for IDE autocomplete, doc
+        generation, and capability advertising.
+        """
+        seen: set[str] = set(self._defaults) | set(self._user)
+        for family in self._provider_families:
+            seen.update(family.example_slugs)
+        with self._lock:
+            for family in self._user_families:
+                seen.update(family.example_slugs)
+        cached = self._discovery_cache.peek() if self._discovery_cache else None
+        if cached is not None and cached.status is DiscoveryStatus.OK:
+            seen.update(cached.slugs)
         return sorted(seen)
 
     def has(self, model_id: str) -> bool:
-        """True if the model_id (or alias) maps to a non-fallback spec."""
-        return (
+        """True if the model_id (or alias / family pattern) is non-fallback.
+
+        Coherent with ``__contains__`` and ``validate(...).is_ok``: returns
+        ``True`` for any slug that resolves via user spec, legacy defaults,
+        family pattern, alias, or deprecated alias. Returns ``False`` for
+        the permissive fallback.
+        """
+        if (
             model_id in self._user
             or model_id in self._defaults
             or model_id in self._alias_index
             or model_id in self._deprecated_alias_index
-        )
+        ):
+            return True
+        return self.match_family(model_id) is not None
 
     def items(self) -> Iterator[tuple[str, ModelSpec]]:
         """Iterate over ``(model_id, spec)`` pairs in deterministic order.
@@ -327,6 +532,28 @@ def _replace(spec: ModelSpec, **changes: Any) -> ModelSpec:
     from dataclasses import replace
 
     return replace(spec, **changes)
+
+
+def _nearest_slugs(
+    model_id: str,
+    candidates: Iterable[str],
+    *,
+    max_suggestions: int = 3,
+) -> tuple[str, ...]:
+    """Return up to ``max_suggestions`` slugs from ``candidates`` that look
+    similar to ``model_id``. Used to populate ``ValidationResult.suggested_slugs``
+    on ``NOT_FOUND`` outcomes so error messages can say "Did you mean…?".
+
+    Uses ``difflib.get_close_matches`` — Levenshtein-ratio shortest-path on
+    the candidate set. Cheap (~O(n) for typical n ≤ 100), no heuristics
+    beyond what stdlib offers. The result is informational only; callers
+    should not depend on specific suggestions.
+    """
+    import difflib
+
+    return tuple(
+        difflib.get_close_matches(model_id, list(candidates), n=max_suggestions, cutoff=0.5)
+    )
 
 
 # Module-level empty registry used as a fast default on BaseProvider.

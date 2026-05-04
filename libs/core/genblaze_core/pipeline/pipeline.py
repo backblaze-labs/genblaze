@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -18,6 +19,7 @@ from genblaze_core.exceptions import (
     GenblazeError,
     PipelineError,
     PipelineTimeoutError,
+    ProviderError,
 )
 from genblaze_core.models.enums import (
     Modality,
@@ -43,6 +45,7 @@ from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
 from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
 from genblaze_core.progress_display import Spinner, should_auto_enable
 from genblaze_core.providers.base import BaseProvider
+from genblaze_core.providers.validation import ValidationOutcome, ValidationResult
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
@@ -230,6 +233,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         max_concurrency: int | None = None,
         moderation: ModerationHook | None = None,
         tracer: Tracer | None = None,
+        preflight: bool = True,
     ):
         self._name = name
         self._tenant_id = tenant_id
@@ -245,6 +249,17 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         self._max_concurrency = max_concurrency
         self._moderation = moderation
+        # Model preflight (default ON, soft-launch posture):
+        # _validate_steps() calls validate_model() on each step's provider.
+        # NOT_FOUND raises before any wire calls; OK_PROVISIONAL and
+        # UNKNOWN_PERMISSIVE emit a single WARN per (provider, slug) per
+        # process. Hot paths can opt out via Pipeline(preflight=False) or
+        # Pipeline.preflight(False).
+        self._preflight: bool = preflight
+        # Tracks (provider_name, slug) tuples already warned about so the
+        # WARN log is one-per-pipeline-lifetime, mirroring the
+        # _warned_deprecated dedup pattern in ModelRegistry.
+        self._warned_preflight: set[tuple[str, str]] = set()
         # Tracer resolution: explicit arg wins; legacy structured_log=True maps
         # to LoggingTracer so existing callers keep their JSON event stream.
         if tracer is not None:
@@ -267,6 +282,23 @@ class Pipeline(Runnable[None, PipelineResult]):
     def cache(self, cache: StepCache) -> Pipeline:
         """Enable step-level caching with the given cache instance."""
         self._cache = cache
+        return self
+
+    def preflight(self, enabled: bool) -> Pipeline:
+        """Toggle the model preflight validation phase.
+
+        When enabled (the default), ``run()`` calls ``validate_model()`` on
+        each step's provider before issuing any generation calls. ``NOT_FOUND``
+        raises ``ProviderError(MODEL_ERROR)``; ``OK_PROVISIONAL`` and
+        ``UNKNOWN_PERMISSIVE`` emit a one-per-process WARN; ``OK_AUTHORITATIVE``
+        is silent.
+
+        Disable for hot paths where preflight overhead matters and the
+        caller has already validated models out-of-band, or when running
+        against fixtures that mock the upstream wire without backing
+        ``discover_models()``.
+        """
+        self._preflight = enabled
         return self
 
     def from_result(self, result: PipelineResult) -> Pipeline:
@@ -466,6 +498,107 @@ class Pipeline(Runnable[None, PipelineResult]):
                     f" remove the input source."
                 )
                 raise GenblazeError(msg)
+
+        # Model preflight runs after capability validation so a misconfigured
+        # step (wrong modality, missing chain support) surfaces a clear error
+        # before the slug-validity question even comes up.
+        if self._preflight:
+            self._validate_models()
+
+    def _validate_models(self) -> None:
+        """Preflight: validate every step's model in parallel.
+
+        ``BaseProvider.validate_model()`` may issue a discovery fetch or a
+        family probe — both are network operations. We dispatch them via
+        ``concurrent.futures.ThreadPoolExecutor`` so the sync ``Pipeline.run()``
+        stays compatible with FastAPI / Jupyter / threaded daemons. The
+        single-flight discovery cache deduplicates concurrent fetches at the
+        provider level, so multiple steps targeting the same provider share
+        one round-trip.
+
+        Behavior on outcome:
+        - ``NOT_FOUND``: raise ``ProviderError(MODEL_ERROR)`` immediately.
+        - ``OK_PROVISIONAL``: log WARN once per (provider, slug) per process.
+        - ``UNKNOWN_PERMISSIVE``: log WARN once per (provider, slug) per process.
+        - ``OK_AUTHORITATIVE``: silent.
+        """
+        if not self._steps:
+            return
+
+        # Bound concurrency at 8 — empirically enough to overlap 8 different
+        # providers' discovery fetches; wider would just contend on CPython
+        # GIL during regex matching for the family-only path.
+        max_workers = min(8, len(self._steps))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {
+                ex.submit(self._safe_validate_model, ps): (i, ps)
+                for i, ps in enumerate(self._steps)
+            }
+            for fut in as_completed(futures):
+                i, ps = futures[fut]
+                # _safe_validate_model never raises — it returns a synthetic
+                # ValidationResult on internal exceptions so a flaky validator
+                # cannot block the entire pipeline.
+                result = fut.result()
+                self._handle_validation(i, ps, result)
+
+    @staticmethod
+    def _safe_validate_model(ps: _PipelineStep) -> ValidationResult:
+        try:
+            return ps.provider.validate_model(ps.model)
+        except Exception as exc:
+            # Validator threw — degrade to permissive rather than fail
+            # closed. The actual upstream call will surface the real error
+            # if there is one. Logged at DEBUG: this is expected for
+            # offline tests that mock the wire without backing
+            # discover_models().
+            logger.debug(
+                "validate_model(%s/%s) raised: %s — falling through",
+                ps.provider.name,
+                ps.model,
+                exc,
+            )
+            return ValidationResult.unknown_permissive(detail=f"validator raised: {exc}")
+
+    def _handle_validation(self, i: int, ps: _PipelineStep, result: ValidationResult) -> None:
+        if result.outcome is ValidationOutcome.NOT_FOUND:
+            suggestions = (
+                f" Did you mean: {', '.join(result.suggested_slugs[:3])}?"
+                if result.suggested_slugs
+                else ""
+            )
+            raise ProviderError(
+                f"Step {i} ({ps.provider.name}): model {ps.model!r} not found "
+                f"in upstream catalog.{suggestions} "
+                f"See docs/migration/registry-decoupling.md.",
+                error_code=ProviderErrorCode.MODEL_ERROR,
+            )
+
+        key = (ps.provider.name, ps.model)
+        if result.outcome is ValidationOutcome.OK_PROVISIONAL:
+            if key not in self._warned_preflight:
+                self._warned_preflight.add(key)
+                logger.warning(
+                    "preflight.provisional step=%d provider=%s model=%s "
+                    "family=%s detail=%s — liveness unverifiable; "
+                    "failures will surface mid-pipeline",
+                    i,
+                    ps.provider.name,
+                    ps.model,
+                    result.family_name,
+                    result.detail,
+                )
+        elif result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE:
+            if key not in self._warned_preflight:
+                self._warned_preflight.add(key)
+                logger.warning(
+                    "preflight.unknown step=%d provider=%s model=%s — "
+                    "no family matched; permissive fallback applies",
+                    i,
+                    ps.provider.name,
+                    ps.model,
+                )
+        # OK_AUTHORITATIVE: silent.
 
     def _resolve_inputs(
         self,

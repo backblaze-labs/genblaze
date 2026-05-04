@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+import warnings
 from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -24,12 +25,22 @@ from genblaze_core.models.enums import (
 )
 from genblaze_core.models.step import Step
 from genblaze_core.observability.span import StepSpan
+from genblaze_core.providers.discovery import DiscoveryResult, DiscoveryStatus
+from genblaze_core.providers.family import (
+    DiscoverySupport,
+    LiveProbeResult,
+)
 from genblaze_core.providers.model_registry import EMPTY_REGISTRY, ModelRegistry, compute_cost
 from genblaze_core.providers.pricing import PricingContext
-from genblaze_core.providers.probe import ProbeResult
+from genblaze_core.providers.probe import ProbeResult, ProbeStatus
 from genblaze_core.providers.progress import ProgressEvent
 from genblaze_core.providers.retry import PRE_RESPONSE_EXCEPTIONS, RetryPolicy
 from genblaze_core.providers.spec import ModelSpec
+from genblaze_core.providers.validation import (
+    ValidationOutcome,
+    ValidationResult,
+    ValidationSource,
+)
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
@@ -208,6 +219,15 @@ class BaseProvider(Runnable[Step, Step]):
     """
 
     name: str = "base"
+
+    #: Per-provider declaration of upstream catalog API support. Drives
+    #: ``validate_model()`` outcome semantics and the ``tools/probe_models.py``
+    #: probe scope. Subclasses **must** override unless they accept the
+    #: ``NONE`` default (no catalog API). The conformance test enforces
+    #: presence on every entry-point provider. See
+    #: :class:`~genblaze_core.providers.family.DiscoverySupport`.
+    discovery_support: DiscoverySupport = DiscoverySupport.NONE
+
     poll_interval: float = DEFAULT_POLL_INTERVAL
     # Max transient failures tolerated per phase (submit/poll/fetch) before escalating.
     # Counter is phase-local — a successful poll does not refund submit's budget.
@@ -399,16 +419,169 @@ class BaseProvider(Runnable[Step, Step]):
         """
         return None
 
-    def probe_model(self, model_id: str) -> ProbeResult:
-        """Cheap liveness check for a single model id. Default ``SKIPPED``.
+    # --- catalog discovery & validation ------------------------------------
+    #
+    # Two surfaces collaborate to answer "is this slug usable?":
+    #
+    # * ``discover_models()`` snapshots upstream's catalog (when one exists)
+    #   and caches the result single-flight, RLock-guarded, with a 1-hour
+    #   default TTL. Connectors with ``DiscoverySupport.NATIVE`` override.
+    # * ``validate_model()`` returns a graded ``ValidationResult`` —
+    #   authoritative, provisional, unknown, or not-found — and is the
+    #   single entrypoint for the question. ``Pipeline.run()`` calls it
+    #   during preflight; users call it directly for explicit checks.
+    #
+    # See ``docs/exec-plans/active/model-registry-decoupling.md``.
 
-        Used by ``tools/probe_models.py`` to detect drift between a connector's
-        registry defaults and its upstream API. Connectors with a cheap catalog
-        endpoint (``GET /models``) intersect against the live list; queue-style
-        connectors POST a deliberately-empty payload and distinguish 404 from
-        400. See :class:`~genblaze_core.providers.probe.ProbeResult`.
+    def discover_models(
+        self,
+        *,
+        max_age_seconds: float | None = ...,  # type: ignore[assignment]
+    ) -> DiscoveryResult:
+        """Snapshot upstream's model catalog (when one exists).
+
+        Default returns ``DiscoveryResult.unsupported()`` — connectors with
+        a real catalog endpoint (``GET /v1/models``, vendor SDK list, etc.)
+        override and back the call with a ``_DiscoveryCache``.
+
+        Args:
+            max_age_seconds: Maximum age (seconds) of an acceptable cached
+                snapshot. ``None`` accepts any age (one-fetch-per-process).
+                Override per-call; default uses the cache's TTL.
         """
-        return ProbeResult.skipped()
+        return DiscoveryResult.unsupported(
+            detail=f"{type(self).__name__} declares DiscoverySupport.{self.discovery_support}"
+        )
+
+    def validate_model(
+        self,
+        model_id: str,
+        *,
+        refresh: bool = False,
+    ) -> ValidationResult:
+        """Return the graded answer to "is this slug usable?".
+
+        Outcomes (see ``ValidationOutcome``):
+
+        * ``OK_AUTHORITATIVE`` — user-registered, NATIVE-discovery-confirmed,
+          or family probe returned LIVE.
+        * ``OK_PROVISIONAL`` — family-matched but liveness unverifiable.
+          Pipeline preflight emits a WARN and proceeds.
+        * ``UNKNOWN_PERMISSIVE`` — no family match; permissive fallback applies.
+        * ``NOT_FOUND`` — discovery says absent or probe returned DEAD.
+          Pipeline preflight raises before any wire calls.
+
+        For ``DiscoverySupport.NATIVE`` providers, this method may issue
+        a single discovery fetch (subject to TTL and single-flight). For
+        ``PARTIAL`` / ``NONE``, it may invoke a family-level ``probe()``
+        when present. ``refresh=True`` forces a fresh discovery snapshot.
+        """
+        # First pass: non-network — return immediately if we already know.
+        result = self._models.validate(model_id, discovery_support=self.discovery_support)
+        if (
+            result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+            or result.outcome is ValidationOutcome.NOT_FOUND
+        ) and not refresh:
+            return result
+
+        # NATIVE: refresh discovery cache and re-validate. The single-flight
+        # cache deduplicates concurrent callers, so this is safe to call
+        # eagerly from preflight.
+        if self.discovery_support is DiscoverySupport.NATIVE:
+            if refresh:
+                # Force-evict so the cache reissues a fetch. ``invalidate``
+                # is a no-op for connectors without a cache backing.
+                cache = self._models._discovery_cache
+                if cache is not None:
+                    cache.invalidate()
+            try:
+                self.discover_models()
+            except Exception as exc:
+                logger.warning("discover_models raised during validate_model: %s", exc)
+            return self._models.validate(model_id, discovery_support=self.discovery_support)
+
+        # PARTIAL / NONE: if a family probe is configured, consult it.
+        match = self._models.match_family(model_id)
+        if match is not None and match.family.probe is not None:
+            try:
+                probe_result = self._invoke_family_probe(match.family.probe, model_id)
+            except Exception as exc:
+                logger.warning(
+                    "family.probe raised for %s/%s: %s",
+                    match.family.name,
+                    model_id,
+                    exc,
+                )
+                probe_result = LiveProbeResult.UNKNOWN
+
+            if probe_result is LiveProbeResult.LIVE:
+                return ValidationResult.ok_authoritative(
+                    ValidationSource.PROBE,
+                    family_name=match.family.name,
+                )
+            if probe_result is LiveProbeResult.DEAD:
+                return ValidationResult.not_found(
+                    ValidationSource.PROBE,
+                    family_name=match.family.name,
+                    detail="upstream probe returned DEAD",
+                )
+            # UNKNOWN: fall through to provisional answer below.
+
+        return result
+
+    def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
+        """Hook for connectors to invoke a ``FamilyProbe`` with their http client.
+
+        Default raises ``NotImplementedError`` — connectors that ship a
+        family probe must override this to wire in their ``httpx.Client``,
+        auth, and timeout. Keeping the wiring connector-side keeps
+        ``BaseProvider`` free of httpx-specific detail.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} ships a FamilyProbe but does not "
+            f"override _invoke_family_probe(). Override to wire in your "
+            f"http client and auth."
+        )
+
+    def probe_model(self, model_id: str) -> ProbeResult:
+        """**Deprecated.** Use ``validate_model(model_id, refresh=True)``.
+
+        Adapter that delegates to ``validate_model`` and coerces the result
+        to a legacy ``ProbeResult`` so existing ``tools/probe_models.py``
+        consumers don't break in-flight. Slated for removal in
+        ``genblaze-core 0.4.0``.
+
+        Outcome mapping:
+
+        ============================  ====================
+        ``ValidationOutcome``         ``ProbeStatus``
+        ============================  ====================
+        ``OK_AUTHORITATIVE``          ``OK``
+        ``OK_PROVISIONAL``            ``UNKNOWN`` (provisional ≠ confirmed)
+        ``UNKNOWN_PERMISSIVE``        ``UNKNOWN``
+        ``NOT_FOUND``                 ``NOT_FOUND``
+        ============================  ====================
+
+        ``DiscoverySupport.NONE`` providers without a configured probe
+        return ``SKIPPED`` to preserve the historical default.
+        """
+        warnings.warn(
+            "BaseProvider.probe_model() is deprecated; use validate_model() "
+            "instead. Removed in genblaze-core 0.4.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Preserve the historical SKIPPED-by-default behavior for providers
+        # that haven't opted into the new validation contract.
+        if (
+            self.discovery_support is DiscoverySupport.NONE
+            and self._models.match_family(model_id) is None
+            and model_id not in self._models
+        ):
+            return ProbeResult.skipped()
+
+        result = self.validate_model(model_id, refresh=True)
+        return _coerce_validation_to_probe(result)
 
     # --- pricing estimation ------------------------------------------------
 
@@ -1393,3 +1566,25 @@ class SyncProvider(BaseProvider):
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         return self._sync_results.pop(step.step_id, step)
+
+
+# --- ValidationResult → ProbeResult coercion --------------------------------
+#
+# Bridge between the new validation surface and the legacy probe surface so
+# external probe-CI consumers don't break in 0.3.0. The mapping is deliberately
+# lossy on the OK_PROVISIONAL → UNKNOWN edge — provisional is a weaker claim
+# than ProbeStatus.OK, so coercing it down to UNKNOWN is the honest move.
+
+_VALIDATION_TO_PROBE: Mapping[ValidationOutcome, ProbeStatus] = {
+    ValidationOutcome.OK_AUTHORITATIVE: ProbeStatus.OK,
+    ValidationOutcome.OK_PROVISIONAL: ProbeStatus.UNKNOWN,
+    ValidationOutcome.UNKNOWN_PERMISSIVE: ProbeStatus.UNKNOWN,
+    ValidationOutcome.NOT_FOUND: ProbeStatus.NOT_FOUND,
+}
+
+
+def _coerce_validation_to_probe(result: ValidationResult) -> ProbeResult:
+    """Map a ``ValidationResult`` to a legacy ``ProbeResult`` for the
+    deprecated ``probe_model()`` adapter."""
+    status = _VALIDATION_TO_PROBE.get(result.outcome, ProbeStatus.UNKNOWN)
+    return ProbeResult(status=status, detail=result.detail)
