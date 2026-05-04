@@ -176,15 +176,31 @@ def test_estimate_cost_offline(cls: type[BaseProvider]) -> None:
 def test_probe_model_default_skips(cls: type[BaseProvider]) -> None:
     """Default ``probe_model`` is a no-op returning SKIPPED.
 
-    Connectors that override ``probe_model`` are exercised by
-    ``tools/probe_models.py`` against real credentials, not the unit suite.
-    Here we just confirm the default behavior is observable.
+    Only meaningful for connectors that have neither overridden
+    ``probe_model`` nor opted into the new validation contract via
+    ``validate_model``. ``DiscoverySupport.NATIVE`` / ``PARTIAL``
+    connectors carry authoritative slug-validity signal, so SKIPPED is
+    no longer the appropriate default for them — those are exercised by
+    ``tools/probe_models.py`` against real credentials.
     """
+    from genblaze_core.providers import DiscoverySupport
+
+    if cls.probe_model is not BaseProvider.probe_model:
+        # Explicitly overridden — the connector has its own probe semantics.
+        return
+    if cls.validate_model is not BaseProvider.validate_model:
+        # Connector overrode validate_model; probe_model adapts to that.
+        # SKIPPED is not the right default here.
+        return
+    if cls.discovery_support is not DiscoverySupport.NONE:
+        # NATIVE / PARTIAL declares authoritative validation. The default
+        # adapter delegates to discovery, not the SKIPPED shortcut.
+        return
+
     provider = _instantiate(cls)
-    if cls.probe_model is BaseProvider.probe_model:
-        result = provider.probe_model("nonexistent-model-xyz")
-        assert isinstance(result, ProbeResult)
-        assert result.status.value == "skipped"
+    result = provider.probe_model("nonexistent-model-xyz")
+    assert isinstance(result, ProbeResult)
+    assert result.status.value == "skipped"
 
 
 # --- Registry iteration contracts -------------------------------------------

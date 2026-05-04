@@ -82,9 +82,68 @@ provider.models.register_pricing("*", per_input_chars(LMNT_PRICE_PER_CHAR, per=1
 
 ---
 
+## Replicate
+
+**Source:** module-level constants ``_COST_PER_SEC = 0.000225`` and
+``_compute_time_cost`` in ``genblaze_replicate/provider.py`` prior to
+``genblaze-core 0.3.0``.
+**Snapshot date:** 2026-05-04.
+**Verify at:** [replicate.com/pricing](https://replicate.com/pricing).
+
+Replicate bills based on actual GPU-compute time, reported per
+prediction in ``prediction.metrics.predict_time``. The connector
+captures this value in ``step.provider_payload["replicate"]["predict_time"]``
+during ``fetch_output()``, so any pricing strategy you register can read
+it via ``ctx.provider_payload``.
+
+The historical default rate was ``$0.000225/second`` (Nvidia A40/T4
+tier). Replicate publishes per-hardware rates that can vary by model;
+you may want different rates for different families.
+
+```python
+from genblaze_core.providers import per_response_metric
+from genblaze_replicate import ReplicateProvider
+
+REPLICATE_COST_PER_SEC = 0.000225  # USD/sec, A40/T4 tier as of 2026-05-04
+
+def compute_time_cost(ctx):
+    """Read predict_time from the captured provider payload."""
+    payload = ctx.provider_payload.get("replicate") if ctx.provider_payload else None
+    if not isinstance(payload, dict):
+        return None
+    predict_time = payload.get("predict_time")
+    if predict_time is None:
+        return None
+    try:
+        return float(predict_time) * REPLICATE_COST_PER_SEC
+    except (TypeError, ValueError):
+        return None
+
+provider = ReplicateProvider(api_token="...")
+
+# Register against the fallback (catch-all) so every Replicate slug
+# inherits the rule. Replace with explicit per-slug registrations if
+# you maintain different rates per family.
+provider.models.register_pricing("*", per_response_metric(compute_time_cost))
+```
+
+For per-slug rate variation (e.g., higher rates on H100-tier models):
+
+```python
+H100_RATE_PER_SEC = 0.001  # placeholder; verify with Replicate
+H100_MODELS = {"some-owner/h100-model", "another-owner/big-model"}
+
+for slug in H100_MODELS:
+    provider.models.register_pricing(
+        slug,
+        per_response_metric(lambda ctx, rate=H100_RATE_PER_SEC: _compute_with_rate(ctx, rate)),
+    )
+```
+
+---
+
 <!--
   Subsequent connectors append their sections here as they migrate:
-    - replicate
     - nvidia (chat / generative)
     - gmicloud
     - runway

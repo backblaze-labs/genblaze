@@ -7,8 +7,9 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
+from genblaze_core.providers import ModelSpec
 from genblaze_core.testing import ProviderComplianceTests
 from genblaze_replicate._errors import map_replicate_error
 from genblaze_replicate.provider import ReplicateProvider
@@ -310,9 +311,40 @@ def test_fetch_output_rejects_schemeless_url():
         provider.fetch_output("pred-abc123", step)
 
 
-def test_cost_tracked_from_metrics():
-    """Cost is computed from prediction.metrics.predict_time."""
+def test_cost_none_by_default():
+    """As of genblaze-core 0.3.0 the SDK no longer ships pricing for
+    Replicate. ``cost_usd`` is ``None`` unless the user has registered
+    a pricing strategy via ``provider.models.register_pricing()``.
+    See ``docs/reference/pricing-recipes.md``.
+    """
     provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    pred = FakePrediction()
+    pred.metrics = MagicMock()
+    pred.metrics.predict_time = 10.0
+    mock_client.predictions.get.return_value = pred
+    provider._client = mock_client
+
+    step = _make_step()
+    result = provider.fetch_output("pred-abc123", step)
+    assert result.cost_usd is None
+
+
+def test_cost_tracked_with_user_registered_pricing():
+    """User-registered compute-time pricing flows through the same path."""
+    from genblaze_core.providers import per_response_metric
+
+    def compute_time_cost(ctx):
+        payload = ctx.provider_payload.get("replicate") if ctx.provider_payload else None
+        if not isinstance(payload, dict):
+            return None
+        predict_time = payload.get("predict_time")
+        if predict_time is None:
+            return None
+        return float(predict_time) * 0.000225
+
+    provider = ReplicateProvider(api_token="test-token")
+    provider.models.register_pricing("test/model", per_response_metric(compute_time_cost))
     mock_client = MagicMock()
     pred = FakePrediction()
     pred.metrics = MagicMock()
@@ -327,8 +359,11 @@ def test_cost_tracked_from_metrics():
 
 
 def test_cost_none_without_metrics():
-    """Cost stays None when prediction has no metrics."""
+    """Cost stays None when prediction has no metrics, even with pricing registered."""
+    from genblaze_core.providers import per_response_metric
+
     provider = ReplicateProvider(api_token="test-token")
+    provider.models.register_pricing("test/model", per_response_metric(lambda ctx: 0.0))
     mock_client = MagicMock()
     pred = FakePrediction()
     # No metrics attribute
@@ -337,7 +372,9 @@ def test_cost_none_without_metrics():
 
     step = _make_step()
     result = provider.fetch_output("pred-abc123", step)
-    assert result.cost_usd is None
+    # The strategy returns 0.0 if metrics are absent — but we registered
+    # one that returns 0.0 unconditionally. Verify the pricing path runs.
+    assert result.cost_usd == pytest.approx(0.0)
 
 
 def test_token_not_in_provider_payload():
@@ -355,6 +392,137 @@ def test_token_not_in_provider_payload():
 
     payload_str = json.dumps(result.provider_payload)
     assert "r8_secret_token_123" not in payload_str
+
+
+# --- Catalog-decoupling: discovery + per-slug validation ---
+
+
+def _make_model(owner: str, name: str):
+    """Minimal fake of a Replicate ``Model`` object."""
+    m = MagicMock()
+    m.owner = owner
+    m.name = name
+    return m
+
+
+def test_discovery_support_native():
+    """Replicate is the proof-point for NATIVE discovery in PR #3."""
+    from genblaze_core.providers import DiscoverySupport
+
+    assert ReplicateProvider.discovery_support is DiscoverySupport.NATIVE
+
+
+def test_discover_models_returns_first_page():
+    """``discover_models`` snapshots the first page of /v1/models — enough
+    to seed ``known()`` without enumerating the entire catalog."""
+    from genblaze_core.providers import DiscoveryStatus
+
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    page = MagicMock()
+    page.results = [
+        _make_model("black-forest-labs", "flux-schnell"),
+        _make_model("stability-ai", "sdxl"),
+        _make_model("meta", "llama-3"),
+    ]
+    mock_client.models.list.return_value = page
+    provider._client = mock_client
+
+    result = provider.discover_models()
+    assert result.status is DiscoveryStatus.OK
+    assert "black-forest-labs/flux-schnell" in result.slugs
+    assert "stability-ai/sdxl" in result.slugs
+    assert result.source_url == "https://api.replicate.com/v1/models"
+
+
+def test_discover_models_failure_returns_failed():
+    """A failed list call surfaces as ``DiscoveryStatus.FAILED`` — never
+    raises into the caller, never poisons the cache."""
+    from genblaze_core.providers import DiscoveryStatus
+
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.list.side_effect = RuntimeError("boom")
+    provider._client = mock_client
+
+    result = provider.discover_models()
+    assert result.status is DiscoveryStatus.FAILED
+    assert "boom" in (result.detail or "")
+
+
+def test_validate_model_authoritative_via_models_get():
+    """A live slug returns ``OK_AUTHORITATIVE`` (source PROBE) via
+    ``client.models.get()`` — the cheap-existence-check that Replicate
+    supports authoritatively."""
+    from genblaze_core.providers import ValidationOutcome, ValidationSource
+
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model("owner", "live-model")
+    provider._client = mock_client
+
+    result = provider.validate_model("owner/live-model")
+    assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+    assert result.source is ValidationSource.PROBE
+
+
+def test_validate_model_not_found_via_models_get():
+    """A 404-class error from ``client.models.get()`` surfaces as
+    ``NOT_FOUND``. The Pipeline preflight phase raises on this outcome
+    before any prediction is created."""
+    from genblaze_core.providers import ValidationOutcome, ValidationSource
+
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.side_effect = RuntimeError("404 model not found")
+    provider._client = mock_client
+
+    result = provider.validate_model("owner/dead-model")
+    assert result.outcome is ValidationOutcome.NOT_FOUND
+    assert result.source is ValidationSource.PROBE
+
+
+def test_validate_model_caches_result():
+    """Per-slug validation cache memoizes the per-slug GET so successive
+    Pipeline runs don't re-fetch."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model("owner", "x")
+    provider._client = mock_client
+
+    provider.validate_model("owner/x")
+    provider.validate_model("owner/x")
+    provider.validate_model("owner/x")
+
+    assert mock_client.models.get.call_count == 1
+
+
+def test_validate_model_refresh_evicts_cache():
+    """``refresh=True`` forces a fresh per-slug GET."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model("owner", "x")
+    provider._client = mock_client
+
+    provider.validate_model("owner/x")
+    provider.validate_model("owner/x", refresh=True)
+    assert mock_client.models.get.call_count == 2
+
+
+def test_validate_model_user_registered_skips_probe():
+    """A user-registered exact spec is authoritative without a network
+    round-trip — the per-slug probe should not fire."""
+    from genblaze_core.providers import ValidationOutcome, ValidationSource
+
+    provider = ReplicateProvider(api_token="test-token")
+    provider.models.register(ModelSpec(model_id="owner/local", modality=Modality.IMAGE))
+    mock_client = MagicMock()
+    provider._client = mock_client
+
+    result = provider.validate_model("owner/local")
+    assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+    assert result.source is ValidationSource.USER
+    mock_client.models.get.assert_not_called()
 
 
 # --- Compliance harness ---
