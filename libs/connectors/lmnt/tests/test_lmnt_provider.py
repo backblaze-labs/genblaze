@@ -107,9 +107,25 @@ def test_multi_word_duration(mock_lmnt):
     assert result.assets[0].audio.word_timings[2].word == "world"
 
 
-def test_cost_tracked(mock_lmnt):
-    """Cost is computed from character count."""
+def test_cost_none_by_default(mock_lmnt):
+    """As of 0.3.0, the SDK no longer ships pricing for LMNT.
+
+    ``cost_usd`` is ``None`` unless the user has registered a pricing
+    strategy via ``provider.models.register_pricing()``. See
+    ``docs/reference/pricing-recipes.md`` for the canonical recipe.
+    """
     provider, _ = mock_lmnt
+    step = Step(provider="lmnt", model="lmnt-1", prompt="Hello world")
+    result = provider.generate(step)
+    assert result.cost_usd is None
+
+
+def test_cost_tracked_with_user_registered_pricing(mock_lmnt):
+    """User-registered pricing flows through the same compute_cost path."""
+    from genblaze_core.providers import per_input_chars
+
+    provider, _ = mock_lmnt
+    provider.models.register_pricing("lmnt-1", per_input_chars(0.00015, per=1))
     step = Step(provider="lmnt", model="lmnt-1", prompt="Hello world")
     result = provider.generate(step)
     assert result.cost_usd is not None
@@ -117,8 +133,11 @@ def test_cost_tracked(mock_lmnt):
 
 
 def test_cost_none_empty_prompt(mock_lmnt):
-    """Cost stays None for empty prompt."""
+    """Cost stays None for empty prompt even with pricing registered."""
+    from genblaze_core.providers import per_input_chars
+
     provider, _ = mock_lmnt
+    provider.models.register_pricing("lmnt-1", per_input_chars(0.00015, per=1))
     step = Step(provider="lmnt", model="lmnt-1", prompt="")
     result = provider.generate(step)
     assert result.cost_usd is None
@@ -132,11 +151,53 @@ def test_api_error_raises(mock_lmnt):
         provider.generate(step)
 
 
+# --- Catalog-decoupling proof-point ---
+
+
+def test_lmnt_declares_discovery_support_none():
+    """LMNT is the proof-point connector for the catalog-decoupled
+    architecture: empty defaults, permissive fallback, no discovery API.
+    """
+    from genblaze_core.providers import DiscoverySupport
+    from genblaze_lmnt import LMNTProvider
+
+    assert LMNTProvider.discovery_support is DiscoverySupport.NONE
+
+
+def test_lmnt_validate_model_returns_unknown_permissive(mock_lmnt):
+    """Without a registered slug or family, every LMNT model id falls
+    through to the permissive fallback. Pipeline preflight handles this
+    with a one-time WARN and proceeds."""
+    from genblaze_core.providers import ValidationOutcome
+
+    provider, _ = mock_lmnt
+    result = provider.validate_model("any-lmnt-slug")
+    assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
+
+
+def test_lmnt_user_registered_slug_authoritative(mock_lmnt):
+    """Once the user registers a slug, validate_model returns
+    OK_AUTHORITATIVE — the SDK has positive confirmation regardless of
+    LMNT's lack of a discovery API."""
+    from genblaze_core.providers import ModelSpec, ValidationOutcome
+    from genblaze_core.models.enums import Modality
+
+    provider, _ = mock_lmnt
+    provider.models.register(ModelSpec(model_id="lmnt-1", modality=Modality.AUDIO))
+    result = provider.validate_model("lmnt-1")
+    assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+
+
 # --- Compliance harness ---
 
 
 class TestLMNTCompliance(ProviderComplianceTests):
     """Verify LMNTProvider satisfies the genblaze provider contract."""
+
+    # As of genblaze-core 0.3.0 the SDK ships zero hardcoded prices.
+    # LMNT users register pricing via ``provider.models.register_pricing()``;
+    # see ``docs/reference/pricing-recipes.md``.
+    expects_cost = False
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):

@@ -2,10 +2,27 @@
 
 Synchronous API: returns audio bytes directly.
 
-Models, pricing, and parameter handling are driven by the ``ModelRegistry``
-returned from ``create_registry()``. LMNT has no enumerated model catalogue
-so the registry ships a permissive fallback (``FALLBACK_SPEC`` with pricing)
-that matches any ``step.model`` and applies per-character pricing.
+LMNT has no enumerable model catalog, so this provider declares
+``DiscoverySupport.NONE`` and ships an empty registry with a permissive
+fallback that matches any ``step.model``. Param-shape rules (canonical
+``voice_id``→``voice``, ``output_format``→``format`` aliases; ``speed``
+coercion to float) ride on the fallback ``ModelSpec``.
+
+This connector is the **proof-point** for the catalog-decoupling
+architecture in ``genblaze-core 0.3.0`` — LMNT was already empty-defaults
++ permissive-fallback before the migration, and the only change required
+was declaring ``discovery_support`` and removing the hardcoded per-char
+price (which now lives as a user-registered recipe in
+``docs/reference/pricing-recipes.md``).
+
+**Pricing**: LMNT was previously hardcoded at ``0.00015`` USD/char on
+the fallback spec. As of ``0.3.0`` the SDK no longer ships pricing.
+Register it explicitly if you want cost tracking::
+
+    from genblaze_core.providers import per_input_chars
+    provider.models.register_pricing(
+        "lmnt-1", per_input_chars(0.00015, per=1)
+    )
 
 Docs: https://docs.lmnt.com/
 """
@@ -24,12 +41,12 @@ from genblaze_core.models.asset import Asset, AudioMetadata, WordTiming
 from genblaze_core.models.enums import Modality
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
+    DiscoverySupport,
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
-    per_input_chars,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -42,16 +59,13 @@ _FORMAT_TO_MIME = {
     "aac": "audio/aac",
 }
 
-# Per-character pricing (USD)
-_PRICE_PER_CHAR = 0.00015
 
-
-# Fallback spec — LMNT has no enumerable model list; any model_id applies
-# the per-character pricing and canonical-to-native aliasing.
+# Fallback spec — LMNT has no enumerable model list. Any ``step.model``
+# matches and inherits the canonical-to-native aliasing. Pricing is
+# user-registered (see module docstring).
 _LMNT_FALLBACK_SPEC = ModelSpec(
     model_id="*",
     modality=Modality.AUDIO,
-    pricing=per_input_chars(_PRICE_PER_CHAR, per=1),
     param_aliases={"voice_id": "voice", "output_format": "format"},
     param_coercers={"speed": float},
 )
@@ -62,8 +76,8 @@ class LMNTProvider(SyncProvider):
 
     Ultra-low latency TTS with natural-sounding voices. The registry uses
     a permissive fallback spec (no enumerated models) so every LMNT model
-    id passes through with per-character pricing and canonical parameter
-    aliasing (``voice_id`` → ``voice``, ``output_format`` → ``format``).
+    id passes through with canonical parameter aliasing
+    (``voice_id`` → ``voice``, ``output_format`` → ``format``).
 
     Args:
         api_key: LMNT API key. Falls back to LMNT_API_KEY env var.
@@ -72,6 +86,9 @@ class LMNTProvider(SyncProvider):
     """
 
     name = "lmnt"
+    discovery_support = DiscoverySupport.NONE
+    """LMNT has no ``GET /v1/models`` endpoint. Slug freshness is the
+    user's responsibility — pass any model id and the upstream API decides."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:
