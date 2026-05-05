@@ -34,7 +34,6 @@ from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     DiscoveryResult,
-    DiscoveryStatus,
     DiscoverySupport,
 )
 from genblaze_core.providers.base import ProviderCapabilities, SyncProvider

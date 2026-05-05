@@ -179,8 +179,8 @@ def test_lmnt_user_registered_slug_authoritative(mock_lmnt):
     """Once the user registers a slug, validate_model returns
     OK_AUTHORITATIVE — the SDK has positive confirmation regardless of
     LMNT's lack of a discovery API."""
-    from genblaze_core.providers import ModelSpec, ValidationOutcome
     from genblaze_core.models.enums import Modality
+    from genblaze_core.providers import ModelSpec, ValidationOutcome
 
     provider, _ = mock_lmnt
     provider.models.register(ModelSpec(model_id="lmnt-1", modality=Modality.AUDIO))

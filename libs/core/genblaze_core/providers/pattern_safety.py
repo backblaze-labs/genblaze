@@ -32,7 +32,7 @@ import re
 from typing import Final
 
 try:
-    import google.re2 as _re2  # type: ignore[import-not-found]
+    import google.re2 as _re2  # type: ignore[import-not-found,import-untyped]
 
     _HAS_RE2 = True
 except ImportError:

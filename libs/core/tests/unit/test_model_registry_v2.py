@@ -17,8 +17,8 @@ from genblaze_core.providers.discovery import (
     _DiscoveryCache,
 )
 from genblaze_core.providers.family import (
-    DiscoverySupport,
     MAX_PROVIDER_FAMILIES,
+    DiscoverySupport,
     ModelFamily,
 )
 from genblaze_core.providers.model_registry import ModelRegistry

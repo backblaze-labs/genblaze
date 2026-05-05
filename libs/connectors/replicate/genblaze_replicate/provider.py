@@ -40,7 +40,6 @@ from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     BaseProvider,
     DiscoveryResult,
-    DiscoveryStatus,
     DiscoverySupport,
     ModelRegistry,
     ModelSpec,

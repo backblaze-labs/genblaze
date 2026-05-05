@@ -7,10 +7,10 @@ import re
 import pytest
 from genblaze_core.models.enums import Modality
 from genblaze_core.providers.family import (
+    MAX_PROVIDER_FAMILIES,
     DiscoverySupport,
     FamilyMatch,
     LiveProbeResult,
-    MAX_PROVIDER_FAMILIES,
     ModelFamily,
 )
 from genblaze_core.providers.pricing import per_unit

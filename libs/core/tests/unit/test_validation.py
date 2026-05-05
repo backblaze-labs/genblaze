@@ -83,10 +83,11 @@ class TestEnums:
 
 class TestFrozen:
     def test_validation_result_is_immutable(self) -> None:
+        """Frozen dataclass — assignment raises FrozenInstanceError."""
+        import dataclasses
+
+        import pytest
+
         r = ValidationResult.ok_authoritative(ValidationSource.USER)
-        try:
+        with pytest.raises(dataclasses.FrozenInstanceError):
             r.outcome = ValidationOutcome.NOT_FOUND  # type: ignore[misc]
-        except (AttributeError, Exception):
-            pass
-        else:
-            raise AssertionError("ValidationResult should be frozen")

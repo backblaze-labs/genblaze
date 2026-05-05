@@ -225,6 +225,13 @@ class _DiscoveryCache:
                 )
 
         # Elected fetcher: issue the call outside the lock.
+        # ``result`` is pre-populated with a sentinel FAILED so a hard
+        # interrupt (SystemExit/KeyboardInterrupt) before the fetcher
+        # runs still produces a coherent state-cleanup in ``finally``,
+        # and the ``return self._result`` lives outside ``finally`` —
+        # otherwise a return-in-finally would silently swallow any
+        # exception that escapes the try/except (B012).
+        result: DiscoveryResult = DiscoveryResult.failed("interrupted before fetcher completed")
         try:
             result = self._fetcher()
         except Exception as exc:
@@ -250,7 +257,8 @@ class _DiscoveryCache:
                 if self._event is not None:
                     self._event.set()
                     self._event = None
-                return self._result
+
+        return self._result
 
     def invalidate(self) -> None:
         """Drop the cached result. Next ``get()`` triggers a fresh fetch."""

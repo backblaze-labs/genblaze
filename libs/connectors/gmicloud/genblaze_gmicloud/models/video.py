@@ -121,7 +121,7 @@ _GMI_VIDEO_VEO_FAMILY = ModelFamily(
     ),
     description="Google Veo family on GMI — produces video + audio tracks.",
     example_slugs=("veo3",),
-    unstable_examples=("veo3-fast",),
+    unstable_examples=frozenset({"veo3-fast"}),
     probe=empty_payload_request_probe,
 )
 

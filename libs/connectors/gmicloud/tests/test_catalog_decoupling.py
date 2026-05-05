@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 from genblaze_core.providers import (
     DiscoverySupport,
     LiveProbeResult,
@@ -27,7 +26,6 @@ from genblaze_gmicloud import (
     GMICloudVideoProvider,
 )
 from genblaze_gmicloud._probe import empty_payload_request_probe
-
 
 # --- DiscoverySupport declarations -----------------------------------------
 

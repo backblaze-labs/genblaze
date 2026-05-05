@@ -26,7 +26,6 @@ See ``docs/exec-plans/active/model-registry-decoupling.md``.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import warnings
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -46,7 +45,6 @@ from genblaze_core.providers.family import (
 from genblaze_core.providers.pricing import PricingStrategy
 from genblaze_core.providers.spec import FALLBACK_SPEC, ModelSpec
 from genblaze_core.providers.validation import (
-    ValidationOutcome,
     ValidationResult,
     ValidationSource,
 )
@@ -322,7 +320,7 @@ class ModelRegistry:
                 return ValidationResult.not_found(
                     ValidationSource.DISCOVERY,
                     family_name=family_name,
-                    detail=f"slug not present in fresh upstream catalog",
+                    detail="slug not present in fresh upstream catalog",
                     suggested_slugs=_nearest_slugs(model_id, cached.slugs),
                 )
             # PARTIAL/NONE without a probe (registry can't probe — provider

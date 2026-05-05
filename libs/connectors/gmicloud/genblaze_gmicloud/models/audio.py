@@ -63,7 +63,7 @@ _GMI_AUDIO_CLONE_FAMILY = ModelFamily(
     # 2026-04 reconciliation: all GMI audio slugs returned 404 against the
     # live /requests endpoint. Flagged as known-unstable until the probe
     # confirms or upstream rotates them.
-    unstable_examples=("MiniMax-Voice-Clone-Speech-2.6-HD",),
+    unstable_examples=frozenset({"MiniMax-Voice-Clone-Speech-2.6-HD"}),
     probe=empty_payload_request_probe,
 )
 
@@ -78,7 +78,7 @@ _GMI_AUDIO_MUSIC_FAMILY = ModelFamily(
     ),
     description="GMICloud music generation (MiniMax Music family).",
     example_slugs=("MiniMax-Music-2.5",),
-    unstable_examples=("MiniMax-Music-2.5",),
+    unstable_examples=frozenset({"MiniMax-Music-2.5"}),
     probe=empty_payload_request_probe,
 )
 
@@ -100,10 +100,12 @@ _GMI_AUDIO_TTS_FAMILY = ModelFamily(
         "MiniMax-TTS-Speech-2.6-Turbo",
         "Inworld-TTS-1.5-Mini",
     ),
-    unstable_examples=(
-        "ElevenLabs-TTS-v3",
-        "MiniMax-TTS-Speech-2.6-Turbo",
-        "Inworld-TTS-1.5-Mini",
+    unstable_examples=frozenset(
+        {
+            "ElevenLabs-TTS-v3",
+            "MiniMax-TTS-Speech-2.6-Turbo",
+            "Inworld-TTS-1.5-Mini",
+        }
     ),
     probe=empty_payload_request_probe,
 )

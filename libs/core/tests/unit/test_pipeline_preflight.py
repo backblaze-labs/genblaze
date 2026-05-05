@@ -131,7 +131,6 @@ class TestNotFoundRaises:
         # a custom detail. We pass a stub directly via ``models=`` and
         # mock the validate path.
         from genblaze_core.providers.validation import (
-            ValidationOutcome,
             ValidationResult,
             ValidationSource,
         )

@@ -25,7 +25,7 @@ from genblaze_core.models.enums import (
 )
 from genblaze_core.models.step import Step
 from genblaze_core.observability.span import StepSpan
-from genblaze_core.providers.discovery import DiscoveryResult, DiscoveryStatus
+from genblaze_core.providers.discovery import DiscoveryResult
 from genblaze_core.providers.family import (
     DiscoverySupport,
     LiveProbeResult,

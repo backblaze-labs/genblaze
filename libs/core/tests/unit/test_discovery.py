@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
 from genblaze_core.providers.discovery import (
     DEFAULT_TTL_SECONDS,
     DiscoveryResult,
