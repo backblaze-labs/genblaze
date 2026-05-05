@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — model registry decoupling (PRs #1–#4)
+
+- **`genblaze-core 0.3.0` (in progress)**: introduces a new pattern-based
+  model-catalog architecture. The SDK no longer ships hardcoded slug lists.
+  Connectors declare:
+  - `discovery_support: DiscoverySupport` — `NATIVE`, `PARTIAL`, or `NONE`.
+  - `provider_families: tuple[ModelFamily, ...]` — pattern-keyed param-shape
+    rules, replacing per-slug `defaults={...}` dicts.
+  - Optional `family.probe` callable for `PARTIAL` providers (NIM
+    generative endpoints use the empty-payload POST trick).
+  See `docs/exec-plans/active/model-registry-decoupling.md` for the
+  architecture, red-team trail, and rollout sequence.
+
+- New public types in `genblaze_core.providers`:
+  `ModelFamily`, `FamilyMatch`, `FamilyProbe`, `LiveProbeResult`,
+  `DiscoverySupport`, `DiscoveryResult`, `DiscoveryStatus`,
+  `ValidationResult`, `ValidationOutcome`, `ValidationSource`,
+  `MAX_PROVIDER_FAMILIES`, `DEFAULT_TTL_SECONDS`.
+
+- New public methods on `BaseProvider`:
+  - `discover_models()` — snapshot the upstream catalog (NATIVE only).
+  - `validate_model(slug, *, refresh=False)` — graded slug-validity outcome.
+  - `_invoke_family_probe(probe, slug)` — connector-side hook for PARTIAL
+    providers to wire their `httpx.Client` into the family probe.
+
+- New `Pipeline(preflight=True)` knob (default ON, soft-launch posture).
+  `Pipeline.run()` validates every step's model in parallel via
+  `ThreadPoolExecutor` before any wire calls. `NOT_FOUND` raises
+  `ProviderError(MODEL_ERROR)`; `OK_PROVISIONAL` and `UNKNOWN_PERMISSIVE`
+  emit one-time WARN logs. Opt out with `Pipeline(preflight=False)`.
+
+- New connector adoption (this release):
+  - **lmnt** — `DiscoverySupport.NONE` proof-point.
+  - **replicate** — `DiscoverySupport.NATIVE`. `discover_models()`
+    returns the first page of `/v1/models`; `validate_model()` does
+    per-slug `client.models.get()` lookups (cached per-process, 1-hour TTL).
+  - **nvidia** — chat = `NATIVE` via `/v1/models`; audio/image/video =
+    `PARTIAL` with the empty-payload `genai` probe.
+
+### Fixed — F-2026-05-04-01 (NVIDIA `nvidia/riva-tts` 404)
+
+- The retired `nvidia/riva-tts` slug is no longer pinned in the SDK. Users
+  who still pass it now get a deterministic `ProviderError(MODEL_ERROR)`
+  at preflight (via the empty-payload probe) instead of a mid-pipeline 404.
+  `nvidia/magpie-tts-multilingual` is the surfaced "Did you mean…?" hint.
+- New end-to-end repro test
+  (`libs/connectors/nvidia/tests/test_catalog_decoupling.py::test_riva_tts_surfaces_at_preflight_not_mid_pipeline`)
+  pins this regression class going forward.
+
+### Changed — pricing phase-out
+
+- The SDK no longer ships hardcoded prices. `_PRICE_PER_CHAR`, `_COST_PER_SEC`,
+  `_compute_time_cost`, and the per-slug pricing on connector fallback
+  specs have been removed. `compute_cost()` and `Pipeline.estimated_cost()`
+  return `None` for any model unless the user has registered pricing via
+  `provider.models.register_pricing(slug, strategy)`.
+- New `docs/reference/pricing-recipes.md` cookbook holds the last-known
+  prices per connector as one-shot copy-paste recipes. **Not maintained**:
+  verify with the upstream provider before relying on the values.
+- `compute_cost()` and `register_pricing()` themselves are unchanged; the
+  pricing-strategy primitives (`per_unit`, `by_param`,
+  `bucketed_by_duration`, `per_input_chars`, `per_response_metric`,
+  `by_model_and_param`, etc.) remain in `genblaze_core.providers.pricing`.
+
+### Deprecated
+
+- `BaseProvider.probe_model()` is deprecated and now delegates to
+  `validate_model(refresh=True)` with a coerced `ProbeResult` for legacy
+  `tools/probe_models.py` consumers. Slated for removal in
+  `genblaze-core 0.4.0`. Use `validate_model()` directly going forward.
+
 ## [0.2.9] - 2026-04-30
 
 ### Released package versions

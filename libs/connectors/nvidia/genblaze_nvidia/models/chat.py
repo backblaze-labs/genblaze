@@ -1,14 +1,16 @@
-"""NVIDIA chat model specs (Nemotron + Llama families on NIM).
+"""NVIDIA chat-model registry — empty + permissive fallback.
 
-Pricing is ``None`` for all entries: ``integrate.api.nvidia.com`` free tier
-is RPM-gated (no per-token billing) and enterprise NIM pricing is contract-
-specific. Token counts ARE always populated on the response, so callers who
-track cost downstream compute ``tokens × negotiated_rate``. Unlisted models
-pass through the fallback spec.
+NIM's chat surface (``integrate.api.nvidia.com/v1``) is OpenAI-wire-
+compatible across every model NVIDIA hosts (Nemotron, Llama, Mixtral,
+…). The wire shape is identical, so the SDK doesn't need pattern-keyed
+families to encode per-model param differences — every chat slug uses
+the same payload contract. Discovery is the upstream's job:
+``GET /v1/models`` returns the authoritative live catalog and is used by
+``NvidiaChatProvider.discover_models()`` for ``validate_model()``.
 
-Modality is ``Modality.TEXT`` because chat outputs text. Multimodal *input*
-is handled via ``Asset.media_type`` on ``step.inputs`` — see
-``NvidiaChatProvider._build_messages``.
+Multimodal *input* (image_url / video_url / audio_url content blocks) is
+handled by ``NvidiaChatProvider._build_messages`` based on
+``Asset.media_type``, not by any per-slug spec.
 """
 
 from __future__ import annotations
@@ -16,41 +18,15 @@ from __future__ import annotations
 from genblaze_core.models.enums import Modality
 from genblaze_core.providers import ModelRegistry, ModelSpec
 
-# Nemotron 3 multimodal / Omni / VL families. Multimodal accepts image_url
-# and video_url content blocks (NIM is OpenAI-vision-wire-compat). Document
-# inputs are not natively supported — callers rasterize PDFs to images.
-_NEMOTRON_MULTIMODAL: tuple[str, ...] = (
-    "nvidia/nemotron-3-nano-omni",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-    "nvidia/nemotron-nano-12b-v2-vl",
-)
-
-# Text-only Nemotron / Llama variants on NIM. Pass-through is fine here too,
-# but listing them lets `get_capabilities().models` advertise the curated set.
-_TEXT_ONLY: tuple[str, ...] = (
-    "nvidia/nemotron-4-340b-instruct",
-    "nvidia/nemotron-3-nano-30b-a3b",
-    "meta/llama-3.3-70b-instruct",
-    "mistralai/mixtral-8x22b-instruct-v0.1",
-)
-
-
-def _multimodal_spec(model_id: str) -> ModelSpec:
-    return ModelSpec(model_id=model_id, modality=Modality.TEXT, pricing=None)
-
-
-def _text_only_spec(model_id: str) -> ModelSpec:
-    return ModelSpec(model_id=model_id, modality=Modality.TEXT, pricing=None)
-
-
+# Permissive fallback: chat surface is uniform across all NIM-hosted slugs.
 _FALLBACK = ModelSpec(model_id="*", modality=Modality.TEXT)
 
 
 def build_chat_registry() -> ModelRegistry:
-    """Return the default chat ModelRegistry. Pass-through for unknown ids."""
-    defaults: dict[str, ModelSpec] = {}
-    for mid in _NEMOTRON_MULTIMODAL:
-        defaults[mid] = _multimodal_spec(mid)
-    for mid in _TEXT_ONLY:
-        defaults[mid] = _text_only_spec(mid)
-    return ModelRegistry(defaults=defaults, fallback=_FALLBACK)
+    """Return the default chat ``ModelRegistry`` — empty, fallback-only.
+
+    NVIDIA chat is ``DiscoverySupport.NATIVE``: ``/v1/models`` is the
+    authoritative slug source. The registry holds no families because
+    the param shape is uniform across the NIM chat surface.
+    """
+    return ModelRegistry(fallback=_FALLBACK)

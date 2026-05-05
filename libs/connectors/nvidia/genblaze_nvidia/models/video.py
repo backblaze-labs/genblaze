@@ -1,65 +1,84 @@
-"""NVIDIA video-model specs (Cosmos, Edify Video).
+"""NVIDIA video-model families (Cosmos text2world / video2world).
 
-Model slugs follow build.nvidia.com's ``vendor/slug`` convention. The endpoint
-path is derived at request time as ``/genai/{model_id}`` — nothing model-
-specific lives in code.
+Two families distinguished by chain-input shape:
 
-Cosmos endpoints are still enterprise-gated as of 2026-04; the provider still
-works (the code path is correct) but callers on the free tier will see
-AUTH_FAILURE responses until they have access. Unlisted models pass through
-the permissive fallback spec — no code change needed when NVIDIA ships new
-video models.
+* ``nvidia-cosmos-text2world`` — image-to-video (chain inputs route via
+  ``image``).
+* ``nvidia-cosmos-video2world`` — video-to-video (chain inputs route via
+  ``video``).
+
+The pattern absorbs any future Cosmos minor/major version (1.0, 2.0, ...)
+without code changes — the SDK ships the param shape, not the slug list.
+``nvidia/cosmos-*-text2world`` and ``nvidia/cosmos-*-video2world`` slugs
+inherit the right family automatically.
+
+The empty-payload genai probe surfaces dead slugs at preflight. Cosmos
+is enterprise-gated on the free tier — probes against unauthorized
+endpoints return 401/403, which the probe maps to ``UNKNOWN`` (we can't
+say "dead" without auth). That's the honest answer.
 """
 
 from __future__ import annotations
 
+import re
+
 from genblaze_core.models.enums import Modality
 from genblaze_core.providers import (
+    ModelFamily,
     ModelRegistry,
     ModelSpec,
     route_images,
     route_video,
 )
 
-# Curated list — kept narrow on purpose. Unlisted models get the fallback.
-_VIDEO_MODELS: tuple[str, ...] = (
-    "nvidia/cosmos-1.0-7b-diffusion-text2world",
-    "nvidia/cosmos-1.0-7b-diffusion-video2world",
-    "nvidia/cosmos-2.0-diffusion-text2world",
-    "nvidia/cosmos-2.0-diffusion-video2world",
-)
+from .._probe import empty_payload_genai_probe
 
-# Canonical → native renames. NVIDIA generation endpoints accept either name
-# on the wire, but keeping the alias explicit makes manifests more readable
-# and lets genblaze users write in the canonical form everywhere.
+# Canonical → native param renames. NVIDIA accepts either name on the wire,
+# but keeping the alias explicit makes manifests more readable and lets
+# genblaze users write canonical-form prompts everywhere.
 _COMMON_ALIASES = {"guidance_scale": "cfg_scale"}
 
-# Route chain inputs: most models take an image (image-to-video); video2world
-# variants take a video instead. ``text2world`` / text-only models simply
-# don't read either slot — the payload keys just aren't present.
 _IMAGE_INPUT = route_images(slots=("image",))
 _VIDEO_INPUT = route_video(slot="video")
 
 
-def _video_spec(model_id: str) -> ModelSpec:
-    """Build a spec for a curated video model.
-
-    Pricing intentionally ``None``: NVIDIA's free tier is RPM-gated with no
-    per-token billing, and Cosmos enterprise pricing is contract-specific.
-    Users can attach pricing at runtime via ``registry.register_pricing``.
-    """
-    input_mapping = _VIDEO_INPUT if "video2world" in model_id else _IMAGE_INPUT
-    return ModelSpec(
-        model_id=model_id,
+_NVIDIA_COSMOS_TEXT2WORLD_FAMILY = ModelFamily(
+    name="nvidia-cosmos-text2world",
+    pattern=re.compile(r"^nvidia/cosmos-.*-text2world"),
+    spec_template=ModelSpec(
+        model_id="*",
         modality=Modality.VIDEO,
-        pricing=None,
         param_aliases=_COMMON_ALIASES,
-        input_mapping=input_mapping,
-    )
+        input_mapping=_IMAGE_INPUT,
+    ),
+    description="NVIDIA Cosmos text-to-video family (image-conditioned).",
+    example_slugs=(
+        "nvidia/cosmos-1.0-7b-diffusion-text2world",
+        "nvidia/cosmos-2.0-diffusion-text2world",
+    ),
+    probe=empty_payload_genai_probe,
+)
+
+_NVIDIA_COSMOS_VIDEO2WORLD_FAMILY = ModelFamily(
+    name="nvidia-cosmos-video2world",
+    pattern=re.compile(r"^nvidia/cosmos-.*-video2world"),
+    spec_template=ModelSpec(
+        model_id="*",
+        modality=Modality.VIDEO,
+        param_aliases=_COMMON_ALIASES,
+        input_mapping=_VIDEO_INPUT,
+    ),
+    description="NVIDIA Cosmos video-to-video family.",
+    example_slugs=(
+        "nvidia/cosmos-1.0-7b-diffusion-video2world",
+        "nvidia/cosmos-2.0-diffusion-video2world",
+    ),
+    probe=empty_payload_genai_probe,
+)
 
 
-# Fallback spec: permissive for unlisted models, but keeps the image-input
-# routing so e.g. a new image-to-video model just works out of the box.
+# Permissive fallback: keeps the image-input routing so an unrecognized
+# image-to-video slug still works out of the box.
 _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
@@ -69,8 +88,11 @@ _FALLBACK = ModelSpec(
 
 
 def build_video_registry() -> ModelRegistry:
-    """Return the default video ModelRegistry."""
+    """Return the default video ``ModelRegistry`` — pattern-keyed."""
     return ModelRegistry(
-        defaults={mid: _video_spec(mid) for mid in _VIDEO_MODELS},
+        provider_families=(
+            _NVIDIA_COSMOS_TEXT2WORLD_FAMILY,
+            _NVIDIA_COSMOS_VIDEO2WORLD_FAMILY,
+        ),
         fallback=_FALLBACK,
     )

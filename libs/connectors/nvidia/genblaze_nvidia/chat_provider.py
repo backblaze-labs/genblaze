@@ -32,7 +32,13 @@ from genblaze_core.models.chat import (
 )
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
+from genblaze_core.providers import (
+    DiscoveryResult,
+    DiscoveryStatus,
+    DiscoverySupport,
+)
 from genblaze_core.providers.base import ProviderCapabilities, SyncProvider
+from genblaze_core.providers.discovery import DEFAULT_TTL_SECONDS, _DiscoveryCache
 from genblaze_core.providers.model_registry import ModelRegistry
 from genblaze_core.providers.retry import RetryPolicy, retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -77,6 +83,11 @@ class NvidiaChatProvider(SyncProvider):
     """
 
     name = "nvidia-chat"
+    discovery_support = DiscoverySupport.NATIVE
+    """NIM chat surface (``integrate.api.nvidia.com/v1``) exposes
+    OpenAI-compatible ``GET /v1/models`` for authoritative slug listing.
+    The cache is wired in ``__init__`` and refreshed on a 1-hour TTL by
+    default."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:
@@ -103,6 +114,54 @@ class NvidiaChatProvider(SyncProvider):
         self._media_io_kwargs = media_io_kwargs
         self._mm_processor_kwargs = mm_processor_kwargs
         self._injected_client = client
+        # Wire the discovery cache lazily — the fetcher closes over self
+        # so it picks up the (possibly-late-bound) injected client and
+        # the OpenAI-compatible /v1/models endpoint NIM exposes.
+        self._models._discovery_cache = _DiscoveryCache(
+            self._fetch_chat_models,
+            default_max_age_seconds=DEFAULT_TTL_SECONDS,
+        )
+
+    # --- catalog discovery (DiscoverySupport.NATIVE) ----------------------
+
+    def _fetch_chat_models(self) -> DiscoveryResult:
+        """Fetcher backing ``discover_models`` — calls /v1/models on NIM.
+
+        OpenAI's SDK ``client.models.list()`` returns a paginated
+        response; the page already contains the full chat catalog (NIM
+        publishes a few dozen slugs, well below the page limit). We
+        consume ``response.data`` directly without paginating further.
+        """
+        try:
+            client = self._resolve_client()
+            response = client.models.list()
+            data = getattr(response, "data", None) or list(response)
+            slugs: set[str] = set()
+            for model in data:
+                model_id = getattr(model, "id", None)
+                if isinstance(model_id, str):
+                    slugs.add(model_id)
+            return DiscoveryResult.ok(
+                slugs,
+                source_url=f"{_resolve_chat_base_url(self._base_url)}/models",
+            )
+        except Exception as exc:
+            return DiscoveryResult.failed(
+                f"NIM /v1/models fetch failed: {exc}",
+                source_url=f"{_resolve_chat_base_url(self._base_url)}/models",
+            )
+
+    def discover_models(
+        self,
+        *,
+        max_age_seconds: float | None = ...,  # type: ignore[assignment]
+    ) -> DiscoveryResult:
+        """Snapshot the NIM chat catalog. Single-flight, TTL-bounded."""
+        cache = self._models._discovery_cache
+        assert cache is not None  # wired in __init__
+        if max_age_seconds is ...:  # type: ignore[comparison-overlap]
+            return cache.get()
+        return cache.get(max_age_seconds=max_age_seconds)
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(

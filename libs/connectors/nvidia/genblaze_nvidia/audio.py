@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -16,6 +17,10 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
+from genblaze_core.providers import (
+    DiscoverySupport,
+    LiveProbeResult,
+)
 from genblaze_core.providers.base import (
     ProviderCapabilities,
     SyncProvider,
@@ -51,10 +56,18 @@ class NvidiaAudioProvider(SyncProvider):
     """
 
     name = "nvidia-audio"
+    discovery_support = DiscoverySupport.PARTIAL
+    """NVIDIA's generative endpoints have no ``GET /models`` catalog. The
+    ``ModelFamily``-attached empty-payload probe is the authoritative
+    liveness signal — see ``_invoke_family_probe`` and ``_probe.py``."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:
         return build_audio_registry()
+
+    def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
+        """Forward the family probe with this provider's ``httpx.Client``."""
+        return probe(model_id, http=self._client.http())
 
     def __init__(
         self,
