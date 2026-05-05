@@ -30,9 +30,13 @@ from ._base import GMICloudBase, extract_media_url
 from ._errors import map_gmicloud_error
 from .models.video import build_video_registry
 
-# Canonical slugs for models that produce audio alongside video (multi-track).
-# Legacy ids resolve through ``_resolve_model`` before this check.
-_HAS_AUDIO_MODELS: frozenset[str] = frozenset({"veo3", "veo3-fast"})
+# "Does this model produce audio alongside video?" used to live as
+# ``_HAS_AUDIO_MODELS = frozenset({"veo3", "veo3-fast"})`` in this
+# module. That parallel slug list inevitably drifted from the family
+# registry, and broke for any non-canonical casing (PascalCase Veo3
+# silently lost audio metadata). The flag now lives on the Veo
+# family's ``spec_template.extras["has_audio"]`` — single source of
+# truth, queryable via ``self._models.get(model_id).extras``.
 
 
 class GMICloudVideoProvider(GMICloudBase):
@@ -99,7 +103,9 @@ class GMICloudVideoProvider(GMICloudBase):
             validate_asset_url(str(video_url))
             asset = Asset(url=str(video_url), media_type="video/mp4")
 
-            has_audio = self._models.resolve_canonical(step.model) in _HAS_AUDIO_MODELS
+            # ``has_audio`` lives on the family's spec_template.extras —
+            # single source of truth, no parallel slug list to drift.
+            has_audio = bool(self._models.get(step.model).extras.get("has_audio"))
             asset.video = VideoMetadata(has_audio=has_audio)
             if has_audio:
                 asset.tracks = [

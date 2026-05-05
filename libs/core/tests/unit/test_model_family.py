@@ -34,7 +34,9 @@ class TestConstruction:
         )
         assert fam.name == "sdxl"
         assert fam.example_slugs == ()
-        assert fam.unstable_examples == ()
+        # ``unstable_examples`` was changed from tuple to frozenset for
+        # O(1) membership testing. Empty default is now ``frozenset()``.
+        assert fam.unstable_examples == frozenset()
         assert fam.probe is None
         assert fam.discovery_required is False
 

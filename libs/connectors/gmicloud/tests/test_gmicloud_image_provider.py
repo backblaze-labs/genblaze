@@ -167,7 +167,22 @@ def test_invoke_full_lifecycle(provider):
 # --- Cost ---
 
 
-def test_cost_tracked(provider):
+def test_cost_none_by_default(provider):
+    """SDK no longer ships pricing for GMICloud as of genblaze-core 0.3.0."""
+    provider.poll("req-img-001")
+    step = Step(provider="gmicloud-image", model="seedream-5.0-lite", prompt="a cat")
+    result = provider.fetch_output("req-img-001", step)
+    assert result.cost_usd is None
+
+
+def test_cost_tracked_with_user_registered_pricing(provider):
+    """User-registered per-unit pricing flows through compute_cost."""
+    from genblaze_core.providers import per_unit
+
+    # Fork before mutating so the test doesn't pollute the class-level
+    # models_default() cache (and therefore other tests).
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("seedream-5.0-lite", per_unit(0.035))
     provider.poll("req-img-001")
     step = Step(provider="gmicloud-image", model="seedream-5.0-lite", prompt="a cat")
     result = provider.fetch_output("req-img-001", step)
@@ -236,14 +251,18 @@ def test_unknown_model_passthrough(provider):
 # --- Deprecated aliases ---
 
 
-def test_legacy_slug_resolves_with_deprecation_warning(provider):
-    """Old PascalCase ids keep working but surface a DeprecationWarning."""
+def test_legacy_pascalcase_slug_passes_through_permissive_fallback(provider):
+    """Soft-launch clean break (genblaze-core 0.3.0): the SDK no longer
+    registers per-slug PascalCase ``deprecated_aliases``. Legacy
+    PascalCase ids still execute (the request goes to the wire as-is)
+    but no DeprecationWarning is emitted — there's nothing to redirect
+    them to. Users should pass canonical lowercase slugs.
+    """
     provider.poll("req-img-001")
     step = Step(provider="gmicloud-image", model="Seedream-5.0-Lite", prompt="a cat")
-    with pytest.warns(DeprecationWarning, match="seedream-5.0-lite"):
-        result = provider.fetch_output("req-img-001", step)
-    # Pricing still resolves via the canonical spec.
-    assert result.cost_usd == pytest.approx(0.035)
+    result = provider.fetch_output("req-img-001", step)
+    # Step still completes; pricing is None unless the user registered it.
+    assert result.assets, "fetch_output should produce an asset"
 
 
 # --- Multi-image output ---
@@ -297,6 +316,9 @@ def test_fetch_output_is_atomic_on_validation_failure(provider):
 
 
 class TestGMICloudImageCompliance(ProviderComplianceTests):
+    # SDK no longer ships pricing for GMICloud (genblaze-core 0.3.0).
+    expects_cost = False
+
     def make_provider(self):
         from genblaze_gmicloud.image import GMICloudImageProvider
 

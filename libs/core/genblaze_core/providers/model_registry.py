@@ -75,6 +75,16 @@ class ModelRegistry:
             implement ``BaseProvider.discover_models()``. The registry
             consults the cache via :meth:`peek` only — it never issues
             fetches itself; that is the provider's responsibility.
+        unstable_slugs: Slugs the connector flags as known-unstable
+            (suspected dead, deprecated upstream, etc.) without
+            requiring them to belong to a dedicated ``ModelFamily``.
+            Unioned with ``family.unstable_examples`` on construction
+            into a single O(1)-lookup ``frozenset``. ``validate()``
+            surfaces these as ``OK_PROVISIONAL`` with
+            ``detail="known_unstable"``. Replaces the historical
+            "catch-all family carrying unstable_examples" pattern (the
+            family was a code smell — its only purpose was to carry the
+            list).
         strict_params: If True, unknown keys raise instead of being silently
             dropped when an allowlist is set.
     """
@@ -86,6 +96,7 @@ class ModelRegistry:
         *,
         provider_families: Sequence[ModelFamily] = (),
         discovery_cache: _DiscoveryCache | None = None,
+        unstable_slugs: Iterable[str] = (),
         strict_params: bool = False,
     ) -> None:
         if len(provider_families) > MAX_PROVIDER_FAMILIES:
@@ -94,6 +105,14 @@ class ModelRegistry:
                 f"{MAX_PROVIDER_FAMILIES}. Consolidate patterns or split the "
                 f"registry by modality."
             )
+        # Union the registry-level unstable_slugs with every family's own
+        # unstable_examples so callers have a single O(1) source of truth.
+        # Both routes (registry-level and family-level) produce the same
+        # OK_PROVISIONAL/known_unstable signal in validate().
+        _unstable: set[str] = set(unstable_slugs)
+        for family in provider_families:
+            _unstable.update(family.unstable_examples)
+        self._unstable_slugs: frozenset[str] = frozenset(_unstable)
         self._defaults: dict[str, ModelSpec] = dict(defaults or {})
         self._user: dict[str, ModelSpec] = {}
         self._provider_families: tuple[ModelFamily, ...] = tuple(provider_families)
@@ -149,12 +168,27 @@ class ModelRegistry:
         override or extend connector-shipped patterns without forking the
         registry. Order within ``_user_families`` is insertion order with
         the most-recent registration at position 0 (highest priority).
+
+        ``family.unstable_examples`` is unioned into ``_unstable_slugs``
+        so a family registered post-construction still surfaces the
+        ``known_unstable`` hint via ``validate()``. Without this union
+        the registry would observe stale state — the family would carry
+        unstable_examples but ``validate()`` wouldn't see them.
         """
         with self._lock:
             self._user_families.insert(0, family)
+            if family.unstable_examples:
+                self._unstable_slugs = self._unstable_slugs | frozenset(family.unstable_examples)
 
     def fork(self) -> ModelRegistry:
-        """Shallow copy-on-write clone — per-instance overrides don't touch the parent."""
+        """Shallow copy-on-write clone — per-instance overrides don't touch the parent.
+
+        Carries forward ``_unstable_slugs`` so clones surface the same
+        ``known_unstable`` hints as the parent. Without this, slugs added
+        via the parent's ``unstable_slugs=`` constructor kwarg (i.e.,
+        registry-level orphans not in any family) would be silently
+        dropped by the fork.
+        """
         with self._lock:
             clone = ModelRegistry(
                 defaults={**self._defaults, **self._user},
@@ -162,8 +196,14 @@ class ModelRegistry:
                 provider_families=self._provider_families,
                 discovery_cache=self._discovery_cache,
                 strict_params=self._strict,
+                # Pass the unioned set; the constructor will re-union with
+                # family.unstable_examples (idempotent — frozenset union).
+                unstable_slugs=self._unstable_slugs,
             )
             # User families are part of the user layer — copy them over.
+            # Their unstable_examples are already in self._unstable_slugs
+            # which we passed above, so this re-population doesn't lose
+            # any signal.
             clone._user_families = list(self._user_families)
             return clone
 
@@ -283,8 +323,10 @@ class ModelRegistry:
             # PARTIAL/NONE without a probe (registry can't probe — provider
             # does that): provisional. The mark-dead unstable_examples
             # signal also lands here so callers see it before the wire.
+            # _unstable_slugs is the unioned set (family.unstable_examples
+            # ∪ registry-level unstable_slugs) — O(1) frozenset lookup.
             detail: str | None = None
-            if model_id in match.family.unstable_examples:
+            if model_id in self._unstable_slugs:
                 detail = "known_unstable; verify with discover_models()"
             return ValidationResult.ok_provisional(
                 family_name=family_name,
@@ -309,7 +351,14 @@ class ModelRegistry:
                 suggested_slugs=_nearest_slugs(model_id, cached.slugs),
             )
 
-        # 4. Permissive fallback — we can't say anything authoritative.
+        # 4. Permissive fallback. If the slug is registry-level unstable
+        # but didn't match any family, still surface the hint — preflight
+        # then emits a known_unstable WARN rather than a generic
+        # UNKNOWN_PERMISSIVE one.
+        if model_id in self._unstable_slugs:
+            return ValidationResult.unknown_permissive(
+                detail="known_unstable; verify with discover_models()"
+            )
         return ValidationResult.unknown_permissive()
 
     def resolve_canonical(self, model_id: str) -> str:

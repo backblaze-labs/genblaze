@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     per-slug `client.models.get()` lookups (cached per-process, 1-hour TTL).
   - **nvidia** — chat = `NATIVE` via `/v1/models`; audio/image/video =
     `PARTIAL` with the empty-payload `genai` probe.
+  - **gmicloud** — audio/image/video = `PARTIAL` with the empty-payload
+    `/requests` probe. The 2026-04 reconciliation's `suspected_dead`
+    slugs (`veo3-fast`, `kling-text2video-v2.1-master`,
+    `minimax-hailuo-2.3-fast`, `vidu-q1`, all 5 audio defaults) are
+    preserved as `ModelFamily.unstable_examples` (RT-10) — the probe is
+    the authoritative answer at runtime; users see a "known unstable"
+    hint at preflight. PascalCase `deprecated_aliases` are removed
+    (soft-launch clean break); pass canonical lowercase slugs.
 
 ### Fixed — F-2026-05-04-01 (NVIDIA `nvidia/riva-tts` 404)
 

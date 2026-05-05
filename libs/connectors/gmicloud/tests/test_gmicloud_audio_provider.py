@@ -158,7 +158,26 @@ def test_invoke_full_lifecycle(provider):
 # --- Cost ---
 
 
-def test_cost_tracked(provider):
+def test_cost_none_by_default(provider):
+    """As of genblaze-core 0.3.0 the SDK no longer ships pricing for
+    GMICloud. cost_usd is None unless the user has registered pricing
+    via ``provider.models.register_pricing()``. See
+    ``docs/reference/pricing-recipes.md``.
+    """
+    provider.poll("req-aud-001")
+    step = Step(provider="gmicloud-audio", model="ElevenLabs-TTS-v3", prompt="Hello")
+    result = provider.fetch_output("req-aud-001", step)
+    assert result.cost_usd is None
+
+
+def test_cost_tracked_with_user_registered_pricing(provider):
+    """User-registered per-unit pricing flows through compute_cost."""
+    from genblaze_core.providers import per_unit
+
+    # Fork before mutating so the test doesn't pollute the class-level
+    # models_default() cache (and therefore other tests).
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("ElevenLabs-TTS-v3", per_unit(0.10))
     provider.poll("req-aud-001")
     step = Step(provider="gmicloud-audio", model="ElevenLabs-TTS-v3", prompt="Hello")
     result = provider.fetch_output("req-aud-001", step)
@@ -257,6 +276,9 @@ def test_fetch_output_legacy_audio_url_fallback(provider):
 
 
 class TestGMICloudAudioCompliance(ProviderComplianceTests):
+    # SDK no longer ships pricing for GMICloud (genblaze-core 0.3.0).
+    expects_cost = False
+
     def make_provider(self):
         from genblaze_gmicloud.audio import GMICloudAudioProvider
 

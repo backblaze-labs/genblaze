@@ -228,6 +228,22 @@ class BaseProvider(Runnable[Step, Step]):
     #: :class:`~genblaze_core.providers.family.DiscoverySupport`.
     discovery_support: DiscoverySupport = DiscoverySupport.NONE
 
+    #: TTL (seconds) for cached family-probe results. The probe call is
+    #: cheap network-wise but for queue-style providers (GMI, Runway,
+    #: Luma) it creates an audit-log entry on the user's account per
+    #: invocation — cache aggressively. Subclasses may override the
+    #: class attribute, or operators may set it per-instance via
+    #: ``provider.PROBE_CACHE_TTL_SECONDS = N`` before the first probe.
+    PROBE_CACHE_TTL_SECONDS: float = 3600.0
+
+    #: Maximum probe-cache size before oldest-first eviction kicks in.
+    #: Bounded so long-running daemons that see many distinct slugs
+    #: don't grow the cache unbounded. 256 fits any realistic
+    #: per-provider catalog with margin (largest connector today is
+    #: GMICloud with ~30 slugs). Eviction is FIFO via dict insertion
+    #: order, not LRU — adequate given the TTL provides freshness.
+    PROBE_CACHE_MAX_ENTRIES: int = 256
+
     poll_interval: float = DEFAULT_POLL_INTERVAL
     # Max transient failures tolerated per phase (submit/poll/fetch) before escalating.
     # Counter is phase-local — a successful poll does not refund submit's budget.
@@ -297,6 +313,32 @@ class BaseProvider(Runnable[Step, Step]):
         self._preflight_done: bool = False
         self._preflight_sync_lock: threading.Lock = threading.Lock()
         self._preflight_async_lock: asyncio.Lock | None = None
+        # Family-probe result cache — keyed by slug; value is
+        # ``(fetched_monotonic, LiveProbeResult)``. Keeps Pipeline
+        # preflight from firing the audit-log-creating empty-payload
+        # probe on every step.
+        #
+        # Concurrency: ``RLock``-guarded for state mutation;
+        # ``threading.Event``-based single-flight prevents the cold-burst
+        # case where N concurrent ``validate_model`` callers for the
+        # same slug all miss the cache and all fire the probe. With
+        # single-flight, exactly one probe fires; the others wait on the
+        # Event and read the result the winner produced.
+        #
+        # Memory bound: ``_PROBE_CACHE_MAX_ENTRIES`` caps the dict size.
+        # When exceeded, the cache evicts the oldest entries (insertion
+        # order via ``dict``'s ordered-since-3.7 contract). 256 entries
+        # is comfortably above any realistic per-provider catalog while
+        # keeping memory bounded for daemons that see many distinct slugs.
+        #
+        # ``refresh=True`` on ``validate_model()`` evicts the entry.
+        # Default TTL of 1 hour matches the discovery cache and the
+        # operator's mental model of "model existence is stable for ~hours".
+        self._probe_cache: dict[str, tuple[float, LiveProbeResult]] = {}
+        self._probe_cache_lock: threading.RLock = threading.RLock()
+        # In-flight probe events keyed by slug; entry exists while a
+        # probe is mid-flight, gets removed once the result is cached.
+        self._probe_inflight: dict[str, threading.Event] = {}
 
     @property
     def retry_policy(self) -> RetryPolicy:
@@ -501,23 +543,27 @@ class BaseProvider(Runnable[Step, Step]):
             return self._models.validate(model_id, discovery_support=self.discovery_support)
 
         # PARTIAL / NONE: if a family probe is configured, consult it.
+        # Goes through _cached_probe so repeated validate_model() calls
+        # for the same slug (e.g., Pipeline preflight + retries + manual
+        # checks) hit the upstream at most once per TTL window.
+        #
+        # The pre-probe ``result.detail`` may carry "known_unstable" when
+        # the slug is in the family's unstable_examples or registry-level
+        # unstable_slugs. We preserve that detail on the probe-LIVE path
+        # (the slug was flagged unstable for a reason — ops may want the
+        # hint even when it's currently live) but drop it on the
+        # probe-DEAD path (NOT_FOUND speaks for itself).
+        unstable_detail = (
+            result.detail if result.outcome is ValidationOutcome.OK_PROVISIONAL else None
+        )
         match = self._models.match_family(model_id)
         if match is not None and match.family.probe is not None:
-            try:
-                probe_result = self._invoke_family_probe(match.family.probe, model_id)
-            except Exception as exc:
-                logger.warning(
-                    "family.probe raised for %s/%s: %s",
-                    match.family.name,
-                    model_id,
-                    exc,
-                )
-                probe_result = LiveProbeResult.UNKNOWN
-
+            probe_result = self._cached_probe(match.family.probe, model_id, refresh=refresh)
             if probe_result is LiveProbeResult.LIVE:
                 return ValidationResult.ok_authoritative(
                     ValidationSource.PROBE,
                     family_name=match.family.name,
+                    detail=unstable_detail,
                 )
             if probe_result is LiveProbeResult.DEAD:
                 return ValidationResult.not_found(
@@ -528,6 +574,123 @@ class BaseProvider(Runnable[Step, Step]):
             # UNKNOWN: fall through to provisional answer below.
 
         return result
+
+    # Bound on how long a thread will wait for an in-flight probe before
+    # giving up and falling through to UNKNOWN. Higher than the typical
+    # probe round-trip (sub-second for catalog-style endpoints, seconds
+    # for queue-style); lower than the pipeline preflight step budget so
+    # a hung probe doesn't deadlock preflight indefinitely.
+    _PROBE_INFLIGHT_WAIT_SECONDS: float = 30.0
+
+    def _cached_probe(
+        self,
+        probe: Any,
+        model_id: str,
+        *,
+        refresh: bool,
+    ) -> LiveProbeResult:
+        """Cache + single-flight wrapper around ``_invoke_family_probe``.
+
+        Returns a previously-cached ``LiveProbeResult`` when fresh; otherwise
+        elects the calling thread as the in-flight probe issuer and runs
+        the probe outside the lock. Concurrent callers for the same slug
+        block on a ``threading.Event`` and read the result the winner
+        produced — exactly one probe fires across N concurrent callers
+        on the cold path. ``refresh=True`` forces a fresh fetch.
+
+        Concurrency model:
+
+        * ``_probe_cache_lock`` (RLock) guards all state — both the cache
+          dict and the in-flight registry.
+        * Single-flight uses ``threading.Event``: the elected fetcher
+          stores an Event under the slug while running the probe; other
+          threads encountering the same slug wait on it.
+        * The cache is bounded at ``PROBE_CACHE_MAX_ENTRIES`` via FIFO
+          eviction (oldest first, exploiting Python 3.7+ dict insertion
+          order). Evictions only happen on write — reads are O(1).
+
+        Exceptions in the probe surface as ``LiveProbeResult.UNKNOWN``
+        and are NOT cached — a transient error shouldn't poison the cache
+        for the TTL window. ``UNKNOWN`` results from a successful probe
+        also aren't cached for the same reason (a model whose probe is
+        inconclusive deserves re-checking next call).
+        """
+        # Phase 1: cache lookup or single-flight election (under lock).
+        is_fetcher: bool
+        wait_event: threading.Event | None = None
+        with self._probe_cache_lock:
+            if not refresh:
+                cached = self._probe_cache.get(model_id)
+                if cached is not None:
+                    fetched_at, result = cached
+                    if (time.monotonic() - fetched_at) <= self.PROBE_CACHE_TTL_SECONDS:
+                        return result
+                    # Expired — evict; we'll repopulate after the probe.
+                    del self._probe_cache[model_id]
+            else:
+                self._probe_cache.pop(model_id, None)
+
+            # Single-flight election. If another thread is already
+            # probing this slug, wait on its event.
+            in_flight = self._probe_inflight.get(model_id)
+            if in_flight is not None:
+                is_fetcher = False
+                wait_event = in_flight
+            else:
+                is_fetcher = True
+                self._probe_inflight[model_id] = threading.Event()
+
+        # Phase 2 (waiter): block on the in-flight event, then read cache.
+        if not is_fetcher:
+            if wait_event is not None:
+                wait_event.wait(timeout=self._PROBE_INFLIGHT_WAIT_SECONDS)
+            with self._probe_cache_lock:
+                cached = self._probe_cache.get(model_id)
+                if cached is not None:
+                    return cached[1]
+            # Either the fetcher timed out, errored without caching
+            # (UNKNOWN), or the entry expired between wait and read.
+            # Fall through to UNKNOWN rather than re-firing the probe —
+            # callers can retry with refresh=True if they need certainty.
+            return LiveProbeResult.UNKNOWN
+
+        # Phase 3 (elected fetcher): run the probe outside the lock,
+        # then update cache + signal waiters.
+        try:
+            result = self._invoke_family_probe(probe, model_id)
+        except Exception as exc:
+            logger.warning(
+                "family.probe raised for %s: %s — returning UNKNOWN",
+                model_id,
+                exc,
+            )
+            result = LiveProbeResult.UNKNOWN
+
+        with self._probe_cache_lock:
+            event = self._probe_inflight.pop(model_id, None)
+            # Only cache definitive answers — UNKNOWN may be transient.
+            if result is not LiveProbeResult.UNKNOWN:
+                self._probe_cache[model_id] = (time.monotonic(), result)
+                self._evict_probe_cache_if_oversized()
+            if event is not None:
+                event.set()
+
+        return result
+
+    def _evict_probe_cache_if_oversized(self) -> None:
+        """FIFO eviction when ``_probe_cache`` exceeds the size cap.
+
+        Caller must hold ``_probe_cache_lock``. Drops the oldest 25% of
+        entries in one pass to amortize eviction cost — checking on
+        every write would amplify lock-hold time on the hot path.
+        """
+        if len(self._probe_cache) <= self.PROBE_CACHE_MAX_ENTRIES:
+            return
+        # Drop oldest 25% (relies on dict insertion-order being
+        # FIFO-coherent in Python 3.7+).
+        evict_count = max(1, len(self._probe_cache) // 4)
+        for slug in list(self._probe_cache.keys())[:evict_count]:
+            del self._probe_cache[slug]
 
     def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
         """Hook for connectors to invoke a ``FamilyProbe`` with their http client.

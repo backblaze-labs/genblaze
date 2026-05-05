@@ -140,12 +140,21 @@ class ModelFamily:
     spec_template: ModelSpec
     description: str
     example_slugs: tuple[str, ...] = ()
-    unstable_examples: tuple[str, ...] = ()
+    # ``frozenset`` rather than ``tuple`` for O(1) membership checks —
+    # the registry's ``validate()`` does ``slug in family.unstable_examples``
+    # on every preflight, and a list of N unstable slugs would force a
+    # linear scan. Callers may pass any iterable; ``__post_init__`` coerces.
+    unstable_examples: frozenset[str] = field(default_factory=frozenset)
     probe: FamilyProbe | None = None
     discovery_required: bool = False
 
     def __post_init__(self) -> None:
         assert_safe(self.pattern)
+        # Coerce ``unstable_examples`` to a frozenset if a tuple/list was
+        # passed. ``object.__setattr__`` is the documented escape hatch
+        # for frozen dataclass post-init normalization.
+        if not isinstance(self.unstable_examples, frozenset):
+            object.__setattr__(self, "unstable_examples", frozenset(self.unstable_examples))
         if self.spec_template.pricing is not None:
             # Pricing-by-family is the rot vector this plan eliminates;
             # users register pricing per-slug at runtime instead. Catch
@@ -158,19 +167,39 @@ class ModelFamily:
             )
 
     def matches(self, model_id: str) -> bool:
-        """True iff ``model_id`` matches this family's pattern."""
-        return bool(self.pattern.fullmatch(model_id) or self.pattern.match(model_id))
+        """True iff ``model_id`` matches this family's pattern.
+
+        ``re.match`` anchors at the start of the string; ``fullmatch``
+        adds an end anchor. For prefix-style family patterns
+        (``^reve-edit``, no ``$``) we want ``match`` semantics; for
+        closed-set patterns (``^bria-(?:genfill|eraser)$``) ``match``
+        and ``fullmatch`` are equivalent because the pattern itself
+        carries the ``$``. Using ``match`` exclusively is sufficient and
+        avoids the redundant double-evaluation the previous
+        ``fullmatch or match`` form did on every lookup.
+        """
+        return self.pattern.match(model_id) is not None
 
     def resolve(self, model_id: str) -> ModelSpec:
         """Return a ``ModelSpec`` for ``model_id`` derived from this family.
 
         The returned spec is the family's ``spec_template`` with
-        ``model_id`` substituted. All other fields (param shape, schemas,
-        transformers, ``extras``) are inherited verbatim.
+        ``model_id`` substituted. ``extras`` is shallow-copied so a
+        consumer mutating ``spec.extras`` cannot corrupt the family's
+        ``spec_template`` (which would silently affect every subsequent
+        ``resolve()`` call from the same family).
         """
         from dataclasses import replace
 
-        return replace(self.spec_template, model_id=model_id)
+        # Defensive copy of extras: ModelSpec is frozen, but its extras
+        # field is a Mapping that's typically a plain dict at runtime —
+        # a caller doing ``spec.extras["k"] = v`` mutates the shared
+        # template otherwise.
+        return replace(
+            self.spec_template,
+            model_id=model_id,
+            extras=dict(self.spec_template.extras),
+        )
 
 
 @dataclass(frozen=True, slots=True)

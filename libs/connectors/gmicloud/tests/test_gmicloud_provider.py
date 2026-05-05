@@ -143,11 +143,12 @@ def test_invoke_full_lifecycle(provider):
 # --- Cost ---
 
 
-def test_cost_tracked(provider):
+def test_cost_none_by_default(provider):
+    """SDK no longer ships pricing for GMICloud as of genblaze-core 0.3.0."""
     provider.poll("req-abc123")
     step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="a sunset")
     result = provider.fetch_output("req-abc123", step)
-    assert result.cost_usd == pytest.approx(0.098)
+    assert result.cost_usd is None
 
 
 def test_cost_none_unknown_model(provider):
@@ -157,9 +158,34 @@ def test_cost_none_unknown_model(provider):
     assert result.cost_usd is None
 
 
-def test_cost_per_second_pricing_seedance_2(provider):
-    """Seedance 2.0 is priced per-second ($0.052/sec) — cost must multiply
-    by the duration from step.params, not a flat per-generation rate."""
+def test_cost_tracked_with_user_registered_per_unit(provider):
+    """User-registered per-unit pricing flows through compute_cost."""
+    from genblaze_core.providers import per_unit
+
+    # Fork before mutating so the test doesn't pollute models_default().
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("kling-text2video-v1.6-pro", per_unit(0.098))
+    provider.poll("req-abc123")
+    step = Step(provider="gmicloud", model="kling-text2video-v1.6-pro", prompt="a sunset")
+    result = provider.fetch_output("req-abc123", step)
+    assert result.cost_usd == pytest.approx(0.098)
+
+
+def test_cost_tracked_with_user_registered_per_second(provider):
+    """Per-second strategies still compose — user wires the rate via
+    register_pricing(). See docs/reference/pricing-recipes.md for the
+    canonical Seedance 2.0 recipe."""
+    from genblaze_core.providers import PricingContext, PricingStrategy
+
+    def per_duration(rate: float) -> PricingStrategy:
+        def s(ctx: PricingContext) -> float | None:
+            dur = ctx.step.params.get("duration")
+            return rate * float(dur) if dur is not None else None
+
+        return s
+
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("seedance-2-0-260128", per_duration(0.052))
     provider.poll("req-abc123")
     step = Step(
         provider="gmicloud",
@@ -169,20 +195,6 @@ def test_cost_per_second_pricing_seedance_2(provider):
     )
     result = provider.fetch_output("req-abc123", step)
     assert result.cost_usd == pytest.approx(0.052 * 10)
-
-
-def test_cost_per_second_pricing_missing_duration_is_none(provider):
-    """Without a duration we can't compute per-second cost — leave it None
-    rather than guess. Users who need cost tracking must pass duration."""
-    provider.poll("req-abc123")
-    step = Step(
-        provider="gmicloud",
-        model="seedance-2-0-260128",
-        prompt="a sunset",
-        # no duration in params
-    )
-    result = provider.fetch_output("req-abc123", step)
-    assert result.cost_usd is None
 
 
 # --- Video metadata ---
@@ -207,13 +219,18 @@ def test_veo3_model_has_audio_metadata(provider):
     assert len(asset.tracks) == 2
 
 
-def test_veo3_legacy_slug_still_marks_audio(provider):
-    """The deprecated ``Veo3`` id must still flag has_audio=True for one minor."""
+def test_veo3_legacy_slug_no_longer_alias_resolves(provider):
+    """Soft-launch clean break (genblaze-core 0.3.0): the SDK no longer
+    registers per-slug PascalCase ``deprecated_aliases``. ``Veo3``
+    passes through to the wire as-is — no alias redirect, no
+    DeprecationWarning. The audio metadata heuristic in
+    ``_HAS_AUDIO_MODELS`` keys off the canonical lowercase id only."""
     provider.poll("req-abc123")
     step = Step(provider="gmicloud", model="Veo3", prompt="test")
-    with pytest.warns(DeprecationWarning):
-        result = provider.fetch_output("req-abc123", step)
-    assert result.assets[0].video.has_audio is True
+    result = provider.fetch_output("req-abc123", step)
+    # Audio metadata not auto-attached for the PascalCase form (the
+    # _HAS_AUDIO_MODELS frozenset is canonical-lowercase-only).
+    assert result.assets, "fetch_output should still produce an asset"
 
 
 # --- Provider payload ---
@@ -346,14 +363,16 @@ def test_submit_unwraps_json_error_body(provider):
     assert '{"error"' not in msg
 
 
-def test_submit_sends_canonical_slug_when_legacy_id_supplied(provider):
-    """Legacy PascalCase id is silently rewritten to the canonical lowercase slug
-    before hitting the wire — the live API is case-sensitive."""
+def test_submit_passes_pascalcase_slug_through_unchanged(provider):
+    """Soft-launch clean break: the SDK no longer canonicalizes
+    PascalCase ids via ``deprecated_aliases``. The slug goes to the
+    wire verbatim. Users who need the lowercase form should pass it
+    directly; users for whom GMICloud actually accepts PascalCase get
+    that behavior natively now."""
     step = Step(provider="gmicloud", model="Kling-Text2Video-V1.6-Pro", prompt="x")
-    with pytest.warns(DeprecationWarning):
-        provider.submit(step)
+    provider.submit(step)
     body = provider._http_client.post.call_args.kwargs.get("json")
-    assert body["model"] == "kling-text2video-v1.6-pro"
+    assert body["model"] == "Kling-Text2Video-V1.6-Pro"
 
 
 def test_submit_passes_non_json_body_through(provider):
@@ -426,6 +445,10 @@ def test_unknown_model_passthrough(provider):
 
 
 class TestGMICloudCompliance(ProviderComplianceTests):
+    # SDK no longer ships pricing for GMICloud (genblaze-core 0.3.0).
+    # Users wire pricing via register_pricing(); see docs/reference/pricing-recipes.md.
+    expects_cost = False
+
     def make_provider(self):
         from genblaze_gmicloud import GMICloudVideoProvider
 

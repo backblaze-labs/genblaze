@@ -13,9 +13,12 @@ from typing import Any
 import httpx
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers import (
+    DiscoverySupport,
+    LiveProbeResult,
+)
 from genblaze_core.providers.base import BaseProvider, SubmitResult
 from genblaze_core.providers.model_registry import ModelRegistry
-from genblaze_core.providers.probe import ProbeResult
 from genblaze_core.providers.retry import RetryPolicy, retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
@@ -98,6 +101,12 @@ class GMICloudBase(BaseProvider):
     lifecycle. Subclasses implement ``get_capabilities()``, ``submit()``,
     and ``fetch_output()`` for their specific modality.
 
+    GMICloud has no authoritative ``GET /models`` endpoint, so this base
+    class declares ``DiscoverySupport.PARTIAL``. Slug liveness is
+    confirmed via the empty-payload probe attached to each
+    ``ModelFamily`` — see ``_probe.empty_payload_request_probe`` and
+    ``_invoke_family_probe`` below.
+
     Args:
         api_key: GMICloud API key. Falls back to GMI_API_KEY env var.
             Ignored when ``http_client`` is supplied.
@@ -113,6 +122,15 @@ class GMICloudBase(BaseProvider):
             audio) in multi-modality pipelines. When supplied, the base
             class will never close it — lifecycle is the caller's.
     """
+
+    discovery_support = DiscoverySupport.PARTIAL
+    """GMICloud's request-queue surface has no ``GET /models``. The
+    family-attached empty-payload probe is the authoritative liveness
+    signal — see ``_invoke_family_probe`` below and ``_probe.py``."""
+
+    def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
+        """Forward the family probe with this provider's ``httpx.Client``."""
+        return probe(model_id, http=self._get_http_client())
 
     def __init__(
         self,
@@ -271,45 +289,14 @@ class GMICloudBase(BaseProvider):
                 error_code=ProviderErrorCode.AUTH_FAILURE,
             )
 
-    def probe_model(self, model_id: str) -> ProbeResult:
-        """Live-API liveness probe — distinguishes 404 (dead model) from 400 (bad payload).
-
-        Submits an intentionally-empty payload to ``/requests`` for the given
-        ``model_id``. The upstream's response shape gives us the answer:
-
-        * ``404`` → model unknown to the request queue → ``NOT_FOUND``.
-        * ``400`` → model accepted, payload rejected → ``OK`` (model is live).
-        * ``401`` / ``403`` → credentials rejected → ``AUTH``.
-        * Anything else → ``UNKNOWN`` (network blip, 5xx, rate limit).
-
-        Used by ``tools/probe_models.py`` in CI to gate releases. Polite by
-        default — skipped unless explicitly invoked.
-        """
-        canonical = self._models.resolve_canonical(model_id)
-        try:
-            client = self._get_http_client()
-            resp = client.post("/requests", json={"model": canonical, "payload": {}})
-        except httpx.HTTPError as exc:
-            return ProbeResult.unknown(detail=f"network error: {exc}")
-        if resp.status_code == 404:
-            return ProbeResult.not_found(detail=unwrap_error_body(resp.text))
-        if resp.status_code in (401, 403):
-            return ProbeResult.auth(detail=unwrap_error_body(resp.text))
-        if resp.status_code == 400:
-            return ProbeResult.ok(detail="payload rejected (model accepted)")
-        if 200 <= resp.status_code < 300:
-            # Surprise — empty payload was accepted. Cancel the request so we
-            # don't leave a phantom job in the queue, then report OK. Cancel
-            # is best-effort; either way the model accepted our payload, so
-            # the probe verdict is OK.
-            try:
-                body = resp.json()
-                request_id = body.get("request_id") or body.get("id")
-                if request_id:
-                    client.delete(f"/requests/{request_id}")
-            except (ValueError, httpx.HTTPError):
-                pass
-            return ProbeResult.ok(detail=f"submitted with empty payload (HTTP {resp.status_code})")
-        return ProbeResult.unknown(
-            detail=f"HTTP {resp.status_code}: {unwrap_error_body(resp.text)}"
-        )
+    # ``probe_model()`` is intentionally not overridden here. As of
+    # genblaze-core 0.3.0 the legacy ``probe_model`` adapter on
+    # ``BaseProvider`` delegates to ``validate_model(refresh=True)``
+    # which routes through ``_invoke_family_probe`` →
+    # ``empty_payload_request_probe``. That path handles 404/400/2xx
+    # exactly like the previous override (including the cancel-on-2xx
+    # phantom-job cleanup), shares the in-flight + LRU probe cache, and
+    # produces a single source of truth for slug-validity questions.
+    # Removed: the previous override that duplicated probe logic and
+    # could disagree with ``validate_model`` for the same slug (red-team
+    # finding #11 on PR #5).

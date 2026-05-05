@@ -142,10 +142,146 @@ for slug in H100_MODELS:
 
 ---
 
+## GMICloud
+
+**Source:** `_AUDIO_MODELS`, `_IMAGE_MODELS`, `_VIDEO_MODELS` row-per-slug
+data structures in `genblaze_gmicloud/models/*.py` prior to
+`genblaze-core 0.3.0`. Two pricing strategies were in use: flat
+`per_unit(rate)` for most models, and a per-second `_per_duration_rate(rate)`
+for Seedance 2.0.
+**Snapshot date:** 2026-05-04.
+**Verify at:** [docs.gmicloud.ai](https://docs.gmicloud.ai/).
+
+GMICloud bills per-asset for most models (a fixed rate per generation),
+with one per-second-billed model (`seedance-2-0-260128`). The rates
+below were the SDK defaults at migration time. Pricing on GMI is
+contract-specific — check your account.
+
+```python
+from genblaze_core.providers import (
+    PricingContext,
+    PricingStrategy,
+    per_unit,
+)
+from genblaze_gmicloud import (
+    GMICloudAudioProvider,
+    GMICloudImageProvider,
+    GMICloudVideoProvider,
+)
+
+
+def per_duration(rate: float) -> PricingStrategy:
+    """Per-second strategy reading ``duration`` from step.params."""
+
+    def s(ctx: PricingContext) -> float | None:
+        dur = ctx.step.params.get("duration")
+        if dur is None:
+            return None
+        try:
+            return rate * float(dur) * (ctx.output_count or 1)
+        except (TypeError, ValueError):
+            return None
+
+    return s
+
+
+# --- Audio (USD/asset, as of 2026-05-04) ---
+GMI_AUDIO_RATES = {
+    "ElevenLabs-TTS-v3": 0.10,
+    "MiniMax-TTS-Speech-2.6-Turbo": 0.06,
+    "MiniMax-Voice-Clone-Speech-2.6-HD": 0.10,
+    "Inworld-TTS-1.5-Mini": 0.005,
+    "MiniMax-Music-2.5": 0.15,
+}
+
+audio = GMICloudAudioProvider(api_key="...")
+for slug, rate in GMI_AUDIO_RATES.items():
+    audio.models.register_pricing(slug, per_unit(rate))
+
+
+# --- Image (USD/asset) ---
+GMI_IMAGE_RATES = {
+    "seedream-5.0-lite": 0.035,
+    "gemini-2.5-flash-image": 0.039,
+    "flux-kontext-pro": 0.05,
+    "seededit-3-0-i2i-250628": 0.03,
+    "reve-create-20250915": 0.007,
+    "reve-edit-20250915": 0.007,
+    "reve-edit-fast-20251030": 0.007,
+    "reve-remix-20250915": 0.007,
+    "reve-remix-fast-20251030": 0.007,
+    "bria-fibo-image-blend": 0.02,
+    "bria-fibo-relight": 0.02,
+    "bria-fibo-restore": 0.02,
+    "bria-genfill": 0.02,
+    "bria-eraser": 0.02,
+}
+
+image = GMICloudImageProvider(api_key="...")
+for slug, rate in GMI_IMAGE_RATES.items():
+    image.models.register_pricing(slug, per_unit(rate))
+```
+
+> **⚠ Read this before copy-pasting the video block below.** The 2026-04
+> reconciliation flagged four GMI video slugs as known-unstable: they
+> returned 404 against the live ``/requests`` endpoint at the snapshot
+> date. Those slugs are listed in `GMI_VIDEO_UNSTABLE_RATES` separately
+> from the live rates so you don't accidentally lock in a rate for a
+> slug you'll never successfully invoke. Use
+> `provider.validate_model(slug, refresh=True)` to check liveness
+> before relying on any of them.
+
+```python
+# --- Video — known-live rates (USD/asset, except per-second rows noted) ---
+GMI_VIDEO_FLAT_RATES = {
+    "seedance-1-0-pro-250528": 0.30,
+    "seedance-1-0-pro-fast": 0.022,
+    "veo3": 0.40,
+    "sora-2-pro": 0.50,
+    "kling-image2video-v2.1-master": 0.28,
+    "kling-image2video-v1.6-pro": 0.098,
+    "kling-text2video-v1.6-pro": 0.098,
+    "kling-image2video-v1.5-pro": 0.098,
+    "kling-text2video-v1.5-pro": 0.098,
+    "pixverse-v5.6-t2v": 0.03,
+    "pixverse-v5.6-i2v": 0.03,
+    "pixverse-v5.6-transition": 0.03,
+    "wan2.6-t2v": 0.15,
+    "wan2.6-i2v": 0.15,
+    "wan2.6-r2v": 0.15,
+    "wan2.7-t2v": 0.15,
+    "wan2.7-i2v": 0.15,
+    "luma-ray-2": 0.20,
+}
+
+# --- Video — UNSTABLE: 404 in 2026-04 reconciliation. Verify before use. ---
+# Wrapped in a separate dict so a copy-paste consumer is forced to look
+# at it consciously rather than scrolling past a comment.
+GMI_VIDEO_UNSTABLE_RATES = {
+    "veo3-fast": 0.15,
+    "kling-text2video-v2.1-master": 0.28,
+    "minimax-hailuo-2.3-fast": 0.032,
+    "vidu-q1": 0.10,
+}
+
+video = GMICloudVideoProvider(api_key="...")
+for slug, rate in GMI_VIDEO_FLAT_RATES.items():
+    video.models.register_pricing(slug, per_unit(rate))
+
+# Register unstable rates ONLY after probing each — see warning above.
+# for slug, rate in GMI_VIDEO_UNSTABLE_RATES.items():
+#     if video.validate_model(slug, refresh=True).is_ok:
+#         video.models.register_pricing(slug, per_unit(rate))
+
+# Seedance 2.0 is per-second-billed.
+video.models.register_pricing("seedance-2-0-260128", per_duration(0.052))
+```
+
+---
+
 <!--
   Subsequent connectors append their sections here as they migrate:
     - nvidia (chat / generative)
-    - gmicloud
     - runway
     - decart
     - elevenlabs

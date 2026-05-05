@@ -1,6 +1,16 @@
 """Standalone GMICloud chat wrapper over the OpenAI-compatible inference
 endpoint. Pricing intentionally omitted — fleet shifts faster than a static
 table tracks. Auth: ``GMI_API_KEY`` env var or ``api_key=``.
+
+**Catalog-decoupling status (genblaze-core 0.3.0):** this module is a
+standalone function, not a ``BaseProvider`` subclass, so it is not yet
+integrated with ``DiscoverySupport`` / ``validate_model`` / family probes.
+Users invoking ``chat()`` with a dead slug get a raw ``ProviderError``
+rather than a preflight ``NOT_FOUND`` hint. Tracked as a follow-up to
+PR #5; see ``docs/exec-plans/active/model-registry-decoupling.md``.
+The migration path is to lift ``chat()`` into a ``GMICloudChatProvider``
+class declaring ``DiscoverySupport.NATIVE`` against
+``api.gmi-serving.com/v1/models`` (OpenAI-compatible catalog endpoint).
 """
 
 from __future__ import annotations
