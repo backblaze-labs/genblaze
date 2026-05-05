@@ -65,6 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`^lucy-.*2i$`). Cross-modality isolation guarded by tests so video
     slugs don't leak into the image registry and vice versa. Pricing
     removed; recipe published.
+  - **elevenlabs** — TTS = `DiscoverySupport.NATIVE` via
+    `client.models.get_all()` with a single `^eleven_` family pattern;
+    SFX = `DiscoverySupport.NONE` (single-model surface, models endpoint
+    may not enumerate SFX). TTS retired-slug verdicts surface as
+    `NOT_FOUND` at preflight before any wire calls. Per-1K-char and
+    duration-bucket pricing tables removed; recipes published.
 
 ### Fixed — F-2026-05-04-01 (NVIDIA `nvidia/riva-tts` 404)
 

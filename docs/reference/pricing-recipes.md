@@ -365,10 +365,61 @@ slugs ship.
 
 ---
 
+## ElevenLabs
+
+**Source:** module-level constants `_ELEVENLABS_PER_1K_RATES` (per-1K-character
+rates per TTS model tier) in `genblaze_elevenlabs/provider.py` and
+`_SFX_DURATION_BUCKETS` (duration-keyed flat rates) in
+`genblaze_elevenlabs/sfx.py` prior to `genblaze-core 0.3.0`.
+**Snapshot date:** 2026-05-05.
+**Verify at:** [elevenlabs.io/pricing](https://elevenlabs.io/pricing).
+
+ElevenLabs TTS bills per character of input text, with rates varying by
+model tier (Flash is cheapest; Multilingual / V3 most expensive). SFX
+bills bucketed by duration.
+
+```python
+from genblaze_core.providers import bucketed_by_duration, per_input_chars
+from genblaze_elevenlabs import ElevenLabsSFXProvider, ElevenLabsTTSProvider
+
+# --- TTS (USD per 1K input chars, per model tier) ---
+ELEVENLABS_TTS_RATES_PER_1K: dict[str, float] = {
+    "eleven_v3": 0.30,
+    "eleven_multilingual_v2": 0.30,
+    "eleven_flash_v2_5": 0.08,
+    "eleven_turbo_v2_5": 0.15,
+}
+
+tts = ElevenLabsTTSProvider(api_key="...")
+for slug, rate in ELEVENLABS_TTS_RATES_PER_1K.items():
+    tts.models.register_pricing(slug, per_input_chars(rate, per=1000))
+
+
+# --- SFX (USD bucketed by output duration) ---
+# Buckets: ≤5s = $0.10, ≤15s = $0.20, ≤30s = $0.30.
+ELEVENLABS_SFX_BUCKETS: list[tuple[tuple[float, float], float]] = [
+    ((0.0, 5.0 + 1e-9), 0.10),
+    ((5.0 + 1e-9, 15.0 + 1e-9), 0.20),
+    ((15.0 + 1e-9, 30.0 + 1e-9), 0.30),
+]
+
+sfx = ElevenLabsSFXProvider(api_key="...")
+sfx.models.register_pricing(
+    "eleven_text_to_sound_v2", bucketed_by_duration(ELEVENLABS_SFX_BUCKETS)
+)
+```
+
+Future ElevenLabs TTS variants (`eleven_v4`, etc.) match the
+`elevenlabs-tts` family pattern automatically but won't have rates in
+this recipe — extend `ELEVENLABS_TTS_RATES_PER_1K` and re-register as
+new slugs ship. Probe via `tts.discover_models()` to confirm new slugs
+are live before registering rates against them.
+
+---
+
 <!--
   Subsequent connectors append their sections here as they migrate:
     - nvidia (chat / generative)
-    - elevenlabs
     - openai
     - google
     - luma

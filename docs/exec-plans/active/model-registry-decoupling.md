@@ -504,7 +504,7 @@ Per the audit performed for this plan:
 | `nvidia` (chat) | enumerated | none | `NATIVE` (`integrate.api.nvidia.com/v1/models`) | n/a |
 | `gmicloud` | catalog with `suspected_dead` | per-slug `per_unit` | `PARTIAL` | yes — empty-payload POST |
 | `decart` | ~~`_IMAGE_MODELS`, `_VIDEO_MODELS`~~ → families | ~~`per_unit`, `by_param`~~ → recipe | `NONE` (PR #7) | no |
-| `elevenlabs` | enumerated voices/sfx | `per_input_chars`, `bucketed` | `NATIVE` | n/a |
+| `elevenlabs` | ~~enumerated voices/sfx~~ → families | ~~`per_input_chars`, `bucketed`~~ → recipe | TTS = `NATIVE` (`client.models.get_all()`); SFX = `NONE` (PR #8) | n/a |
 | `google` | enumerated | `per_unit`, custom | `PARTIAL` | yes |
 | `lmnt` | already empty + fallback | `per_input_chars` | `NONE` | no |
 | `luma` | enumerated | `None` | `PARTIAL` | yes |

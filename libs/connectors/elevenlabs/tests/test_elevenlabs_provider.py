@@ -157,8 +157,10 @@ def test_sfx_asset_duration_set(mock_sfx):
     assert result.assets[0].duration == 10.0
 
 
-def test_sfx_cost_tracked_short(mock_sfx):
-    """Short SFX (<=5s) uses short price bucket."""
+def test_sfx_cost_none_by_default(mock_sfx):
+    """As of genblaze-core 0.3.0 the SDK ships zero hardcoded prices.
+    SFX users register pricing via ``register_pricing()``; see
+    ``docs/reference/pricing-recipes.md`` for the canonical recipe."""
     provider, _ = mock_sfx
     step = Step(
         provider="elevenlabs-sfx",
@@ -167,33 +169,34 @@ def test_sfx_cost_tracked_short(mock_sfx):
         params={"duration_seconds": "3"},
     )
     result = provider.generate(step)
-    assert result.cost_usd == 0.10
+    assert result.cost_usd is None
 
 
-def test_sfx_cost_tracked_medium(mock_sfx):
-    """Medium SFX (5-15s) uses medium price bucket."""
+def test_sfx_cost_tracked_with_user_registered_buckets(mock_sfx):
+    """User-registered duration-bucket pricing flows through compute_cost.
+
+    Demonstrates the canonical SFX recipe: ``bucketed_by_duration``
+    keyed on ``[lo, hi)`` ranges that map to per-bucket flat rates."""
+    from genblaze_core.providers import bucketed_by_duration
+
+    buckets = [
+        ((0.0, 5.0 + 1e-9), 0.10),
+        ((5.0 + 1e-9, 15.0 + 1e-9), 0.20),
+        ((15.0 + 1e-9, 30.0 + 1e-9), 0.30),
+    ]
     provider, _ = mock_sfx
-    step = Step(
-        provider="elevenlabs-sfx",
-        model="eleven_text_to_sound_v2",
-        prompt="rain",
-        params={"duration_seconds": "10"},
-    )
-    result = provider.generate(step)
-    assert result.cost_usd == 0.20
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("eleven_text_to_sound_v2", bucketed_by_duration(buckets))
 
-
-def test_sfx_cost_tracked_long(mock_sfx):
-    """Long SFX (15-30s) uses long price bucket."""
-    provider, _ = mock_sfx
-    step = Step(
-        provider="elevenlabs-sfx",
-        model="eleven_text_to_sound_v2",
-        prompt="ambient",
-        params={"duration_seconds": "25"},
-    )
-    result = provider.generate(step)
-    assert result.cost_usd == 0.30
+    for duration_s, expected in (("3", 0.10), ("10", 0.20), ("25", 0.30)):
+        step = Step(
+            provider="elevenlabs-sfx",
+            model="eleven_text_to_sound_v2",
+            prompt="x",
+            params={"duration_seconds": duration_s},
+        )
+        result = provider.generate(step)
+        assert result.cost_usd == expected, f"duration={duration_s}"
 
 
 def test_sfx_api_error_raises(mock_sfx):
@@ -213,6 +216,9 @@ def test_sfx_api_error_raises(mock_sfx):
 
 class TestElevenLabsTTSCompliance(ProviderComplianceTests):
     """Verify ElevenLabsTTSProvider satisfies the genblaze provider contract."""
+
+    # SDK no longer ships pricing as of genblaze-core 0.3.0.
+    expects_cost = False
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):
@@ -237,6 +243,9 @@ class TestElevenLabsTTSCompliance(ProviderComplianceTests):
 
 class TestElevenLabsSFXCompliance(ProviderComplianceTests):
     """Verify ElevenLabsSFXProvider satisfies the genblaze provider contract."""
+
+    # SDK no longer ships pricing as of genblaze-core 0.3.0.
+    expects_cost = False
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):

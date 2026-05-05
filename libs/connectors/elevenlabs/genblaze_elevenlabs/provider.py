@@ -2,18 +2,25 @@
 
 Synchronous API: returns audio bytes directly.
 
-Models, pricing, and parameter handling are driven by the ``ModelRegistry``
-returned from ``create_registry()``. Users can override pricing or register
-new models via::
+**Catalog architecture (genblaze-core 0.3.0):** the SDK ships a
+pattern-keyed ``ModelFamily`` plus ``DiscoverySupport.NATIVE`` discovery
+via ``client.models.get_all()``. The ElevenLabs catalog is small,
+authoritative, and changes on the vendor's release cycle — discovery
+gives users pre-flight ``NOT_FOUND`` for retired model ids without
+shipping a static slug list in the SDK.
 
-    provider = ElevenLabsTTSProvider(models=my_registry)
+**Pricing**: previously hardcoded as per-1K-character rates per model
+tier. As of 0.3.0 the SDK no longer ships pricing — see
+``docs/reference/pricing-recipes.md`` for the canonical recipe.
 
 Docs: https://elevenlabs.io/docs/api-reference/text-to-speech
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,17 +31,22 @@ from genblaze_core.models.asset import Asset, AudioMetadata, WordTiming
 from genblaze_core.models.enums import Modality
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
+    DiscoveryResult,
+    DiscoverySupport,
+    ModelFamily,
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
-    per_input_chars,
 )
+from genblaze_core.providers.discovery import DEFAULT_TTL_SECONDS, _DiscoveryCache
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_elevenlabs._errors import map_elevenlabs_error
+
+logger = logging.getLogger("genblaze.elevenlabs.tts")
 
 _FORMAT_TO_MIME = {
     "mp3_44100_128": "audio/mpeg",
@@ -57,23 +69,28 @@ _FORMAT_TO_EXT = {
     "audio/opus": ".opus",
 }
 
-# Per-1K character pricing by model tier (USD). Baked into ``per_input_chars``
-# strategies on the model specs.
-_ELEVENLABS_PER_1K_RATES: dict[str, float] = {
-    "eleven_v3": 0.30,
-    "eleven_multilingual_v2": 0.30,
-    "eleven_flash_v2_5": 0.08,
-    "eleven_turbo_v2_5": 0.15,
-}
+# The ElevenLabs TTS family covers every ``eleven_*`` model id —
+# eleven_v3, eleven_multilingual_v2, eleven_flash_v2_5,
+# eleven_turbo_v2_5, and any future variant. The wire shape (text input,
+# voice_id parameter, output_format selection) is uniform across tiers,
+# so a single family is sufficient. Discovery via client.models.get_all()
+# upgrades family-matched slugs to OK_AUTHORITATIVE iff present in the
+# live catalog.
+_ELEVENLABS_TTS_FAMILY = ModelFamily(
+    name="elevenlabs-tts",
+    pattern=re.compile(r"^eleven_"),
+    spec_template=ModelSpec(model_id="*", modality=Modality.AUDIO),
+    description="ElevenLabs TTS family — all eleven_* model variants.",
+    example_slugs=(
+        "eleven_v3",
+        "eleven_multilingual_v2",
+        "eleven_flash_v2_5",
+        "eleven_turbo_v2_5",
+    ),
+)
 
 
-def _tts_spec(model_id: str, rate_per_1k: float) -> ModelSpec:
-    """Per-model spec — per-1K-character pricing on ``step.prompt``."""
-    return ModelSpec(
-        model_id=model_id,
-        modality=Modality.AUDIO,
-        pricing=per_input_chars(rate_per_1k, per=1000),
-    )
+_FALLBACK = ModelSpec(model_id="*", modality=Modality.AUDIO)
 
 
 def _parse_elevenlabs_alignment(
@@ -114,21 +131,30 @@ def _parse_elevenlabs_alignment(
 class ElevenLabsTTSProvider(SyncProvider):
     """Provider adapter for ElevenLabs Text-to-Speech.
 
-    Models: ``eleven_v3``, ``eleven_multilingual_v2``, ``eleven_flash_v2_5``,
-    ``eleven_turbo_v2_5``.
+    Models match the ``elevenlabs-tts`` family — any ``^eleven_`` slug.
 
     Args:
         api_key: ElevenLabs API key. Falls back to ELEVENLABS_API_KEY env var.
         output_dir: Directory for output audio files (default system temp).
         models: Optional custom ``ModelRegistry`` — overrides the class default.
+        retry_policy: Optional retry policy override.
+        probe_cache_ttl: Per-instance probe-cache TTL (no-op for NATIVE
+            but accepted for API uniformity with PARTIAL siblings).
+        probe_cache_max_entries: Per-instance probe-cache size cap.
     """
 
     name = "elevenlabs-tts"
+    discovery_support = DiscoverySupport.NATIVE
+    """ElevenLabs exposes ``client.models.get_all()`` as an authoritative
+    catalog endpoint. Discovery cache populated lazily on first
+    ``validate_model`` / ``discover_models`` call; 1-hour TTL by default."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:
-        defaults = {mid: _tts_spec(mid, rate) for mid, rate in _ELEVENLABS_PER_1K_RATES.items()}
-        return ModelRegistry(defaults=defaults)
+        return ModelRegistry(
+            provider_families=(_ELEVENLABS_TTS_FAMILY,),
+            fallback=_FALLBACK,
+        )
 
     def get_capabilities(self) -> ProviderCapabilities:
         """ElevenLabs TTS: audio speech generation from text."""
@@ -146,11 +172,59 @@ class ElevenLabsTTSProvider(SyncProvider):
         *,
         models: ModelRegistry | None = None,
         retry_policy: RetryPolicy | None = None,
+        probe_cache_ttl: float | None = None,
+        probe_cache_max_entries: int | None = None,
     ):
-        super().__init__(models=models, retry_policy=retry_policy)
+        super().__init__(
+            models=models,
+            retry_policy=retry_policy,
+            probe_cache_ttl=probe_cache_ttl,
+            probe_cache_max_entries=probe_cache_max_entries,
+        )
         self._api_key = api_key
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
+        # Wire the discovery cache lazily — fetcher closes over self so it
+        # picks up the lazy-initialized client.
+        self._models._discovery_cache = _DiscoveryCache(
+            self._fetch_models,
+            default_max_age_seconds=DEFAULT_TTL_SECONDS,
+        )
+
+    # --- catalog discovery (DiscoverySupport.NATIVE) ----------------------
+
+    def _fetch_models(self) -> DiscoveryResult:
+        """Fetcher backing ``discover_models`` — calls client.models.get_all().
+
+        ElevenLabs returns a list of Model objects with ``model_id``
+        fields; we collect those into a frozenset.
+        """
+        try:
+            client = self._get_client()
+            models = client.models.get_all()
+            slugs: set[str] = set()
+            for m in models:
+                mid = getattr(m, "model_id", None)
+                if isinstance(mid, str):
+                    slugs.add(mid)
+            return DiscoveryResult.ok(slugs, source_url="https://api.elevenlabs.io/v1/models")
+        except Exception as exc:
+            return DiscoveryResult.failed(
+                f"ElevenLabs models.get_all() failed: {exc}",
+                source_url="https://api.elevenlabs.io/v1/models",
+            )
+
+    def discover_models(
+        self,
+        *,
+        max_age_seconds: float | None = ...,  # type: ignore[assignment]
+    ) -> DiscoveryResult:
+        """Snapshot the ElevenLabs model catalog. Single-flight, TTL-bounded."""
+        cache = self._models._discovery_cache
+        assert cache is not None  # wired in __init__
+        if max_age_seconds is ...:  # type: ignore[comparison-overlap]
+            return cache.get()
+        return cache.get(max_age_seconds=max_age_seconds)
 
     def _get_client(self):
         if self._client is None:

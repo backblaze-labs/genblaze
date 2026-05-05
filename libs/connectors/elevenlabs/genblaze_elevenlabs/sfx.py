@@ -2,11 +2,17 @@
 
 Synchronous API: returns audio bytes directly.
 
-Models, pricing, and parameter handling are driven by the ``ModelRegistry``
-returned from ``create_registry()``. Users can override pricing or register
-new models via::
+**Catalog architecture (genblaze-core 0.3.0):** the SDK ships a
+pattern-keyed ``ModelFamily`` plus ``DiscoverySupport.NONE``. The SFX
+catalog is a single hand-curated model
+(``eleven_text_to_sound_v2``); the TTS sibling provider's
+``client.models.get_all()`` may not enumerate SFX models, so we declare
+NONE rather than risk a misleading classification. Submit-time errors
+are the authoritative liveness signal.
 
-    provider = ElevenLabsSFXProvider(models=my_registry)
+**Pricing**: previously bucketed by duration (≤5s: $0.10, ≤15s: $0.20,
+≤30s: $0.30). As of 0.3.0 the SDK no longer ships pricing — see
+``docs/reference/pricing-recipes.md`` for the canonical recipe.
 
 Docs: https://elevenlabs.io/docs/api-reference/text-to-sound-effects
 """
@@ -14,6 +20,7 @@ Docs: https://elevenlabs.io/docs/api-reference/text-to-sound-effects
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,36 +31,31 @@ from genblaze_core.models.asset import Asset, AudioMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
+    DiscoverySupport,
+    ModelFamily,
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
-    bucketed_by_duration,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_elevenlabs._errors import map_elevenlabs_error
 
-# Duration-bucketed pricing (USD). (min_inclusive, max_exclusive) → price.
-# Legacy buckets: short ≤5s, medium >5s and ≤15s, long >15s up to 30s.
-# Translated to the ``[lo, hi)`` shape the packaged strategy expects while
-# preserving the inclusive upper bounds of the legacy buckets.
-_SFX_DURATION_BUCKETS: list[tuple[tuple[float, float], float]] = [
-    ((0.0, 5.0 + 1e-9), 0.10),  # ≤5s
-    ((5.0 + 1e-9, 15.0 + 1e-9), 0.20),  # >5s and ≤15s
-    ((15.0 + 1e-9, 30.0 + 1e-9), 0.30),  # >15s up to 30s
-]
+# SFX family — currently a single model. Pattern absorbs future
+# variants (eleven_text_to_sound_v3, etc.) without code changes.
+_ELEVENLABS_SFX_FAMILY = ModelFamily(
+    name="elevenlabs-sfx",
+    pattern=re.compile(r"^eleven_text_to_sound"),
+    spec_template=ModelSpec(model_id="*", modality=Modality.AUDIO),
+    description="ElevenLabs sound-effects family.",
+    example_slugs=("eleven_text_to_sound_v2",),
+)
 
 
-def _sfx_spec(model_id: str) -> ModelSpec:
-    """Single-model spec — duration-bucketed pricing."""
-    return ModelSpec(
-        model_id=model_id,
-        modality=Modality.AUDIO,
-        pricing=bucketed_by_duration(_SFX_DURATION_BUCKETS),
-    )
+_FALLBACK = ModelSpec(model_id="*", modality=Modality.AUDIO)
 
 
 class ElevenLabsSFXProvider(SyncProvider):
@@ -71,11 +73,16 @@ class ElevenLabsSFXProvider(SyncProvider):
     """
 
     name = "elevenlabs-sfx"
+    discovery_support = DiscoverySupport.NONE
+    """The TTS sibling provider's ``client.models.get_all()`` may not
+    enumerate SFX models. Single-model catalog is small and stable
+    enough that submit-time errors are sufficient."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:
         return ModelRegistry(
-            defaults={"eleven_text_to_sound_v2": _sfx_spec("eleven_text_to_sound_v2")}
+            provider_families=(_ELEVENLABS_SFX_FAMILY,),
+            fallback=_FALLBACK,
         )
 
     def get_capabilities(self) -> ProviderCapabilities:
@@ -95,8 +102,15 @@ class ElevenLabsSFXProvider(SyncProvider):
         *,
         models: ModelRegistry | None = None,
         retry_policy: RetryPolicy | None = None,
+        probe_cache_ttl: float | None = None,
+        probe_cache_max_entries: int | None = None,
     ):
-        super().__init__(models=models, retry_policy=retry_policy)
+        super().__init__(
+            models=models,
+            retry_policy=retry_policy,
+            probe_cache_ttl=probe_cache_ttl,
+            probe_cache_max_entries=probe_cache_max_entries,
+        )
         self._api_key = api_key
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
