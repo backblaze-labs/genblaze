@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This guide will help you get started.
 ## Development setup
 
 ```bash
-git clone https://github.com/backblaze-labs/genblaze.git
+git clone https://github.com/<your-username>/genblaze.git
 cd genblaze
 make install-dev
 make test          # Verify setup

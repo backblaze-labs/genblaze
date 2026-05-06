@@ -95,8 +95,12 @@ def test_api_error_raises(mock_stability):
         provider.generate(step)
 
 
-def test_cost_tracked_with_duration(mock_stability):
-    """Cost is set based on requested duration."""
+def test_cost_none_by_default(mock_stability):
+    """As of genblaze-core 0.3.0 the SDK no longer ships pricing for
+    Stability Audio. cost_usd is None unless the user has registered
+    pricing via ``provider.models.register_pricing()``. See
+    ``docs/reference/pricing-recipes.md`` for the canonical recipe.
+    """
     provider, _ = mock_stability
     step = Step(
         provider="stability-audio",
@@ -105,20 +109,46 @@ def test_cost_tracked_with_duration(mock_stability):
         params={"duration": "30"},
     )
     result = provider.generate(step)
-    assert result.cost_usd is not None
-    assert result.cost_usd == pytest.approx(30.0 * 0.01)
+    assert result.cost_usd is None
 
 
-def test_cost_none_without_duration(mock_stability):
-    """Cost stays None when no duration param is set."""
+def test_cost_tracked_with_user_registered_per_second(mock_stability):
+    """User-registered per-second strategy with the duration-fallback shape.
+
+    Documents the canonical Stability Audio recipe: prefer the
+    probed asset duration, fall back to ``step.params['duration']``.
+    """
+    from genblaze_core.providers import PricingContext, PricingStrategy
+
+    def per_second_with_param_fallback(rate: float) -> PricingStrategy:
+        def _strategy(ctx: PricingContext) -> float | None:
+            dur = ctx.output_duration_s
+            if dur is None:
+                raw = ctx.step.params.get("duration")
+                try:
+                    dur = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    dur = None
+            if dur is None:
+                return None
+            return dur * rate
+
+        return _strategy
+
     provider, _ = mock_stability
+    # Fork before mutating to avoid polluting the class-level
+    # models_default() cache (would affect sibling tests).
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("stable-audio-2.5", per_second_with_param_fallback(0.01))
+
     step = Step(
         provider="stability-audio",
         model="stable-audio-2.5",
-        prompt="Ambient soundscape",
+        prompt="Upbeat music",
+        params={"duration": "30"},
     )
     result = provider.generate(step)
-    assert result.cost_usd is None
+    assert result.cost_usd == pytest.approx(30.0 * 0.01)
 
 
 def test_audio_type_metadata(mock_stability):

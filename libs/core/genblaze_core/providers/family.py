@@ -18,15 +18,12 @@ design and red-team trail.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
 
 from genblaze_core.providers.pattern_safety import assert_safe
 from genblaze_core.providers.spec import ModelSpec
-
-if TYPE_CHECKING:
-    import httpx
 
 
 class LiveProbeResult(StrEnum):
@@ -42,24 +39,33 @@ class LiveProbeResult(StrEnum):
     """Probe could not determine liveness — auth, network, or transport error."""
 
 
-class FamilyProbe(Protocol):
-    """Cheap upstream liveness check for a family-matched slug.
+FamilyProbe = Callable[..., LiveProbeResult]
+"""Cheap upstream liveness check for a family-matched slug.
 
-    Implementations must be cheap (one round-trip, no token spend) and
-    polite (avoid creating persistent records in the upstream's audit log
-    where possible). The canonical shapes:
+Implementations must be cheap (one round-trip, no token spend) and
+polite (avoid creating persistent records in the upstream's audit log
+where possible). The canonical shapes:
 
-    * **Catalog endpoint** — for providers without a full ``/v1/models``
-      surface but with a single-model probe (HEAD on a model URL, etc.).
-    * **Invalid-payload trick** — POST a deliberately-empty body. ``404``
-      means the model is gone; ``400`` means it exists but the payload is
-      invalid. Used by GMI, NVIDIA generative endpoints, etc.
+* **Catalog endpoint** — for providers without a full ``/v1/models``
+  surface but with a single-model probe (HEAD on a model URL,
+  ``client.models.get(model=slug)``, etc.).
+* **Invalid-payload trick** — POST a deliberately-empty body. ``404``
+  means the model is gone; ``400`` means it exists but the payload is
+  invalid. Used by GMI, NVIDIA generative endpoints, etc.
 
-    The probe receives an ``httpx.Client`` from the calling provider so
-    timeout, retry, and auth are honored consistently.
-    """
+Probes receive their HTTP / SDK transport via keyword arguments
+forwarded by the connector's ``_invoke_family_probe`` hook. Since
+different upstreams expose different transports (``httpx.Client``,
+``google.genai.Client``, vendor SDK objects), the alias intentionally
+leaves the parameter shape open — the connector knows what its probe
+expects. The first positional arg is always the slug; the return is
+always a ``LiveProbeResult``.
 
-    def __call__(self, slug: str, *, http: httpx.Client) -> LiveProbeResult: ...
+Concrete shapes used in this repo:
+
+* ``def empty_payload_genai_probe(slug: str, *, http: httpx.Client) -> LiveProbeResult``
+* ``def google_models_get_probe(slug: str, *, client: genai.Client) -> LiveProbeResult``
+"""
 
 
 class DiscoverySupport(StrEnum):

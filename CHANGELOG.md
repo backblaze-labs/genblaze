@@ -101,6 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     already pricing-None — the recipe documents the canonical
     per-second-by-model strategy for users who want cost
     attribution.
+  - **stability-audio** — single `^stable-audio-` family covers
+    `stable-audio-2.5` and future `stable-audio-N` variants.
+    `DiscoverySupport.NONE`: Stability ships no Python SDK or
+    `/v1/models` endpoint for audio, the upstream catalog is
+    effectively a single line, and submit-time errors plus the
+    family pattern are sufficient. The hardcoded $0.01/sec rate
+    table removed; recipe published preserving the duration-fallback
+    behavior (probe → params).
 
 ### Fixed — F-2026-05-04-01 (NVIDIA `nvidia/riva-tts` 404)
 

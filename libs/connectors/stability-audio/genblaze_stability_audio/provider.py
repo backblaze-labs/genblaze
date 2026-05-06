@@ -2,11 +2,22 @@
 
 Synchronous API: POST multipart form, returns audio bytes directly.
 
-Models, pricing, and parameter handling are driven by the ``ModelRegistry``
-returned from ``create_registry()``. Pricing is per-second on the generated
-audio (USD), reading from ``Asset.duration`` first and falling back to the
-requested ``step.params["duration"]`` when the audio probe yields no value
-(e.g. fake fixtures).
+**Catalog architecture (genblaze-core 0.3.0):** the SDK ships a
+pattern-keyed ``stability-stable-audio`` family (``^stable-audio-``)
+instead of a hardcoded slug list. Future ``stable-audio-N`` variants
+inherit the param shape automatically.
+
+**DiscoverySupport.NONE**: Stability's audio surface has no
+``GET /v1/models`` endpoint, no Python SDK exposing one, and a small
+stable catalog (effectively a single model line). Submit-time errors
+plus the family pattern are sufficient — same call as Decart, Runway,
+and Luma.
+
+**Pricing**: per-second-by-model billing. The SDK no longer ships a
+hardcoded $0.01/sec rate; users register pricing via
+``provider.models.register_pricing(...)``. See
+``docs/reference/pricing-recipes.md`` for the canonical recipe,
+which preserves the duration-fallback behavior (probe → params).
 
 Docs: https://platform.stability.ai/docs/api-reference
 """
@@ -14,6 +25,7 @@ Docs: https://platform.stability.ai/docs/api-reference
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,12 +36,12 @@ from genblaze_core.models.asset import Asset, AudioMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
+    DiscoverySupport,
     EnumSchema,
     FloatSchema,
+    ModelFamily,
     ModelRegistry,
     ModelSpec,
-    PricingContext,
-    PricingStrategy,
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
@@ -48,69 +60,74 @@ _FORMAT_TO_MIME = {
 }
 _OUTPUT_FORMATS = frozenset(_FORMAT_TO_MIME)
 
-# Per-second pricing for generated audio (USD)
-_PRICE_PER_SEC = 0.01
 
-
-def _per_second_with_param_fallback(rate: float) -> PricingStrategy:
-    """Per-second pricing using probed asset duration, falling back to params.
-
-    The standard ``per_output_second`` helper only reads ``Asset.duration``;
-    the connector also wants to bill from the requested duration when the
-    audio probe returns no value (e.g. test fixtures with fake bytes). This
-    bespoke strategy preserves that behavior.
-    """
-
-    def _strategy(ctx: PricingContext) -> float | None:
-        dur = ctx.output_duration_s
-        if dur is None:
-            raw = ctx.step.params.get("duration")
-            try:
-                dur = float(raw) if raw is not None else None
-            except (TypeError, ValueError):
-                dur = None
-        if dur is None:
-            return None
-        return dur * rate
-
-    return _strategy
-
-
-def _stable_audio_spec(model_id: str) -> ModelSpec:
-    """Single-model spec for Stable Audio 2.5."""
-    return ModelSpec(
-        model_id=model_id,
+_STABILITY_STABLE_AUDIO_FAMILY = ModelFamily(
+    name="stability-stable-audio",
+    pattern=re.compile(r"^stable-audio-"),
+    spec_template=ModelSpec(
+        model_id="*",
         modality=Modality.AUDIO,
-        pricing=_per_second_with_param_fallback(_PRICE_PER_SEC),
-        # Duration arrives as either a numeric or a stringy form ("30"); coerce
-        # before the FloatSchema bounds-check runs.
+        # Duration arrives as numeric or stringy ("30"); coerce before
+        # FloatSchema bounds-check runs.
         param_coercers={"duration": float},
         param_schemas={
             "output_format": EnumSchema(values=_OUTPUT_FORMATS),
             "duration": FloatSchema(min=0.5, max=190.0),
         },
-    )
+    ),
+    description=(
+        "Stability AI Stable Audio family — text-to-audio music / SFX "
+        "generation up to ~3 minutes. Covers stable-audio-2.5 and future "
+        "stable-audio-N variants."
+    ),
+    example_slugs=("stable-audio-2.5",),
+)
+
+
+_FALLBACK = ModelSpec(
+    model_id="*",
+    modality=Modality.AUDIO,
+    param_coercers={"duration": float},
+    param_schemas={
+        "output_format": EnumSchema(values=_OUTPUT_FORMATS),
+        "duration": FloatSchema(min=0.5, max=190.0),
+    },
+)
 
 
 class StabilityAudioProvider(SyncProvider):
     """Provider adapter for Stability AI Stable Audio generation.
 
-    Model: ``stable-audio-2.5`` — generates music and sound effects up to 3 min.
+    Models match the ``stability-stable-audio`` family
+    (``^stable-audio-``). Current example: ``stable-audio-2.5`` —
+    music + SFX up to 3 minutes.
 
-    Uses raw HTTP (no SDK) since Stability has no official Python SDK for audio.
+    Uses raw HTTP (no SDK) since Stability has no official Python SDK
+    for audio.
 
     Args:
         api_key: Stability AI API key. Falls back to STABILITY_API_KEY env var.
         http_timeout: HTTP request timeout in seconds (default 120).
         output_dir: Directory for output audio files (default system temp).
         models: Optional custom ``ModelRegistry`` — overrides the class default.
+        retry_policy: Optional retry policy override.
+        probe_cache_ttl: Per-instance probe-cache TTL (no-op for NONE).
+        probe_cache_max_entries: Per-instance probe-cache size cap.
     """
 
     name = "stability-audio"
+    discovery_support = DiscoverySupport.NONE
+    """No /v1/models endpoint; Stability ships no Python SDK exposing
+    one. Family-pattern resolution + small stable catalog +
+    submit-time errors are sufficient — same call as Runway / Decart /
+    Luma."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:
-        return ModelRegistry(defaults={"stable-audio-2.5": _stable_audio_spec("stable-audio-2.5")})
+        return ModelRegistry(
+            provider_families=(_STABILITY_STABLE_AUDIO_FAMILY,),
+            fallback=_FALLBACK,
+        )
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Stability Audio: music and sound effect generation from text."""
@@ -130,8 +147,15 @@ class StabilityAudioProvider(SyncProvider):
         *,
         models: ModelRegistry | None = None,
         retry_policy: RetryPolicy | None = None,
+        probe_cache_ttl: float | None = None,
+        probe_cache_max_entries: int | None = None,
     ):
-        super().__init__(models=models, retry_policy=retry_policy)
+        super().__init__(
+            models=models,
+            retry_policy=retry_policy,
+            probe_cache_ttl=probe_cache_ttl,
+            probe_cache_max_entries=probe_cache_max_entries,
+        )
         self._api_key = api_key
         self._http_timeout = http_timeout
         self._output_dir = Path(output_dir) if output_dir else None

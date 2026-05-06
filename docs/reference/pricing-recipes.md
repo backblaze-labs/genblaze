@@ -633,8 +633,63 @@ rather than at preflight.
 
 ---
 
+## Stability Audio
+
+**Source:** `_PRICE_PER_SEC = 0.01` and the bespoke
+`_per_second_with_param_fallback` strategy in
+`genblaze_stability_audio/provider.py` prior to `genblaze-core 0.3.0`.
+**Snapshot date:** 2026-05-05.
+**Verify at:** [platform.stability.ai/pricing](https://platform.stability.ai/pricing).
+
+Stable Audio bills per-second of generated audio. The connector probes
+the rendered file's actual duration via mutagen; when the probe
+returns `None` (e.g. test fixtures with fake bytes) the strategy falls
+back to the requested `step.params["duration"]`.
+
+```python
+from genblaze_core.providers import PricingContext, PricingStrategy
+from genblaze_stability_audio import StabilityAudioProvider
+
+STABILITY_AUDIO_RATES_PER_SEC: dict[str, float] = {
+    "stable-audio-2.5": 0.01,
+}
+
+
+def per_second_with_param_fallback(rate: float) -> PricingStrategy:
+    """Per-second pricing using probed asset duration, falling back to params.
+
+    Mirrors the previous SDK shipping behavior: the Stability HTTP
+    response carries the audio bytes only, so we probe the file
+    duration after writing it. When the probe returns ``None``, the
+    requested ``duration`` param is the next-best signal.
+    """
+
+    def _strategy(ctx: PricingContext) -> float | None:
+        dur = ctx.output_duration_s
+        if dur is None:
+            raw = ctx.step.params.get("duration")
+            try:
+                dur = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                dur = None
+        if dur is None:
+            return None
+        return dur * rate
+
+    return _strategy
+
+
+stability_audio = StabilityAudioProvider(api_key="...")
+for slug, rate in STABILITY_AUDIO_RATES_PER_SEC.items():
+    stability_audio.models.register_pricing(slug, per_second_with_param_fallback(rate))
+```
+
+Future `stable-audio-N` slugs match the family pattern automatically;
+extend the rate dictionary and re-register as new models ship.
+
+---
+
 <!--
   Subsequent connectors append their sections here as they migrate:
     - nvidia (chat / generative)
-    - stability-audio
 -->
