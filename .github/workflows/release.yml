@@ -8,8 +8,30 @@ permissions:
   id-token: write  # Trusted publishing to PyPI
 
 jobs:
+  # Pre-publish gate: build every wheel, install ``genblaze[all]`` from
+  # the local wheelhouse with ``--no-index``, and import every connector.
+  # Catches incompatible pyproject pins BEFORE we publish to PyPI —
+  # editable installs in ci.yml don't exercise version constraints.
+  release-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: pip install build twine
+      - name: Run release smoke test (build + install + import all)
+        run: make release-smoke
+
   publish-core:
     runs-on: ubuntu-latest
+    # BOTH pre-publish gates must pass — release-smoke (wheel install
+    # works) AND changelog-gate (CHANGELOG cut for the version being
+    # released). Either failure blocks every downstream publish job
+    # via the dependency chain (cli, connectors, meta all need
+    # publish-core).
+    needs: [release-smoke, changelog-gate]
     environment: pypi
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +88,7 @@ jobs:
           - lmnt
           - gmicloud
           - langsmith
+          - nvidia
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -81,3 +104,57 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: libs/connectors/${{ matrix.connector }}/dist/
+
+  publish-meta:
+    # The ``genblaze`` umbrella package must publish AFTER all connectors:
+    # its [project.optional-dependencies] block references connector packages
+    # by version (>=0.3.0,<0.4), and pip resolution requires those targets
+    # to exist on PyPI when the umbrella's own wheel is being installed.
+    # Publishing meta before connectors would leave ``pip install "genblaze[all]"``
+    # in a broken intermediate state until connectors land.
+    runs-on: ubuntu-latest
+    needs: publish-connectors
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: pip install build twine
+      - name: Build genblaze (umbrella)
+        run: cd libs/meta && python -m build
+      - name: Validate wheel metadata
+        run: twine check libs/meta/dist/*
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: libs/meta/dist/
+
+  # CHANGELOG hygiene gate — block release if [Unreleased] still present.
+  # Cheap insurance against accidentally publishing with an uncut changelog.
+  changelog-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure CHANGELOG is cut
+        run: |
+          # Extract lines BETWEEN ``## [Unreleased]`` (exclusive) and the
+          # next ``## [...`` versioned heading (exclusive). A range-style
+          # ``awk '/A/,/B/'`` would collapse to a single line because
+          # ``[Unreleased]`` matches both start and end patterns — use a
+          # flag instead.
+          unreleased_body=$(awk '
+              /^## \[Unreleased\]$/ { flag=1; next }
+              /^## \[/ && flag       { flag=0; exit }
+              flag                   { print }
+          ' CHANGELOG.md)
+          # An entry is ``- `` (bullet) or ``### `` (subsection heading).
+          # Blank lines and prose are allowed in a clean ``[Unreleased]``.
+          if echo "$unreleased_body" | grep -qE "^- |^### "; then
+            echo "::error::CHANGELOG.md [Unreleased] block has entries — must be cut to a versioned heading before release"
+            echo "Offending content:"
+            echo "$unreleased_body"
+            exit 1
+          fi
+          echo "CHANGELOG.md [Unreleased] block is empty — ok"

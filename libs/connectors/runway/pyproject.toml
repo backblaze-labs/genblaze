@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-runway"
-version = "0.2.3"
+version = "0.3.0"
 description = "Runway Gen video provider adapter for genblaze"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "runway", "gen-4", "video"]
 
 dependencies = [
-    "genblaze-core>=0.2.0,<0.3",
+    "genblaze-core>=0.3.0,<0.4",
     "runwayml>=0.6",
 ]
 

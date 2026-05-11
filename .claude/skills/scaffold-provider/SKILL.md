@@ -53,7 +53,7 @@ Create `libs/connectors/{name}/` with the file layout below. Match the **most re
 
 Mirror an existing connector's structure exactly. Required fields:
 
-- `[project]` — `name = "genblaze-{name}"`, version `"0.1.0"`, the standard `authors`, `readme`, `requires-python = ">=3.11"`, `license = "MIT"`, classifiers, and `dependencies = ["genblaze-core>=0.2.0,<0.3", "<sdk>>=<min-version>"]`
+- `[project]` — `name = "genblaze-{name}"`, version `"0.1.0"`, the standard `authors`, `readme`, `requires-python = ">=3.11"`, `license = "MIT"`, classifiers, and `dependencies = ["genblaze-core>=0.3.0,<0.4", "<sdk>>=<min-version>"]`
 - `[project.urls]` — Homepage / Documentation / Repository / Issues (copy from a sibling)
 - `[project.optional-dependencies]` — `dev = ["pytest>=7.0"]`
 - `[project.entry-points."genblaze.providers"]` — `{name} = "genblaze_{name}:{Name}Provider"` (one line per exported provider class)

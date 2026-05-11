@@ -63,6 +63,12 @@ def main() -> None:
     )
 
     # --- Simulate a user upload landing on disk ---
+    # NOTE: ``file://`` Asset URLs are demo-only. Production UGC pipelines
+    # should accept user uploads via HTTP(S) and pass an ``https://``
+    # staging-bucket URL — never construct ``file://`` URLs from
+    # user-controlled paths (LFI risk). ``validate_chain_input_url``
+    # denylists sensitive system paths but is best-effort by default;
+    # see its docstring for the ``file_root_allowlist`` strict mode.
     with tempfile.TemporaryDirectory() as tmp:
         upload_path = write_demo_upload(Path(tmp))
 

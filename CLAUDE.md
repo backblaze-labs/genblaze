@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-05-11 -->
 # Genblaze — Claude Code Config
 
 - Follow [AGENTS.md](AGENTS.md) at all times

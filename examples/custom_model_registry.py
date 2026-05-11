@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Custom Model Registry: three levels of runtime control over pricing & specs.
+"""Custom Model Registry: three levels of runtime control over the SDK.
 
-Demonstrates how to customize a provider's model handling WITHOUT a library
-release — useful when a provider ships a new model faster than genblaze, or
-when you have volume-discount pricing, or when you want strict param validation.
+Demonstrates the three power-user surfaces the 0.3.0 registry exposes:
+adding pricing to a slug the SDK doesn't price, teaching the SDK about
+a vendor model line it doesn't ship, and registering a one-off spec
+with full param validation.
 
-Runs with zero API calls — it only exercises the registry, not any provider
-submit path. No network, no API keys.
+Runs with zero API calls — exercises only the registry, no provider
+submit path. No network, no API keys required.
 
 Three scenarios:
-  1. Fallback — unknown model works out-of-box with cost_usd=None
-  2. Pricing override — add pricing for an existing model (one line)
-  3. Full custom spec — register a brand-new model with schema + allowlist
+  1. Register pricing on a family-matched slug — preserves the family's
+     param contracts (aliases, allowlist, schemas, extras) and layers
+     your pricing strategy on top.
+  2. Register a new family for a vendor model line — teaches the SDK
+     to route a whole pattern of slugs without per-slug registration.
+  3. Register a brand-new model with full ModelSpec — schema validation,
+     allowlist filtering, custom pricing.
 
 Usage:
     pip install genblaze-core genblaze-openai
@@ -20,11 +25,14 @@ Usage:
 
 from __future__ import annotations
 
+import re
+
 from genblaze_core import Modality
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     IntSchema,
+    ModelFamily,
     ModelSpec,
     PricingContext,
     per_unit,
@@ -48,54 +56,108 @@ def _fake_cost(reg, model_id: str, step: Step, n_assets: int = 1) -> float | Non
     return spec.pricing(ctx)
 
 
-def scenario_1_unknown_model() -> None:
-    """Unknown models work — the fallback spec forwards params as-is."""
+def scenario_1_register_pricing_on_family_slug() -> None:
+    """Add pricing to a slug already covered by a connector family.
+
+    As of 0.3.0 the SDK ships zero hardcoded prices — every published
+    slug returns ``cost_usd=None`` until the user registers a pricing
+    strategy. ``register_pricing()`` is family-aware: when the slug
+    is covered by a connector family (here, OpenAI's ``^dall-e-``
+    family), the family's param contracts (aliases, allowlist,
+    constraints, extras) are preserved and pricing is layered on top.
+    """
     print("=" * 70)
-    print("Scenario 1: unknown model (zero registration)")
-    print("=" * 70)
-
-    provider = DalleProvider()  # default registry, no customization
-    reg = provider.models
-
-    # Library has never heard of this model — falls back to permissive spec.
-    spec = reg.get("gpt-image-3-unreleased")
-    print(f"  spec.model_id    = {spec.model_id!r}  # fallback sentinel")
-    print(f"  spec.pricing     = {spec.pricing}    # None → cost_usd stays None")
-    print(f"  reg.has('...')   = {reg.has('gpt-image-3-unreleased')}  # unknown")
-    print("  Result: request would submit fine, cost_usd is None.")
-    print()
-
-
-def scenario_2_override_pricing() -> None:
-    """Override pricing on a known model — one line, no library release."""
-    print("=" * 70)
-    print("Scenario 2: volume-discount pricing on an existing model")
+    print("Scenario 1: register pricing on a family-matched slug")
     print("=" * 70)
 
     reg = DalleProvider.models_default().fork()
-    reg.register_pricing("dall-e-3", per_unit(0.050))  # your negotiated rate
-    provider = DalleProvider(models=reg)
 
+    # Before: no pricing shipped for dall-e-3.
+    before = reg.get("dall-e-3")
+    print(f"  before: dall-e-3 pricing = {before.pricing}    # SDK ships no pricing")
+
+    # Register your rate. The OpenAI dall-e family's param shape
+    # (validation, constraints, extras) is preserved automatically —
+    # register_pricing() clones the family-resolved spec under the hood
+    # so you don't have to redeclare param_aliases or constraints.
+    reg.register_pricing("dall-e-3", per_unit(0.040))
+
+    after = reg.get("dall-e-3")
     step = Step(
         provider="openai-dalle",
         model="dall-e-3",
         prompt="a sunset over Big Sur",
         params={"quality": "standard", "size": "1024x1024"},
     )
+    cost = _fake_cost(reg, "dall-e-3", step, n_assets=1)
+    pricing_label = getattr(after.pricing, "__name__", "registered")
+    print(f"  after:  dall-e-3 pricing = {pricing_label}")
+    print(f"          dall-e-3 cost (1 img) = ${cost:.4f}")
+    print("  Result: pricing applied without touching the family's contracts.")
+    print("  See docs/reference/pricing-recipes.md for canonical per-provider rate sheets.")
+    print()
 
-    # Per-instance fork doesn't leak into other DalleProvider instances
-    other = DalleProvider()  # default registry
-    default_cost = _fake_cost(other.models, "dall-e-3", step, n_assets=1)
-    forked_cost = _fake_cost(provider.models, "dall-e-3", step, n_assets=1)
 
-    print(f"  default dall-e-3 cost (1 img): ${default_cost:.4f}")
-    print(f"  forked  dall-e-3 cost (1 img): ${forked_cost:.4f}  # your rate")
-    print("  Result: library untouched, only this provider instance pays $0.050.")
+def scenario_2_register_family_for_vendor_line() -> None:
+    """Teach the SDK about a vendor model line it doesn't ship.
+
+    When a vendor releases a new model family the connector hasn't been
+    updated for — or a private-preview line, or an internal fork —
+    register a ``ModelFamily`` to route every matching slug through a
+    shared spec. One registration covers every current and future
+    member of the line.
+
+    Demonstrates ``register_family()``, the headline 0.3.0 power-user
+    surface. User families take precedence over connector-shipped
+    families; future provider releases that add an overlapping family
+    won't override your customization.
+    """
+    print("=" * 70)
+    print("Scenario 2: register a new family for a private-preview line")
+    print("=" * 70)
+
+    reg = DalleProvider.models_default().fork()
+
+    reg.register_family(
+        ModelFamily(
+            name="my-private-gpt-image",
+            pattern=re.compile(r"^my-private-gpt-image-"),
+            spec_template=ModelSpec(
+                model_id="*",  # substituted to the actual slug at resolution time
+                modality=Modality.IMAGE,
+                pricing=None,  # set per-slug via register_pricing if needed
+                param_allowlist=frozenset({"prompt", "size", "n"}),
+                param_schemas={"n": IntSchema(min=1, max=4)},
+                extras={"private_preview": True},
+            ),
+            description="Private-preview gpt-image variants from my vendor.",
+            example_slugs=("my-private-gpt-image-2025q4", "my-private-gpt-image-experimental"),
+        )
+    )
+
+    # Every slug matching the pattern resolves through the new family
+    # without per-slug registration.
+    for slug in ("my-private-gpt-image-2025q4", "my-private-gpt-image-experimental"):
+        match = reg.match_family(slug)
+        assert match is not None
+        print(f"  {slug:42s} → family={match.family.name!r}")
+
+    # Param contracts apply uniformly to every matched slug.
+    sample_spec = reg.get("my-private-gpt-image-2025q4")
+    print(f"  shared allowlist : {sorted(sample_spec.param_allowlist)}")
+    print(f"  shared extras    : {sample_spec.extras}")
+    print("  Result: one family declaration covers the whole vendor line.")
     print()
 
 
 def scenario_3_custom_spec() -> None:
-    """Register a brand-new model with validation, pricing, and allowlist."""
+    """Register a brand-new model with validation, pricing, and allowlist.
+
+    For one-off models that don't fit any existing pattern, ``register()``
+    takes a full ``ModelSpec`` with per-slug pricing, schemas, and
+    allowlist. Use when the model is genuinely unique (a one-time research
+    snapshot, a benchmark fixture) rather than part of a vendor line.
+    """
     print("=" * 70)
     print("Scenario 3: register a brand-new model with full ModelSpec")
     print("=" * 70)
@@ -103,7 +165,7 @@ def scenario_3_custom_spec() -> None:
     reg = DalleProvider.models_default().fork()
     reg.register(
         ModelSpec(
-            model_id="gpt-image-3-preview",
+            model_id="my-research-snapshot-v1",
             modality=Modality.IMAGE,
             pricing=per_unit(0.20),
             param_schemas={"n": IntSchema(min=1, max=4)},
@@ -114,31 +176,32 @@ def scenario_3_custom_spec() -> None:
 
     step = Step(
         provider="openai-dalle",
-        model="gpt-image-3-preview",
+        model="my-research-snapshot-v1",
         prompt="a misty forest at dawn",
         params={"n": 2, "unknown_param": "ignored", "size": "also dropped"},
     )
 
     payload = provider.prepare_payload(step)
-    cost = _fake_cost(provider.models, "gpt-image-3-preview", step, n_assets=2)
+    cost = _fake_cost(provider.models, "my-research-snapshot-v1", step, n_assets=2)
 
     print(f"  raw params   : {step.params}")
     print(f"  forwarded    : {payload}")
     print("                 # allowlist dropped 'unknown_param' and 'size'")
     print(f"  cost (n=2)   : ${cost:.4f}  # $0.20 × 2 images")
-    print("  Result: strict validation + pricing on a model library has never seen.")
+    print("  Result: strict validation + pricing on a one-off model.")
     print()
 
 
 def main() -> None:
     print()
-    print("Custom Model Registry — runtime control over pricing & specs")
+    print("Custom Model Registry — three levels of runtime control")
     print()
-    scenario_1_unknown_model()
-    scenario_2_override_pricing()
+    scenario_1_register_pricing_on_family_slug()
+    scenario_2_register_family_for_vendor_line()
     scenario_3_custom_spec()
     print("=" * 70)
-    print("See docs/features/model-registry.md for the full ModelSpec surface.")
+    print("See docs/features/model-registry.md for the full surface.")
+    print("See docs/guides/migrating-to-0.3.md if upgrading from 0.2.x.")
     print("=" * 70)
 
 

@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint fmt typecheck coverage clean ts-types ts-types-check
+.PHONY: install install-dev test lint fmt typecheck coverage clean ts-types ts-types-check release-smoke
 
 install:
 	pip install -e libs/core
@@ -92,3 +92,11 @@ ts-types-check: ts-types
 # loudly here rather than rendering empty on PyPI later.
 pypi-metadata-check:
 	@python tools/check_pypi_metadata.py --strict
+
+# Pre-release wheel install smoke test. Builds every package to a
+# local wheelhouse, then installs ``genblaze[all]`` into a fresh
+# venv from that wheelhouse only (``--no-index``). Catches version-
+# constraint breakage that the editable installs in ``install-dev``
+# bypass. Run this before tagging a release.
+release-smoke:
+	@tools/release_smoke.sh

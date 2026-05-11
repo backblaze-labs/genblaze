@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-11
+
+### Released package versions
+
+- `genblaze-core` 0.2.8 → **0.3.0** (minor — breaking: `ModelRegistry(defaults=...)` removed)
+- `genblaze` (umbrella) 0.3.2 → **0.4.0**
+- `genblaze-decart` 0.2.2 → **0.3.0**
+- `genblaze-elevenlabs` 0.2.2 → **0.3.0**
+- `genblaze-gmicloud` 0.2.6 → **0.3.0**
+- `genblaze-google` 0.2.4 → **0.3.0**
+- `genblaze-lmnt` 0.2.2 → **0.3.0**
+- `genblaze-luma` 0.2.3 → **0.3.0**
+- `genblaze-nvidia` 0.2.1 → **0.3.0**
+- `genblaze-openai` 0.2.4 → **0.3.0**
+- `genblaze-replicate` 0.2.2 → **0.3.0**
+- `genblaze-runway` 0.2.3 → **0.3.0**
+- `genblaze-stability-audio` 0.2.2 → **0.3.0**
+- `genblaze-langsmith` — unchanged (no code edits this release)
+- `genblaze-s3` — unchanged
+- `genblaze-cli` — unchanged
+
 ### Hardening — production readiness (`model-registry-decoupling-hardening`)
 
 Closes the BLOCKER + HIGH-severity findings from the post-rollout deep
