@@ -426,6 +426,7 @@ examples/               # Usage examples
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System layout, data flows, canonical files
 - [docs/features/model-registry.md](docs/features/model-registry.md) — Register models, override pricing, customize parameters
 - [docs/features/](docs/features/) — Feature docs (pipeline, providers, media, policy, sinks, observability, agents)
+- [RELEASING.md](RELEASING.md) — How releases are cut: wave naming, gates, the automated publish pipeline
 
 ## Contributing
 

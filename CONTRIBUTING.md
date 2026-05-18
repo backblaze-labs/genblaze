@@ -55,6 +55,21 @@ update the matching schema in `libs/spec/schemas/manifest/v1/` and run
 3. Docs updated in the same PR as code changes
 4. PR description summarizes what and why
 5. Reference the execution plan if one exists
+6. If your change should ship in a release, add a bullet to the
+   `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) under the
+   appropriate package heading. The release workflow's `changelog-gate`
+   fails any release where `[Unreleased]` still contains entries — so
+   you _will_ remember to write release notes.
+
+## Releases
+
+Maintainer-facing. If you're cutting a release, read
+[RELEASING.md](RELEASING.md) — it documents the wave-naming convention,
+the gates that must pass before any package is built, the order in
+which packages publish (core → cli/connectors → meta umbrella), the
+TestPyPI dry-run path, and how to recover from a partially-failed
+release. The release-smoke gate (`make release-smoke`) is the same
+script the CI workflow runs; run it locally before tagging.
 
 ## Code conventions
 

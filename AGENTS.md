@@ -31,6 +31,8 @@ Orchestration framework for generative media pipelines with manifest-based prove
 - [README.md](README.md) — Product overview, install, quickstart
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System layout, data flows, canonical files
 - [AGENTS.md](AGENTS.md) — This file; agent table of contents
+- [RELEASING.md](RELEASING.md) — Release wave naming, publish pipeline, dry-run path
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Dev setup, PR process, release notes via CHANGELOG
 - [docs/features/](docs/features/) — Feature docs (one per core feature)
 - [docs/app-workflows.md](docs/app-workflows.md) — User journeys
 - [docs/dev-workflows.md](docs/dev-workflows.md) — Engineering workflows

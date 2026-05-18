@@ -10,4 +10,5 @@
 - Always run `make test` before considering work complete
 - Update docs in the same PR as code changes
 - Keep diffs minimal — only change what's needed
-- Adding a new connector: use `/scaffold-provider`. Before tagging a release: use `/release-check`. Auditing docs freshness: `/verify-docs`.
+- Adding a new connector: use `/scaffold-provider`. Before tagging a release: use `/release-check` and read [RELEASING.md](RELEASING.md). Auditing docs freshness: `/verify-docs`.
+- Release flow: tag name follows the CHANGELOG wave header (`v0.3.0`), not any single package's version. Workflow at `.github/workflows/release.yml` triggers on GitHub Release creation; `workflow_dispatch` runs a TestPyPI dry-run.
