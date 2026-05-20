@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-18
+
+### Released package versions
+
+- `genblaze-s3` 0.3.0 → **0.3.1** — patch republish. The 0.3.0 wheel on PyPI was built before the `genblaze-core<0.4` widening and shipped with the stale `<0.3` constraint, which made `pip install "genblaze"` unresolvable after the 0.3.0 wave. Source already had the correct constraint; this bump forces PyPI to take the corrected wheel.
+- All other packages — unchanged.
+
 ## [0.3.0] - 2026-05-11
 
 ### Released package versions
