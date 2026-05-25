@@ -68,8 +68,23 @@ bucket is on B2 — it encodes the B2-specific tuning so you don't have to:
   On first use the backend issues one `HeadBucket` and, if B2 returns a
   redirect, transparently reconfigures itself against the correct regional
   endpoint. Some regions (notably `us-east-005`) reject cross-region
-  requests with **403** instead of a 301 redirect — the backend can't
-  auto-correct those, so the region must be set correctly up front.
+  requests with **403** instead of a 301 redirect — auto-correct can't read
+  a header that isn't sent. **As of `genblaze-s3` 0.3.2**, when this
+  happens the preflight probes the other published B2 regions in parallel
+  and surfaces a concrete region in the error:
+
+  ```
+  StorageError: Bucket 'my-bucket' lives in us-east-005 — pass
+  region='us-east-005' to for_backblaze() (or set $B2_REGION).
+  ```
+
+  If every probed region returns 404, the error reports the bucket as
+  missing instead. If signals are mixed (403/timeout/etc), the message
+  falls through to the generic *"Check bucket name, region, and
+  credentials"* form, now annotated with the endpoint URL that was
+  tried. The probe runs only on B2 endpoints, only on a 403 (the 301
+  path is unchanged), and uses a 3-second per-region timeout with
+  retries disabled — total error-path latency stays bounded.
 - **Lifecycle (opt-in)** — pass `auto_lifecycle=True` to apply
   `AbortIncompleteMultipartUpload` after 7 days and noncurrent-version
   expiry after 30 days. **Default in 0.3.0+ is False** — bucket-wide

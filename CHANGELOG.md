@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `presigned_get` / `presigned_put` remain the safe default; the `_url`
   companions are the explicit raw-string escape hatch.
 
+### Improved
+
+- `genblaze-s3`: `S3StorageBackend.for_backblaze()` preflight now surfaces
+  a specific region in the error message when the bucket lives in a B2
+  region that returns 403 instead of 301 (e.g. `us-east-005`). On a 403
+  from a B2 endpoint, the preflight probes the other published B2 regions
+  in parallel and classifies:
+  - Exactly one other region returns 200 → *"Bucket 'X' lives in
+    `us-east-005` — pass `region='us-east-005'` to `for_backblaze()`."*
+  - Every probed region returns 404 → *"Bucket 'X' does not exist in any
+    known B2 region. Verify the bucket name."*
+  - Mixed signals → today's generic message, now with the endpoint URL
+    we tried.
+
+  Probe clients share credentials with the primary client, carry a 3-second
+  connect+read timeout with retries disabled, and are explicitly closed via
+  `contextlib.closing` so the error path doesn't leak sockets in long-running
+  daemons. Probe path is gated on B2 endpoints (`backblazeb2.com`) — AWS S3
+  and R2 backends are unaffected. Addresses the 2026-05-23 feedback batch
+  item 6.
+
 ## [0.3.1] - 2026-05-18
 
 ### Released package versions

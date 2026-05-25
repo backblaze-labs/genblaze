@@ -64,6 +64,38 @@ _MAX_POOL_CONNECTIONS = 20
 _DEFAULT_CANCEL_MULTIPART_DAYS = 7
 _DEFAULT_NONCURRENT_EXPIRE_DAYS = 30
 
+# B2's published regional endpoints — used only on the 403-from-B2 error path
+# to disambiguate "wrong region" from "missing bucket" / "bad credentials".
+# Some B2 regions return 403 (not 301) when HEAD'd against a bucket that
+# lives elsewhere, which strips the ``x-amz-bucket-region`` redirect signal
+# the 301 path uses. Probing the other regions in parallel gives us a
+# concrete region name to surface in the error message. New B2 regions are
+# rare (~1 every 2-3 years); when one is added, append it here.
+_B2_REGIONS: tuple[str, ...] = (
+    "us-west-002",
+    "us-west-004",
+    "us-east-005",
+    "eu-central-003",
+)
+
+# Aggressive per-probe timeout. The probe runs on the error path only, so
+# a hung region cannot extend the error-path latency past this bound. With
+# parallel probes the wall-clock cost is ~one connect+read timeout total,
+# not N×timeout.
+_PROBE_TIMEOUT_SEC = 3
+
+
+def _b2_endpoint(region: str) -> str:
+    """Synthesize the B2 S3-compatible endpoint for ``region``.
+
+    Centralizing the URL template means a future B2 hostname shift
+    (precedent: the ``s3.`` prefix addition during the S3-compat launch)
+    is a one-line change. Used by ``_reconfigure_for_region`` on the
+    301-redirect auto-correct path and by ``_probe_other_b2_regions``
+    on the 403-error path.
+    """
+    return f"https://s3.{region}.backblazeb2.com"
+
 
 def _data_size(data: bytes | BinaryIO) -> int | None:
     """Best-effort total-size determination for a put payload.
@@ -1327,6 +1359,7 @@ class S3StorageBackend(StorageBackend):
                     .get("x-amz-bucket-region")
                 )
                 code = exc.response.get("Error", {}).get("Code")
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
                 is_redirect = code in {"301", "PermanentRedirect"}
                 if self._is_b2 and is_redirect and actual and actual != self._region:
                     logger.info(
@@ -1338,10 +1371,25 @@ class S3StorageBackend(StorageBackend):
                     self._reconfigure_for_region(actual)
                     self._region_verified = True
                     return
-                err = StorageError(
-                    f"Bucket {self._bucket!r} preflight failed: {exc}. "
-                    "Check bucket name, region, and credentials."
-                )
+                # 403-from-B2 path: some B2 regions hide cross-region bucket
+                # existence behind 403 (no ``x-amz-bucket-region`` header
+                # comes back), so the 301-redirect auto-correct above can't
+                # fire. Probe the other regions in parallel to surface
+                # "bucket lives in us-east-005" rather than the generic
+                # "check credentials" message the user originally hit.
+                #
+                # The probe deliberately runs *inside* ``_region_lock`` so
+                # concurrent preflight callers on the same backend instance
+                # share the probe's network work — one thread pays the ~3s
+                # bounded probe latency, the rest fast-path through the
+                # sticky ``_preflight_error`` cache below. Moving the probe
+                # outside the lock would let N concurrent callers each fire
+                # their own probe (N×4 audit-log entries on the user's B2
+                # account), which is the worse trade-off.
+                if self._is_b2 and status == 403 and not is_redirect:
+                    err = self._build_b2_region_probe_error(exc)
+                else:
+                    err = self._generic_preflight_error(exc)
                 if is_sticky_preflight_error(exc):
                     # Sticky failure (bad creds, missing bucket, sig mismatch):
                     # cache once and re-raise the same helpful message on every
@@ -1374,9 +1422,132 @@ class S3StorageBackend(StorageBackend):
         import boto3
 
         self._region = region
-        self._endpoint_url = f"https://s3.{region}.backblazeb2.com"
+        self._endpoint_url = _b2_endpoint(region)
         self._client = boto3.client("s3", **self._client_kwargs())
         self._transfer_config = self._build_transfer_config()
+
+    def _build_b2_region_probe_error(self, exc: Exception) -> StorageError:
+        """Classify a 403-from-B2 preflight by probing the other B2 regions.
+
+        Outcome matrix (evaluated after all probes complete, not on first
+        response — see ``_probe_other_b2_regions``):
+
+        - **Exactly one other region returns 200** → the bucket lives
+          there. Surface the region name in the error so the user knows
+          which value to pass to ``region=`` / ``$B2_REGION``.
+        - **Every probed region returns 404** → uniform 404 is
+          authoritative: bucket doesn't exist in any known B2 region.
+          Note the user's region returned 403 here (not 404) because B2
+          can hide existence behind 403 for unauthorized callers; uniform
+          404 elsewhere is the strongest signal we have that the bucket
+          truly doesn't exist.
+        - **Mixed 403/5xx/timeout** → fall through to the generic
+          "check name/region/credentials" message, but include the
+          endpoint URL we tried so users can confirm the wire address.
+
+        A single 404 with other 403s does NOT trigger the missing-bucket
+        message — it's mixed. The uniform-404 rule prevents a single
+        probe blip (network or auth glitch on one region) from
+        misclassifying as "missing".
+        """
+        probes = self._probe_other_b2_regions()
+        matches = [region for region, status in probes.items() if status == 200]
+        if len(matches) == 1:
+            region = matches[0]
+            # Match the 301-redirect path's info log so post-incident
+            # correlation works the same way regardless of which auto-discovery
+            # branch found the right region.
+            logger.info(
+                "Bucket %s lives in %s (client was pointed at %s); raising with region hint.",
+                self._bucket,
+                region,
+                self._region,
+            )
+            return StorageError(
+                f"Bucket {self._bucket!r} lives in {region} — pass "
+                f"region={region!r} to for_backblaze() (or set $B2_REGION)."
+            )
+        if probes and all(status == 404 for status in probes.values()):
+            return StorageError(
+                f"Bucket {self._bucket!r} does not exist in any known "
+                f"B2 region. Verify the bucket name."
+            )
+        return self._generic_preflight_error(exc)
+
+    def _generic_preflight_error(self, exc: Exception) -> StorageError:
+        """Build the fall-through preflight error.
+
+        Single source of truth for the "we couldn't pinpoint the cause"
+        message — emitted both from the non-B2/non-403 path in
+        ``_ensure_region_verified`` and from the mixed-signal branch in
+        ``_build_b2_region_probe_error``. Centralizing keeps the two
+        sites from drifting on future wording tweaks.
+        """
+        return StorageError(
+            f"Bucket {self._bucket!r} preflight failed: {exc}. "
+            f"Check bucket name, region, and credentials "
+            f"(tried {self._endpoint_url!r})."
+        )
+
+    def _probe_other_b2_regions(self) -> dict[str, int | None]:
+        """HEAD ``self._bucket`` against every other B2 region in parallel.
+
+        Used only on the 403-from-B2 preflight error path to distinguish
+        "bucket lives elsewhere" from "bucket truly missing" from "bad
+        credentials." Returns a ``{region: http_status}`` mapping; status
+        is the HTTP code for ClientError responses, ``200`` on success,
+        or ``None`` if the probe couldn't reach the endpoint (timeout,
+        DNS failure). Caller classifies the dict per the outcome matrix
+        documented on ``_ensure_region_verified``.
+
+        Each probe spins up a short-lived boto3 client with the same
+        credentials as ``self._client`` plus aggressive timeouts and
+        retries disabled. Clients are explicitly closed via
+        ``contextlib.closing`` so the error path doesn't leak sockets
+        in long-running daemons.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import closing
+
+        import boto3
+
+        # Local imports keep the cold-import cost of this module flat —
+        # botocore.config / concurrent.futures are only paid on the
+        # error path, which is rare.
+        from botocore.config import Config
+
+        other_regions = [r for r in _B2_REGIONS if r != self._region]
+        if not other_regions:
+            return {}
+
+        # Reuse ``_client_kwargs()`` for credentials, then override
+        # endpoint/region for the probe target and replace Config with
+        # aggressive timeouts. The override Config explicitly re-sets
+        # ``user_agent_extra=_USER_AGENT`` so probe traffic still carries
+        # the ``b2ai-genblaze`` attribution (otherwise the Config
+        # replacement would drop it).
+        def _probe_one(region: str) -> int | None:
+            kwargs = self._client_kwargs()
+            kwargs["endpoint_url"] = _b2_endpoint(region)
+            kwargs["region_name"] = region
+            kwargs["config"] = Config(
+                user_agent_extra=_USER_AGENT,
+                connect_timeout=_PROBE_TIMEOUT_SEC,
+                read_timeout=_PROBE_TIMEOUT_SEC,
+                retries={"max_attempts": 1},
+            )
+            try:
+                with closing(boto3.client("s3", **kwargs)) as client:
+                    client.head_bucket(Bucket=self._bucket)
+                    return 200
+            except ClientError as exc:
+                return exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            except Exception:  # noqa: BLE001 — timeouts / DNS / connection errors all collapse to None
+                return None
+
+        with ThreadPoolExecutor(max_workers=len(other_regions)) as pool:
+            results = dict(zip(other_regions, pool.map(_probe_one, other_regions), strict=True))
+        return results
 
     def ensure_lifecycle_defaults(
         self,

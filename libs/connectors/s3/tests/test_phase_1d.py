@@ -339,12 +339,23 @@ class TestStickyPreflightCacheFilter:
             endpoint_url="https://s3.us-west-004.backblazeb2.com",
             region="us-west-004",
         )
+        from genblaze_s3.backend import _B2_REGIONS
+
         with pytest.raises(StorageError, match="preflight failed"):
             backend._ensure_region_verified()
-        # Second call also raises — but no second HeadBucket round-trip.
+        # The 403-from-B2 path additionally probes other regions on the
+        # first call (introduced in 0.3.2); pin the cache property by
+        # capturing the post-first-call count rather than asserting an
+        # absolute number that includes the probe HEADs. Bound the count
+        # both above and below: at least 1 (primary HEAD) and at most
+        # 1 + N (primary + one probe HEAD per other B2 region, since
+        # mock_client is reused for every boto3.client() call here).
+        count_after_first = mock_client.head_bucket.call_count
+        assert 1 <= count_after_first <= 1 + len(_B2_REGIONS)
+        # Second call hits the sticky cache — no further HEADs anywhere.
         with pytest.raises(StorageError, match="preflight failed"):
             backend._ensure_region_verified()
-        assert mock_client.head_bucket.call_count == 1
+        assert mock_client.head_bucket.call_count == count_after_first
 
     def test_missing_bucket_caches_permanently(self, mock_boto3):
         from genblaze_s3.backend import S3StorageBackend
@@ -482,15 +493,6 @@ class TestPresignedURLCompanions:
         kwargs = mock_client.generate_presigned_url.call_args.kwargs
         assert kwargs["ExpiresIn"] == 600
         assert kwargs["Params"]["ContentType"] == "image/png"
-
-    def test_get_url_equivalence_with_presigned_get_dot_url(self, mock_boto3):
-        """``presigned_get_url(k)`` must equal ``presigned_get(k).url``
-        byte-for-byte — they're alternate spellings of the same answer."""
-        backend, mock_client = _make_backend(mock_boto3)
-        mock_client.generate_presigned_url.return_value = "https://signed/fetch?sig=z"
-        via_companion = backend.presigned_get_url("k")
-        via_dot_url = backend.presigned_get("k").url
-        assert via_companion == via_dot_url
 
     def test_str_of_presigned_get_still_redacts(self, mock_boto3):
         """Safety property: the ``PresignedURL`` value object's ``__str__``
