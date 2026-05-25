@@ -41,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and R2 backends are unaffected. Addresses the 2026-05-23 feedback batch
   item 6.
 
+### Internal
+
+- **Catalog-drift CI hook**: new `.github/workflows/probe-catalog.yml`
+  runs the existing `tools/probe_models.py` (provider-agnostic) +
+  `tools/probe_gmicloud_wire.py` (GMI wire-conformance) weekly (Monday
+  06:00 UTC) and on-demand via `workflow_dispatch`. Pre-listed env vars
+  for all 21 provider entry points → adding probe coverage for a new
+  provider is a 2-line YAML change plus one GH secret. Providers without
+  configured secrets skip silently; the wire probe is gated on
+  `GMI_API_KEY_STAGING` being set. On `NOT_FOUND`, dedupes against any
+  open `[catalog-drift]`-titled issue (one global issue across all
+  providers — the attached JSON pinpoints which slug drifted). Reports
+  uploaded as artifacts (90-day retention); does not gate PR CI.
+  See [docs/dev-workflows.md §Catalog drift detection](docs/dev-workflows.md#catalog-drift-detection).
+
 ### Fixed
 
 - **Repo dev install**: stripped the stub `[project]` block from the root

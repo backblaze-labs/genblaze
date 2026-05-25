@@ -1,0 +1,191 @@
+# Weekly catalog-drift probe across every registered genblaze provider.
+#
+# Runs the two probe tools that live in ``tools/``:
+#
+#   * tools/probe_models.py        — provider-agnostic; walks every
+#                                    entry-point-registered provider's
+#                                    example_slugs. Exits 1 on NOT_FOUND.
+#   * tools/probe_gmicloud_wire.py — GMICloud-specific wire-conformance
+#                                    probe (slug casing + image wire-keys +
+#                                    PixVerse coercer). Skipped if no GMI
+#                                    staging credential is configured.
+#
+# **Scaling model.** Adding a new provider's probe coverage is two lines:
+# add the ``GENBLAZE_PROBE_<NAME>_API_KEY`` mapping below, and configure
+# the corresponding GH secret in repo Settings. The ``probe_models.py``
+# tool silently skips providers whose env var resolves to empty (because
+# the secret isn't set), so all 21 mappings can be pre-listed here and
+# activate organically as credentials come online.
+#
+# **Issue dedup.** On NOT_FOUND, the workflow searches for any open
+# ``[catalog-drift]``-titled issue and comments on it; only creates a new
+# issue if none exists. Avoids one-issue-per-week spam during sustained
+# upstream drift. One global issue across all providers — the attached
+# JSON report lists which specific slug(s) drifted.
+#
+# Does NOT gate PR CI. Provider catalogs rotate faster than the SDK ships;
+# drift surfaces as an issue, not a blocker.
+#
+# Audit-log cost: roughly one upstream request per registered slug + ~25
+# matrix submissions for the GMI wire probe. Configured-provider count ×
+# weekly cadence stays well under any provider's reasonable rate limit.
+#
+# See docs/dev-workflows.md §"Catalog drift detection" for triage steps.
+
+name: Catalog drift probe
+
+on:
+  schedule:
+    # Monday 06:00 UTC — early in the workweek so a maintainer can triage
+    # results during business hours before the next release wave.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  # One probe in flight at a time. A manual dispatch during a scheduled
+  # run cancels the scheduled one — the manual has more recent intent.
+  group: probe-catalog
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    # Safety cap — prevents a hung upstream from running up unbounded
+    # CI minutes. Normal completion is well under this; the cap is the
+    # ceiling, not the expected duration.
+    timeout-minutes: 20
+    env:
+      # ``probe_models.py`` resolves each provider's credential via
+      # ``GENBLAZE_PROBE_<UPPER>_API_KEY`` (entry-point name uppercased,
+      # ``-`` → ``_``). Providers whose secret isn't configured resolve
+      # to empty here and are silently skipped by the probe.
+      #
+      # Multiple entry points sharing one upstream account (e.g. all
+      # gmicloud-* providers, all openai-* providers) reuse the same
+      # secret to keep the secrets-management surface small.
+      GENBLAZE_PROBE_GMICLOUD_API_KEY: ${{ secrets.GMI_API_KEY_STAGING }}
+      GENBLAZE_PROBE_GMICLOUD_IMAGE_API_KEY: ${{ secrets.GMI_API_KEY_STAGING }}
+      GENBLAZE_PROBE_GMICLOUD_AUDIO_API_KEY: ${{ secrets.GMI_API_KEY_STAGING }}
+      GENBLAZE_PROBE_OPENAI_SORA_API_KEY: ${{ secrets.OPENAI_API_KEY_STAGING }}
+      GENBLAZE_PROBE_OPENAI_DALLE_API_KEY: ${{ secrets.OPENAI_API_KEY_STAGING }}
+      GENBLAZE_PROBE_OPENAI_TTS_API_KEY: ${{ secrets.OPENAI_API_KEY_STAGING }}
+      GENBLAZE_PROBE_GOOGLE_VEO_API_KEY: ${{ secrets.GOOGLE_API_KEY_STAGING }}
+      GENBLAZE_PROBE_GOOGLE_IMAGEN_API_KEY: ${{ secrets.GOOGLE_API_KEY_STAGING }}
+      GENBLAZE_PROBE_NVIDIA_VIDEO_API_KEY: ${{ secrets.NVIDIA_API_KEY_STAGING }}
+      GENBLAZE_PROBE_NVIDIA_IMAGE_API_KEY: ${{ secrets.NVIDIA_API_KEY_STAGING }}
+      GENBLAZE_PROBE_NVIDIA_AUDIO_API_KEY: ${{ secrets.NVIDIA_API_KEY_STAGING }}
+      GENBLAZE_PROBE_NVIDIA_CHAT_API_KEY: ${{ secrets.NVIDIA_API_KEY_STAGING }}
+      GENBLAZE_PROBE_DECART_API_KEY: ${{ secrets.DECART_API_KEY_STAGING }}
+      GENBLAZE_PROBE_DECART_IMAGE_API_KEY: ${{ secrets.DECART_API_KEY_STAGING }}
+      GENBLAZE_PROBE_ELEVENLABS_TTS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY_STAGING }}
+      GENBLAZE_PROBE_ELEVENLABS_SFX_API_KEY: ${{ secrets.ELEVENLABS_API_KEY_STAGING }}
+      GENBLAZE_PROBE_REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY_STAGING }}
+      GENBLAZE_PROBE_RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY_STAGING }}
+      GENBLAZE_PROBE_LUMA_API_KEY: ${{ secrets.LUMA_API_KEY_STAGING }}
+      GENBLAZE_PROBE_LMNT_API_KEY: ${{ secrets.LMNT_API_KEY_STAGING }}
+      GENBLAZE_PROBE_STABILITY_AUDIO_API_KEY: ${{ secrets.STABILITY_AUDIO_API_KEY_STAGING }}
+      # ``probe_gmicloud_wire.py`` uses GMI_API_KEY directly (it predates
+      # the GENBLAZE_PROBE_* convention). Step is gated on this var being
+      # non-empty so the workflow tolerates missing GMI staging creds.
+      GMI_API_KEY: ${{ secrets.GMI_API_KEY_STAGING }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: "**/pyproject.toml"
+
+      - name: Install all provider connectors (tolerant)
+        # One broken connector must not block probes for the others.
+        # Each install is attempted independently; failures are surfaced
+        # as a workflow warning but do not abort. ``probe_models.py``
+        # subsequently runs against whatever IS installed and silently
+        # skips providers whose package is missing (entry-point lookup
+        # only finds installed packages).
+        run: |
+          set +e
+          failed=""
+          pip install -e libs/core || failed+=" core"
+          for pkg in libs/connectors/*/; do
+            name=$(basename "$pkg")
+            pip install -e "$pkg" || failed+=" $name"
+          done
+          if [ -n "$failed" ]; then
+            echo "::warning::Failed to install:$failed — their providers will be skipped by probe_models.py"
+          fi
+          # Restore strict mode so any future additions to this step
+          # surface their failures instead of being silently swallowed.
+          set -e
+          exit 0
+
+      - name: Probe registered providers
+        # Providers without their ``GENBLAZE_PROBE_<NAME>_API_KEY`` secret
+        # configured resolve to an empty env var here and are silently
+        # skipped — they neither fail the run nor open an issue. Only
+        # providers with credentials AND a real ``not_found`` result
+        # trigger the failure path below.
+        id: probe_models
+        continue-on-error: true
+        run: python tools/probe_models.py
+
+      - name: Probe GMICloud wire conformance
+        # Step-level gate: skip cleanly when no GMI staging credential
+        # is configured. Other providers' probes are unaffected.
+        id: probe_wire
+        if: env.GMI_API_KEY != ''
+        continue-on-error: true
+        run: python tools/probe_gmicloud_wire.py
+
+      - name: Upload probe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-reports
+          # Narrow to just the files the probe tools write. Avoids
+          # uploading unrelated checked-in docs (model-matrix.md,
+          # pricing-recipes.md) on every run.
+          path: |
+            docs/reference/model-probe-status.json
+            docs/reference/gmicloud-wire-probe-*.json
+            docs/reference/gmicloud-wire-probe-*.md
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Open or update catalog-drift issue
+        # Fires on any probe failure. Single global issue across all
+        # providers — the attached JSON pinpoints which slug(s) drifted.
+        if: steps.probe_models.outcome == 'failure' || steps.probe_wire.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="[catalog-drift] Model probe NOT_FOUND"
+          BODY=$(cat <<EOF
+          The scheduled catalog probe detected drift on $(date -u +%Y-%m-%d).
+
+          - tools/probe_models.py outcome: ${{ steps.probe_models.outcome }}
+          - tools/probe_gmicloud_wire.py outcome: ${{ steps.probe_wire.outcome }}
+
+          Per-slug results in the workflow artifacts: $RUN_URL
+
+          Triage: see [docs/dev-workflows.md §Catalog drift detection](../blob/main/docs/dev-workflows.md#catalog-drift-detection).
+          EOF
+          )
+          # Exact-phrase match via embedded quotes so the search doesn't
+          # AND across tokens and risk matching unrelated titles.
+          EXISTING=$(gh issue list --search "\"$TITLE\" in:title is:open" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Commenting on existing issue #$EXISTING"
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            echo "Creating new catalog-drift issue"
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
