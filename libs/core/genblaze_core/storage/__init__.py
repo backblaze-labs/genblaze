@@ -8,6 +8,7 @@ from genblaze_core.storage.base import (
 )
 from genblaze_core.storage.sink import ObjectStorageSink
 from genblaze_core.storage.transfer import AssetTransfer
+from genblaze_core.storage.url_policy import URLPolicy, URLPolicyError
 
 __all__ = [
     "AssetTransfer",
@@ -16,4 +17,6 @@ __all__ = [
     "ObjectLockMode",
     "ObjectStorageSink",
     "StorageBackend",
+    "URLPolicy",
+    "URLPolicyError",
 ]

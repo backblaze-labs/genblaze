@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "s3", "backblaze", "b2", "storage", "object-storage"]
 
 dependencies = [
-    "genblaze-core>=0.1.0,<0.4",
+    "genblaze-core>=0.3.1,<0.4",
     "boto3>=1.28",
 ]
 

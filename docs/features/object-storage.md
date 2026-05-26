@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-29 -->
+<!-- last_verified: 2026-05-25 -->
 # Object Storage
 
 Upload run assets and manifests to any S3-compatible bucket. **Backblaze B2 is
@@ -295,6 +295,52 @@ intermediate handling so any accidental logging stays redacted; use the
 > **`presigned_post` is intentionally deferred.** S3 POST policies return a
 > `{"url", "fields"}` shape that doesn't fit `PresignedURL`. Tracked for a
 > later phase that ships a separate `PresignedPost` value object.
+
+### Sink-level `asset_url_policy`
+
+Added in `genblaze-core` 0.3.1. `ObjectStorageSink` takes an optional
+`asset_url_policy: URLPolicy` kwarg that selects what URL flavor lands in
+`asset.url` after a transfer:
+
+```python
+from genblaze_core import ObjectStorageSink, URLPolicy
+from genblaze_s3 import S3StorageBackend
+
+# Default — preserves today's behavior (durable URL from get_durable_url).
+sink = ObjectStorageSink(backend)                              # URLPolicy.AUTO
+
+# Strict: refuse to construct unless backend.public_url_base is set.
+sink = ObjectStorageSink(backend, asset_url_policy=URLPolicy.PUBLIC)
+```
+
+Three states:
+
+- **`URLPolicy.AUTO`** (default) — writes `backend.get_durable_url(key)` into
+  `asset.url`. When the backend has a `public_url_base` attribute and it's
+  unset, the sink emits a **one-time WARN per process per `(bucket, policy)`
+  tuple**: *"backend has no public_url_base configured for bucket 'X'.
+  asset.url will be the durable endpoint URL — browsers may 403 on private
+  buckets. Configure backend.public_url_base, or read assets via
+  backend.presigned_get_url(key) at fetch time."* The WARN doesn't change
+  behavior — it just flags the likely-private-bucket case so callers know
+  why their browser-fetched URLs 403.
+- **`URLPolicy.PUBLIC`** — same write path as AUTO (durable URL), but
+  raises `URLPolicyError` at sink construction if the backend has no
+  `public_url_base`. Use this when your code path requires a
+  browser-loadable URL and you want the SDK to fail loudly on
+  misconfiguration.
+- **`URLPolicy.PRESIGNED`** — **rejected at sink construction**. Manifests
+  must not carry SigV4 URLs (they decay before the manifest does, breaking
+  provenance). The error message points callers at
+  `backend.presigned_get_url(key)` for read-time presigning instead.
+
+Backends that don't expose a `public_url_base` attribute at all (future
+non-S3-shaped backends) skip the WARN cleanly — the sink uses a
+sentinel-based `getattr` lookup that distinguishes "attribute absent"
+(non-S3 backend → silent) from "attribute present but falsy"
+(S3-like backend with `None` or `""` → WARN). PUBLIC and AUTO apply the
+same truthiness check, so an empty-string misconfiguration triggers
+the same branch as `None`.
 
 ## Server-side encryption (SSE)
 

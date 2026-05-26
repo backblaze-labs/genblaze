@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `genblaze-core`: `ObjectStorageSink(asset_url_policy=URLPolicy.AUTO | PUBLIC | PRESIGNED)`
+  kwarg selects what flavor of URL gets written into `asset.url` on
+  transfer. Default `AUTO` preserves today's durable-URL behavior; `PUBLIC`
+  enforces that `backend.public_url_base` is configured (raises
+  `URLPolicyError` at construction if not); `PRESIGNED` is **rejected
+  at sink construction** — manifests must not carry SigV4 URLs (they
+  decay before the manifest does, breaking provenance). For read-time
+  presigned URLs use `backend.presigned_get_url(key)` directly.
+  `AUTO` + missing `public_url_base` emits a one-time WARN per process
+  per `(bucket, policy)` tuple pointing the caller at `public_url_base`
+  or `presigned_get_url`. Backend-agnostic: backends that don't expose
+  `public_url_base` skip the WARN cleanly. Addresses the 2026-05-23
+  feedback batch item 5.
+
 - `genblaze-s3`: `S3StorageBackend.presigned_get_url(key, ...)` and
   `presigned_put_url(key, ...)` — raw-`str` companions to `presigned_get` /
   `presigned_put`. Use at the boundary where the URL leaves the process
@@ -19,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hit the redacted `__str__` and 403'd on a SigV4 mismatch. The wrapped
   `presigned_get` / `presigned_put` remain the safe default; the `_url`
   companions are the explicit raw-string escape hatch.
+
+### Changed
+
+- `genblaze-core` 0.3.0 → **0.3.1**: relocated `URLPolicy` /
+  `URLPolicyError` from `genblaze_s3.url_policy` to
+  `genblaze_core.storage.url_policy`. Required so `ObjectStorageSink`
+  (which lives in core) can reference the enum without inverting the
+  `genblaze-s3 → genblaze-core` dependency direction. Back-compat
+  preserved: `from genblaze_s3.url_policy import URLPolicy` still
+  resolves (the s3 module is now a thin re-export). New convenience:
+  `from genblaze_core import URLPolicy`. `genblaze-s3`'s minimum
+  `genblaze-core` pin tightens to `>=0.3.1,<0.4`.
 
 ### Improved
 

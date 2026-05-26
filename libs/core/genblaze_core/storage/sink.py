@@ -19,6 +19,7 @@ from genblaze_core.sinks.base import BaseSink
 from genblaze_core.storage.base import KeyStrategy
 from genblaze_core.storage.key_builder import KeyBuilder
 from genblaze_core.storage.transfer import AssetTransfer
+from genblaze_core.storage.url_policy import URLPolicy, URLPolicyError
 
 if TYPE_CHECKING:
     from genblaze_core.models.run import Run
@@ -31,6 +32,51 @@ logger = logging.getLogger("genblaze.storage.sink")
 # Max parallel asset uploads within a single write_run call
 _DEFAULT_UPLOAD_WORKERS = 4
 
+# Module-level guard for the "no public_url_base on the backend" warning.
+# Keyed by (bucket, policy) so:
+#   - The same bucket constructed twice (multi-tenant fork pattern) warns once.
+#   - Two different buckets each warn once.
+#   - A bucket reconfigured between policies warns once per policy.
+# Test isolation: tests that exercise this path should clear the set via an
+# autouse fixture so ordering doesn't leak state.
+_warned_durable_url: set[tuple[str, URLPolicy]] = set()
+_warned_durable_url_lock = threading.Lock()
+
+# Sentinel for ``_validate_asset_url_policy``'s single-lookup pattern: lets
+# us distinguish "backend doesn't declare ``public_url_base`` at all"
+# (non-S3-shaped backend → skip the WARN) from "attribute present but
+# None/empty" (S3-like backend with no CDN → WARN). Using a private
+# sentinel object instead of ``None`` keeps the three cases unambiguous.
+_PUBLIC_URL_BASE_MISSING = object()
+
+
+def _warn_durable_url_on_private_bucket(bucket: str, policy: URLPolicy) -> None:
+    """Emit a one-time WARN about durable-URL behavior on a private bucket.
+
+    Fired from ``ObjectStorageSink.__init__`` when the backend's
+    ``public_url_base`` is unset under ``URLPolicy.AUTO``. Module-level
+    dedup so a process running many sinks against the same bucket only
+    sees one warning.
+    """
+    key = (bucket, policy)
+    # Double-checked locking: the unlocked read is fast and correct for
+    # the steady-state "already warned" case; the lock guards check-then-add
+    # against a TOCTOU race that could otherwise double-emit under
+    # high-concurrency sink construction.
+    if key in _warned_durable_url:
+        return
+    with _warned_durable_url_lock:
+        if key in _warned_durable_url:
+            return
+        _warned_durable_url.add(key)
+    logger.warning(
+        "ObjectStorageSink: backend has no public_url_base configured for "
+        "bucket %r. asset.url will be the durable endpoint URL — browsers "
+        "may 403 on private buckets. Configure backend.public_url_base, or "
+        "read assets via backend.presigned_get_url(key) at fetch time.",
+        bucket,
+    )
+
 
 class ObjectStorageSink(BaseSink):
     """Upload run assets and manifests to an object storage backend.
@@ -38,6 +84,81 @@ class ObjectStorageSink(BaseSink):
     Optionally delegates to a ParquetSink for structured data, and can
     upload the resulting Parquet files to storage as well.
     """
+
+    @staticmethod
+    def _validate_asset_url_policy(backend: StorageBackend, policy: URLPolicy) -> None:
+        """Validate ``asset_url_policy`` against the backend's configuration.
+
+        Three cases:
+
+        * ``PRESIGNED`` — rejected outright. Writing SigV4 URLs into
+          ``asset.url`` would embed expiring credentials in manifests,
+          breaking provenance (the URL decays before the manifest does).
+          Caller is pointed at ``backend.presigned_get_url(key)`` for
+          per-asset read-time presigning.
+        * ``PUBLIC`` — requires ``backend.public_url_base`` to be set.
+          Otherwise raises so misconfiguration fails loudly at construction
+          rather than silently producing 403-on-fetch URLs.
+        * ``AUTO`` — preserves today's durable-URL behavior. If the
+          backend has no ``public_url_base``, emits a one-time WARN to
+          alert the caller (private buckets need ``public_url_base`` or
+          read-time presigning). Backends without a ``public_url_base``
+          attribute at all (non-S3-shaped backends) skip the WARN.
+        """
+        if policy is URLPolicy.PRESIGNED:
+            raise URLPolicyError(
+                "asset_url_policy=URLPolicy.PRESIGNED is not supported on "
+                "ObjectStorageSink. For read-time presigned URLs, call "
+                "backend.presigned_get_url(key) directly when handing the "
+                "URL to an HTTP client. (Reason: manifests outlive presigned "
+                "SigV4 URLs, so persisting them breaks provenance.)"
+            )
+        # Single attribute lookup with a sentinel so the "attribute missing"
+        # branch (non-S3-shaped backends) is distinguishable from the
+        # "attribute present but empty or None" branch (S3-like backends
+        # without a CDN configured). Treat the empty string the same as
+        # None — both indicate "not configured" — so PUBLIC raises and AUTO
+        # warns consistently for either misconfiguration.
+        public_url_base = getattr(backend, "public_url_base", _PUBLIC_URL_BASE_MISSING)
+        if policy is URLPolicy.PUBLIC:
+            if public_url_base is _PUBLIC_URL_BASE_MISSING:
+                # Backend doesn't expose ``public_url_base`` at all — most
+                # non-S3-shaped backends. PUBLIC mode is meaningless here;
+                # fail loudly rather than silently constructing a sink that
+                # would produce durable-only URLs under a policy that
+                # promised public ones.
+                raise URLPolicyError(
+                    "asset_url_policy=URLPolicy.PUBLIC requires a backend "
+                    "that exposes a public_url_base attribute. This backend "
+                    f"({type(backend).__name__}) does not. Use "
+                    "asset_url_policy=URLPolicy.AUTO instead, or pass an "
+                    "S3-compatible backend with public_url_base configured."
+                )
+            if not public_url_base:
+                raise URLPolicyError(
+                    "asset_url_policy=URLPolicy.PUBLIC requires "
+                    "backend.public_url_base to be set (got "
+                    f"{public_url_base!r}). Pass "
+                    "asset_url_policy=URLPolicy.AUTO to fall back to the "
+                    "durable endpoint URL, or configure public_url_base on "
+                    "the backend (e.g. via S3StorageBackend.for_backblaze("
+                    "public_url_base=...))."
+                )
+        if (
+            policy is URLPolicy.AUTO
+            and public_url_base is not _PUBLIC_URL_BASE_MISSING
+            and not public_url_base
+        ):
+            # The backend declares a ``public_url_base`` attribute but it's
+            # unset (None) or empty (""). Both indicate "user picked an
+            # S3-like backend, didn't wire a CDN/public-URL base, and is
+            # about to ship durable-only URLs that may 403 in browsers."
+            bucket = (
+                getattr(backend, "_bucket", None)
+                or getattr(backend, "bucket", None)
+                or "<unknown>"
+            )
+            _warn_durable_url_on_private_bucket(bucket, policy)
 
     def __init__(
         self,
@@ -50,6 +171,7 @@ class ObjectStorageSink(BaseSink):
         manifest_lock: ObjectLockConfig | None = None,
         pipelined_transfer: bool = False,
         eager_transfer: bool = False,
+        asset_url_policy: URLPolicy = URLPolicy.AUTO,
     ):
         """Construct an ObjectStorageSink.
 
@@ -73,7 +195,26 @@ class ObjectStorageSink(BaseSink):
             pipelined_transfer: Pipelined CAS transfer (temp → copy → rename).
             eager_transfer: Start asset uploads from ``on_step_complete``
                 instead of waiting for ``write_run``.
+            asset_url_policy: Selects what flavor of URL gets written into
+                ``asset.url`` on transfer. Default :class:`URLPolicy.AUTO`
+                preserves today's behavior (durable, credential-free URL
+                from ``backend.get_durable_url``). :class:`URLPolicy.PUBLIC`
+                enforces that ``backend.public_url_base`` is configured
+                (raises :class:`URLPolicyError` at construction if not).
+                :class:`URLPolicy.PRESIGNED` is **rejected at construction**
+                — manifests must not carry SigV4 URLs (they decay before
+                the manifest does, breaking provenance). For read-time
+                presigned URLs use ``backend.presigned_get_url(key)``
+                directly. Introduced in ``genblaze-core`` 0.3.1.
+
+        Raises:
+            URLPolicyError: ``asset_url_policy=URLPolicy.PRESIGNED`` (rejected;
+                manifests cannot carry credential-bearing URLs). Or
+                ``asset_url_policy=URLPolicy.PUBLIC`` when the backend has
+                no ``public_url_base`` set.
         """
+        self._validate_asset_url_policy(backend, asset_url_policy)
+        self._asset_url_policy = asset_url_policy
         self._backend = backend
         self._prefix = prefix
         self._key_strategy = key_strategy
