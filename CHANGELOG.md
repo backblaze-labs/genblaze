@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-26
+
+Storage ergonomics & GMI catalog hygiene. Closes the 2026-05-23 user feedback
+batch (7 items). Additive-only — no existing import paths, kwargs, or
+behaviors break. See [MIGRATING-0.3.2.md](MIGRATING-0.3.2.md) for the
+migration guide.
+
+### Released package versions
+
+- `genblaze-core` 0.3.0 → **0.3.2** (canonical_slug field on `ModelFamily`;
+  `URLPolicy` / `URLPolicyError` relocated from `genblaze_s3.url_policy`;
+  `ObjectStorageSink(asset_url_policy=...)` kwarg)
+- `genblaze-s3` 0.3.1 → **0.3.2** (`presigned_get_url` / `presigned_put_url`
+  companions; `for_backblaze()` 403-region probe)
+- `genblaze-gmicloud` 0.3.0 → **0.3.1** (canonical_slug applied to audio /
+  Veo / new Kling V2.1 families per GMI's 2026 catalog)
+- All other packages — unchanged.
+
 ### Added
 
 - `genblaze-core`: `ObjectStorageSink(asset_url_policy=URLPolicy.AUTO | PUBLIC | PRESIGNED)`
@@ -54,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     published lowercase wire form (per the 2026-03-10 "Most Popular
     AI Models" blog: `elevenlabs-tts-v3`, `minimax-tts-speech-2.6-turbo`,
     `inworld-tts-1.5-mini`, `minimax-music-2.5`,
-    `minimax-audio-voice-clone-speech-2.6-hd`). Pre-0.3.2 PascalCase
+    `minimax-audio-voice-clone-speech-2.6-hd`). Pre-0.3.1 PascalCase
     callers continue to work; their input gets rewritten on the wire
     with a one-time INFO nudge.
   - **Veo family** — pattern made case-insensitive; `canonical_slug`
@@ -63,10 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **New Kling V2.1 family** — covers `Kling-Text2Video-V2.1-Master` and
     `Kling-Image2Video-V2.1-Master` (PascalCase wire form per the
     2026-04-14 "Real-Time Video Generation Platforms" blog at $0.28/req).
-    Accepts pre-0.3.2 lowercase callers via `canonical_slug`. Previously
+    Accepts pre-0.3.1 lowercase callers via `canonical_slug`. Previously
     these slugs fell through to the permissive fallback and lost their
     family-specific param surface.
-  - Cleaned up `_UNSTABLE_SLUGS` — pre-0.3.2 it carried lowercase
+  - Cleaned up `_UNSTABLE_SLUGS` — pre-0.3.1 it carried lowercase
     variants of slugs whose canonical wire form is PascalCase
     (`kling-text2video-v2.1-master`, `minimax-hailuo-2.3-fast`). With
     the canonical-slug rewrite, those lowercase forms now resolve to
@@ -76,15 +94,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     audio family `example_slugs` all updated to the lowercase canonical
     forms.
 
-- `genblaze-core` 0.3.0 → **0.3.1**: relocated `URLPolicy` /
+- `genblaze-core` 0.3.0 → **0.3.2**: relocated `URLPolicy` /
   `URLPolicyError` from `genblaze_s3.url_policy` to
   `genblaze_core.storage.url_policy`. Required so `ObjectStorageSink`
   (which lives in core) can reference the enum without inverting the
   `genblaze-s3 → genblaze-core` dependency direction. Back-compat
   preserved: `from genblaze_s3.url_policy import URLPolicy` still
   resolves (the s3 module is now a thin re-export). New convenience:
-  `from genblaze_core import URLPolicy`. `genblaze-s3`'s minimum
-  `genblaze-core` pin tightens to `>=0.3.1,<0.4`.
+  `from genblaze_core import URLPolicy`. `genblaze-s3`'s and
+  `genblaze-gmicloud`'s minimum `genblaze-core` pin tightens to
+  `>=0.3.2,<0.4`.
 
 ### Improved
 
@@ -137,34 +156,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PascalCase for Kling V2.1 + Veo3, while newer Kling V2.5/V3 series use
   lowercase — verify on `console.gmicloud.ai` per slug).
 
-### Deferred (verify before wave ships)
-
-- **Audio family slug casing (separate follow-up PR — ~7 file code change).**
-  Our code uses PascalCase: `ElevenLabs-TTS-v3`, `MiniMax-TTS-Speech-2.6-Turbo`,
-  `MiniMax-Music-2.5`, `MiniMax-Voice-Clone-Speech-2.6-HD`, `Inworld-TTS-1.5-Mini`
-  (in `models/audio.py` family patterns, `voices.py` defaults, README + example
-  quickstarts). The 2026-03-10 GMICloud blog lists these as **lowercase**:
-  `elevenlabs-tts-v3` ($0.10), `minimax-tts-speech-2.6-turbo` ($0.06),
-  `minimax-music-2.5` ($0.15), `inworld-tts-1.5-mini` ($0.005),
-  `minimax-audio-voice-clone-speech-2.6-hd` ($0.10). If lowercase is the
-  actual wire-accepted form, a follow-up PR rewrites the audio family
-  pattern, `voices.py` defaults, audio quickstart, and audio example.
-  Confirm via `console.gmicloud.ai` or `python tools/probe_gmicloud_wire.py`
-  before the wave ships.
-
-- **Video family `example_slugs` casing in `models/video.py`.**
-  The Veo family pattern is `re.compile(r"^veo\d+")` (lowercase) with
-  `example_slugs=("veo3",)`. GMICloud's published form is `Veo3` PascalCase.
-  A user passing `Veo3` falls through to the fallback (still works, but
-  doesn't get the family's `extras["has_audio"]=True` plumbing). Same
-  concern as the audio family — code change deferred to the audio-casing
-  reconciliation PR.
-
-- **Kling V2.1 slugs in the connector code.** The README quickstart now
-  uses `Kling-Text2Video-V2.1-Master` and `Kling-Image2Video-V2.1-Master`,
-  but no family pattern in `models/video.py` matches them (they hit the
-  fallback). Adding a Kling family is part of the same code-casing
-  follow-up — not required for the README slugs to work via pass-through.
+- **Repo dev install**: stripped the stub `[project]` block from the root
+  `pyproject.toml`. The stub declared `name="genblaze" version="0.1.0"`
+  with empty dependencies, which made `pip install -e .` from the repo
+  root install an extras-less 0.1.0 placeholder that shadowed the real
+  `genblaze` umbrella from `libs/meta`. Users following the README saw
+  *"no matching distribution for genblaze-gmicloud"* on `pip install -e
+  ".[gmicloud]"` even though the umbrella on PyPI works correctly. After
+  the strip, `pip install -e .` from the root fails cleanly (hatchling:
+  *"Missing 'project' metadata table"*); use `make install-dev` for
+  editable monorepo dev installs. Addresses the 2026-05-23 feedback batch
+  item 4.
 
 ### Internal
 
@@ -178,20 +180,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was overkill and carried real audit-log + potential-paid-job cost.
   The existing `tools/probe_*.py` scripts remain as an optional
   programmatic sanity-check.
-
-### Fixed
-
-- **Repo dev install**: stripped the stub `[project]` block from the root
-  `pyproject.toml`. The stub declared `name="genblaze" version="0.1.0"`
-  with empty dependencies, which made `pip install -e .` from the repo
-  root install an extras-less 0.1.0 placeholder that shadowed the real
-  `genblaze` umbrella from `libs/meta`. Users following the README saw
-  *"no matching distribution for genblaze-gmicloud"* on `pip install -e
-  ".[gmicloud]"` even though the umbrella on PyPI works correctly. After
-  the strip, `pip install -e .` from the root fails cleanly (hatchling:
-  *"Missing 'project' metadata table"*); use `make install-dev` for
-  editable monorepo dev installs. Addresses the 2026-05-23 feedback batch
-  item 4.
 
 ## [0.3.1] - 2026-05-18
 
