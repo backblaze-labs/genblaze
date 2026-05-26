@@ -115,6 +115,13 @@ class ModelRegistry:
         # per registry lifetime, regardless of how many internal callers
         # (submit, prepare_payload, compute_cost) resolve the same model.
         self._warned_deprecated: set[str] = set()
+        # Mirror of ``_warned_deprecated`` for the ``ModelFamily.canonical_slug``
+        # rewrite path. Keyed by ``(family.name, input_slug)`` so the same
+        # nudge fires once per non-canonical input per registry lifetime.
+        # Carried through ``with_user_overlay`` so per-request forks inherit
+        # the dedup state (otherwise a multi-tenant deployment forking on
+        # every request would re-log indefinitely).
+        self._warned_canonical_rewrite: set[tuple[str, str]] = set()
         self._fallback = fallback
         self._strict = strict_params
         self._lock = threading.RLock()
@@ -255,6 +262,10 @@ class ModelRegistry:
             # prevent. The set is shallow-copied so future warnings on
             # the clone don't leak back to the parent.
             clone._warned_deprecated = set(self._warned_deprecated)
+            # Same fork-carryover for the canonical_slug INFO dedup — without
+            # this, a fork-per-request multi-tenant deployment would re-log
+            # on every request for the same non-canonical input.
+            clone._warned_canonical_rewrite = set(self._warned_canonical_rewrite)
             return clone
 
     # --- read ---------------------------------------------------------------
@@ -301,6 +312,13 @@ class ModelRegistry:
         User families take precedence over provider families. Within each
         layer, families are scanned in order — connectors must list their
         families from most-specific to least-specific.
+
+        When the matched family declares a ``canonical_slug`` transform
+        and the rewrite changes the input, emits a one-time INFO log
+        per ``(family, input)`` so callers know they're using a non-
+        canonical form (e.g. lowercase ``"veo3"`` against a PascalCase
+        wire family). Dedup is instance-level via ``_warned_canonical_rewrite``
+        and is fork-safe (the set is shallow-copied on ``with_user_overlay``).
         """
         # Snapshot the user list under the lock so concurrent registration
         # doesn't tear our scan. Provider families are an immutable tuple,
@@ -309,11 +327,37 @@ class ModelRegistry:
             user_snapshot = list(self._user_families)
         for family in user_snapshot:
             if family.matches(model_id):
-                return FamilyMatch(family=family, spec=family.resolve(model_id))
+                spec = family.resolve(model_id)
+                self._maybe_log_canonical_rewrite(family, model_id, spec.model_id)
+                return FamilyMatch(family=family, spec=spec)
         for family in self._provider_families:
             if family.matches(model_id):
-                return FamilyMatch(family=family, spec=family.resolve(model_id))
+                spec = family.resolve(model_id)
+                self._maybe_log_canonical_rewrite(family, model_id, spec.model_id)
+                return FamilyMatch(family=family, spec=spec)
         return None
+
+    def _maybe_log_canonical_rewrite(
+        self, family: ModelFamily, input_slug: str, wire_slug: str
+    ) -> None:
+        """Emit a one-time INFO when ``canonical_slug`` rewrote the caller's
+        input. No-op when the family has no transform or when the rewrite
+        is the identity. Dedup is keyed by ``(family.name, input_slug)``
+        so the same migrate-your-call-site nudge doesn't spam the logs.
+        """
+        if input_slug == wire_slug:
+            return
+        key = (family.name, input_slug)
+        if key in self._warned_canonical_rewrite:
+            return
+        self._warned_canonical_rewrite.add(key)
+        logger.info(
+            "%s canonical-slug rewrite: %r → %r. Update call sites to the "
+            "canonical form to avoid this log line.",
+            family.name,
+            input_slug,
+            wire_slug,
+        )
 
     @property
     def families(self) -> tuple[ModelFamily, ...]:
@@ -346,12 +390,22 @@ class ModelRegistry:
         cached = self._discovery_cache.peek() if self._discovery_cache else None
         if match is not None:
             family_name = match.family.name
+            # When the family declares a ``canonical_slug`` transform,
+            # normalize the input before comparing against the discovery
+            # cache. Otherwise a user passing ``"veo3"`` against a family
+            # whose wire form is ``"Veo3"`` would get NOT_FOUND from the
+            # cache check even though ``submit()`` would happily resolve
+            # via ``resolve_canonical()`` and succeed on the wire. The
+            # cache is normalized to wire forms; comparison must be too.
+            normalized = (
+                match.family.canonical_slug(model_id) if match.family.canonical_slug else model_id
+            )
             if (
                 discovery_support is DiscoverySupport.NATIVE
                 and cached is not None
                 and cached.status is DiscoveryStatus.OK
             ):
-                if model_id in cached.slugs:
+                if normalized in cached.slugs:
                     return ValidationResult.ok_authoritative(
                         ValidationSource.DISCOVERY,
                         family_name=family_name,
@@ -360,7 +414,7 @@ class ModelRegistry:
                     ValidationSource.DISCOVERY,
                     family_name=family_name,
                     detail="slug not present in fresh upstream catalog",
-                    suggested_slugs=_nearest_slugs(model_id, cached.slugs),
+                    suggested_slugs=_nearest_slugs(normalized, cached.slugs),
                 )
             # PARTIAL/NONE without a probe (registry can't probe — provider
             # does that): provisional. The mark-dead unstable_examples
@@ -431,11 +485,16 @@ class ModelRegistry:
         generation, and capability advertising.
         """
         seen: set[str] = set(self._user)
+        # Apply ``canonical_slug`` to each family's ``example_slugs`` so
+        # the surface returned matches the wire form a user actually
+        # needs to pass. User-registered slugs in ``self._user`` are
+        # treated as authoritative (caller chose that exact string) and
+        # are NOT rewritten — only the family's editorial examples are.
         for family in self._provider_families:
-            seen.update(family.example_slugs)
+            seen.update(_canonicalize_family_examples(family))
         with self._lock:
             for family in self._user_families:
-                seen.update(family.example_slugs)
+                seen.update(_canonicalize_family_examples(family))
         cached = self._discovery_cache.peek() if self._discovery_cache else None
         if cached is not None and cached.status is DiscoveryStatus.OK:
             seen.update(cached.slugs)
@@ -625,6 +684,20 @@ def _replace(spec: ModelSpec, **changes: Any) -> ModelSpec:
     from dataclasses import replace
 
     return replace(spec, **changes)
+
+
+def _canonicalize_family_examples(family: ModelFamily) -> tuple[str, ...]:
+    """Return a family's ``example_slugs`` rewritten through its
+    ``canonical_slug`` (no-op when the family doesn't declare one).
+
+    Used by :meth:`ModelRegistry.known` so the returned surface — which
+    drives IDE autocomplete and capability advertising — matches the
+    wire form a user must actually pass. Identity-default preserves
+    today's behavior for families that don't ship a transform.
+    """
+    if family.canonical_slug is None:
+        return family.example_slugs
+    return tuple(family.canonical_slug(s) for s in family.example_slugs)
 
 
 def _nearest_slugs(

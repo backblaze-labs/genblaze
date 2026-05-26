@@ -80,7 +80,7 @@ class GMICloudAudioProvider(GMICloudBase):
         rather than fetched live (catalogs change rarely and a static list is
         offline-friendly). To list voices for a specific model::
 
-            provider.list_voices(model="ElevenLabs-TTS-v3")
+            provider.list_voices(model="elevenlabs-tts-v3")
             provider.list_voices(language="en")  # any English-prefix voice
         """
         return list_curated_voices(model=model, language=language)

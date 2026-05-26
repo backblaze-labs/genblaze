@@ -101,13 +101,32 @@ _GMI_VIDEO_WAN_R2V_FAMILY = ModelFamily(
     probe=empty_payload_request_probe,
 )
 
+
+def _veo_canonical(slug: str) -> str:
+    """Map any case of ``veo<digits>...`` to GMI's published PascalCase form.
+
+    GMI's catalog uses ``Veo3``, ``Veo3-Fast``, ``Veo3-Pro``, etc. — the
+    ``Veo`` prefix is always capitalized, the rest of the suffix
+    preserves its original casing. Accepts lowercase ``veo3``,
+    SCREAMING_CASE, and the PascalCase canonical form; emits the
+    canonical form for the wire.
+
+    The Veo family pattern ``^veo\\d+`` (case-insensitive) requires at
+    least 4 characters (``veo`` + one digit), so ``slug[3:]`` is always
+    safe here — the pattern is the invariant, no length guard needed.
+    """
+    return "Veo" + slug[3:]
+
+
 _GMI_VIDEO_VEO_FAMILY = ModelFamily(
     name="gmi-video-veo",
-    # ``^veo\d+`` (no end anchor) absorbs future Google Veo variants
-    # — ``-fast``, ``-pro``, ``-ultra``, ``-2025``, etc. The
-    # has_audio property is intrinsic to the model family, not the
-    # variant tier, so all variants inherit it correctly.
-    pattern=re.compile(r"^veo\d+"),
+    # Case-insensitive ``^veo\d+`` absorbs lowercase ``veo3`` (pre-0.3.2
+    # convention), PascalCase ``Veo3`` (GMI's canonical wire form per
+    # every 2025-12-08 → 2026-04-14 blog), and future variants like
+    # ``-fast`` / ``-pro``. ``canonical_slug`` rewrites the wire form to
+    # PascalCase; the rewrite emits a one-time INFO so callers know to
+    # migrate their call sites.
+    pattern=re.compile(r"^veo\d+", re.IGNORECASE),
     spec_template=ModelSpec(
         model_id="*",
         modality=Modality.VIDEO,
@@ -120,8 +139,51 @@ _GMI_VIDEO_VEO_FAMILY = ModelFamily(
         **_VIDEO_BASE.build(),
     ),
     description="Google Veo family on GMI — produces video + audio tracks.",
-    example_slugs=("veo3",),
-    unstable_examples=frozenset({"veo3-fast"}),
+    example_slugs=("Veo3", "Veo3-Fast"),
+    canonical_slug=_veo_canonical,
+    probe=empty_payload_request_probe,
+)
+
+
+# Kling V2.1 wire form is PascalCase per GMI's 2026-04-14 blog
+# (``Kling-Text2Video-V2.1-Master`` $0.28/req, ``Kling-Image2Video-V2.1-Master``
+# $0.28/req). Newer V2.5/V3 series ship lowercase (``kling-v2-5-turbo``,
+# ``kling-v3-text-to-video``); they hit the permissive fallback. This
+# family captures only the PascalCase V2.1 family that needs canonical
+# rewriting from lowercase callers.
+_KLING_V21_CANONICAL: dict[str, str] = {
+    "kling-text2video-v2.1-master": "Kling-Text2Video-V2.1-Master",
+    "kling-image2video-v2.1-master": "Kling-Image2Video-V2.1-Master",
+}
+
+
+def _kling_v21_canonical(slug: str) -> str:
+    """Map lowercase ``kling-text2video-v2.1-master`` → the PascalCase wire
+    form per GMI's 2026-04-14 catalog blog (``Kling-Text2Video-V2.1-Master``,
+    ``Kling-Image2Video-V2.1-Master``).
+
+    Embedded mixed-case (``Text2Video``, with both T AND V capitalized)
+    defeats a simple per-segment Title-Case heuristic, so the mapping is
+    spelled out explicitly. Only two Kling V2.1 slugs exist; the map
+    stays trivial to maintain. Unmapped inputs (e.g. PascalCase callers
+    already using the canonical form) round-trip unchanged.
+    """
+    return _KLING_V21_CANONICAL.get(slug.lower(), slug)
+
+
+_GMI_VIDEO_KLING_V21_FAMILY = ModelFamily(
+    name="gmi-video-kling-v21",
+    pattern=re.compile(r"^kling-(?:text2video|image2video)-v2\.1-master$", re.IGNORECASE),
+    spec_template=ModelSpec(
+        model_id="*",
+        modality=Modality.VIDEO,
+        input_mapping=_COMMON_INPUT,
+        extras=_ENVELOPE,
+        **_VIDEO_BASE.build(),
+    ),
+    description="Kling V2.1 (Master) — Text2Video / Image2Video on GMI.",
+    example_slugs=("Kling-Text2Video-V2.1-Master", "Kling-Image2Video-V2.1-Master"),
+    canonical_slug=_kling_v21_canonical,
     probe=empty_payload_request_probe,
 )
 
@@ -143,13 +205,15 @@ _FALLBACK = ModelSpec(
 # ``veo3-fast`` is intentionally NOT here because it lives in the Veo
 # family's own ``unstable_examples`` (the union happens at registry
 # construction).
-_UNSTABLE_SLUGS: frozenset[str] = frozenset(
-    {
-        "kling-text2video-v2.1-master",
-        "minimax-hailuo-2.3-fast",
-        "vidu-q1",
-    }
-)
+# Pre-0.3.2 ``_UNSTABLE_SLUGS`` carried lowercase variants of slugs whose
+# canonical wire form is PascalCase (``kling-text2video-v2.1-master``,
+# ``minimax-hailuo-2.3-fast``). With the new ``canonical_slug`` rewrite on
+# the Kling V2.1 family, those lowercase forms now resolve to the right
+# wire ids — they're not unstable, just non-canonical user input.
+# ``vidu-q1`` was already removed from GMI's catalog (replaced by
+# ``vidu-q3-pro-i2v`` per the 2026-03-04 blog); it stays flagged here
+# until a maintainer confirms via the probe tool.
+_UNSTABLE_SLUGS: frozenset[str] = frozenset({"vidu-q1"})
 
 
 def build_video_registry() -> ModelRegistry:
@@ -159,6 +223,7 @@ def build_video_registry() -> ModelRegistry:
             _GMI_VIDEO_PIXVERSE_FAMILY,
             _GMI_VIDEO_WAN_R2V_FAMILY,
             _GMI_VIDEO_VEO_FAMILY,
+            _GMI_VIDEO_KLING_V21_FAMILY,
         ),
         fallback=_FALLBACK,
         unstable_slugs=_UNSTABLE_SLUGS,

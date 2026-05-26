@@ -5,9 +5,9 @@ Generates audio using GMICloud's request queue and captures full provenance
 in a manifest.
 
 Models (subset — any audio model on GMICloud's queue is supported):
-    - ElevenLabs-TTS-v3: High-quality text-to-speech
-    - MiniMax-TTS-Speech-2.6-Turbo: Fast TTS
-    - MiniMax-Music-2.5: Music generation
+    - elevenlabs-tts-v3: High-quality text-to-speech
+    - minimax-tts-speech-2.6-turbo: Fast TTS
+    - minimax-music-2.5: Music generation
 
 Auth options (in priority order):
     - API key: Set GMI_API_KEY env var (recommended)
@@ -30,7 +30,7 @@ def main() -> None:
         Pipeline("gmicloud-audio-demo", project_id="examples")
         .step(
             provider,
-            model="ElevenLabs-TTS-v3",
+            model="elevenlabs-tts-v3",
             prompt="Welcome to Genblaze, the fastest way to build generative AI pipelines.",
             modality=Modality.AUDIO,
         )

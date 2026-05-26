@@ -36,6 +36,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `genblaze-core`: new `ModelFamily.canonical_slug: Callable[[str], str] | None`
+  field. When set, ``family.resolve(input)`` substitutes
+  ``canonical_slug(input)`` into the spec's ``model_id`` — the wire form
+  the upstream HTTP client receives. ``ModelRegistry.validate()``
+  normalizes via the same callable before the discovery-cache check, so
+  validation and submit agree on slug identity. ``ModelRegistry.known()``
+  returns canonical forms for family-matched ``example_slugs``. When the
+  rewrite actually changes the input, a one-time INFO per
+  ``(family, input)`` fires so callers know to migrate their call sites
+  (instance-level dedup, fork-safe via ``fork()``).
+
+- `genblaze-gmicloud` 0.3.0 → **0.3.1**: applied the new `canonical_slug`
+  mechanism to bridge GMICloud's per-slug casing.
+  - **Audio families** (TTS / Voice-Clone / Music) — patterns now
+    case-insensitive; `canonical_slug=str.lower` rewrites to GMI's
+    published lowercase wire form (per the 2026-03-10 "Most Popular
+    AI Models" blog: `elevenlabs-tts-v3`, `minimax-tts-speech-2.6-turbo`,
+    `inworld-tts-1.5-mini`, `minimax-music-2.5`,
+    `minimax-audio-voice-clone-speech-2.6-hd`). Pre-0.3.2 PascalCase
+    callers continue to work; their input gets rewritten on the wire
+    with a one-time INFO nudge.
+  - **Veo family** — pattern made case-insensitive; `canonical_slug`
+    rewrites `veo3` → `Veo3` (PascalCase per every GMI blog from
+    2025-12-08 onward).
+  - **New Kling V2.1 family** — covers `Kling-Text2Video-V2.1-Master` and
+    `Kling-Image2Video-V2.1-Master` (PascalCase wire form per the
+    2026-04-14 "Real-Time Video Generation Platforms" blog at $0.28/req).
+    Accepts pre-0.3.2 lowercase callers via `canonical_slug`. Previously
+    these slugs fell through to the permissive fallback and lost their
+    family-specific param surface.
+  - Cleaned up `_UNSTABLE_SLUGS` — pre-0.3.2 it carried lowercase
+    variants of slugs whose canonical wire form is PascalCase
+    (`kling-text2video-v2.1-master`, `minimax-hailuo-2.3-fast`). With
+    the canonical-slug rewrite, those lowercase forms now resolve to
+    the right wire ids and aren't unstable. Only `vidu-q1` remains
+    (replaced by `vidu-q3-pro-i2v` per the 2026-03-04 GMI blog).
+  - `models/voices.py`, audio README quickstart, audio example, and
+    audio family `example_slugs` all updated to the lowercase canonical
+    forms.
+
 - `genblaze-core` 0.3.0 → **0.3.1**: relocated `URLPolicy` /
   `URLPolicyError` from `genblaze_s3.url_policy` to
   `genblaze_core.storage.url_policy`. Required so `ObjectStorageSink`

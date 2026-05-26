@@ -48,9 +48,42 @@ _ENVELOPE = {"envelope_key": "payload"}
 _CLONE_INPUT = route_audio(slot="reference_audio")
 
 
+# GMICloud's published catalog (2026-03-10 "Most Popular AI Models" blog)
+# lists every audio slug in lowercase: ``elevenlabs-tts-v3``,
+# ``minimax-tts-speech-2.6-turbo``, ``minimax-audio-voice-clone-speech-2.6-hd``,
+# ``minimax-music-2.5``, ``inworld-tts-1.5-mini``. Patterns are case-
+# insensitive so pre-0.3.2 PascalCase callers continue to match the right
+# family, and ``canonical_slug=str.lower`` rewrites the wire form to what
+# GMI accepts. The rewrite emits a one-time INFO per (family, input) so
+# callers know to migrate their call sites.
+
+
+def _voice_clone_canonical(slug: str) -> str:
+    """Rewrite voice-clone slugs to GMI's published canonical form.
+
+    GMI's 2026-03-10 catalog ships the slug as
+    ``minimax-audio-voice-clone-speech-2.6-hd`` — note the ``-audio-``
+    segment. Pre-0.3.2 connector code (and any pre-existing user code
+    following the older convention) used ``MiniMax-Voice-Clone-Speech-2.6-HD``
+    (no ``-Audio-``); plain ``str.lower`` produces
+    ``minimax-voice-clone-speech-2.6-hd`` which doesn't match GMI's
+    catalog. This canonical_slug inserts the missing ``-audio-`` segment
+    so legacy and current call sites both produce the right wire form.
+    """
+    low = slug.lower()
+    legacy_prefix = "minimax-voice-clone"
+    if low.startswith(legacy_prefix) and not low.startswith("minimax-audio-voice-clone"):
+        return "minimax-audio-voice-clone" + low[len(legacy_prefix) :]
+    return low
+
+
 _GMI_AUDIO_CLONE_FAMILY = ModelFamily(
     name="gmi-audio-clone",
-    pattern=re.compile(r"^MiniMax-Voice-Clone"),
+    # Match both the legacy ``minimax-voice-clone-*`` shape and GMI's
+    # current canonical ``minimax-audio-voice-clone-*`` shape (with the
+    # ``-audio-`` segment) — the canonical_slug rewrites the former to
+    # the latter on the wire.
+    pattern=re.compile(r"^minimax-(?:audio-)?voice-clone", re.IGNORECASE),
     spec_template=ModelSpec(
         model_id="*",
         modality=Modality.AUDIO,
@@ -59,17 +92,14 @@ _GMI_AUDIO_CLONE_FAMILY = ModelFamily(
         **_VOICE_CLONE.build(),
     ),
     description="GMICloud voice-clone TTS (MiniMax Voice-Clone family).",
-    example_slugs=("MiniMax-Voice-Clone-Speech-2.6-HD",),
-    # 2026-04 reconciliation: all GMI audio slugs returned 404 against the
-    # live /requests endpoint. Flagged as known-unstable until the probe
-    # confirms or upstream rotates them.
-    unstable_examples=frozenset({"MiniMax-Voice-Clone-Speech-2.6-HD"}),
+    example_slugs=("minimax-audio-voice-clone-speech-2.6-hd",),
+    canonical_slug=_voice_clone_canonical,
     probe=empty_payload_request_probe,
 )
 
 _GMI_AUDIO_MUSIC_FAMILY = ModelFamily(
     name="gmi-audio-music",
-    pattern=re.compile(r"^MiniMax-Music"),
+    pattern=re.compile(r"^minimax-music", re.IGNORECASE),
     spec_template=ModelSpec(
         model_id="*",
         modality=Modality.AUDIO,
@@ -77,8 +107,8 @@ _GMI_AUDIO_MUSIC_FAMILY = ModelFamily(
         **_MUSIC.build(),
     ),
     description="GMICloud music generation (MiniMax Music family).",
-    example_slugs=("MiniMax-Music-2.5",),
-    unstable_examples=frozenset({"MiniMax-Music-2.5"}),
+    example_slugs=("minimax-music-2.5",),
+    canonical_slug=str.lower,
     probe=empty_payload_request_probe,
 )
 
@@ -87,7 +117,7 @@ _GMI_AUDIO_TTS_FAMILY = ModelFamily(
     # ElevenLabs / MiniMax-TTS / Inworld TTS variants. Voice-Clone and
     # Music get their own families above (more-specific patterns checked
     # first per the family-resolution contract).
-    pattern=re.compile(r"^(?:ElevenLabs-TTS|MiniMax-TTS|Inworld-TTS)"),
+    pattern=re.compile(r"^(?:elevenlabs-tts|minimax-tts|inworld-tts)", re.IGNORECASE),
     spec_template=ModelSpec(
         model_id="*",
         modality=Modality.AUDIO,
@@ -96,17 +126,11 @@ _GMI_AUDIO_TTS_FAMILY = ModelFamily(
     ),
     description="GMICloud text-to-speech (ElevenLabs, MiniMax-TTS, Inworld families).",
     example_slugs=(
-        "ElevenLabs-TTS-v3",
-        "MiniMax-TTS-Speech-2.6-Turbo",
-        "Inworld-TTS-1.5-Mini",
+        "elevenlabs-tts-v3",
+        "minimax-tts-speech-2.6-turbo",
+        "inworld-tts-1.5-mini",
     ),
-    unstable_examples=frozenset(
-        {
-            "ElevenLabs-TTS-v3",
-            "MiniMax-TTS-Speech-2.6-Turbo",
-            "Inworld-TTS-1.5-Mini",
-        }
-    ),
+    canonical_slug=str.lower,
     probe=empty_payload_request_probe,
 )
 

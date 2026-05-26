@@ -20,11 +20,11 @@
 |---|---|---|
 | `GMICloudVideoProvider` | video | `Kling-Text2Video-V2.1-Master`, `Kling-Image2Video-V2.1-Master`, `Veo3`, `wan2.6-t2v`, `seedance-1-0-pro-250528`, `sora-2-pro` |
 | `GMICloudImageProvider` | image | `seedream-5.0-lite`, `gemini-2.5-flash-image`, `reve-edit-fast-20251030`, `flux-kontext-pro` |
-| `GMICloudAudioProvider` | audio | `ElevenLabs-TTS-v3`, `MiniMax-TTS-Speech-2.6-Turbo`, `MiniMax-Music-2.5` |
+| `GMICloudAudioProvider` | audio | `elevenlabs-tts-v3`, `minimax-tts-speech-2.6-turbo`, `minimax-music-2.5` |
 
 Registered via entry points as `gmicloud`, `gmicloud-image`, and `gmicloud-audio`. Any model on GMICloud's queue is supported — pass the exact model slug.
 
-> **Slug casing** — GMICloud's request queue is case-sensitive and uses **per-slug casing** (per their published catalog): lowercase for Sora/Pixverse/Seedance/Seedream/Reve/Wan/Bria/Gemini-Image and newer Kling V2.5/V3 series; PascalCase for Kling V2.1, Veo3, and (per current code, under verification) the audio families. Pass the exact casing GMICloud publishes on [console.gmicloud.ai](https://console.gmicloud.ai/); the connector does not rewrite the slug. The 0.3.0 wave removed the previous `ModelSpec.deprecated_aliases` rewrite layer — update call sites directly when a slug rotates.
+> **Slug casing** — GMICloud's request queue is case-sensitive and uses **per-slug casing** (per their published catalog): lowercase for Sora / Pixverse / Seedance / Seedream / Reve / Wan / Bria / Gemini-Image, the audio families (`elevenlabs-tts-*`, `minimax-tts-*`, `minimax-music-*`, `minimax-audio-voice-clone-*`, `inworld-tts-*`), and the newer Kling V2.5 / V3 series; PascalCase for Kling V2.1 (`Kling-Text2Video-V2.1-Master`, `Kling-Image2Video-V2.1-Master`) and Veo3. As of `genblaze-gmicloud` 0.3.1, the connector **rewrites caller-supplied casing to GMICloud's published wire form** for the families above via the new `ModelFamily.canonical_slug` mechanism — so `model="ElevenLabs-TTS-v3"` and `model="veo3"` (legacy mixed/lower-case) keep working, with a one-time INFO per (family, input) nudging callers toward the canonical form. Slugs that don't match a known family still pass through verbatim; refer to [console.gmicloud.ai](https://console.gmicloud.ai/) as the source of truth when a model rotates.
 
 ## Install
 
@@ -76,7 +76,7 @@ from genblaze_gmicloud import GMICloudAudioProvider
 
 run, manifest = (
     Pipeline("gmicloud-audio-demo")
-    .step(GMICloudAudioProvider(), model="ElevenLabs-TTS-v3",
+    .step(GMICloudAudioProvider(), model="elevenlabs-tts-v3",
           prompt="Welcome to Genblaze — the fastest way to build generative AI pipelines.",
           modality=Modality.AUDIO)
     .run(timeout=120)

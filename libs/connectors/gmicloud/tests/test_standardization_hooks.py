@@ -162,10 +162,13 @@ def test_list_voices_returns_curated_catalog():
 
 
 def test_list_voices_filters_by_model():
+    """The curated voice catalog uses lowercase canonical model ids
+    (per GMI's 2026-03-10 published catalog) since 0.3.2. Filtering
+    by the canonical id returns the voices bound to that model."""
     provider = GMICloudAudioProvider(api_key="ok")
-    voices = provider.list_voices(model="ElevenLabs-TTS-v3")
+    voices = provider.list_voices(model="elevenlabs-tts-v3")
     assert len(voices) > 0
-    assert all(v.model == "ElevenLabs-TTS-v3" for v in voices)
+    assert all(v.model == "elevenlabs-tts-v3" for v in voices)
 
 
 def test_list_voices_filters_by_language_prefix():

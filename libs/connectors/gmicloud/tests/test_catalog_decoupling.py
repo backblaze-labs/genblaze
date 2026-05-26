@@ -45,11 +45,29 @@ class TestDiscoverySupportDeclarations:
 
 
 class TestAudioFamilyResolution:
+    """Audio families in 0.3.2+ use case-insensitive patterns with
+    ``canonical_slug=str.lower`` so pre-existing PascalCase callers
+    continue to match the right family AND the wire form is rewritten to
+    the lowercase canonical (per GMI's 2026-03-10 published catalog)."""
+
     def test_voice_clone_routes_to_clone_family(self) -> None:
+        """GMI's 2026-03-10 catalog ships the slug as
+        ``minimax-audio-voice-clone-speech-2.6-hd`` (note the ``-audio-``
+        segment). The family's canonical_slug rewrites both legacy
+        (``MiniMax-Voice-Clone-*``, no ``-Audio-``) and current
+        (``minimax-audio-voice-clone-*``) callers to the published wire
+        form. Test both inputs."""
         provider = GMICloudAudioProvider(api_key="test")
+        # Legacy PascalCase without -Audio- segment.
         match = provider._models.match_family("MiniMax-Voice-Clone-Speech-2.6-HD")
         assert match is not None
         assert match.family.name == "gmi-audio-clone"
+        assert match.spec.model_id == "minimax-audio-voice-clone-speech-2.6-hd"
+        # Current canonical (already includes -audio- + lowercase).
+        match2 = provider._models.match_family("minimax-audio-voice-clone-speech-2.6-hd")
+        assert match2 is not None
+        assert match2.family.name == "gmi-audio-clone"
+        assert match2.spec.model_id == "minimax-audio-voice-clone-speech-2.6-hd"
 
     def test_music_routes_to_music_family(self) -> None:
         provider = GMICloudAudioProvider(api_key="test")
@@ -57,17 +75,20 @@ class TestAudioFamilyResolution:
         assert match is not None
         assert match.family.name == "gmi-audio-music"
         assert match.spec.extras.get("is_music") is True
+        assert match.spec.model_id == "minimax-music-2.5"
 
     def test_tts_routes_to_tts_family(self) -> None:
         provider = GMICloudAudioProvider(api_key="test")
-        for slug in (
-            "ElevenLabs-TTS-v3",
-            "MiniMax-TTS-Speech-2.6-Turbo",
-            "Inworld-TTS-1.5-Mini",
+        # Mix PascalCase + lowercase to prove both casings match.
+        for slug, expected_wire in (
+            ("ElevenLabs-TTS-v3", "elevenlabs-tts-v3"),
+            ("MiniMax-TTS-Speech-2.6-Turbo", "minimax-tts-speech-2.6-turbo"),
+            ("inworld-tts-1.5-mini", "inworld-tts-1.5-mini"),
         ):
             match = provider._models.match_family(slug)
             assert match is not None, slug
             assert match.family.name == "gmi-audio-tts", slug
+            assert match.spec.model_id == expected_wire, slug
 
 
 class TestImageFamilyResolution:
@@ -135,15 +156,17 @@ class TestVideoFamilyResolution:
 
     def test_other_video_slugs_fall_through_to_fallback(self) -> None:
         """Slugs that don't match a specialized family (Pixverse, Wan-r2v,
-        Veo) fall through to the permissive fallback. The base video
-        surface (``cfg_scale`` alias, ``duration`` coercion) lives on
-        the fallback spec, not on a catch-all family."""
+        Veo, Kling V2.1) fall through to the permissive fallback. The base
+        video surface (``cfg_scale`` alias, ``duration`` coercion) lives
+        on the fallback spec, not on a catch-all family."""
         provider = GMICloudVideoProvider(api_key="test")
         for slug in (
             "seedance-1-0-pro-250528",
-            "kling-image2video-v2.1-master",
             "wan2.6-t2v",
             "luma-ray-2",
+            # Newer Kling V2.5/V3 series uses lowercase; no dedicated
+            # family ships their param surface — they hit the fallback.
+            "kling-v3-text-to-video",
         ):
             match = provider._models.match_family(slug)
             assert match is None, slug
@@ -152,52 +175,43 @@ class TestVideoFamilyResolution:
             assert "cfg_scale" in spec.param_aliases.values()
             assert "duration" in spec.param_coercers
 
+    def test_kling_v21_routes_to_dedicated_family(self) -> None:
+        """Kling V2.1 (text2video + image2video) gets its own family
+        because GMI's wire form is PascalCase and the family carries
+        ``canonical_slug`` to rewrite lowercase user input."""
+        provider = GMICloudVideoProvider(api_key="test")
+        for slug, expected_wire in (
+            ("kling-text2video-v2.1-master", "Kling-Text2Video-V2.1-Master"),
+            ("Kling-Text2Video-V2.1-Master", "Kling-Text2Video-V2.1-Master"),
+            ("kling-image2video-v2.1-master", "Kling-Image2Video-V2.1-Master"),
+            ("Kling-Image2Video-V2.1-Master", "Kling-Image2Video-V2.1-Master"),
+        ):
+            match = provider._models.match_family(slug)
+            assert match is not None, slug
+            assert match.family.name == "gmi-video-kling-v21", slug
+            assert match.spec.model_id == expected_wire, slug
+
 
 # --- unstable_examples propagation (RT-10) ---------------------------------
 
 
 class TestUnstableExamples:
-    """Slugs flagged ``suspected_dead`` in the 2026-04 reconciliation are
-    preserved in each family's ``unstable_examples`` until the probe
-    confirms or upstream rotates them."""
+    """0.3.2 cleanup: most slugs previously flagged ``suspected_dead`` in
+    the 2026-04 reconciliation were actually *case-variant* mismatches.
+    GMI's published catalog confirms the lowercase audio family slugs
+    and PascalCase Kling V2.1 / Veo3 slugs are live. ``canonical_slug``
+    now rewrites pre-0.3.2 callers to the wire form; only genuinely
+    rotated-out slugs (e.g. ``vidu-q1``) remain flagged."""
 
-    def test_audio_tts_unstable_examples(self) -> None:
-        provider = GMICloudAudioProvider(api_key="test")
-        result = provider._models.validate("ElevenLabs-TTS-v3")
-        assert result.outcome is ValidationOutcome.OK_PROVISIONAL
-        assert "known_unstable" in (result.detail or "")
-        assert result.family_name == "gmi-audio-tts"
-
-    def test_audio_music_unstable(self) -> None:
-        provider = GMICloudAudioProvider(api_key="test")
-        result = provider._models.validate("MiniMax-Music-2.5")
-        assert result.outcome is ValidationOutcome.OK_PROVISIONAL
-        assert "known_unstable" in (result.detail or "")
-
-    def test_veo3_fast_unstable_via_family(self) -> None:
-        """``veo3-fast`` matches the Veo family AND is in that family's
-        ``unstable_examples`` → ``OK_PROVISIONAL`` with ``known_unstable``."""
+    def test_orphan_unstable_slug_via_registry(self) -> None:
+        """``vidu-q1`` was replaced by ``vidu-q3-pro-i2v`` per GMI's
+        2026-03-04 catalog blog; it stays flagged at the registry level
+        as a permissive-fallback ``known_unstable`` hint until a
+        maintainer confirms via the probe tool."""
         provider = GMICloudVideoProvider(api_key="test")
-        result = provider._models.validate("veo3-fast")
-        assert result.outcome is ValidationOutcome.OK_PROVISIONAL
+        result = provider._models.validate("vidu-q1")
+        assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
         assert "known_unstable" in (result.detail or "")
-        assert result.family_name == "gmi-video-veo"
-
-    def test_orphan_unstable_slugs_via_registry(self) -> None:
-        """Slugs that don't have a dedicated family but ARE registered
-        as registry-level ``unstable_slugs`` surface the hint via the
-        permissive-fallback path. Replaces the old "catch-all family
-        carrying unstable_examples" pattern with a registry-level field —
-        no spurious family needed."""
-        provider = GMICloudVideoProvider(api_key="test")
-        for slug in (
-            "kling-text2video-v2.1-master",
-            "minimax-hailuo-2.3-fast",
-            "vidu-q1",
-        ):
-            result = provider._models.validate(slug)
-            assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE, slug
-            assert "known_unstable" in (result.detail or ""), slug
 
     def test_live_video_slug_no_unstable_hint(self) -> None:
         """A slug that's neither in a family's ``unstable_examples`` nor
@@ -207,8 +221,8 @@ class TestUnstableExamples:
         result = provider._models.validate("seedance-1-0-pro-250528")
         assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
         assert "known_unstable" not in (result.detail or "")
-        # veo3 — matches Veo family, NOT in family's unstable_examples
-        result = provider._models.validate("veo3")
+        # Veo3 — matches Veo family (canonical PascalCase form)
+        result = provider._models.validate("Veo3")
         assert result.outcome is ValidationOutcome.OK_PROVISIONAL
         assert "known_unstable" not in (result.detail or "")
 
@@ -459,15 +473,15 @@ class TestPreflightOptOut:
 # --- Probe-LIVE preserves known_unstable detail (RT-7) -------------------
 
 
-class TestProbeLiveKeepsUnstableHint:
-    """When a slug is in ``unstable_examples`` AND the probe currently
-    returns LIVE, the result is OK_AUTHORITATIVE but the hint that the
-    slug was flagged unstable should propagate via ``detail`` so ops
-    can decide whether to keep relying on the slug."""
+class TestUnstableSlugSurfaces:
+    """0.3.2 cleanup: the only remaining ``unstable_slug`` is the orphan
+    ``vidu-q1`` (no family, registry-level). It surfaces as
+    ``UNKNOWN_PERMISSIVE`` + ``known_unstable`` via the fallback path —
+    there's no family probe to upgrade it to ``OK_AUTHORITATIVE``."""
 
-    def test_unstable_slug_with_live_probe_keeps_detail(self) -> None:
-        http = _http_with_status(400)  # LIVE
+    def test_orphan_unstable_slug_surfaces_known_unstable(self) -> None:
+        http = _http_with_status(400)  # LIVE — irrelevant; no family probe runs
         provider = GMICloudVideoProvider(api_key="test", http_client=http)
-        result = provider.validate_model("veo3-fast")
-        assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+        result = provider.validate_model("vidu-q1")
+        assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
         assert "known_unstable" in (result.detail or "")

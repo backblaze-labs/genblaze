@@ -168,6 +168,21 @@ class ModelFamily:
     unstable_examples: frozenset[str] = field(default_factory=frozenset)
     probe: FamilyProbe | None = None
     discovery_required: bool = False
+    # Optional caller-input → wire-form transform. Receives the
+    # caller-supplied slug as a single ``str`` argument; must return the
+    # wire-canonical ``str`` the upstream API accepts. Use this when the
+    # upstream API is case-sensitive AND the SDK wants to accept multiple
+    # casings from users while always sending the canonical form on the
+    # wire. Default ``None`` preserves the historical pass-through
+    # behavior (whatever the user typed is what ``resolve()`` returns).
+    # ``ModelFamily.resolve()`` substitutes ``canonical_slug(input)``
+    # into ``spec.model_id``; ``ModelRegistry.validate()`` normalizes
+    # via the same callable before consulting the discovery cache;
+    # ``ModelRegistry.known()`` returns canonical forms for documentation
+    # honesty. When the rewrite actually changes the input, a one-time
+    # INFO log fires per ``(family, input)`` so callers know to migrate
+    # their call sites. Introduced in ``genblaze-core`` 0.3.2.
+    canonical_slug: Callable[[str], str] | None = None
 
     def __post_init__(self) -> None:
         assert_safe(self.pattern)
@@ -209,16 +224,25 @@ class ModelFamily:
         consumer mutating ``spec.extras`` cannot corrupt the family's
         ``spec_template`` (which would silently affect every subsequent
         ``resolve()`` call from the same family).
+
+        If the family declares a ``canonical_slug`` transform, the
+        caller-supplied ``model_id`` is rewritten through it before
+        substitution — the returned spec's ``model_id`` is the
+        wire-canonical form, which is what ``ModelRegistry.resolve_canonical``
+        eventually hands to the upstream HTTP client. The original input
+        is not retained on the spec; callers that need to surface it can
+        keep their own copy.
         """
         from dataclasses import replace
 
+        wire_id = self.canonical_slug(model_id) if self.canonical_slug else model_id
         # Defensive copy of extras: ModelSpec is frozen, but its extras
         # field is a Mapping that's typically a plain dict at runtime —
         # a caller doing ``spec.extras["k"] = v`` mutates the shared
         # template otherwise.
         return replace(
             self.spec_template,
-            model_id=model_id,
+            model_id=wire_id,
             extras=dict(self.spec_template.extras),
         )
 

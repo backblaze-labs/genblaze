@@ -21,7 +21,7 @@ _PROVIDER = "gmicloud-audio"
 _VOICES_LAST_VERIFIED = "2026-04-24"
 
 
-# ElevenLabs-TTS-v3 — selection from the curated ElevenLabs default-voice
+# elevenlabs-tts-v3 — selection from the curated ElevenLabs default-voice
 # library (id values are the ElevenLabs ``voice_id`` strings; valid against
 # the GMICloud TTS proxy as of the last refresh).
 _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
@@ -29,7 +29,7 @@ _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="JBFqnCBsd6RMkjVDRZzb",
         name="George",
         provider=_PROVIDER,
-        model="ElevenLabs-TTS-v3",
+        model="elevenlabs-tts-v3",
         gender="male",
         language="en-US",
         style_tags=("warm", "narration"),
@@ -38,7 +38,7 @@ _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="EXAVITQu4vr4xnSDxMaL",
         name="Sarah",
         provider=_PROVIDER,
-        model="ElevenLabs-TTS-v3",
+        model="elevenlabs-tts-v3",
         gender="female",
         language="en-US",
         style_tags=("conversational", "young"),
@@ -47,7 +47,7 @@ _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="ErXwobaYiN019PkySvjV",
         name="Antoni",
         provider=_PROVIDER,
-        model="ElevenLabs-TTS-v3",
+        model="elevenlabs-tts-v3",
         gender="male",
         language="en-US",
         style_tags=("calm", "narration"),
@@ -56,7 +56,7 @@ _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="21m00Tcm4TlvDq8ikWAM",
         name="Rachel",
         provider=_PROVIDER,
-        model="ElevenLabs-TTS-v3",
+        model="elevenlabs-tts-v3",
         gender="female",
         language="en-US",
         style_tags=("clear", "narration"),
@@ -65,7 +65,7 @@ _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="pNInz6obpgDQGcFmaJgB",
         name="Adam",
         provider=_PROVIDER,
-        model="ElevenLabs-TTS-v3",
+        model="elevenlabs-tts-v3",
         gender="male",
         language="en-US",
         style_tags=("deep", "announcer"),
@@ -73,13 +73,13 @@ _ELEVENLABS_TTS_VOICES: tuple[Voice, ...] = (
 )
 
 
-# MiniMax-TTS-Speech-2.6-Turbo — MiniMax's published default voice ids.
+# minimax-tts-speech-2.6-turbo — MiniMax's published default voice ids.
 _MINIMAX_TTS_VOICES: tuple[Voice, ...] = (
     Voice(
         voice_id="male-qn-qingse",
         name="Qingse (Male)",
         provider=_PROVIDER,
-        model="MiniMax-TTS-Speech-2.6-Turbo",
+        model="minimax-tts-speech-2.6-turbo",
         gender="male",
         language="zh-CN",
         style_tags=("youth", "clear"),
@@ -88,7 +88,7 @@ _MINIMAX_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="female-shaonv",
         name="Shaonv (Female)",
         provider=_PROVIDER,
-        model="MiniMax-TTS-Speech-2.6-Turbo",
+        model="minimax-tts-speech-2.6-turbo",
         gender="female",
         language="zh-CN",
         style_tags=("youth", "warm"),
@@ -97,7 +97,7 @@ _MINIMAX_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="male-qn-jingying",
         name="Jingying (Male)",
         provider=_PROVIDER,
-        model="MiniMax-TTS-Speech-2.6-Turbo",
+        model="minimax-tts-speech-2.6-turbo",
         gender="male",
         language="zh-CN",
         style_tags=("professional",),
@@ -106,7 +106,7 @@ _MINIMAX_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="presenter_female",
         name="Presenter (Female)",
         provider=_PROVIDER,
-        model="MiniMax-TTS-Speech-2.6-Turbo",
+        model="minimax-tts-speech-2.6-turbo",
         gender="female",
         language="en-US",
         style_tags=("presenter", "announcer"),
@@ -114,13 +114,13 @@ _MINIMAX_TTS_VOICES: tuple[Voice, ...] = (
 )
 
 
-# Inworld-TTS-1.5-Mini — Inworld AI character voices, English-only.
+# inworld-tts-1.5-mini — Inworld AI character voices, English-only.
 _INWORLD_TTS_VOICES: tuple[Voice, ...] = (
     Voice(
         voice_id="ashley",
         name="Ashley",
         provider=_PROVIDER,
-        model="Inworld-TTS-1.5-Mini",
+        model="inworld-tts-1.5-mini",
         gender="female",
         language="en-US",
         style_tags=("conversational", "warm"),
@@ -129,7 +129,7 @@ _INWORLD_TTS_VOICES: tuple[Voice, ...] = (
         voice_id="ronald",
         name="Ronald",
         provider=_PROVIDER,
-        model="Inworld-TTS-1.5-Mini",
+        model="inworld-tts-1.5-mini",
         gender="male",
         language="en-US",
         style_tags=("conversational",),
