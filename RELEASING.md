@@ -88,15 +88,18 @@ validate-version ─┐                              ┌──> publish-cli
                   ├──> publish-core ─────────────┤
 changelog-gate ───┤                              └──> publish-connectors (matrix×13) ──> publish-meta ─┐
                   │                                                                                    ├──> install-verify
-release-smoke ────┘                                                                                    │
+release-smoke ────┤                                                                                    │
+                  │                                                                                    │
+pin-parity ───────┘                                                                                    │
                                                                                                        │
 publish-npm ───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Notes on the graph:
 
-* `validate-version`, `changelog-gate`, and `release-smoke` are the
-  three pre-publish gates. All must pass before any package is built.
+* `validate-version`, `changelog-gate`, `release-smoke`, and
+  `pin-parity` are the four pre-publish gates. All must pass before
+  any package is built.
 * `publish-cli` runs in parallel with the connector matrix but is NOT
   on the path to `install-verify`. A `publish-cli` failure marks the
   overall run red but doesn't cancel verify — verify is a smoke test
@@ -114,6 +117,15 @@ Notes on the graph:
   installs `genblaze[all]` from a local wheelhouse with `--no-index`,
   imports every connector. Catches version-pin mismatches before PyPI
   sees them.
+* **`pin-parity`** — for every package, compares source
+  `[project.dependencies]` against the wheel already on PyPI at the
+  same version. Fails the release if they diverge. Closes the
+  `skip-existing` trap that shipped twice (s3 in 0.3.0, langsmith +
+  cli in 0.3.2): without this gate, a package whose pin was widened
+  in source but whose version was never bumped will be silently
+  skipped on every release, leaving the broken wheel resolvable. Run
+  locally via `make pypi-pin-parity` (also bundled into
+  `make pre-release`).
 * **`publish-core`** — must publish first; everything else pins it.
 * **`publish-cli` + `publish-connectors`** — fan out in parallel. The
   connectors matrix uses `fail-fast: false` so one transient PyPI hiccup
@@ -124,8 +136,12 @@ Notes on the graph:
   PyPI to resolve `pip install "genblaze[all]"`.
 * **`publish-npm`** — independent of the PyPI graph. Publishes
   `@genblaze/spec` with sigstore provenance.
-* **`install-verify`** — installs `genblaze==$version` from public PyPI
-  in a fresh venv and imports the core packages. Skipped on dry-runs
+* **`install-verify`** — installs `genblaze[all]==$version` from public
+  PyPI in a fresh venv and imports the core packages. The `[all]` form
+  exercises every connector's pin against the live registry, which is
+  what catches drift like the 0.3.2 langsmith/cli wheels (a bare
+  `genblaze==$version` resolve only pulls the umbrella defaults and
+  misses connector-specific pin breakage). Skipped on dry-runs
   (TestPyPI indexing lag makes this flaky).
 
 ### 2. Dry run (`workflow_dispatch`)

@@ -46,7 +46,8 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Pre-publish gates. All three must pass before any package is built.
+  # Pre-publish gates. All four must pass before any package is built:
+  # validate-version, changelog-gate, release-smoke, pin-parity.
   # ─────────────────────────────────────────────────────────────────────
 
   validate-version:
@@ -182,6 +183,30 @@ jobs:
       - name: Run release smoke test (build + install + import all)
         run: make release-smoke
 
+  pin-parity:
+    # For every package, compare its source [project.dependencies] to the
+    # wheel already published on PyPI at the same version. A mismatch is
+    # fatal: ``skip-existing`` on the publish jobs would silently no-op
+    # the divergent wheel, leaving the stale (broken) wheel resolvable
+    # forever. This trap has shipped twice (genblaze-s3 in 0.3.0,
+    # genblaze-langsmith + genblaze-cli in 0.3.2) before this gate
+    # existed. ``make pre-release`` runs the same check locally — this
+    # is the defense-in-depth layer for maintainers who skipped it.
+    # See tools/check_pin_parity.py.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [validate-version]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install packaging
+      - name: Check source pins match published wheel pins
+        run: python tools/check_pin_parity.py
+
   # ─────────────────────────────────────────────────────────────────────
   # PyPI publishes. Dependency order is significant: core ships first
   # because every other package depends on it; the umbrella ships last
@@ -191,7 +216,7 @@ jobs:
   publish-core:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-version, changelog-gate, release-smoke]
+    needs: [validate-version, changelog-gate, release-smoke, pin-parity]
     # Dry-run dispatches use the `testpypi` environment so we can configure
     # a SEPARATE Trusted Publisher on test.pypi.org without leaking that
     # OIDC trust into production. Real publishes use `pypi`.
@@ -339,7 +364,7 @@ jobs:
   publish-npm:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-version, changelog-gate]
+    needs: [validate-version, changelog-gate, pin-parity]
     environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'npm-dryrun' || 'npm' }}
     permissions:
       contents: read
@@ -430,11 +455,18 @@ jobs:
           echo "::error::genblaze==$version did not appear on PyPI within 2 minutes"
           exit 1
       - name: Fresh install and import smoke
+        # Resolves ``genblaze[all]`` (every connector), not bare ``genblaze``
+        # (only umbrella defaults: core + s3). The [all] form exercises
+        # every connector's pin against public PyPI — the same install
+        # graph real users see, and the gate that would have caught the
+        # 0.3.0 s3 drift and the 0.3.2 langsmith/cli drift before they
+        # shipped. ``make post-release`` from a maintainer's laptop runs
+        # the same check.
         run: |
           version="${{ needs.validate-version.outputs.umbrella_version }}"
           python -m venv /tmp/verify
           /tmp/verify/bin/pip install --upgrade pip
-          /tmp/verify/bin/pip install "genblaze==$version"
+          /tmp/verify/bin/pip install "genblaze[all]==$version"
           /tmp/verify/bin/python -c "
           import genblaze_core, genblaze_s3
           print(f'genblaze_core={genblaze_core.__version__}')

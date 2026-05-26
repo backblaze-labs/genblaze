@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-26
+
+Release-pipeline hardening + refresh of two PyPI wheels with stale
+`genblaze-core` pins. Closes the class of drift bug where
+`skip-existing` silently no-ops a package whose source pin was widened
+but whose `version` field was never bumped. This trap shipped twice
+before: `genblaze-s3` in the 0.3.0 wave (fixed in 0.3.1), and now
+`genblaze-langsmith` + `genblaze-cli` discovered during 0.3.2
+post-publish verification.
+
+### Released package versions
+
+- `genblaze-langsmith` 0.2.1 → **0.3.0** — patch republish to refresh
+  the PyPI wheel. The 0.2.1 wheel pinned `genblaze-core<0.3`, so
+  `pip install "genblaze[all]"` could not resolve any release in the
+  0.3.x line. Source had the corrected `<0.4` pin since the 0.3.0
+  prep window but `skip-existing` skipped publish on every wave.
+- `genblaze-cli` 0.2.0 → **0.3.0** — patch republish for the same
+  reason. The 0.2.0 wheel on PyPI pinned `genblaze-core<0.3`; source
+  had `<0.4`. Surfaced by the new pin-parity gate, not by any
+  install-resolution failure (cli is not in `genblaze[all]`).
+- All other packages — unchanged.
+
+### Changed
+
+- **Release pipeline**: new pre-publish parity gate
+  (`make pypi-pin-parity`, backed by `tools/check_pin_parity.py`)
+  fails the release if any package's `[project.dependencies]` diverges
+  from the same-version wheel already on PyPI. Bundled into
+  `make pre-release` and added as a `pin-parity` job in
+  `.github/workflows/release.yml` that gates every publish job. The
+  trap class is now closed — a future wave cannot ship a divergent
+  wheel without an explicit version bump.
+- **Release pipeline**: `install-verify` now resolves
+  `genblaze[all]==<version>` instead of bare `genblaze==<version>`.
+  The workflow's own post-publish gate now exercises every connector's
+  pin against public PyPI, matching what `make post-release` does from
+  a maintainer's laptop and what real users see on `pip install
+  "genblaze[all]"`.
+
 ## [0.3.2] - 2026-05-26
 
 Storage ergonomics & GMI catalog hygiene. Closes the 2026-05-23 user feedback

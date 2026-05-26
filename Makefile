@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check release-smoke pre-release post-release
+.PHONY: install install-dev test lint fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity release-smoke pre-release post-release
 
 install:
 	pip install -e libs/core
@@ -93,6 +93,14 @@ ts-types-check: ts-types
 pypi-metadata-check:
 	@python tools/check_pypi_metadata.py --strict
 
+# Pre-release drift guard. For every package whose source version is
+# already on PyPI, compare [project.dependencies] against the wheel's
+# Requires-Dist. A mismatch means ``skip-existing`` would silently
+# no-op a divergent wheel — the trap that shipped twice (s3 in 0.3.0,
+# langsmith + cli in 0.3.2). See tools/check_pin_parity.py.
+pypi-pin-parity:
+	@python tools/check_pin_parity.py
+
 # Pre-release wheel install smoke test. Builds every package to a
 # local wheelhouse, then installs ``genblaze[all]`` into a fresh
 # venv from that wheelhouse only (``--no-index``). Catches version-
@@ -107,7 +115,7 @@ release-smoke:
 # is a strong signal the publish pipeline will be green. Ordered for
 # quick-fail: cheap checks first, then the full test suite and the
 # wheelhouse smoke. See RELEASING.md.
-pre-release: lint typecheck ts-types-check pypi-metadata-check test release-smoke
+pre-release: lint typecheck ts-types-check pypi-metadata-check pypi-pin-parity test release-smoke
 	@echo ""
 	@echo "pre-release gates passed."
 	@echo "Next: bump pyproject.toml versions, cut CHANGELOG, tag, gh release create."
