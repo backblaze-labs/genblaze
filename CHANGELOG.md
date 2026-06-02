@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`,
+  so a cache shared across tenants no longer serves one tenant's cached output
+  asset to another for an otherwise-identical step (#68).
+
 ## [0.3.3] - 2026-05-26
 
 Release-pipeline hardening + refresh of two PyPI wheels with stale

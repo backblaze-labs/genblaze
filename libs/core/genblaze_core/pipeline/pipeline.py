@@ -782,7 +782,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(result, mod_result, "post")
 
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
-            self._cache.put(cache_key_step, result)
+            self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
 
         return result
 
@@ -806,7 +806,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(step, mod_result, "pre")
 
         if self._cache is not None:
-            cached = self._cache.get(step)
+            cached = self._cache.get(step, tenant_id=self._tenant_id)
             if cached is not None:
                 return cached
 
@@ -864,7 +864,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(step, mod_result, "pre")
 
         if self._cache is not None:
-            cached = self._cache.get(step)
+            cached = self._cache.get(step, tenant_id=self._tenant_id)
             if cached is not None:
                 return cached
 

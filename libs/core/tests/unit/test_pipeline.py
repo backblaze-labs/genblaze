@@ -166,6 +166,40 @@ def test_pipeline_cache_miss_different_new_fields(field: str, val_a: str, val_b:
     assert step_cache_key(a) != step_cache_key(b)
 
 
+def test_step_cache_key_tenant_isolation() -> None:
+    """Issue #68: tenant_id partitions the key; default stays backward-compatible.
+
+    tenant_id lives on Run, not Step, so a shared StepCache must be told the
+    tenant explicitly or it will serve one tenant's output to another.
+    """
+    from genblaze_core.models.step import Step
+    from genblaze_core.pipeline.cache import step_cache_key
+
+    s = Step(provider="p", model="m", prompt="same")
+    assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s, tenant_id="tenant-b")
+    # Single-tenant callers that pass no tenant_id keep the prior key.
+    assert step_cache_key(s, tenant_id=None) == step_cache_key(s)
+
+
+def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
+    """Issue #68: a shared StepCache must not serve one tenant's result to another."""
+    cache = StepCache(tmp_path / "cache")
+
+    a1 = CountingProvider()
+    Pipeline("c", tenant_id="tenant-a").cache(cache).step(a1, model="m", prompt="p").run()
+    assert a1.invoke_count == 1
+
+    # Identical step, different tenant, shared cache -> must MISS (no cross-tenant leak).
+    b1 = CountingProvider()
+    Pipeline("c", tenant_id="tenant-b").cache(cache).step(b1, model="m", prompt="p").run()
+    assert b1.invoke_count == 1
+
+    # Same tenant again -> cache hit, provider not called.
+    a2 = CountingProvider()
+    Pipeline("c", tenant_id="tenant-a").cache(cache).step(a2, model="m", prompt="p").run()
+    assert a2.invoke_count == 0
+
+
 def test_pipeline_cache_clear(tmp_path: Path) -> None:
     """Cache.clear() should invalidate all entries."""
     cache = StepCache(tmp_path / "cache")
