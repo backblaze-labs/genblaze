@@ -9,20 +9,28 @@ import tempfile
 import threading
 from pathlib import Path
 
+from genblaze_core._utils import normalize_tenant_id
 from genblaze_core.canonical.json import canonical_hash
 from genblaze_core.models.step import Step
 
 logger = logging.getLogger("genblaze.cache")
 
 
-def step_cache_key(step: Step) -> str:
+def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
     """Compute deterministic cache key from step inputs.
 
     Key is derived from every Step field whose change would legitimately
     yield a different output: provider, model, model_version, model_hash,
     prompt, negative_prompt, prompt_visibility (affects redaction on reuse),
     params, seed, modality, step_type, and input asset content IDs.
+
+    ``tenant_id`` partitions the key so a shared cache never serves one
+    tenant's output to another. It lives on ``Run``, not ``Step``, so callers
+    must pass it explicitly. It is normalized (whitespace stripped, empty -> None)
+    and folded into the key only when present; an unset tenant yields the
+    pre-tenant key, so existing single-tenant cache entries stay valid.
     """
+    tenant_id = normalize_tenant_id(tenant_id)
     key_data = {
         "provider": step.provider,
         "model": step.model,
@@ -38,6 +46,8 @@ def step_cache_key(step: Step) -> str:
         # Use content hash or URL for cache correctness — asset_id is random per execution
         "input_ids": sorted(a.sha256 or a.url for a in step.inputs) if step.inputs else None,
     }
+    if tenant_id is not None:
+        key_data["tenant_id"] = tenant_id
     return canonical_hash(key_data)
 
 
@@ -67,9 +77,9 @@ class StepCache:
     def _path(self, key: str) -> Path:
         return self._dir / f"{key}.json"
 
-    def get(self, step: Step) -> Step | None:
+    def get(self, step: Step, tenant_id: str | None = None) -> Step | None:
         """Return cached step result, or None if not cached (race-free)."""
-        key = step_cache_key(step)
+        key = step_cache_key(step, tenant_id)
         path = self._path(key)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -81,9 +91,9 @@ class StepCache:
             logger.warning("Cache entry corrupt or unreadable (treating as miss): %s", exc)
             return None
 
-    def put(self, step: Step, result: Step) -> None:
+    def put(self, step: Step, result: Step, tenant_id: str | None = None) -> None:
         """Cache a completed step result (atomic write, thread-safe)."""
-        key = step_cache_key(step)
+        key = step_cache_key(step, tenant_id)
         path = self._path(key)
         data = result.model_dump_json().encode("utf-8")
         fd, tmp = tempfile.mkstemp(dir=self._dir, suffix=".tmp")

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
+from genblaze_core._utils import _SECRET_PATTERNS, new_id, normalize_tenant_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
     BatchPipelineError,
@@ -236,7 +236,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         preflight: bool = True,
     ):
         self._name = name
-        self._tenant_id = tenant_id
+        self._tenant_id = normalize_tenant_id(tenant_id)
         self._project_id = project_id
         self._parent_run_id: str | None = None
         self._steps: list[_PipelineStep] = []
@@ -271,7 +271,24 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._tracer = NoOpTracer()
         self._event_emitter: QueueEmitter | None = None
 
+    @staticmethod
+    def _reject_config_tenant(cfg: RunnableConfig | None) -> None:
+        """Reject a per-call ``tenant_id`` in ``RunnableConfig``.
+
+        ``RunnableConfig`` is a ``TypedDict`` and does not validate keys at
+        runtime, so a config-level ``tenant_id`` would slip through as a plain
+        dict key. It is never applied to the cache key or the Run, so accepting
+        it silently would leak one tenant's cached output to another. Fail loudly
+        and point at the supported path.
+        """
+        if cfg is not None and "tenant_id" in cfg:
+            raise ValueError(
+                "RunnableConfig does not support 'tenant_id'. Set the tenant on "
+                "the pipeline instead: Pipeline(..., tenant_id=...) (see #68)."
+            )
+
     def config(self, cfg: RunnableConfig) -> Pipeline:
+        self._reject_config_tenant(cfg)
         self._config = cfg
         return self
 
@@ -782,7 +799,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(result, mod_result, "post")
 
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
-            self._cache.put(cache_key_step, result)
+            self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
 
         return result
 
@@ -806,7 +823,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(step, mod_result, "pre")
 
         if self._cache is not None:
-            cached = self._cache.get(step)
+            cached = self._cache.get(step, tenant_id=self._tenant_id)
             if cached is not None:
                 return cached
 
@@ -864,7 +881,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(step, mod_result, "pre")
 
         if self._cache is not None:
-            cached = self._cache.get(step)
+            cached = self._cache.get(step, tenant_id=self._tenant_id)
             if cached is not None:
                 return cached
 
@@ -1332,8 +1349,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             msg = "Pipeline has no steps. Add steps with .step() before calling .run()."
             raise GenblazeError(msg)
 
-        self._validate_steps()
-
         # Resolve config: explicit override > inline kwargs > pipeline-level config
         config: RunnableConfig | None
         if _config_override is not None:
@@ -1345,6 +1360,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
+        # Reject an invalid config-level tenant before model preflight (which may
+        # do network work), so a bad invoke(config={"tenant_id": ...}) fails fast.
+        self._reject_config_tenant(config)
+
+        self._validate_steps()
 
         run_id = new_id()
         spinner: Spinner | None = None
@@ -1517,8 +1537,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                 f"max_concurrency must be None (unlimited) or >= 1, got {max_concurrency}"
             )
 
-        self._validate_steps()
-
         # Resolve config: explicit override > inline kwargs > pipeline-level config
         config: RunnableConfig | None
         if _config_override is not None:
@@ -1530,6 +1548,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
+        # Reject an invalid config-level tenant before model preflight (which may
+        # do network work), so a bad ainvoke(config={"tenant_id": ...}) fails fast.
+        self._reject_config_tenant(config)
+
+        self._validate_steps()
 
         run_id = new_id()
         # input_from requires sequential execution (needs prior step results)

@@ -16,7 +16,7 @@ Fluent API for building and executing multi-step generative media workflows with
 - `Pipeline.batch_run(prompts, max_concurrency=5, sink=None, pipeline_timeout=None, on_step_complete=None)` — Execute pipeline independently for each prompt (sync)
 - `Pipeline.abatch_run(prompts, max_concurrency=5, sink=None, pipeline_timeout=None, on_step_complete=None)` — Execute pipeline for each prompt with async concurrency control
 - `PipelineResult.save()` — Save output with optional manifest embedding
-- `StepCache` — File-based cache keyed by deterministic hash of step inputs
+- `StepCache` — File-based cache keyed by deterministic hash of step inputs; partitioned by `tenant_id` only when a tenant is set (via `Pipeline(tenant_id=...)`, or passed directly to `StepCache.get`/`put`), so a shared cache stays isolated across tenants. Single-tenant keys are unchanged.
 - `StepCompleteEvent` — Dataclass fired via `on_step_complete` after each step finishes
 
 ## Canonical Files

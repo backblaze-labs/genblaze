@@ -166,6 +166,120 @@ def test_pipeline_cache_miss_different_new_fields(field: str, val_a: str, val_b:
     assert step_cache_key(a) != step_cache_key(b)
 
 
+def test_step_cache_key_tenant_isolation() -> None:
+    """Issue #68: tenant_id partitions the key; default stays backward-compatible.
+
+    tenant_id lives on Run, not Step, so a shared StepCache must be told the
+    tenant explicitly or it will serve one tenant's output to another.
+    """
+    from genblaze_core.models.step import Step
+    from genblaze_core.pipeline.cache import step_cache_key
+
+    s = Step(provider="p", model="m", prompt="same")
+    assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s, tenant_id="tenant-b")
+    # Single-tenant callers that pass no tenant_id keep the prior key.
+    assert step_cache_key(s, tenant_id=None) == step_cache_key(s)
+    # A set tenant_id changes the key, but leaving it unset preserves the legacy
+    # key (tenant_id is folded in only when present), so existing caches stay valid.
+    assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s)
+    # Empty / whitespace tenant is treated as unset, matching Run-level handling
+    # (normalize_tenant_id strips whitespace, so both "" and "   " collapse to None).
+    assert step_cache_key(s, tenant_id="") == step_cache_key(s)
+    assert step_cache_key(s, tenant_id="   ") == step_cache_key(s)
+
+
+def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
+    """Issue #68: a shared StepCache must not serve one tenant's result to another."""
+    cache = StepCache(tmp_path / "cache")
+
+    a1 = CountingProvider()
+    Pipeline("c", tenant_id="tenant-a").cache(cache).step(a1, model="m", prompt="p").run()
+    assert a1.invoke_count == 1
+
+    # Identical step, different tenant, shared cache -> must MISS (no cross-tenant leak).
+    b1 = CountingProvider()
+    Pipeline("c", tenant_id="tenant-b").cache(cache).step(b1, model="m", prompt="p").run()
+    assert b1.invoke_count == 1
+
+    # Same tenant again -> cache hit, provider not called.
+    a2 = CountingProvider()
+    Pipeline("c", tenant_id="tenant-a").cache(cache).step(a2, model="m", prompt="p").run()
+    assert a2.invoke_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cache_no_cross_tenant_hit_async(tmp_path: Path) -> None:
+    """Issue #68 (async path): a shared StepCache must isolate tenants under arun()."""
+    cache = StepCache(tmp_path / "cache")
+
+    a1 = CountingProvider()
+    await Pipeline("c", tenant_id="tenant-a").cache(cache).step(a1, model="m", prompt="p").arun()
+    assert a1.invoke_count == 1
+
+    # Identical step, different tenant, shared cache -> must MISS (no cross-tenant leak).
+    b1 = CountingProvider()
+    await Pipeline("c", tenant_id="tenant-b").cache(cache).step(b1, model="m", prompt="p").arun()
+    assert b1.invoke_count == 1
+
+    # Same tenant again -> cache hit, provider not called.
+    a2 = CountingProvider()
+    await Pipeline("c", tenant_id="tenant-a").cache(cache).step(a2, model="m", prompt="p").arun()
+    assert a2.invoke_count == 0
+
+
+def test_config_rejects_tenant_id() -> None:
+    """Issue #68: a tenant_id in RunnableConfig is rejected, not silently ignored.
+
+    RunnableConfig is a TypedDict (no runtime key validation), so a dynamic caller
+    could pass tenant_id and never get isolation. Reject it loudly instead.
+    """
+    with pytest.raises(ValueError, match="tenant_id"):
+        Pipeline("c").config({"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
+def test_invoke_rejects_config_tenant_id() -> None:
+    """Issue #68: tenant_id via invoke(config=...) is rejected at run resolution."""
+    p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
+    with pytest.raises(ValueError, match="tenant_id"):
+        p.invoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_ainvoke_rejects_config_tenant_id() -> None:
+    """Issue #68: tenant_id via ainvoke(config=...) is rejected at arun resolution."""
+    p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
+    with pytest.raises(ValueError, match="tenant_id"):
+        await p.ainvoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
+def test_config_tenant_rejected_before_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #68: reject a config-level tenant before (networked) model preflight."""
+    p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
+    preflight_calls: list[int] = []
+    monkeypatch.setattr(p, "_validate_steps", lambda: preflight_calls.append(1))
+    with pytest.raises(ValueError, match="tenant_id"):
+        p.invoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+    assert preflight_calls == []  # rejected before preflight ran
+
+
+def test_empty_tenant_normalized_to_none() -> None:
+    """Issue #68: empty / whitespace tenant_id normalizes to None so cache and run agree."""
+    assert Pipeline("c", tenant_id="")._tenant_id is None
+    assert Pipeline("c", tenant_id="   ")._tenant_id is None
+    assert Pipeline("c", tenant_id="acme")._tenant_id == "acme"
+
+
+def test_normalize_tenant_id_helper() -> None:
+    """Issue #68: one shared normalizer feeds both the cache key and Run metadata."""
+    from genblaze_core._utils import normalize_tenant_id
+
+    assert normalize_tenant_id(None) is None
+    assert normalize_tenant_id("") is None
+    assert normalize_tenant_id("   ") is None
+    assert normalize_tenant_id("  acme ") == "acme"
+    assert normalize_tenant_id("acme") == "acme"
+
+
 def test_pipeline_cache_clear(tmp_path: Path) -> None:
     """Cache.clear() should invalidate all entries."""
     cache = StepCache(tmp_path / "cache")
