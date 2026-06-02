@@ -17,7 +17,7 @@ class RunnableConfig(TypedDict, total=False):
     tags: list[str]
     metadata: dict[str, Any]
     run_id: str
-    tenant_id: str
+    # Tenancy is set via Pipeline(tenant_id=...), not per-call config (see #68).
     timeout: float
     max_retries: int
     on_progress: Callable[[ProgressEvent], None] | None

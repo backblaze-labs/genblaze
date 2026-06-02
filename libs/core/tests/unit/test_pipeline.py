@@ -179,6 +179,9 @@ def test_step_cache_key_tenant_isolation() -> None:
     assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s, tenant_id="tenant-b")
     # Single-tenant callers that pass no tenant_id keep the prior key.
     assert step_cache_key(s, tenant_id=None) == step_cache_key(s)
+    # A set tenant_id changes the key, but leaving it unset preserves the legacy
+    # key (tenant_id is folded in only when present), so existing caches stay valid.
+    assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s)
 
 
 def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
@@ -197,6 +200,26 @@ def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
     # Same tenant again -> cache hit, provider not called.
     a2 = CountingProvider()
     Pipeline("c", tenant_id="tenant-a").cache(cache).step(a2, model="m", prompt="p").run()
+    assert a2.invoke_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cache_no_cross_tenant_hit_async(tmp_path: Path) -> None:
+    """Issue #68 (async path): a shared StepCache must isolate tenants under arun()."""
+    cache = StepCache(tmp_path / "cache")
+
+    a1 = CountingProvider()
+    await Pipeline("c", tenant_id="tenant-a").cache(cache).step(a1, model="m", prompt="p").arun()
+    assert a1.invoke_count == 1
+
+    # Identical step, different tenant, shared cache -> must MISS (no cross-tenant leak).
+    b1 = CountingProvider()
+    await Pipeline("c", tenant_id="tenant-b").cache(cache).step(b1, model="m", prompt="p").arun()
+    assert b1.invoke_count == 1
+
+    # Same tenant again -> cache hit, provider not called.
+    a2 = CountingProvider()
+    await Pipeline("c", tenant_id="tenant-a").cache(cache).step(a2, model="m", prompt="p").arun()
     assert a2.invoke_count == 0
 
 

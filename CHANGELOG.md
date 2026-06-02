@@ -9,9 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`,
-  so a cache shared across tenants no longer serves one tenant's cached output
-  asset to another for an otherwise-identical step (#68).
+- `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
+  when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
+  `StepCache.get`/`put`), so a cache shared across tenants no longer serves one
+  tenant's cached output asset to another for an otherwise-identical step.
+  Single-tenant keys are unchanged, and `RunnableConfig` no longer advertises a
+  `tenant_id` key that was never honored (#68).
 
 ## [0.3.3] - 2026-05-26
 

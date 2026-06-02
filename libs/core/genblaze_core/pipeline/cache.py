@@ -25,10 +25,11 @@ def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
 
     ``tenant_id`` partitions the key so a shared cache never serves one
     tenant's output to another. It lives on ``Run``, not ``Step``, so callers
-    must pass it explicitly; it defaults to ``None`` for single-tenant use.
+    must pass it explicitly. It is folded into the key only when set; when it is
+    ``None`` (single-tenant), the key matches the pre-tenant behavior, so existing
+    on-disk cache entries stay valid.
     """
     key_data = {
-        "tenant_id": tenant_id,
         "provider": step.provider,
         "model": step.model,
         "model_version": step.model_version,
@@ -43,6 +44,10 @@ def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
         # Use content hash or URL for cache correctness — asset_id is random per execution
         "input_ids": sorted(a.sha256 or a.url for a in step.inputs) if step.inputs else None,
     }
+    # Only fold tenant_id in when set, so single-tenant keys are byte-identical
+    # to the pre-tenant behavior and existing cache entries remain valid.
+    if tenant_id is not None:
+        key_data["tenant_id"] = tenant_id
     return canonical_hash(key_data)
 
 
