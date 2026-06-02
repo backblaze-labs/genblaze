@@ -182,6 +182,8 @@ def test_step_cache_key_tenant_isolation() -> None:
     # A set tenant_id changes the key, but leaving it unset preserves the legacy
     # key (tenant_id is folded in only when present), so existing caches stay valid.
     assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s)
+    # Empty / whitespace tenant is treated as unset, matching Run-level handling.
+    assert step_cache_key(s, tenant_id="") == step_cache_key(s)
 
 
 def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
@@ -246,6 +248,23 @@ async def test_ainvoke_rejects_config_tenant_id() -> None:
     p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
     with pytest.raises(ValueError, match="tenant_id"):
         await p.ainvoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
+def test_config_tenant_rejected_before_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #68: reject a config-level tenant before (networked) model preflight."""
+    p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
+    preflight_calls: list[int] = []
+    monkeypatch.setattr(p, "_validate_steps", lambda: preflight_calls.append(1))
+    with pytest.raises(ValueError, match="tenant_id"):
+        p.invoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+    assert preflight_calls == []  # rejected before preflight ran
+
+
+def test_empty_tenant_normalized_to_none() -> None:
+    """Issue #68: empty / whitespace tenant_id normalizes to None so cache and run agree."""
+    assert Pipeline("c", tenant_id="")._tenant_id is None
+    assert Pipeline("c", tenant_id="   ")._tenant_id is None
+    assert Pipeline("c", tenant_id="acme")._tenant_id == "acme"
 
 
 def test_pipeline_cache_clear(tmp_path: Path) -> None:

@@ -236,7 +236,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         preflight: bool = True,
     ):
         self._name = name
-        self._tenant_id = tenant_id
+        # Normalize ""/whitespace -> None so cache keys and Run metadata agree.
+        self._tenant_id = (tenant_id.strip() or None) if tenant_id else None
         self._project_id = project_id
         self._parent_run_id: str | None = None
         self._steps: list[_PipelineStep] = []
@@ -1349,8 +1350,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             msg = "Pipeline has no steps. Add steps with .step() before calling .run()."
             raise GenblazeError(msg)
 
-        self._validate_steps()
-
         # Resolve config: explicit override > inline kwargs > pipeline-level config
         config: RunnableConfig | None
         if _config_override is not None:
@@ -1362,7 +1361,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
+        # Reject an invalid config-level tenant before model preflight (which may
+        # do network work), so a bad invoke(config={"tenant_id": ...}) fails fast.
         self._reject_config_tenant(config)
+
+        self._validate_steps()
 
         run_id = new_id()
         spinner: Spinner | None = None
@@ -1535,8 +1538,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                 f"max_concurrency must be None (unlimited) or >= 1, got {max_concurrency}"
             )
 
-        self._validate_steps()
-
         # Resolve config: explicit override > inline kwargs > pipeline-level config
         config: RunnableConfig | None
         if _config_override is not None:
@@ -1548,7 +1549,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
+        # Reject an invalid config-level tenant before model preflight (which may
+        # do network work), so a bad ainvoke(config={"tenant_id": ...}) fails fast.
         self._reject_config_tenant(config)
+
+        self._validate_steps()
 
         run_id = new_id()
         # input_from requires sequential execution (needs prior step results)

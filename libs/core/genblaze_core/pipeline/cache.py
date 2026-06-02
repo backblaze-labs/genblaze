@@ -44,9 +44,9 @@ def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
         # Use content hash or URL for cache correctness — asset_id is random per execution
         "input_ids": sorted(a.sha256 or a.url for a in step.inputs) if step.inputs else None,
     }
-    # Only fold tenant_id in when set, so single-tenant keys are byte-identical
-    # to the pre-tenant behavior and existing cache entries remain valid.
-    if tenant_id is not None:
+    # Fold tenant_id in only when set (non-empty); None and "" hash identically, so
+    # single-tenant keys match the pre-tenant behavior and stay backward-compatible.
+    if tenant_id:
         key_data["tenant_id"] = tenant_id
     return canonical_hash(key_data)
 
