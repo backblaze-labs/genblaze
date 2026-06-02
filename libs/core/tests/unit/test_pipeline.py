@@ -182,8 +182,10 @@ def test_step_cache_key_tenant_isolation() -> None:
     # A set tenant_id changes the key, but leaving it unset preserves the legacy
     # key (tenant_id is folded in only when present), so existing caches stay valid.
     assert step_cache_key(s, tenant_id="tenant-a") != step_cache_key(s)
-    # Empty / whitespace tenant is treated as unset, matching Run-level handling.
+    # Empty / whitespace tenant is treated as unset, matching Run-level handling
+    # (normalize_tenant_id strips whitespace, so both "" and "   " collapse to None).
     assert step_cache_key(s, tenant_id="") == step_cache_key(s)
+    assert step_cache_key(s, tenant_id="   ") == step_cache_key(s)
 
 
 def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
