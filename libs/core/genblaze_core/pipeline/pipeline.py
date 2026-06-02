@@ -271,7 +271,24 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._tracer = NoOpTracer()
         self._event_emitter: QueueEmitter | None = None
 
+    @staticmethod
+    def _reject_config_tenant(cfg: RunnableConfig | None) -> None:
+        """Reject a per-call ``tenant_id`` in ``RunnableConfig``.
+
+        ``RunnableConfig`` is a ``TypedDict`` and does not validate keys at
+        runtime, so a config-level ``tenant_id`` would slip through as a plain
+        dict key. It is never applied to the cache key or the Run, so accepting
+        it silently would leak one tenant's cached output to another. Fail loudly
+        and point at the supported path.
+        """
+        if cfg is not None and "tenant_id" in cfg:
+            raise ValueError(
+                "RunnableConfig does not support 'tenant_id'. Set the tenant on "
+                "the pipeline instead: Pipeline(..., tenant_id=...) (see #68)."
+            )
+
     def config(self, cfg: RunnableConfig) -> Pipeline:
+        self._reject_config_tenant(cfg)
         self._config = cfg
         return self
 
@@ -1345,6 +1362,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
+        self._reject_config_tenant(config)
 
         run_id = new_id()
         spinner: Spinner | None = None
@@ -1530,6 +1548,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
+        self._reject_config_tenant(config)
 
         run_id = new_id()
         # input_from requires sequential execution (needs prior step results)

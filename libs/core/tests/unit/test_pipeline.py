@@ -223,6 +223,31 @@ async def test_pipeline_cache_no_cross_tenant_hit_async(tmp_path: Path) -> None:
     assert a2.invoke_count == 0
 
 
+def test_config_rejects_tenant_id() -> None:
+    """Issue #68: a tenant_id in RunnableConfig is rejected, not silently ignored.
+
+    RunnableConfig is a TypedDict (no runtime key validation), so a dynamic caller
+    could pass tenant_id and never get isolation. Reject it loudly instead.
+    """
+    with pytest.raises(ValueError, match="tenant_id"):
+        Pipeline("c").config({"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
+def test_invoke_rejects_config_tenant_id() -> None:
+    """Issue #68: tenant_id via invoke(config=...) is rejected at run resolution."""
+    p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
+    with pytest.raises(ValueError, match="tenant_id"):
+        p.invoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_ainvoke_rejects_config_tenant_id() -> None:
+    """Issue #68: tenant_id via ainvoke(config=...) is rejected at arun resolution."""
+    p = Pipeline("c").step(CountingProvider(), model="m", prompt="p")
+    with pytest.raises(ValueError, match="tenant_id"):
+        await p.ainvoke(config={"tenant_id": "tenant-a"})  # type: ignore[arg-type]
+
+
 def test_pipeline_cache_clear(tmp_path: Path) -> None:
     """Cache.clear() should invalidate all entries."""
     cache = StepCache(tmp_path / "cache")

@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
   `StepCache.get`/`put`), so a cache shared across tenants no longer serves one
   tenant's cached output asset to another for an otherwise-identical step.
-  Single-tenant keys are unchanged, and `RunnableConfig` no longer advertises a
-  `tenant_id` key that was never honored (#68).
+  Single-tenant keys are unchanged. A `tenant_id` in `RunnableConfig` is now
+  rejected at runtime (it was never honored), so a dynamic caller passing it via
+  `config()` / `invoke(config=...)` fails loudly instead of silently bypassing
+  cache isolation (#68).
 
 ## [0.3.3] - 2026-05-26
 
