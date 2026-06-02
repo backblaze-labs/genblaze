@@ -9,6 +9,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from genblaze_core._utils import normalize_tenant_id
 from genblaze_core.canonical.json import canonical_hash
 from genblaze_core.models.step import Step
 
@@ -25,10 +26,11 @@ def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
 
     ``tenant_id`` partitions the key so a shared cache never serves one
     tenant's output to another. It lives on ``Run``, not ``Step``, so callers
-    must pass it explicitly. It is folded into the key only when set; when it is
-    ``None`` (single-tenant), the key matches the pre-tenant behavior, so existing
-    on-disk cache entries stay valid.
+    must pass it explicitly. It is normalized (whitespace stripped, empty -> None)
+    and folded into the key only when present; an unset tenant yields the
+    pre-tenant key, so existing single-tenant cache entries stay valid.
     """
+    tenant_id = normalize_tenant_id(tenant_id)
     key_data = {
         "provider": step.provider,
         "model": step.model,
@@ -44,9 +46,7 @@ def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
         # Use content hash or URL for cache correctness — asset_id is random per execution
         "input_ids": sorted(a.sha256 or a.url for a in step.inputs) if step.inputs else None,
     }
-    # Fold tenant_id in only when set (non-empty); None and "" hash identically, so
-    # single-tenant keys match the pre-tenant behavior and stay backward-compatible.
-    if tenant_id:
+    if tenant_id is not None:
         key_data["tenant_id"] = tenant_id
     return canonical_hash(key_data)
 

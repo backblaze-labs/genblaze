@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
+from genblaze_core._utils import _SECRET_PATTERNS, new_id, normalize_tenant_id, utc_now
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
     BatchPipelineError,
@@ -236,8 +236,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         preflight: bool = True,
     ):
         self._name = name
-        # Normalize ""/whitespace -> None so cache keys and Run metadata agree.
-        self._tenant_id = (tenant_id.strip() or None) if tenant_id else None
+        self._tenant_id = normalize_tenant_id(tenant_id)
         self._project_id = project_id
         self._parent_run_id: str | None = None
         self._steps: list[_PipelineStep] = []

@@ -267,6 +267,17 @@ def test_empty_tenant_normalized_to_none() -> None:
     assert Pipeline("c", tenant_id="acme")._tenant_id == "acme"
 
 
+def test_normalize_tenant_id_helper() -> None:
+    """Issue #68: one shared normalizer feeds both the cache key and Run metadata."""
+    from genblaze_core._utils import normalize_tenant_id
+
+    assert normalize_tenant_id(None) is None
+    assert normalize_tenant_id("") is None
+    assert normalize_tenant_id("   ") is None
+    assert normalize_tenant_id("  acme ") == "acme"
+    assert normalize_tenant_id("acme") == "acme"
+
+
 def test_pipeline_cache_clear(tmp_path: Path) -> None:
     """Cache.clear() should invalidate all entries."""
     cache = StepCache(tmp_path / "cache")

@@ -33,6 +33,18 @@ def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def normalize_tenant_id(tenant_id: str | None) -> str | None:
+    """Normalize a tenant identifier: strip surrounding whitespace, "" -> None.
+
+    Tenancy must read identically wherever it is used (cache key, Run metadata,
+    sinks), so empty / whitespace-only values collapse to ``None`` in one place
+    rather than being special-cased at each call site.
+    """
+    if tenant_id is None:
+        return None
+    return tenant_id.strip() or None
+
+
 def _run_async(coro: Coroutine) -> Any:
     """Run an async coroutine from sync code safely.
 
