@@ -1,0 +1,7 @@
+# zizmor configuration. https://docs.zizmor.sh/configuration/
+#
+# zizmor audits the GitHub Actions workflows under .github/workflows/. It runs in
+# .github/workflows/security.yml and uploads SARIF to GitHub code scanning. No
+# audits are overridden here yet; add per-rule `ignore:` entries with a reason if
+# a finding is a verified false positive.
+rules: {}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import StorageError
@@ -188,7 +189,8 @@ class TestAssetTransfer:
         assert asset.sha256 is not None
         assert len(asset.sha256) == 64
         assert asset.size_bytes == len(b"fake image data")
-        assert "storage.example.com" in asset.url
+        _host = urlparse(asset.url).hostname or ""
+        assert _host == "storage.example.com" or _host.endswith(".storage.example.com")
         assert key in backend.store
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)

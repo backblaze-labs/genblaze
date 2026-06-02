@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
@@ -82,7 +83,8 @@ def test_fetch_output_attaches_asset(mock_luma):
     result = provider.fetch_output("gen-abc", step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "video/mp4"
-    assert "luma-output.com" in result.assets[0].url
+    _host = urlparse(result.assets[0].url).hostname or ""
+    assert _host == "luma-output.com" or _host.endswith(".luma-output.com")
 
 
 def test_fetch_output_failed_raises(mock_luma):

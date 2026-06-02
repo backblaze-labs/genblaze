@@ -301,8 +301,16 @@ class S3StorageBackend(StorageBackend):
 
     @property
     def _is_b2(self) -> bool:
-        """True when the endpoint points at B2 — gates B2-specific behaviors."""
-        return bool(self._endpoint_url and "backblazeb2.com" in self._endpoint_url)
+        """True when the endpoint host is a backblazeb2.com domain (gates B2 behaviors)."""
+        if not self._endpoint_url:
+            return False
+        from urllib.parse import urlparse
+
+        raw = self._endpoint_url
+        # Parse the host so the check can't be fooled by the domain appearing
+        # elsewhere in the URL (e.g. https://evil.example/backblazeb2.com).
+        host = (urlparse(raw if "://" in raw else f"//{raw}").hostname or "").lower()
+        return host == "backblazeb2.com" or host.endswith(".backblazeb2.com")
 
     def _client_kwargs(self) -> dict[str, Any]:
         """Assemble boto3.client kwargs from current instance state."""

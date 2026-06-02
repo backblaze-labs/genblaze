@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
@@ -108,7 +109,8 @@ def test_fetch_output_attaches_asset(provider):
     result = provider.fetch_output("req-abc123", step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "video/mp4"
-    assert "gmicloud-output.com" in result.assets[0].url
+    _host = urlparse(result.assets[0].url).hostname or ""
+    assert _host == "gmicloud-output.com" or _host.endswith(".gmicloud-output.com")
 
 
 def test_poll_then_fetch_failed(provider):

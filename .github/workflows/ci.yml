@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default token scope for every job (CodeQL: actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
