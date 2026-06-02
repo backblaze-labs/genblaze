@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
@@ -37,7 +38,8 @@ def test_generate_returns_image_asset(mock_dalle):
     result = provider.generate(step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "image/png"
-    assert "blob.core.windows.net" in result.assets[0].url
+    _host = urlparse(result.assets[0].url).hostname or ""
+    assert _host == "blob.core.windows.net" or _host.endswith(".blob.core.windows.net")
 
 
 def test_invoke_full_lifecycle(mock_dalle):

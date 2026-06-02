@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
@@ -56,7 +57,8 @@ def test_fetch_output_attaches_asset(mock_runway):
     result = provider.fetch_output("task-abc", step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "video/mp4"
-    assert "runway-output.com" in result.assets[0].url
+    _host = urlparse(result.assets[0].url).hostname or ""
+    assert _host == "runway-output.com" or _host.endswith(".runway-output.com")
 
 
 def test_fetch_output_failed_raises(mock_runway):
