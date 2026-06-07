@@ -279,7 +279,7 @@ class ReplicateProvider(BaseProvider):
                     self._client = replicate.Client(timeout=timeout)
             except ImportError as exc:
                 raise ProviderError(
-                    "replicate package not installed. Run: pip install replicate"
+                    "replicate or httpx package not installed. Run: pip install replicate httpx"
                 ) from exc
         return self._client
 
