@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-hume"
+version = "0.3.0"
+description = "Hume AI (Octave TTS) provider adapter for genblaze"
+authors = [{name = "Kamren Mahaney", email = "kmahaney@backblaze.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia",
+    "Topic :: Software Development :: Libraries",
+]
+keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "hume", "octave", "tts", "audio"]
+
+dependencies = [
+    "genblaze-core>=0.3.0,<0.4",
+    # Modern Fern-generated SDK surface (sync HumeClient, client.tts.synthesize_json,
+    # hume.tts.Posted* request models). Bounded below 1.0 so a future major can't
+    # silently reshape the client out from under these call sites.
+    "hume>=0.8,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
+Documentation = "https://github.com/backblaze-labs/genblaze"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.entry-points."genblaze.providers"]
+hume-tts = "genblaze_hume:HumeTTSProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_hume"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

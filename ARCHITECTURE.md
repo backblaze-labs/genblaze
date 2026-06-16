@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-06-15 -->
 # Architecture
 
 ## Components
@@ -14,6 +14,7 @@
   - `genblaze-elevenlabs` — ElevenLabs (TTS + sound effects)
   - `genblaze-stability-audio` — Stability AI (Stable Audio music)
   - `genblaze-lmnt` — LMNT (fast TTS)
+  - `genblaze-hume` — Hume AI (Octave TTS)
   - `genblaze-gmicloud` — GMICloud (video, image, audio via request queue)
   - `genblaze-nvidia` — NVIDIA NIM / build.nvidia.com (video, image, audio, chat)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
@@ -65,6 +66,7 @@
 - **ElevenLabs API** — TTS + sound effects (`genblaze-elevenlabs`)
 - **Stability AI API** — Stable Audio music (`genblaze-stability-audio`)
 - **LMNT API** — Fast TTS (`genblaze-lmnt`)
+- **Hume AI API** — Octave TTS (`genblaze-hume`)
 - **GMICloud API** — Video, image, audio via request queue (`genblaze-gmicloud`)
 - All accessed via lazy SDK imports — no runtime dependency unless the connector is used
 

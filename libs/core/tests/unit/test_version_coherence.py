@@ -67,7 +67,7 @@ class TestVersionCoherence:
 class TestConnectorVersionCoherence:
     """Each genblaze-* connector's ``__version__`` must read from
     ``importlib.metadata`` rather than a hardcoded string. Plan 5
-    Phase 1B closed the version-drift class of bug across all 13
+    Phase 1B closed the version-drift class of bug across all 14
     connector packages."""
 
     @staticmethod
@@ -112,6 +112,9 @@ class TestConnectorVersionCoherence:
 
     def test_genblaze_lmnt(self):
         self._check("genblaze_lmnt", "genblaze-lmnt")
+
+    def test_genblaze_hume(self):
+        self._check("genblaze_hume", "genblaze-hume")
 
     def test_genblaze_stability_audio(self):
         self._check("genblaze_stability_audio", "genblaze-stability-audio")

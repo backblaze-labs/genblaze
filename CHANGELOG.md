@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `genblaze-hume`: new provider adapter for Hume AI **Octave TTS** (audio /
+  text-to-speech). Synchronous `SyncProvider` that decodes the API's base64
+  audio to a local `file://` asset; `step.model` (`octave-1` / `octave-2`)
+  maps to the Octave `version` field. Ships a pattern-keyed `octave-*` model
+  family with a permissive fallback, `DiscoverySupport.NONE`, and no hardcoded
+  pricing (register per-character rates via the recipe in
+  `docs/reference/pricing-recipes.md`). Available as `pip install genblaze-hume`
+  or the `genblaze[hume]` / `genblaze[audio]` extras.
+
 ### Fixed
 
 - `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
