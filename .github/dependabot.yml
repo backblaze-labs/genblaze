@@ -9,11 +9,24 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Keep Python dependencies up to date
+  # Keep Python dependencies up to date across every installable package.
+  # The `directories` glob auto-covers new connectors scaffolded under
+  # libs/connectors/*, so coverage never drifts as the monorepo grows. The
+  # root pyproject is tool-config only (no [project] dependencies) and is
+  # intentionally excluded; libs/spec has no Python deps.
   - package-ecosystem: "pip"
-    directory: "/libs/core"
+    directories:
+      - "/libs/core"
+      - "/libs/meta"
+      - "/libs/connectors/*"
+      - "/cli"
     schedule:
       interval: "weekly"
     groups:
       python-deps:
         patterns: ["*"]
+    ignore:
+      # Internal genblaze-* packages are version-coordinated by the release
+      # wave (see RELEASING.md), not Dependabot — keeps it from opening PRs
+      # that fight the umbrella version flow.
+      - dependency-name: "genblaze-*"
