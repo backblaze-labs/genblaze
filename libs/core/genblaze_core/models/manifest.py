@@ -73,9 +73,12 @@ _RUN_HASH_EXCLUDE_V1_3 = _RUN_HASH_EXCLUDE - {"run_id"}
 def _version_tuple(schema_version: str) -> tuple[int, ...]:
     """Return a numeric schema tuple for feature gates."""
     try:
-        return tuple(int(part) for part in schema_version.split("."))
+        version = tuple(int(part) for part in schema_version.split("."))
     except ValueError:
-        return (0,)
+        raise ManifestError(f"Invalid schema_version: {schema_version!r}") from None
+    if not version:
+        raise ManifestError(f"Invalid schema_version: {schema_version!r}")
+    return version
 
 
 def _uses_unhashed_asset_markers(schema_version: str) -> bool:

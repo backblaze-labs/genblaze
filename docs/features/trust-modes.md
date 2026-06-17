@@ -77,11 +77,12 @@ assert manifest.verify()  # hash recomputes from canonical payload
 
 ## Asset binding caveat
 
-`Manifest.verify()` is an asset-byte integrity check. A successful output asset
-without `asset.sha256` does not verify, even though `Manifest.compute_hash()` can
-still compute a metadata hash for the run. Use `ObjectStorageSink` or a provider
-path that materializes bytes locally to populate `sha256` before relying on Mode
-1 asset integrity.
+For schema version 1.6+, `Manifest.verify()` is an asset-byte integrity check:
+a successful output asset without `asset.sha256` does not verify, even though
+`Manifest.compute_hash()` can still compute a metadata hash for the run. Legacy
+schema versions keep their published `verify()` behavior for backwards
+compatibility. Use `ObjectStorageSink` or a provider path that materializes
+bytes locally to populate `sha256` before relying on Mode 1 asset integrity.
 
 Use `Manifest.verify_hash()` when a caller only needs to check that
 `canonical_hash` matches the manifest payload. This distinction matters for
@@ -101,7 +102,7 @@ byte-unverified without treating them as hash tampering.
 
 ## Verification
 - Mode 1 test files: `libs/core/tests/unit/test_canonical.py`, `test_canonical_hash_stability.py`, `tests/integration/test_pipeline_embed_roundtrip.py`
-- Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding, URL-only output assets do not verify
+- Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding, current-schema URL-only output assets do not verify
 - Quick verify: `cd libs/core && pytest tests/unit/test_canonical.py tests/integration/test_pipeline_embed_roundtrip.py -v`
 - Full verify: `make test`
-- Pass criteria: hashed-asset roundtrip tests report `manifest.verify() == True`; URL-only output manifests report `False`
+- Pass criteria: hashed-asset roundtrip tests report `manifest.verify() == True`; current-schema URL-only output manifests report `False`

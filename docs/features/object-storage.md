@@ -11,7 +11,7 @@ Pass `sink=storage` to `pipeline.run()`. The `ObjectStorageSink`:
 
 1. **Transfers assets** — downloads from provider CDN, computes SHA-256, uploads to storage
 2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash; any failed output asset that remains URL-only makes `manifest.verify()` return `False` for asset-byte integrity while `manifest.verify_hash()` still reports whether the manifest payload was tampered
-3. **Recomputes manifest hash** — the canonical hash reflects post-transfer asset URLs/SHA-256
+3. **Recomputes manifest hash** — the canonical hash reflects post-transfer SHA-256, size, and media metadata. Asset URLs remain transport hints once bytes are hash-bound
 4. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
 5. **Rewrites URLs** — asset URLs in the run now point to your bucket
 
