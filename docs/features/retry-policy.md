@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-25 -->
+<!-- last_verified: 2026-06-17 -->
 # Retry Policy
 
 `RetryPolicy` is the user-tunable knob for how `BaseProvider` retries transient
@@ -54,15 +54,23 @@ There are two retry layers. Most users only need to think about the first.
    of `submit / poll / fetch_output` so a single 5xx mid-poll doesn't fail a
    long-running video generation. The new policy controls **all of these**.
 2. **Step-level retries** (`config["max_retries"]` passed to `Pipeline.run()`)
-   — restart the *whole* step from scratch (state reset, fresh prediction
-   ID). The retryable-codes set is now also taken from the policy, so tuning
-   `RetryPolicy.retryable_codes` affects both layers consistently.
+   — retry the step after a phase-level budget is exhausted. If the failed
+   attempt already reached poll/fetch and has an upstream prediction ID, the
+   retry resumes that existing job instead of calling `submit()` again. Only
+   failures before an upstream ID exists use a fresh submit. The retryable-codes
+   set is now also taken from the policy, so tuning `RetryPolicy.retryable_codes`
+   affects both layers consistently.
 
 Submit retries have a special rule: only **pre-response** exception types
 (httpx `ConnectError`, `ConnectTimeout`, `PoolTimeout`) are eligible by
 default — replaying a request that may already have hit the server could
 double-bill. Once a provider opts into idempotency-key injection, this
 restriction is safe to widen via your own subclass.
+
+Fetch-phase failures have the opposite safety rule: the upstream generation
+already exists, so step-level retries call `resume(prediction_id, step, config)`
+and re-run poll/fetch against the same prediction. This avoids duplicate renders
+and duplicate charges when the transient error happened after generation started.
 
 ## Idempotency keys
 
