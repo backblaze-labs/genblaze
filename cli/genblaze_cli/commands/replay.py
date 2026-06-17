@@ -118,11 +118,11 @@ def replay(
         if not click.confirm("Continue anyway?"):
             raise click.Abort()
     elif not force:
-        unverified_ids = manifest.unverified_output_asset_ids()
-        if unverified_ids:
+        missing_sha_ids = manifest.output_asset_ids_missing_sha256()
+        if missing_sha_ids:
             click.echo(
                 "WARNING: Manifest hash matches, but output asset bytes are unverified "
-                f"for {len(unverified_ids)} asset(s) missing sha256.",
+                f"for {len(missing_sha_ids)} asset(s) missing sha256.",
                 err=True,
             )
 

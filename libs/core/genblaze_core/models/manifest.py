@@ -211,6 +211,10 @@ class Manifest(BaseModel):
         """Return output asset IDs missing byte hashes under current semantics."""
         if not _uses_unhashed_asset_markers(self.schema_version):
             return []
+        return self.output_asset_ids_missing_sha256()
+
+    def output_asset_ids_missing_sha256(self) -> list[str]:
+        """Return output asset IDs missing byte hashes, regardless of schema."""
         return _unhashed_output_asset_ids(self.run)
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:

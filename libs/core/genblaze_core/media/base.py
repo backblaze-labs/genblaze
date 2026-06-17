@@ -84,7 +84,7 @@ class BaseMediaHandler(ABC):
         ...
 
     def verify(self, source: Path) -> bool:
-        """Extract and verify manifest hash plus output asset byte binding."""
+        """Extract and run Manifest.verify(); byte binding is schema-dependent."""
         manifest = self.extract(source)
         return manifest.verify()
 

@@ -31,10 +31,10 @@ def verify(file: Path) -> None:
         if not manifest.verify_hash():
             click.echo("FAIL — manifest hash mismatch.", err=True)
             raise click.exceptions.Exit(1)
-        unverified_ids = manifest.unverified_output_asset_ids()
-        if unverified_ids:
+        missing_sha_ids = manifest.output_asset_ids_missing_sha256()
+        if missing_sha_ids:
             click.echo(
-                f"FAIL — {len(unverified_ids)} output asset(s) missing sha256.",
+                f"FAIL — {len(missing_sha_ids)} output asset(s) missing sha256.",
                 err=True,
             )
             raise click.exceptions.Exit(1)

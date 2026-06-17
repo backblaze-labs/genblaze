@@ -116,6 +116,8 @@ def test_manifest_v1_5_url_only_inputs_keep_legacy_hash_rules():
     assert manifest_a.canonical_hash == manifest_b.canonical_hash
     assert manifest_a.verify_hash()
     assert manifest_a.verify()
+    assert manifest_a.unverified_output_asset_ids() == []
+    assert manifest_a.output_asset_ids_missing_sha256() == []
 
 
 def test_manifest_current_schema_url_only_inputs_are_metadata_bound():
@@ -143,6 +145,24 @@ def test_manifest_current_schema_url_only_inputs_are_metadata_bound():
     assert manifest_a.canonical_hash != manifest_b.canonical_hash
     assert manifest_a.verify_hash()
     assert manifest_a.verify()
+
+
+def test_manifest_v1_5_reports_missing_output_sha_without_failing_verify():
+    """Legacy verification is preserved while diagnostics still expose missing hashes."""
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url="https://cdn.example.com/output.png", media_type="image/png")],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.5")
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert manifest.verify()
+    assert manifest.unverified_output_asset_ids() == []
+    assert manifest.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
 
 
 def test_manifest_hashed_output_assets_verify_with_url_rewrites():
