@@ -107,14 +107,24 @@ def replay(
     except Exception as exc:
         raise click.ClickException(f"Failed to load manifest: {exc}") from exc
 
-    # Verify manifest hash integrity
-    if not force and not manifest.verify():
+    # Verify manifest hash integrity before replay. Asset-byte verification is
+    # reported separately because URL-only outputs can be metadata-valid but
+    # not byte-bound.
+    if not force and not manifest.verify_hash():
         click.echo(
             "WARNING: Manifest hash does not match content. The file may have been modified.",
             err=True,
         )
         if not click.confirm("Continue anyway?"):
             raise click.Abort()
+    elif not force:
+        unverified_ids = manifest.unverified_output_asset_ids()
+        if unverified_ids:
+            click.echo(
+                "WARNING: Manifest hash matches, but output asset bytes are unverified "
+                f"for {len(unverified_ids)} asset(s) missing sha256.",
+                err=True,
+            )
 
     run = manifest.run
     _print_summary(run, show_prompts=show_prompts)

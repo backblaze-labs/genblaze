@@ -63,8 +63,8 @@ asset bytes themselves, either:
 2. Extract the manifest, strip the embed region per format, and re-hash the remainder.
 
 Manifest verification (`manifest.verify()` and `genblaze verify <file>`) checks
-the canonical manifest payload and requires output assets to have `sha256`, but
-it does not hash the post-embed container file. See
+the canonical manifest payload and requires output assets to have `sha256`.
+Hash-only callers can use `manifest.verify_hash()`. Neither path hashes the post-embed container file. See
 [trust-modes.md](trust-modes.md#asset-binding-caveat).
 
 ## WebP lossless preservation

@@ -14,7 +14,7 @@ from genblaze_core.models.run import Run
 if TYPE_CHECKING:
     from genblaze_core.models.policy import EmbedPolicy
 
-SCHEMA_VERSION = "1.5"
+SCHEMA_VERSION = "1.6"
 
 # Operational fields excluded from canonical hash — these are non-deterministic
 # (timestamps, status) or potentially sensitive (error messages, provider payloads).
@@ -53,13 +53,14 @@ _ASSET_HASH_EXCLUDE = frozenset(
         "asset_id",  # Random UUID per execution — not provenance
         "url",  # Transport hint when sha256 is present; varies across
         # re-uploads, presigning, and CDN→durable rewrites. Provenance
-        # identity is sha256 + media_type + size_bytes. If sha256 is missing,
-        # _strip_asset_for_hash() keeps a URL-only marker so unhashed assets
-        # cannot collapse to the same canonical payload.
+        # identity is sha256 + media_type + size_bytes. In schema 1.6+,
+        # _strip_asset_for_hash() keeps a URL-only marker so unhashed
+        # assets cannot collapse to the same canonical payload.
     }
 )
 _UNHASHED_ASSET_MARKER = "url_only_unverified"
 _UNHASHED_ASSET_URL_FIELD = "unverified_asset_url"
+_UNHASHED_ASSET_MARKER_SCHEMA = (1, 6)
 
 # Schema versions that included random IDs in the canonical hash
 _LEGACY_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})
@@ -69,13 +70,25 @@ _STEP_HASH_EXCLUDE_V1_3 = _STEP_HASH_EXCLUDE - {"step_id", "run_id"}
 _RUN_HASH_EXCLUDE_V1_3 = _RUN_HASH_EXCLUDE - {"run_id"}
 
 
-def _strip_asset_for_hash(asset: dict) -> None:
+def _version_tuple(schema_version: str) -> tuple[int, ...]:
+    """Return a numeric schema tuple for feature gates."""
+    try:
+        return tuple(int(part) for part in schema_version.split("."))
+    except ValueError:
+        return (0,)
+
+
+def _uses_unhashed_asset_markers(schema_version: str) -> bool:
+    return _version_tuple(schema_version) >= _UNHASHED_ASSET_MARKER_SCHEMA
+
+
+def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
     """Strip operational asset fields while marking URL-only assets."""
     url = asset.get("url")
     has_sha256 = bool(asset.get("sha256"))
     for key in _ASSET_HASH_EXCLUDE:
         asset.pop(key, None)
-    if not has_sha256 and url is not None:
+    if mark_unhashed and not has_sha256 and url is not None:
         asset["asset_integrity"] = _UNHASHED_ASSET_MARKER
         asset[_UNHASHED_ASSET_URL_FIELD] = url
 
@@ -97,6 +110,7 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
     use_legacy = schema_version in _LEGACY_SCHEMA_VERSIONS
     step_exclude = _STEP_HASH_EXCLUDE_V1_3 if use_legacy else _STEP_HASH_EXCLUDE
     run_exclude = _RUN_HASH_EXCLUDE_V1_3 if use_legacy else _RUN_HASH_EXCLUDE
+    mark_unhashed_assets = _uses_unhashed_asset_markers(schema_version)
 
     # Strip run-level operational fields
     for key in run_exclude:
@@ -107,9 +121,9 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
             step.pop(key, None)
         if not use_legacy:
             for asset in step.get("assets", []):
-                _strip_asset_for_hash(asset)
+                _strip_asset_for_hash(asset, mark_unhashed=mark_unhashed_assets)
             for inp in step.get("inputs", []):
-                _strip_asset_for_hash(inp)
+                _strip_asset_for_hash(inp, mark_unhashed=mark_unhashed_assets)
     return {"schema_version": schema_version, "run": run_data}
 
 
@@ -174,15 +188,30 @@ class Manifest(BaseModel):
     def verify(self) -> bool:
         """Verify the manifest hash and output asset byte binding.
 
-        URL-only output assets are included in the canonical payload as
-        metadata, but they do not prove byte integrity. A manifest containing
-        output assets without ``sha256`` therefore does not verify as
-        asset-integrity provenance.
+        In schema 1.6+, URL-only output assets are included in the canonical
+        payload as metadata, but they do not prove byte integrity. A current
+        manifest containing output assets without ``sha256`` therefore does
+        not verify as asset-integrity provenance.
         """
-        if _unhashed_output_asset_ids(self.run):
+        if not self.verify_hash():
             return False
+        if (
+            _uses_unhashed_asset_markers(self.schema_version)
+            and self.unverified_output_asset_ids()
+        ):
+            return False
+        return True
+
+    def verify_hash(self) -> bool:
+        """Verify only that ``canonical_hash`` matches the canonical payload."""
         payload = _hash_payload(self.schema_version, self.run)
         return self.canonical_hash == canonical_hash(payload)
+
+    def unverified_output_asset_ids(self) -> list[str]:
+        """Return output asset IDs missing byte hashes under current semantics."""
+        if not _uses_unhashed_asset_markers(self.schema_version):
+            return []
+        return _unhashed_output_asset_ids(self.run)
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
         """Return canonical JSON for embedding per policy.

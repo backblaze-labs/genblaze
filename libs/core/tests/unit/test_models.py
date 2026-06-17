@@ -83,8 +83,66 @@ def test_manifest_url_only_output_assets_do_not_verify():
     manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
 
     assert manifest_a.canonical_hash != manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_b.verify_hash()
     assert not manifest_a.verify()
     assert not manifest_b.verify()
+
+
+def test_manifest_v1_5_url_only_inputs_keep_legacy_hash_rules():
+    """Schema 1.5 preserves old URL-stripping rules for existing manifests."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    output = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="b" * 64,
+    )
+    step_a = Step(
+        **base,
+        assets=[output],
+        inputs=[Asset(url="https://cdn.example.com/input-a.png", media_type="image/png")],
+    )
+    step_b = Step(
+        **base,
+        assets=[output.model_copy(deep=True)],
+        inputs=[Asset(url="https://cdn.example.com/input-b.png", media_type="image/png")],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.5")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.5")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_a.verify()
+
+
+def test_manifest_current_schema_url_only_inputs_are_metadata_bound():
+    """Schema 1.6+ includes URL-only inputs in the metadata hash payload."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    output = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="c" * 64,
+    )
+    step_a = Step(
+        **base,
+        assets=[output],
+        inputs=[Asset(url="https://cdn.example.com/input-a.png", media_type="image/png")],
+    )
+    step_b = Step(
+        **base,
+        assets=[output.model_copy(deep=True)],
+        inputs=[Asset(url="https://cdn.example.com/input-b.png", media_type="image/png")],
+    )
+
+    manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
+    manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_a.verify()
 
 
 def test_manifest_hashed_output_assets_verify_with_url_rewrites():
@@ -272,11 +330,11 @@ def test_new_manifest_gets_current_schema_version():
     """New manifests default to the current SCHEMA_VERSION constant."""
     from genblaze_core.models.manifest import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == "1.5"
+    assert SCHEMA_VERSION == "1.6"
     s = Step(provider="p", model="m")
     r = Run(steps=[s])
     m = Manifest.from_run(r)
-    assert m.schema_version == "1.5"
+    assert m.schema_version == "1.6"
 
 
 def test_equivalent_reruns_produce_same_hash():

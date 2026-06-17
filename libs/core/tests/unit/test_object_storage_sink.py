@@ -1009,6 +1009,27 @@ class TestManifestHelpers:
         loaded = sink.read_manifest(run, verify=False)
         assert loaded.run.name == "tampered"
 
+    def test_read_manifest_verify_default_allows_unverified_assets(self):
+        """verify=True checks hash integrity, not output byte binding."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        assert manifest.verify_hash()
+        assert not manifest.verify()
+
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        loaded = sink.read_manifest(run)
+        assert loaded.verify_hash()
+        assert not loaded.verify()
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_manifest_uri_set_when_object_already_exists(self, mock_urlopen, _mock_dns):

@@ -10,7 +10,7 @@ generic constructor.
 Pass `sink=storage` to `pipeline.run()`. The `ObjectStorageSink`:
 
 1. **Transfers assets** — downloads from provider CDN, computes SHA-256, uploads to storage
-2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash; any failed output asset that remains URL-only makes `manifest.verify()` return `False` for asset-byte integrity
+2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash; any failed output asset that remains URL-only makes `manifest.verify()` return `False` for asset-byte integrity while `manifest.verify_hash()` still reports whether the manifest payload was tampered
 3. **Recomputes manifest hash** — the canonical hash reflects post-transfer asset URLs/SHA-256
 4. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
 5. **Rewrites URLs** — asset URLs in the run now point to your bucket
@@ -163,7 +163,9 @@ re-implement the layout rules or parse `manifest.manifest_uri`:
 ```python
 key = sink.manifest_key_for(run)            # storage key (pure function)
 url = sink.manifest_url_for(run)            # durable, credential-free URL
-manifest = sink.read_manifest(run)          # fetch + parse + verify()
+manifest = sink.read_manifest(run)          # fetch + parse + hash-verify()
+assert manifest.verify_hash()               # payload integrity
+assert manifest.verify()                    # payload + output byte binding
 ```
 
 `read_manifest` defaults to `verify=True` (raises `ManifestError` on hash

@@ -8,8 +8,9 @@ from pathlib import Path
 from click.testing import CliRunner
 from genblaze_cli.main import cli
 from genblaze_core.builders import RunBuilder, StepBuilder
+from genblaze_core.models.asset import Asset
 from genblaze_core.media.png import PngHandler
-from genblaze_core.models.enums import Modality, ProviderErrorCode
+from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.testing import MockProvider
 from PIL import Image
@@ -36,6 +37,15 @@ def _create_embedded_png(tmp_path: Path) -> Path:
     Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
     PngHandler().embed(png_path, manifest)
     return png_path
+
+
+def _create_url_only_manifest() -> Manifest:
+    """Create a hash-valid manifest whose output assets are not byte-bound."""
+    step = StepBuilder("test", "test-model").prompt("hello").build()
+    step.status = StepStatus.SUCCEEDED
+    step.assets = [Asset(url="https://cdn.example.com/output.png", media_type="image/png")]
+    run = RunBuilder("url-only").add_step(step).build()
+    return Manifest.from_run(run)
 
 
 def test_extract_json(tmp_path: Path) -> None:
@@ -65,6 +75,20 @@ def test_verify_ok(tmp_path: Path) -> None:
     assert "OK" in result.output
 
 
+def test_verify_distinguishes_unverified_assets(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest()
+    png_path = tmp_path / "url-only.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    PngHandler().embed(png_path, manifest)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(png_path)])
+    combined = result.output + getattr(result, "stderr", "")
+    assert result.exit_code != 0
+    assert "output assets missing sha256" in combined
+    assert "hash mismatch" not in combined
+
+
 def test_verify_no_manifest(tmp_path: Path) -> None:
     png = tmp_path / "bare.png"
     Image.new("RGBA", (1, 1)).save(png)
@@ -80,6 +104,19 @@ def test_replay_dry_run(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Dry run" in result.output
     assert "Step 1:" in result.output
+
+
+def test_replay_warns_on_unverified_assets_without_abort(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest()
+    manifest_path = tmp_path / "url-only.json"
+    manifest_path.write_text(manifest.to_canonical_json(), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["replay", str(manifest_path)])
+    combined = result.output + getattr(result, "stderr", "")
+    assert result.exit_code == 0
+    assert "output asset bytes are unverified" in combined
+    assert "Dry run" in result.output
 
 
 def test_replay_redacts_prompts_by_default(tmp_path: Path) -> None:

@@ -335,10 +335,11 @@ class ObjectStorageSink(BaseSink):
         Args:
             run: The run whose manifest to load. Only ``run_id`` /
                 ``tenant_id`` / ``created_at`` are used (to derive the key).
-            verify: When True (default), checks ``manifest.verify()`` and
-                raises :class:`ManifestError` on hash mismatch. Pass
-                ``verify=False`` to skip the rehash on a manifest you
-                trust (e.g. one you just wrote).
+            verify: When True (default), checks ``manifest.verify_hash()``
+                and raises :class:`ManifestError` on hash mismatch. Pass
+                ``verify=False`` to skip the rehash on a manifest you trust
+                (e.g. one you just wrote). Byte-integrity verification for
+                URL-only outputs remains available via ``manifest.verify()``.
 
         Raises:
             SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
@@ -353,7 +354,7 @@ class ObjectStorageSink(BaseSink):
                 f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
         manifest = Manifest.model_validate_json(data)
-        if verify and not manifest.verify():
+        if verify and not manifest.verify_hash():
             raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
         return manifest
 

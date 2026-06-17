@@ -84,7 +84,7 @@ class BaseMediaHandler(ABC):
         ...
 
     def verify(self, source: Path) -> bool:
-        """Extract and verify the manifest hash. Returns True if valid."""
+        """Extract and verify manifest hash plus output asset byte binding."""
         manifest = self.extract(source)
         return manifest.verify()
 

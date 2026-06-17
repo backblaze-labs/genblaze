@@ -16,7 +16,7 @@ export interface Manifest {
   /**
    * Schema version identifier.
    */
-  schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5";
+  schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
   run: Run;
   /**
    * SHA-256 hash of the canonical JSON representation.
