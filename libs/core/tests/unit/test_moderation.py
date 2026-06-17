@@ -79,6 +79,24 @@ class TrackingHook(ModerationHook):
         return ModerationResult(allowed=True)
 
 
+class RejectContainingHook(TrackingHook):
+    """Rejects prompts or input payloads containing a target string."""
+
+    def __init__(self, needle: str):
+        super().__init__()
+        self.needle = needle
+
+    def check_prompt(self, prompt, params):
+        self.prompt_calls.append((prompt, params))
+        if self.needle in (prompt or ""):
+            return ModerationResult(
+                allowed=False,
+                reason="input text rejected",
+                flagged_categories=["test"],
+            )
+        return ModerationResult(allowed=True)
+
+
 # ---------------------------------------------------------------------------
 # ModerationResult tests
 # ---------------------------------------------------------------------------
@@ -152,8 +170,8 @@ class TestPreStepModeration:
         assert provider.call_count == 1
         assert result.run.steps[0].status == StepStatus.SUCCEEDED
 
-    def test_null_prompt_skips_moderation(self):
-        """Steps with prompt=None skip pre-moderation (e.g. compositor)."""
+    def test_null_prompt_without_text_inputs_skips_moderation(self):
+        """Promptless non-text steps skip pre-moderation (e.g. compositor)."""
         hook = TrackingHook()
         provider = MockProvider()
         result = (
@@ -164,6 +182,62 @@ class TestPreStepModeration:
         assert len(hook.prompt_calls) == 0  # check_prompt was NOT called
         assert provider.call_count == 1
         assert result.run.steps[0].status == StepStatus.SUCCEEDED
+
+    def test_promptless_external_text_input_rejected_before_generation(self):
+        hook = RejectContainingHook("blocked user text")
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": "blocked user text"},
+        )
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .run()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
+        assert "Moderation rejected prompt" in step.error
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "blocked user text"
+
+    def test_promptless_input_from_text_rejected_before_generation(self):
+        hook = RejectContainingHook("blocked user text")
+        source = MockProvider(
+            assets=[
+                Asset(
+                    url="https://input.test/analysis.txt",
+                    media_type="text/plain",
+                    metadata={"text": "blocked user text"},
+                )
+            ]
+        )
+        consumer = MockProvider()
+
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(source, model="source", prompt="source text", modality=Modality.TEXT)
+            .step(consumer, model="consumer", prompt=None, modality=Modality.IMAGE, input_from=0)
+            .run()
+        )
+
+        rejected = result.run.steps[1]
+        assert source.call_count == 1
+        assert consumer.call_count == 0
+        assert rejected.status == StepStatus.FAILED
+        assert rejected.error_code == ProviderErrorCode.INVALID_INPUT
+        assert len(hook.prompt_calls) == 2
+        assert hook.prompt_calls[1][0] == "blocked user text"
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +315,61 @@ class TestAsyncModeration:
         assert provider.call_count == 1
         assert result.run.steps[0].status == StepStatus.FAILED
         assert "Moderation rejected output" in result.run.steps[0].error
+
+    def test_async_promptless_external_text_input_rejected(self):
+        hook = RejectContainingHook("blocked user text")
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": "blocked user text"},
+        )
+        result = asyncio.run(
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .arun()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "blocked user text"
+
+    def test_async_promptless_input_from_text_rejected(self):
+        hook = RejectContainingHook("blocked user text")
+        source = MockProvider(
+            assets=[
+                Asset(
+                    url="https://input.test/analysis.txt",
+                    media_type="text/plain",
+                    metadata={"text": "blocked user text"},
+                )
+            ]
+        )
+        consumer = MockProvider()
+
+        result = asyncio.run(
+            Pipeline("test", moderation=hook)
+            .step(source, model="source", prompt="source text", modality=Modality.TEXT)
+            .step(consumer, model="consumer", prompt=None, modality=Modality.IMAGE, input_from=0)
+            .arun()
+        )
+
+        rejected = result.run.steps[1]
+        assert source.call_count == 1
+        assert consumer.call_count == 0
+        assert rejected.status == StepStatus.FAILED
+        assert rejected.error_code == ProviderErrorCode.INVALID_INPUT
+        assert len(hook.prompt_calls) == 2
+        assert hook.prompt_calls[1][0] == "blocked user text"
 
 
 # ---------------------------------------------------------------------------

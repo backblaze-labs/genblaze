@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Sequence
@@ -163,6 +164,55 @@ def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, mo
 
     for k, v in params.items():
         _scan(v, str(k))
+
+
+def _text_value(value: Any) -> str | None:
+    """Convert a recognized text-bearing input field into moderation text."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            text = str(value)
+    return text if text else None
+
+
+def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
+    """Extract textual moderation payloads from input assets.
+
+    The pipeline does not dereference input asset URLs here. It screens text
+    carried in manifest-visible fields that providers commonly consume.
+    """
+    payloads: list[str] = []
+    for asset in inputs:
+        seen: set[str] = set()
+        asset_text = _text_value(getattr(asset, "text", None))
+        if asset_text is not None:
+            payloads.append(asset_text)
+            seen.add(asset_text)
+
+        metadata = getattr(asset, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata_text = _text_value(metadata.get("text"))
+            if metadata_text is not None and metadata_text not in seen:
+                payloads.append(metadata_text)
+    return payloads
+
+
+def _pre_moderation_payload(step: Step) -> str | None:
+    """Build the pre-step moderation text from prompt plus textual inputs."""
+    parts: list[str] = []
+    if step.prompt is not None:
+        parts.append(step.prompt)
+    parts.extend(_input_text_payloads(step.inputs))
+    if not parts:
+        return None
+    return "\n\n".join(parts)
 
 
 if TYPE_CHECKING:
@@ -729,7 +779,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         stage: str,
     ) -> Step:
         """Mark a step as failed due to moderation rejection."""
-        label = "prompt" if stage == "pre" else "output"
+        label = "prompt/input" if stage == "pre" else "output"
         step.status = StepStatus.FAILED
         step.error = f"Moderation rejected {label}: {mod_result.reason or 'no reason given'}"
         step.error_code = ProviderErrorCode.INVALID_INPUT
@@ -811,9 +861,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx: _StepContext,
     ) -> Step:
         """Execute a single step with moderation, caching, and fallback models."""
-        if self._moderation is not None and step.prompt is not None:
+        if (
+            self._moderation is not None
+            and (moderation_payload := _pre_moderation_payload(step)) is not None
+        ):
             try:
-                mod_result = self._moderation.check_prompt(step.prompt, step.params)
+                mod_result = self._moderation.check_prompt(moderation_payload, step.params)
             except Exception as exc:
                 step.status = StepStatus.FAILED
                 step.error = f"Moderation hook error: {exc}"
@@ -869,9 +922,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx: _StepContext,
     ) -> Step:
         """Execute a single step asynchronously with moderation, caching, and fallback."""
-        if self._moderation is not None and step.prompt is not None:
+        if (
+            self._moderation is not None
+            and (moderation_payload := _pre_moderation_payload(step)) is not None
+        ):
             try:
-                mod_result = await self._moderation.acheck_prompt(step.prompt, step.params)
+                mod_result = await self._moderation.acheck_prompt(moderation_payload, step.params)
             except Exception as exc:
                 step.status = StepStatus.FAILED
                 step.error = f"Moderation hook error: {exc}"
