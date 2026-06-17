@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-27 -->
+<!-- last_verified: 2026-06-17 -->
 # Feature: Trust Modes
 
 ## Purpose
@@ -17,10 +17,11 @@ Genblaze supports a layered trust model. Today only Mode 1 ships in core; Modes 
 
 **What it proves:**
 - The manifest content has not changed since it was written (canonical_hash recomputes).
-- The asset bytes have not changed since the manifest was written (asset.sha256 is included in the canonical hash payload — see caveat in [media-embedding.md](media-embedding.md)).
+- The output asset bytes have not changed since the manifest was written when every output asset has `asset.sha256` populated. `asset.sha256` is included in the canonical hash payload — see caveat in [media-embedding.md](media-embedding.md).
 - The pipeline run is reproducible: same inputs always produce the same canonical_hash.
 
 **What it does NOT prove:**
+- Byte integrity for URL-only output assets. URL-only outputs are marked in the canonical payload so different URLs do not collapse to the same hash, but `Manifest.verify()` returns `False` until the asset has `sha256` populated, typically by using `ObjectStorageSink`.
 - That a specific party produced the manifest. Anyone with the SDK can build a self-consistent manifest from arbitrary inputs.
 - Resistance to a determined re-embedder. A tamperer can modify the asset, recompute the manifest, re-embed, and produce a manifest that verifies against itself.
 
@@ -76,6 +77,12 @@ assert manifest.verify()  # hash recomputes from canonical payload
 
 ## Asset binding caveat
 
+`Manifest.verify()` is an asset-byte integrity check. A successful output asset
+without `asset.sha256` does not verify, even though `Manifest.compute_hash()` can
+still compute a metadata hash for the run. Use `ObjectStorageSink` or a provider
+path that materializes bytes locally to populate `sha256` before relying on Mode
+1 asset integrity.
+
 `asset.sha256` in the manifest is computed against the asset bytes at the moment the manifest is built — i.e., **before** embedding. After `SmartEmbedder.embed()` modifies the file to insert the manifest, the on-disk file's sha256 will not match `asset.sha256`. Two paths to verify the asset:
 
 1. **Verify against the upstream artifact** — keep the original asset (e.g., in B2 storage) and recompute sha256 from those bytes. Recommended for any sink that already uploads the asset.
@@ -89,7 +96,7 @@ assert manifest.verify()  # hash recomputes from canonical payload
 
 ## Verification
 - Mode 1 test files: `libs/core/tests/unit/test_canonical.py`, `test_canonical_hash_stability.py`, `tests/integration/test_pipeline_embed_roundtrip.py`
-- Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding
+- Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding, URL-only output assets do not verify
 - Quick verify: `cd libs/core && pytest tests/unit/test_canonical.py tests/integration/test_pipeline_embed_roundtrip.py -v`
 - Full verify: `make test`
-- Pass criteria: every roundtrip test reports `manifest.verify() == True`
+- Pass criteria: hashed-asset roundtrip tests report `manifest.verify() == True`; URL-only output manifests report `False`

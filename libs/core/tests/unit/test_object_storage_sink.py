@@ -306,11 +306,11 @@ class TestObjectStorageSink:
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_manifest_verifies_after_partial_transfer_failure(self, mock_urlopen, _mock_dns):
-        """Partial transfer failures must not poison canonical_hash integrity.
+        """Partial transfer failures leave URL-only assets non-verifying.
 
-        Regression: previously, sink wrote failure IDs into run.metadata
-        (which is part of the hashed payload) AFTER compute_hash(), so
-        manifest.verify() returned False on any run with failed transfers.
+        transfer_failures remains diagnostic metadata outside the hash payload,
+        but an output asset that never received sha256 must not verify as
+        asset-byte integrity provenance.
         """
         # urlopen raises on every asset download — forces a failure path
         mock_urlopen.side_effect = RuntimeError("network down")
@@ -323,8 +323,7 @@ class TestObjectStorageSink:
 
         # Sink recorded the failure on the manifest (non-hashed field)
         assert manifest.transfer_failures == [run.steps[0].assets[0].asset_id]
-        # Hash must still verify despite the partial failure
-        assert manifest.verify()
+        assert not manifest.verify()
 
 
 def _mock_urlopen():
@@ -439,7 +438,7 @@ class TestEagerTransfer:
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_eager_transfer_failure_recorded_on_manifest(self, mock_get_stream, _mock_dns):
         """A failure in the eager pool still propagates into
-        manifest.transfer_failures — provenance remains intact."""
+        manifest.transfer_failures and leaves the asset unverified."""
         mock_get_stream.side_effect = RuntimeError("CDN down")
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="eager", eager_transfer=True)
@@ -454,8 +453,7 @@ class TestEagerTransfer:
         sink.write_run(run, manifest)
 
         assert manifest.transfer_failures == [run.steps[0].assets[0].asset_id]
-        # Manifest still uploaded — verify integrity preserved.
-        assert manifest.verify()
+        assert not manifest.verify()
         sink.close()
 
     def test_close_shuts_down_eager_pool(self):

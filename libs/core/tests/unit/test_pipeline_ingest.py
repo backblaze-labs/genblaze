@@ -42,8 +42,14 @@ def _stub_sink_that_records_calls() -> MagicMock:
     """A sink mock with the put_asset / write_run / manifest_url_for
     surface the ingest factory expects. Each method records its call
     args for assertion."""
+
+    def _put_asset(asset: Asset, **kwargs) -> Asset:
+        asset.sha256 = "0" * 64
+        asset.size_bytes = 1
+        return asset
+
     sink = MagicMock()
-    sink.put_asset = MagicMock(side_effect=lambda asset, **kwargs: asset)
+    sink.put_asset = MagicMock(side_effect=_put_asset)
     sink.write_run = MagicMock()
     sink.manifest_url_for = MagicMock(return_value="https://mem/run/manifest.json")
     return sink

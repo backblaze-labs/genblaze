@@ -28,7 +28,9 @@ class _OKProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/a.png", media_type="image/png", sha256="0" * 64)
+        )
         return step
 
 
@@ -178,7 +180,9 @@ class _PreviewProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/final.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/final.png", media_type="image/png", sha256="1" * 64)
+        )
         return step
 
 
@@ -215,7 +219,9 @@ def test_stream_early_break_does_not_block() -> None:
             return True
 
         def fetch_output(self, prediction_id, step):
-            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="2" * 64)
+            )
             return step
 
     pipe = (
@@ -253,7 +259,9 @@ async def test_astream_early_break_cancels_worker() -> None:
             return True
 
         def fetch_output(self, prediction_id, step):
-            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="3" * 64)
+            )
             return step
 
     pipe = (
@@ -334,7 +342,9 @@ def test_stream_early_break_drains_without_daemon_error() -> None:
             return True
 
         def fetch_output(self, prediction_id, step):
-            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="4" * 64)
+            )
             return step
 
     pipe = (
@@ -374,7 +384,9 @@ def test_consecutive_streams_after_early_break_terminate_cleanly() -> None:
             return True
 
         def fetch_output(self, prediction_id, step):
-            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="5" * 64)
+            )
             return step
 
     pipe = Pipeline("t").step(_FastProvider(), model="m", prompt="p1")
@@ -417,7 +429,9 @@ class _FlakyPollStreamProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/a.png", media_type="image/png", sha256="6" * 64)
+        )
         return step
 
 
@@ -480,7 +494,9 @@ class _PollProgressProvider(BaseProvider):
         }
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/final.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/final.png", media_type="image/png", sha256="7" * 64)
+        )
         return step
 
 
@@ -555,7 +571,9 @@ async def test_step_queued_concurrency_limit_in_concurrent_arun() -> None:
             return True
 
         def fetch_output(self, prediction_id, step):
-            step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="8" * 64)
+            )
             return step
 
     async def _run() -> list[StreamEvent]:
@@ -601,7 +619,9 @@ class _LongPollProvider(BaseProvider):
         return self._poll_count >= self._polls_until_done
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/a.png", media_type="image/png", sha256="9" * 64)
+        )
         return step
 
 
@@ -687,7 +707,9 @@ class _ProgressBeforeAndAfterSubmitProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/a.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/a.png", media_type="image/png", sha256="a" * 64)
+        )
         return step
 
 
@@ -725,7 +747,9 @@ class _PreviewWithSubmitProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id, step):
-        step.assets.append(Asset(url="https://x.test/final.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://x.test/final.png", media_type="image/png", sha256="b" * 64)
+        )
         return step
 
 

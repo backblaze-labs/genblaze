@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-06 -->
+<!-- last_verified: 2026-06-17 -->
 # Feature: Manifest Provenance
 
 ## Purpose
@@ -10,7 +10,7 @@ Produce hash-verified, canonical JSON manifests that capture full provenance of 
 
 ## Core Functions
 - `Manifest.from_run(run)` — Construct manifest from run and compute hash
-- `Manifest.verify()` — Validate canonical_hash matches content
+- `Manifest.verify()` — Validate canonical_hash matches content and output assets are byte-bound with `sha256`
 - `canonical_json()` — Deterministic serialization (sorted keys, normalized floats, NFC unicode)
 - `Manifest.to_embed_json()` — Policy-filtered JSON for embedding
 
@@ -32,7 +32,7 @@ Produce hash-verified, canonical JSON manifests that capture full provenance of 
 - `compute_hash()` serializes to canonical JSON (deterministic key sort + float normalization + NFC)
 - SHA-256 hash computed over canonical bytes
 - Hash stored as `canonical_hash`
-- `verify()` re-serializes and compares hash
+- `verify()` re-serializes, compares hash, and returns `False` when any output asset lacks `sha256`
 
 ## Edge Cases
 - Float precision differences → normalization ensures consistency
@@ -55,7 +55,7 @@ are version-keyed:
 
 - `_RUN_HASH_EXCLUDE` — run_id, status, created_at, started_at, completed_at, idempotency_key, parent_run_id
 - `_STEP_HASH_EXCLUDE` — step_id, run_id, status, error, error_code, retries, cost_usd, started_at, completed_at, provider_payload, step_index
-- `_ASSET_HASH_EXCLUDE` — asset_id, url
+- `_ASSET_HASH_EXCLUDE` — asset_id, url. For assets without `sha256`, the hash payload keeps an explicit `asset_integrity=url_only_unverified` marker plus the URL as `unverified_asset_url` so different URL-only assets do not collapse to the same metadata hash.
 - Schema versions ≤ 1.3 used the legacy exclusion set (random IDs were included in the hash)
 
 Third-party verifiers in other languages must apply the same strip rules before
@@ -65,7 +65,7 @@ authoritative reference.
 ### Self-verification flow
 1. Read the embedded / sidecar manifest JSON (full canonical form).
 2. Parse with `Manifest.model_validate(json.loads(text))`.
-3. Call `manifest.verify()` — strips operational fields, recomputes hash, compares.
+3. Call `manifest.verify()` — strips operational fields, recomputes hash, compares, and rejects URL-only output assets as unverified.
 
 ### Trust modes
 The hash provides **integrity**, not **authentication**. See

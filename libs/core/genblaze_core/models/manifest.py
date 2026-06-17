@@ -51,11 +51,15 @@ _RUN_HASH_EXCLUDE = frozenset(
 _ASSET_HASH_EXCLUDE = frozenset(
     {
         "asset_id",  # Random UUID per execution — not provenance
-        "url",  # Transport hint; varies across re-uploads, presigning, and
-        # CDN→durable rewrites. Provenance identity is sha256 + media_type
-        # + size_bytes; URL is where the bytes happen to live.
+        "url",  # Transport hint when sha256 is present; varies across
+        # re-uploads, presigning, and CDN→durable rewrites. Provenance
+        # identity is sha256 + media_type + size_bytes. If sha256 is missing,
+        # _strip_asset_for_hash() keeps a URL-only marker so unhashed assets
+        # cannot collapse to the same canonical payload.
     }
 )
+_UNHASHED_ASSET_MARKER = "url_only_unverified"
+_UNHASHED_ASSET_URL_FIELD = "unverified_asset_url"
 
 # Schema versions that included random IDs in the canonical hash
 _LEGACY_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})
@@ -63,6 +67,22 @@ _LEGACY_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})
 # Pre-1.4 exclusion sets (IDs were included in the hash)
 _STEP_HASH_EXCLUDE_V1_3 = _STEP_HASH_EXCLUDE - {"step_id", "run_id"}
 _RUN_HASH_EXCLUDE_V1_3 = _RUN_HASH_EXCLUDE - {"run_id"}
+
+
+def _strip_asset_for_hash(asset: dict) -> None:
+    """Strip operational asset fields while marking URL-only assets."""
+    url = asset.get("url")
+    has_sha256 = bool(asset.get("sha256"))
+    for key in _ASSET_HASH_EXCLUDE:
+        asset.pop(key, None)
+    if not has_sha256 and url is not None:
+        asset["asset_integrity"] = _UNHASHED_ASSET_MARKER
+        asset[_UNHASHED_ASSET_URL_FIELD] = url
+
+
+def _unhashed_output_asset_ids(run: Run) -> list[str]:
+    """Return output asset IDs that cannot be verified against content bytes."""
+    return [asset.asset_id for step in run.steps for asset in step.assets if not asset.sha256]
 
 
 def _hash_payload(schema_version: str, run: Run) -> dict:
@@ -87,11 +107,9 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
             step.pop(key, None)
         if not use_legacy:
             for asset in step.get("assets", []):
-                for key in _ASSET_HASH_EXCLUDE:
-                    asset.pop(key, None)
+                _strip_asset_for_hash(asset)
             for inp in step.get("inputs", []):
-                for key in _ASSET_HASH_EXCLUDE:
-                    inp.pop(key, None)
+                _strip_asset_for_hash(inp)
     return {"schema_version": schema_version, "run": run_data}
 
 
@@ -154,7 +172,15 @@ class Manifest(BaseModel):
         return canonical_json(self.model_dump(mode="python"))
 
     def verify(self) -> bool:
-        """Verify that canonical_hash matches the provenance-relevant run content."""
+        """Verify the manifest hash and output asset byte binding.
+
+        URL-only output assets are included in the canonical payload as
+        metadata, but they do not prove byte integrity. A manifest containing
+        output assets without ``sha256`` therefore does not verify as
+        asset-integrity provenance.
+        """
+        if _unhashed_output_asset_ids(self.run):
+            return False
         payload = _hash_payload(self.schema_version, self.run)
         return self.canonical_hash == canonical_hash(payload)
 

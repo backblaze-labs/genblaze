@@ -427,8 +427,9 @@ class ObjectStorageSink(BaseSink):
         # 2. Record partial failures on the manifest as transport-layer
         # diagnostics — NOT on run.metadata, which is part of the hashed
         # payload (see manifest._RUN_HASH_EXCLUDE). transfer_failures is a
-        # non-hashed Manifest field, so writing it here doesn't affect hash
-        # integrity and verify() still succeeds after partial failures.
+        # non-hashed Manifest field, so writing it here doesn't affect the
+        # canonical payload. Any failed asset that remains URL-only will still
+        # make Manifest.verify() return False for asset-byte integrity.
         if failed_asset_ids:
             manifest.transfer_failures = list(failed_asset_ids)
 

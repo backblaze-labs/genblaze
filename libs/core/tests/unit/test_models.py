@@ -67,6 +67,60 @@ def test_manifest_verify_detects_tampering():
     assert not m.verify()
 
 
+def test_manifest_url_only_output_assets_do_not_verify():
+    """URL-only outputs are metadata-bound, not asset-byte integrity."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[Asset(url="https://cdn.example.com/output-a.png", media_type="image/png")],
+    )
+    step_b = Step(
+        **base,
+        assets=[Asset(url="https://cdn.example.com/output-b.png", media_type="image/png")],
+    )
+
+    manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
+    manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
+    assert not manifest_a.verify()
+    assert not manifest_b.verify()
+
+
+def test_manifest_hashed_output_assets_verify_with_url_rewrites():
+    """sha256, not URL, is the provenance identity once bytes are bound."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn-a.example.com/output.png",
+                media_type="image/png",
+                sha256="a" * 64,
+                size_bytes=3,
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn-b.example.com/output.png",
+                media_type="image/png",
+                sha256="a" * 64,
+                size_bytes=3,
+            )
+        ],
+    )
+
+    manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
+    manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert manifest_a.verify()
+    assert manifest_b.verify()
+
+
 def test_hash_excludes_operational_fields():
     """Operational fields (status, timestamps, errors) must not affect the hash."""
     s = Step(provider="replicate", model="flux-schnell", prompt="a cat")
