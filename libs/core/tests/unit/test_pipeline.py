@@ -340,6 +340,21 @@ class FailingProvider(BaseProvider):
         return step
 
 
+class EmptyAssetProvider(BaseProvider):
+    """Provider that succeeds without returning any assets."""
+
+    name = "empty"
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-empty"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+
 def test_pipeline_fail_fast_stops_on_failure() -> None:
     """With fail_fast=True (default), pipeline stops after first failed step."""
     failing = FailingProvider()
@@ -1327,6 +1342,28 @@ async def test_input_from_failed_producer_fails_consumer_async() -> None:
     assert result.run.steps[1].assets == []
     assert "input_from index 0" in (result.run.steps[1].error or "")
     assert "failed upstream step 0" in (result.run.steps[1].error or "")
+    assert consumer.received_inputs == []
+
+
+def test_input_from_empty_producer_fails_consumer() -> None:
+    """A successful producer with no assets cannot feed a fan-in consumer."""
+    empty = EmptyAssetProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-empty-source")
+        .step(empty, model="m0", prompt="empty")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[0].assets == []
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].assets == []
+    assert "resolved no assets from upstream step 0" in (result.run.steps[1].error or "")
     assert consumer.received_inputs == []
 
 

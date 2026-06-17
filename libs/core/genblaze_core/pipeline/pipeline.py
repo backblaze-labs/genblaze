@@ -745,6 +745,27 @@ class Pipeline(Runnable[None, PipelineResult]):
         step.error_code = ProviderErrorCode.INVALID_INPUT
         return step
 
+    def _record_prefailed_step(self, step: Step, ctx: _StepContext) -> Step:
+        """Emit tracer lifecycle hooks for a step that failed before provider invoke."""
+        safe_call(
+            self._tracer,
+            "on_step_start",
+            ctx.run_id,
+            step,
+            step_index=ctx.step_index,
+            total_steps=ctx.total_steps,
+        )
+        t0 = time.monotonic()
+        safe_call(
+            self._tracer,
+            "on_step_end",
+            ctx.run_id,
+            step,
+            duration_ms=(time.monotonic() - t0) * 1000,
+            step_index=ctx.step_index,
+        )
+        return step
+
     def _build_step(
         self,
         ps: _PipelineStep,
@@ -1531,7 +1552,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                         total=total_steps,
                     )
                 if input_resolution_error:
-                    result = step
+                    result = self._record_prefailed_step(step, ctx)
                 else:
                     result = self._execute_step(ps, step, config, ctx)
                 if spinner is not None:
@@ -1738,7 +1759,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                             total=total_steps,
                         )
                     if input_resolution_error:
-                        result = step
+                        result = self._record_prefailed_step(step, ctx)
                     else:
                         result = await self._execute_step_async(ps, step, config, ctx)
                     if spinner is not None:
