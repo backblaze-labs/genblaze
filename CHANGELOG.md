@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `genblaze-core`: fan-in consumers using `input_from` now fail before provider
+  invocation when a referenced producer step failed or produced no assets,
+  preventing a downstream step from reporting success with empty declared inputs
+  (#69).
 - `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
   when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
   `StepCache.get`/`put`), so a cache shared across tenants no longer serves one

@@ -48,6 +48,10 @@ Fluent API for building and executing multi-step generative media workflows with
 
 Precedence inside `_resolve_inputs`: **external_inputs > input_from > chain mode > none**.
 
+For `input_from`, every referenced prior step must have succeeded and produced at least one
+asset. If a referenced producer failed or returned no assets, the dependent step is marked
+`failed` before its provider is invoked.
+
 `external_inputs` and `input_from` are mutually exclusive at construction (raises `GenblazeError`). Pass an Asset with `sha256` populated; without it, both the step cache key and the manifest canonical hash will drift across reruns when the URL rotates (e.g., presigned). The reserved kwargs `inputs=` and `input=` raise a friendly error pointing at `external_inputs=`.
 
 ## Outputs

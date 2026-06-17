@@ -1285,6 +1285,51 @@ async def test_input_from_arun() -> None:
     assert "https://example.com/async1.png" in urls
 
 
+def test_input_from_failed_producer_fails_consumer() -> None:
+    """A fan-in consumer cannot succeed on assets from a failed producer."""
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-failed-source")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].assets == []
+    assert "input_from index 0" in (result.run.steps[1].error or "")
+    assert "failed upstream step 0" in (result.run.steps[1].error or "")
+    assert consumer.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_failed_producer_fails_consumer_async() -> None:
+    """Async fan-in also fails before invoking a consumer with missing inputs."""
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = await (
+        Pipeline("fan-in-failed-source-async")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].assets == []
+    assert "input_from index 0" in (result.run.steps[1].error or "")
+    assert "failed upstream step 0" in (result.run.steps[1].error or "")
+    assert consumer.received_inputs == []
+
+
 # --- Chain failure propagation tests (fail_fast=False) ---
 
 

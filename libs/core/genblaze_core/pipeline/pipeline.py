@@ -53,6 +53,10 @@ from genblaze_core.runnable.config import RunnableConfig
 logger = logging.getLogger("genblaze.pipeline")
 
 
+class _InputResolutionError(GenblazeError):
+    """Raised when declared upstream step outputs cannot be used as inputs."""
+
+
 # Sentinel for ``raise_on_failure``. ``None`` means "caller didn't pass it,
 # warn about the upcoming default flip"; ``True`` / ``False`` are explicit.
 # In genblaze-core 0.4.0 the default becomes ``True`` and the sentinel is
@@ -702,11 +706,44 @@ class Pipeline(Runnable[None, PipelineResult]):
                     raise GenblazeError(msg)
             assets: list[Asset] = []
             for idx in ps.input_from:
-                assets.extend(completed_steps[idx].assets)
+                upstream = completed_steps[idx]
+                if upstream.status != StepStatus.SUCCEEDED:
+                    detail = f": {upstream.error}" if upstream.error else ""
+                    upstream_label = (
+                        "failed upstream step"
+                        if upstream.status == StepStatus.FAILED
+                        else "upstream step"
+                    )
+                    msg = (
+                        f"input_from index {idx} for step {step_index} points to "
+                        f"{upstream_label} {idx} with status {upstream.status.value}{detail}"
+                    )
+                    raise _InputResolutionError(msg)
+                if not upstream.assets:
+                    msg = (
+                        f"input_from index {idx} for step {step_index} resolved no assets "
+                        f"from upstream step {idx}"
+                    )
+                    raise _InputResolutionError(msg)
+                assets.extend(upstream.assets)
             return assets
         if self._chain:
             return prev_assets
         return None
+
+    def _build_input_resolution_failure_step(
+        self,
+        ps: _PipelineStep,
+        error: _InputResolutionError,
+        *,
+        step_id: str | None = None,
+    ) -> Step:
+        """Build a failed Step when declared input dependencies are unavailable."""
+        step = self._build_step(ps, None, step_id=step_id)
+        step.status = StepStatus.FAILED
+        step.error = str(error)
+        step.error_code = ProviderErrorCode.INVALID_INPUT
+        return step
 
     def _build_step(
         self,
@@ -1466,8 +1503,17 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg)
 
-                inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                try:
+                    inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
+                except _InputResolutionError as exc:
+                    step = self._build_input_resolution_failure_step(
+                        ps, exc, step_id=step_ids[i - 1]
+                    )
+                    input_resolution_error = True
+                else:
+                    step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                    input_resolution_error = False
                 logger.debug(
                     "Executing step %d/%d: %s/%s",
                     i,
@@ -1475,7 +1521,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                     ps.provider.name,
                     ps.model,
                 )
-                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                 self._emit_step_start(ctx, step, ps)
                 if spinner is not None:
                     spinner.step_starting(
@@ -1485,7 +1530,10 @@ class Pipeline(Runnable[None, PipelineResult]):
                         step_index=i - 1,
                         total=total_steps,
                     )
-                result = self._execute_step(ps, step, config, ctx)
+                if input_resolution_error:
+                    result = step
+                else:
+                    result = self._execute_step(ps, step, config, ctx)
                 if spinner is not None:
                     spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                 completed_steps.append(result)
@@ -1662,8 +1710,17 @@ class Pipeline(Runnable[None, PipelineResult]):
                             )
                             raise PipelineTimeoutError(msg)
 
-                    inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                    step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                    try:
+                        inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
+                    except _InputResolutionError as exc:
+                        step = self._build_input_resolution_failure_step(
+                            ps, exc, step_id=step_ids[i - 1]
+                        )
+                        input_resolution_error = True
+                    else:
+                        step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                        input_resolution_error = False
                     logger.debug(
                         "Executing step %d/%d: %s/%s",
                         i,
@@ -1671,7 +1728,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                         ps.provider.name,
                         ps.model,
                     )
-                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                     self._emit_step_start(ctx, step, ps)
                     if spinner is not None:
                         spinner.step_starting(
@@ -1681,7 +1737,10 @@ class Pipeline(Runnable[None, PipelineResult]):
                             step_index=i - 1,
                             total=total_steps,
                         )
-                    result = await self._execute_step_async(ps, step, config, ctx)
+                    if input_resolution_error:
+                        result = step
+                    else:
+                        result = await self._execute_step_async(ps, step, config, ctx)
                     if spinner is not None:
                         spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                     completed_steps.append(result)
