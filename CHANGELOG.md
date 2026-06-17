@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `genblaze-core`: schema version 1.6 now binds URL-only asset metadata into
+  the canonical manifest hash so distinct asset URLs no longer collapse to the
+  same provenance identity. `Manifest.verify()` also rejects current-schema
+  output assets that lack `sha256`, preserving `verify_hash()` as the
+  hash-only compatibility check for durable-storage reads (#77).
+
 ### Added
 
 - `genblaze-hume`: new provider adapter for Hume AI **Octave TTS** (audio /
