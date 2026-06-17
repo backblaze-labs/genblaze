@@ -85,7 +85,7 @@ def test_verify_distinguishes_unverified_assets(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["verify", str(png_path)])
     combined = result.output + getattr(result, "stderr", "")
     assert result.exit_code != 0
-    assert "output assets missing sha256" in combined
+    assert "1 output asset(s) missing sha256" in combined
     assert "hash mismatch" not in combined
 
 

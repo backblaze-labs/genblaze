@@ -338,8 +338,9 @@ class ObjectStorageSink(BaseSink):
             verify: When True (default), checks ``manifest.verify_hash()``
                 and raises :class:`ManifestError` on hash mismatch. Pass
                 ``verify=False`` to skip the rehash on a manifest you trust
-                (e.g. one you just wrote). Byte-integrity verification for
-                URL-only outputs remains available via ``manifest.verify()``.
+                (e.g. one you just wrote). Call ``manifest.verify()`` when
+                you also need to enforce output byte binding; it returns
+                ``False`` for schema 1.6+ URL-only outputs missing ``sha256``.
 
         Raises:
             SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
