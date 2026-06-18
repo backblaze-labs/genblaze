@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import click
-from genblaze_core.models.enums import PromptVisibility
+from genblaze_core.models.enums import PromptVisibility, RunStatus
 
 
 def _load_provider(provider_name: str, allowed: tuple[str, ...] | None):
@@ -202,10 +202,17 @@ def replay(
         )
 
     try:
-        result = pipe.run()
+        result = pipe.run(raise_on_failure=False)
         click.echo()
+        if result.run.status in {RunStatus.FAILED, RunStatus.CANCELLED}:
+            click.echo(f"Replay failed. New run ID: {result.run.run_id}", err=True)
+            click.echo(f"Hash: {result.manifest.canonical_hash}", err=True)
+            click.echo(f"Status: {result.run.status}", err=True)
+            raise click.exceptions.Exit(1)
         click.echo(f"Replay complete. New run ID: {result.run.run_id}")
         click.echo(f"Hash: {result.manifest.canonical_hash}")
         click.echo(f"Status: {result.run.status}")
+    except click.exceptions.Exit:
+        raise
     except Exception as exc:
         raise click.ClickException(f"Replay failed: {exc}") from exc
