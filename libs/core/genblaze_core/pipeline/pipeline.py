@@ -180,7 +180,7 @@ def _text_value(value: Any) -> str | None:
     else:
         try:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             text = str(value)
     return text or None  # Empty text leaves no payload to moderate.
 
