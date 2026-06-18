@@ -177,9 +177,9 @@ def _text_value(value: Any) -> str | None:
     else:
         try:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except TypeError:
+        except (TypeError, ValueError):
             text = str(value)
-    return text if text else None
+    return text or None  # Empty text leaves no payload to moderate.
 
 
 def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
@@ -190,17 +190,9 @@ def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
     """
     payloads: list[str] = []
     for asset in inputs:
-        seen: set[str] = set()
-        asset_text = _text_value(getattr(asset, "text", None))
-        if asset_text is not None:
-            payloads.append(asset_text)
-            seen.add(asset_text)
-
-        metadata = getattr(asset, "metadata", None)
-        if isinstance(metadata, dict):
-            metadata_text = _text_value(metadata.get("text"))
-            if metadata_text is not None and metadata_text not in seen:
-                payloads.append(metadata_text)
+        metadata_text = _text_value(asset.metadata.get("text"))
+        if metadata_text is not None:
+            payloads.append(metadata_text)
     return payloads
 
 

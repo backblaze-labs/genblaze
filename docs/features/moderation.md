@@ -41,7 +41,6 @@ Pre-step moderation runs after pipeline inputs are resolved and before cache loo
 
 - `Step.prompt` when it is not `None`
 - text carried by `Step.inputs`, including inputs from `external_inputs=`, `input_from=`, and `chain=True`
-- text found on an input asset's future `Asset.text` field, if present
 - text found in `Asset.metadata["text"]`; strings are used as-is, bytes are decoded as UTF-8 with replacement, and structured values are JSON-stringified
 
 When both a prompt and textual inputs are present, they are joined with blank lines and checked once. Promptless steps with textual inputs are moderated. Promptless steps with no textual inputs, such as compositors or transforms that only consume media URLs, still skip pre-step moderation.

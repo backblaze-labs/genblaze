@@ -6,8 +6,9 @@ import asyncio
 
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
+from genblaze_core.models.step import Step
 from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
-from genblaze_core.pipeline.pipeline import Pipeline
+from genblaze_core.pipeline.pipeline import Pipeline, _pre_moderation_payload
 from genblaze_core.testing import MockProvider
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ class TestPreStepModeration:
         )
         assert provider.call_count == 0
         assert result.run.steps[0].status == StepStatus.FAILED
-        assert "Moderation rejected prompt" in result.run.steps[0].error
+        assert result.run.steps[0].error.startswith("Moderation rejected prompt/input:")
 
     def test_prompt_allowed_proceeds(self):
         provider = MockProvider()
@@ -207,9 +208,57 @@ class TestPreStepModeration:
         assert provider.call_count == 0
         assert step.status == StepStatus.FAILED
         assert step.error_code == ProviderErrorCode.INVALID_INPUT
-        assert "Moderation rejected prompt" in step.error
+        assert step.error.startswith("Moderation rejected prompt/input:")
         assert len(hook.prompt_calls) == 1
         assert hook.prompt_calls[0][0] == "blocked user text"
+
+    def test_prompt_and_input_text_combined_into_single_payload(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": "input side"},
+        )
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt="prompt side",
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .run()
+        )
+
+        assert provider.call_count == 1
+        assert result.run.steps[0].status == StepStatus.SUCCEEDED
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "prompt side\n\ninput side"
+
+    def test_bytes_input_text_decoded_for_moderation(self):
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": b"blocked user text"},
+        )
+        step = Step(provider="mock", model="m", prompt=None, inputs=[text_asset])
+
+        assert _pre_moderation_payload(step) == "blocked user text"
+
+    def test_circular_input_text_metadata_payload_falls_back_to_str(self):
+        circular: dict[str, object] = {}
+        circular["self"] = circular
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": circular},
+        )
+
+        step = Step(provider="mock", model="m", prompt=None, inputs=[text_asset])
+
+        assert _pre_moderation_payload(step) == "{'self': {...}}"
 
     def test_promptless_input_from_text_rejected_before_generation(self):
         hook = RejectContainingHook("blocked user text")
