@@ -59,9 +59,12 @@ make pre-release
 ```
 
 This runs `lint`, `typecheck`, `ts-types-check`, `pypi-metadata-check`,
-`test`, and `release-smoke` in quick-fail order. A clean run on `main`
-is a strong signal that `validate-version`, `changelog-gate`, and
-`release-smoke` in the workflow will all be green once you tag.
+`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order. `lint`
+now also runs the `deptry` dependency-hygiene gate (`make deptry`), which
+fails if any package imports a dependency it doesn't declare — the
+clean-install crash class behind #37/#106. A clean run on `main` is a strong
+signal that `validate-version`, `changelog-gate`, and `release-smoke` in the
+workflow will all be green once you tag.
 
 ## The publish pipeline
 

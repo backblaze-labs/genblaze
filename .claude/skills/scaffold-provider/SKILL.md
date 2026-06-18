@@ -59,6 +59,7 @@ Mirror an existing connector's structure exactly. Required fields:
 - `[project.entry-points."genblaze.providers"]` — `{name} = "genblaze_{name}:{Name}Provider"` (one line per exported provider class)
 - `[tool.hatch.build.targets.wheel]` — `packages = ["genblaze_{name}"]`
 - `[tool.pytest.ini_options]` — `testpaths = ["tests"]`
+- `[tool.deptry]` — `optional_dependencies_dev_groups = ["dev"]` (required, else the new package fails `make deptry`). The `make deptry` connector glob picks the package up automatically; no Makefile edit needed.
 
 ### `genblaze_{name}/__init__.py`
 

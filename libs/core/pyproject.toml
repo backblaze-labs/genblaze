@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-core"
-version = "0.3.2"
+version = "0.3.3"
 description = "Core SDK for genblaze media generation orchestration"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -26,6 +26,17 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 dependencies = [
     "pydantic>=2.0,<3",
     "pillow>=10.0",
+    # urllib3 is imported unguarded at module load in storage/transfer.py
+    # (the shared PoolManager backing AssetTransfer's presigned-URL streaming),
+    # and storage/__init__ imports transfer eagerly — so `import
+    # genblaze_core.storage` hard-requires it on a clean install. It used to
+    # arrive only transitively via a connector's boto3 stack; declaring it
+    # closes the same crash class as the replicate/httpx fix (#37/#106).
+    # >=1.26 for the Retry(allowed_methods=...) API; <3 matches the repo's
+    # bounded-major convention (cf. pydantic<3) and resolves cleanly against
+    # boto3/botocore's urllib3 cap (botocore<=1.31 wants <1.27 → 1.26.x; newer
+    # botocore allows 2.x — both inside <3).
+    "urllib3>=1.26,<3",
 ]
 
 [project.urls]
@@ -38,16 +49,30 @@ Issues = "https://github.com/backblaze-labs/genblaze/issues"
 [project.optional-dependencies]
 parquet = ["pyarrow>=14.0"]
 audio = ["mutagen>=1.47"]
+# Soft integrations: imported behind guards (try/except ImportError or
+# function-local), so core stays installable without them. Advertised as
+# extras so callers can opt in explicitly. http floor matches the connectors
+# already on httpx>=0.24 (nvidia, gmicloud, stability-audio, replicate).
+http = ["httpx>=0.24"]
+otel = ["opentelemetry-api>=1.20"]
+# genblaze_core.testing ships in the wheel and is a public, documented surface
+# (MockProvider/ProviderComplianceTests — see connector test suites and the
+# langsmith README). It imports pytest at module load, so it's only usable with
+# this extra installed: `pip install "genblaze-core[testing]"`.
+testing = ["pytest>=7.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "ruff>=0.4",
     "mypy>=1.8",
+    "deptry>=0.23",
     "pyarrow>=14.0",
     "mutagen>=1.47",
     "jsonschema>=4.0",
     "hypothesis>=6.0",
+    "httpx>=0.24",
+    "opentelemetry-api>=1.20",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -72,3 +97,24 @@ omit = ["*/tests/*"]
 show_missing = true
 skip_empty = true
 fail_under = 70
+
+[tool.deptry]
+# Treat the `dev` extra as dev-only tooling so deptry doesn't flag pytest,
+# ruff, mypy, etc. as unused declared deps (DEP002).
+optional_dependencies_dev_groups = ["dev"]
+
+[tool.deptry.per_rule_ignores]
+# botocore: core touches botocore exception types only inside
+# classify_botocore_error, reached exclusively from connector code
+# (genblaze-s3) that has already imported botocore. Declaring it in core would
+# wrongly pull boto3's stack into a storage-only install.
+# google: optional google-re2 accelerator for pattern safety; guarded at the
+# import site and absent by default.
+DEP001 = ["botocore", "google"]
+DEP003 = ["botocore", "google"]
+
+[tool.deptry.package_module_name_map]
+# opentelemetry-api (the `otel` extra) ships the top-level `opentelemetry`
+# module; map it so the guarded observability imports resolve to the
+# declaration without requiring the extra to be installed.
+opentelemetry-api = ["opentelemetry"]

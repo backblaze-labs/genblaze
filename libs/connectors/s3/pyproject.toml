@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-s3"
-version = "0.3.2"
+version = "0.3.3"
 description = "S3-compatible storage backend for genblaze (B2, R2, MinIO, AWS)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -25,6 +25,12 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 dependencies = [
     "genblaze-core>=0.3.2,<0.4",
     "boto3>=1.28",
+    # backend.py imports botocore.exceptions directly (unguarded, module load).
+    # boto3 always ships it, but declaring the direct import is honest and lets
+    # deptry verify it. Floor tracks boto3>=1.28's botocore baseline; safe
+    # because pip propagates boto3's exact botocore pin (a `--no-deps` install
+    # could still skew it, but that bypasses all our gates anyway).
+    "botocore>=1.31",
 ]
 
 [project.urls]
@@ -40,6 +46,11 @@ async = [
     # an aioboto3 major bump doesn't silently land breaking changes for
     # users with floating extras pins.
     "aioboto3>=12,<13",
+    # async_backend.py imports aiobotocore.config.AioConfig directly. aioboto3
+    # always pulls it, but the direct import is declared so deptry can verify
+    # it; aioboto3 pins the exact aiobotocore (==2.7.0 at our 12.0 floor), so no
+    # resolver conflict — the floor just matches that true minimum.
+    "aiobotocore>=2.7",
 ]
 dev = [
     "pytest>=7.0",
@@ -50,3 +61,8 @@ packages = ["genblaze_s3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.deptry]
+# Treat the `dev` extra as dev-only tooling so deptry doesn't flag pytest as
+# an unused declared dep (DEP002).
+optional_dependencies_dev_groups = ["dev"]
