@@ -43,3 +43,8 @@ packages = ["genblaze_langsmith"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.deptry]
+# Treat the `dev` extra as dev-only tooling so deptry does not flag pytest
+# (and other test-only deps) as unused declared deps (DEP002).
+optional_dependencies_dev_groups = ["dev"]

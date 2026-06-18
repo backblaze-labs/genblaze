@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity release-smoke pre-release post-release
+.PHONY: install install-dev test lint deptry fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity release-smoke pre-release post-release
 
 install:
 	pip install -e libs/core
@@ -57,6 +57,24 @@ test:
 lint:
 	ruff check libs/ cli/ examples/
 	ruff format --check libs/ cli/ examples/
+	$(MAKE) deptry
+
+# Dependency hygiene gate. Per-package because each carries its own
+# [project.dependencies] + [tool.deptry] config. Fails on undeclared imports
+# (DEP001) — the replicate/httpx clean-install crash class (#37/#106) — plus
+# misclassified transitive deps (DEP003) and unused declared deps (DEP002).
+# Requires the workspace installed (run after `make install-dev`); deptry maps
+# imports to packages via installed metadata. The connector glob auto-includes
+# newly scaffolded packages (matching the CI `build` job) so the gate can't
+# silently skip one. libs/meta is intentionally excluded: it's an umbrella
+# metapackage whose deps are install-time bundles, not imports, so deptry's
+# import-vs-declaration model does not apply.
+deptry:
+	@for pkg in libs/core cli libs/connectors/*/; do \
+		pkg="$${pkg%/}"; \
+		echo "=== deptry: $$pkg ==="; \
+		(cd "$$pkg" && deptry .) || exit 1; \
+	done
 
 fmt:
 	ruff format libs/ cli/ examples/
