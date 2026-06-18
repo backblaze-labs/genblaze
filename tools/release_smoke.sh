@@ -50,6 +50,7 @@ PACKAGES=(
     "libs/connectors/elevenlabs"
     "libs/connectors/stability-audio"
     "libs/connectors/lmnt"
+    "libs/connectors/hume"
     "libs/connectors/gmicloud"
     "libs/connectors/langsmith"
     "libs/connectors/nvidia"
@@ -108,6 +109,7 @@ connectors = [
     "genblaze_elevenlabs",
     "genblaze_stability_audio",
     "genblaze_lmnt",
+    "genblaze_hume",
     "genblaze_gmicloud",
     "genblaze_langsmith",
     "genblaze_nvidia",

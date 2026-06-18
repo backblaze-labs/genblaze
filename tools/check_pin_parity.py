@@ -99,6 +99,7 @@ PACKAGES: list[str] = [
     "libs/connectors/elevenlabs",
     "libs/connectors/stability-audio",
     "libs/connectors/lmnt",
+    "libs/connectors/hume",
     "libs/connectors/gmicloud",
     "libs/connectors/langsmith",
     "libs/connectors/nvidia",
@@ -226,10 +227,7 @@ def main() -> int:
             print(f"  DRIFT {label}: source pins diverge from PyPI wheel")
 
     print()
-    print(
-        f"Summary: {len(matched)} parity, {len(unreleased)} fresh, "
-        f"{len(drift_reports)} drift"
-    )
+    print(f"Summary: {len(matched)} parity, {len(unreleased)} fresh, {len(drift_reports)} drift")
 
     if drift_reports:
         print()

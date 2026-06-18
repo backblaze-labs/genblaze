@@ -24,10 +24,11 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.0,<0.4",
-    # Modern Fern-generated SDK surface (sync HumeClient, client.tts.synthesize_json,
-    # hume.tts.Posted* request models). Bounded below 1.0 so a future major can't
-    # silently reshape the client out from under these call sites.
-    "hume>=0.8,<1",
+    # The provider passes `version` (octave-1/-2 → Octave version) and
+    # `temperature` to synthesize_json; both kwargs only exist together from
+    # hume 0.13.13 (earlier 0.x raise TypeError on the octave-* path). Bounded
+    # below 1.0 so a future major can't silently reshape these call sites.
+    "hume>=0.13.13,<1",
 ]
 
 [project.urls]
@@ -49,3 +50,8 @@ packages = ["genblaze_hume"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.deptry]
+# Treat the `dev` extra as dev-only tooling so deptry does not flag pytest
+# (and other test-only deps) as unused declared deps (DEP002).
+optional_dependencies_dev_groups = ["dev"]

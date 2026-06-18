@@ -80,6 +80,7 @@ jobs:
           pip install -e "libs/connectors/elevenlabs[dev]"
           pip install -e "libs/connectors/stability-audio[dev]"
           pip install -e "libs/connectors/lmnt[dev]"
+          pip install -e "libs/connectors/hume[dev]"
           pip install -e "libs/connectors/gmicloud[dev]"
           pip install -e "libs/connectors/langsmith[dev]"
           pip install -e "libs/connectors/nvidia[dev]"
@@ -90,7 +91,7 @@ jobs:
       - name: Typecheck connectors
         run: |
           failed=""
-          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt gmicloud langsmith nvidia; do
+          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt hume gmicloud langsmith nvidia; do
             echo "=== Typechecking $conn ==="
             if ! mypy libs/connectors/$conn/genblaze_*/ --ignore-missing-imports; then
               failed="$failed $conn"
@@ -193,6 +194,7 @@ jobs:
           pip install -e "libs/connectors/elevenlabs[dev]"
           pip install -e "libs/connectors/stability-audio[dev]"
           pip install -e "libs/connectors/lmnt[dev]"
+          pip install -e "libs/connectors/hume[dev]"
           pip install -e "libs/connectors/gmicloud[dev]"
           pip install -e "libs/connectors/langsmith[dev]"
           pip install -e "libs/connectors/nvidia[dev]"
@@ -203,7 +205,7 @@ jobs:
           cd libs/core && pytest tests/ -v --cov=genblaze_core --cov-report=xml --cov-report=term-missing
       - name: Run connector tests
         run: |
-          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt gmicloud langsmith nvidia; do
+          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt hume gmicloud langsmith nvidia; do
             echo "=== Testing $conn ==="
             (cd libs/connectors/$conn && pytest -v)
           done
