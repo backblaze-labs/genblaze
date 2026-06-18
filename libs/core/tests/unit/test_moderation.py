@@ -237,6 +237,48 @@ class TestPreStepModeration:
         assert len(hook.prompt_calls) == 1
         assert hook.prompt_calls[0][0] == "prompt side\n\ninput side"
 
+    def test_negative_prompt_combined_into_single_payload(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt="prompt side",
+                modality=Modality.IMAGE,
+                negative_prompt="negative side",
+            )
+            .run()
+        )
+
+        assert provider.call_count == 1
+        assert result.run.steps[0].status == StepStatus.SUCCEEDED
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "prompt side\n\nnegative side"
+
+    def test_negative_prompt_rejected_before_generation(self):
+        hook = RejectContainingHook("blocked negative text")
+        provider = MockProvider()
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt="safe prompt",
+                modality=Modality.IMAGE,
+                negative_prompt="blocked negative text",
+            )
+            .run()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "safe prompt\n\nblocked negative text"
+
     def test_bytes_input_text_decoded_for_moderation(self):
         text_asset = Asset(
             url="https://input.test/user.txt",
@@ -572,6 +614,28 @@ class TestAsyncModeration:
         assert result.run.steps[0].status == StepStatus.SUCCEEDED
         assert len(hook.prompt_calls) == 1
         assert hook.prompt_calls[0][0] == "prompt side\n\ninput side"
+
+    def test_async_negative_prompt_rejected_before_generation(self):
+        hook = RejectContainingHook("blocked negative text")
+        provider = MockProvider()
+        result = asyncio.run(
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt="safe prompt",
+                modality=Modality.IMAGE,
+                negative_prompt="blocked negative text",
+            )
+            .arun()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "safe prompt\n\nblocked negative text"
 
     def test_async_promptless_input_from_text_rejected(self):
         hook = RejectContainingHook("blocked user text")

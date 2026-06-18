@@ -39,11 +39,11 @@ result = (
 
 Pre-step moderation runs after pipeline inputs are resolved and before cache lookup or provider invocation. The payload passed to `check_prompt(prompt, params)` includes:
 
-- `Step.prompt` when it is not `None`
+- `Step.prompt` and `Step.negative_prompt` when they are not `None`
 - text carried by `Step.inputs`, including inputs from `external_inputs=`, `input_from=`, and `chain=True`
 - text found in `Asset.metadata["text"]`; strings are used as-is, bytes are decoded as UTF-8 with replacement, and structured values are JSON-stringified
 
-When both a prompt and textual inputs are present, they are joined with blank lines and checked once. Promptless steps with textual inputs are moderated. Promptless steps with no textual inputs, such as compositors or transforms that only consume media URLs, still skip pre-step moderation.
+When prompts and textual inputs are present, they are joined with blank lines and checked once. Promptless steps with textual inputs are moderated. Promptless steps with no textual inputs, such as compositors or transforms that only consume media URLs, still skip pre-step moderation.
 
 The pipeline does not fetch or read `Asset.url` during moderation. For `text/plain` inputs, carry the text in `Asset.metadata["text"]` until a first-class text asset field exists.
 

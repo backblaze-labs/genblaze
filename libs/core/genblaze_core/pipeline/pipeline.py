@@ -200,10 +200,12 @@ def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
 
 
 def _pre_moderation_payload(step: Step) -> str | None:
-    """Build the pre-step moderation text from prompt plus textual inputs."""
+    """Build the pre-step moderation text from prompts plus textual inputs."""
     parts: list[str] = []
     if step.prompt is not None:
         parts.append(step.prompt)
+    if step.negative_prompt is not None:
+        parts.append(step.negative_prompt)
     parts.extend(_input_text_payloads(step.inputs))
     if not parts:
         return None
