@@ -525,6 +525,29 @@ def test_validate_model_user_registered_skips_probe():
     mock_client.models.get.assert_not_called()
 
 
+def test_get_client_raises_when_dependency_missing():
+    """Missing replicate/httpx surfaces a clear ProviderError naming both.
+
+    `_get_client` imports httpx then replicate; either ImportError maps to the
+    same message. Only reachable when a dependency is absent, so skip when both
+    are installed (the branch is un-hittable without uninstalling one). Mirrors
+    nvidia's test_chat_raises_when_openai_missing.
+    """
+    import importlib
+
+    from genblaze_core.exceptions import ProviderError
+
+    if (
+        importlib.util.find_spec("httpx") is not None
+        and importlib.util.find_spec("replicate") is not None
+    ):
+        pytest.skip("httpx and replicate are installed — ImportError branch not reachable")
+
+    provider = ReplicateProvider(api_token="test-token")
+    with pytest.raises(ProviderError, match="replicate or httpx"):
+        provider._get_client()
+
+
 # --- Compliance harness ---
 
 

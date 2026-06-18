@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-replicate"
-version = "0.3.0"
+version = "0.3.1"
 description = "Replicate provider adapter for genblaze"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -25,6 +25,7 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 dependencies = [
     "genblaze-core>=0.3.0,<0.4",
     "replicate>=0.25",
+    "httpx>=0.24",
 ]
 
 [project.urls]
