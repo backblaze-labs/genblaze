@@ -58,6 +58,11 @@ logger = logging.getLogger("genblaze.pipeline")
 # In genblaze-core 0.4.0 the default becomes ``True`` and the sentinel is
 # removed.
 _RAISE_ON_FAILURE_DEFAULT_FLIP_VERSION = "0.4.0"
+_TEXT_METADATA_KEY = "text"
+
+
+def _coerce_str(value: str | bytes | bytearray) -> str:
+    return value if isinstance(value, str) else value.decode("utf-8", errors="replace")
 
 
 def _resolve_raise_on_failure(
@@ -146,7 +151,7 @@ def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, mo
         # token past this guard by passing the UTF-8 bytes of the token
         # instead of the string, and still have it serialized downstream.
         if isinstance(value, (str, bytes, bytearray)):
-            text = value if isinstance(value, str) else value.decode("utf-8", errors="replace")
+            text = _coerce_str(value)
             if _SECRET_PATTERNS.search(text):
                 raise GenblazeError(
                     f"step.params[{path}] for {provider_name}/{model} looks "
@@ -170,10 +175,8 @@ def _text_value(value: Any) -> str | None:
     """Convert a recognized text-bearing input field into moderation text."""
     if value is None:
         return None
-    if isinstance(value, str):
-        text = value
-    elif isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", errors="replace")
+    if isinstance(value, (str, bytes, bytearray)):
+        text = _coerce_str(value)
     else:
         try:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -190,7 +193,7 @@ def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
     """
     payloads: list[str] = []
     for asset in inputs:
-        metadata_text = _text_value(asset.metadata.get("text"))
+        metadata_text = _text_value(asset.metadata.get(_TEXT_METADATA_KEY))
         if metadata_text is not None:
             payloads.append(metadata_text)
     return payloads

@@ -247,6 +247,76 @@ class TestPreStepModeration:
 
         assert _pre_moderation_payload(step) == "blocked user text"
 
+    def test_invalid_bytes_input_text_uses_replacement_char(self):
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": b"bad\xfftext"},
+        )
+        step = Step(provider="mock", model="m", prompt=None, inputs=[text_asset])
+
+        assert _pre_moderation_payload(step) == "bad\ufffdtext"
+
+    def test_empty_and_none_input_text_skip_moderation(self):
+        empty_asset = Asset(
+            url="https://input.test/empty.txt",
+            media_type="text/plain",
+            metadata={"text": ""},
+        )
+        none_asset = Asset(
+            url="https://input.test/none.txt",
+            media_type="text/plain",
+            metadata={"text": None},
+        )
+        step = Step(provider="mock", model="m", prompt=None, inputs=[empty_asset, none_asset])
+
+        assert _pre_moderation_payload(step) is None
+
+    def test_multiple_text_inputs_and_dict_payload_serialized_deterministically(self):
+        first_asset = Asset(
+            url="https://input.test/first.txt",
+            media_type="text/plain",
+            metadata={"text": "first"},
+        )
+        dict_asset = Asset(
+            url="https://input.test/structured.json",
+            media_type="application/json",
+            metadata={"text": {"b": 2, "a": 1}},
+        )
+        step = Step(
+            provider="mock",
+            model="m",
+            prompt="p",
+            inputs=[first_asset, dict_asset],
+        )
+
+        assert _pre_moderation_payload(step) == 'p\n\nfirst\n\n{"a": 1, "b": 2}'
+
+    def test_image_input_with_prompt_moderates_prompt_only(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        image_asset = Asset(
+            url="https://input.test/image.png",
+            media_type="image/png",
+            metadata={},
+        )
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt="safe prompt",
+                modality=Modality.IMAGE,
+                external_inputs=[image_asset],
+            )
+            .run()
+        )
+
+        assert provider.call_count == 1
+        assert result.run.steps[0].status == StepStatus.SUCCEEDED
+        assert len(hook.prompt_calls) == 1
+        assert hook.prompt_calls[0][0] == "safe prompt"
+
     def test_circular_input_text_metadata_payload_falls_back_to_str(self):
         circular: dict[str, object] = {}
         circular["self"] = circular
