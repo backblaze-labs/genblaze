@@ -24,10 +24,10 @@ jobs:
       contents: read
       security-events: write  # upload SARIF to code scanning
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.13"
       - run: pip install zizmor
@@ -41,7 +41,7 @@ jobs:
       - name: Upload SARIF to code scanning
         # Skip on fork PRs: GITHUB_TOKEN can't be granted security-events: write there (zizmor still runs above).
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@d77b13a0df3134d64a457ea9003f600b09fa1c8a  # v3
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v3
         with:
           sarif_file: zizmor.sarif
           category: zizmor

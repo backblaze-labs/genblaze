@@ -91,6 +91,13 @@ import sys
 
 connectors = [
     "genblaze_core",
+    # Submodule with a hard import-at-load dependency (urllib3, via the
+    # AssetTransfer PoolManager). `import genblaze_core` uses lazy __getattr__
+    # dispatch and never executes this, so it must be imported explicitly to
+    # prove the clean-install contract — the regression class behind #37/#106.
+    # (genblaze_core.testing is NOT checked here: it needs pytest, which
+    # genblaze[all] does not install — that extra is gated in the follow-up.)
+    "genblaze_core.storage",
     "genblaze_s3",
     "genblaze_openai",
     "genblaze_google",

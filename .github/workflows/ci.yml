@@ -16,10 +16,16 @@ permissions:
 
 jobs:
   lint:
+    # Runs ruff directly rather than `make lint` (which also runs `make
+    # deptry`): deptry needs the full workspace installed, so it gets its own
+    # `deptry` job below. Local `make lint` therefore covers more than this
+    # job — that's intentional, the two are split by install cost.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.13"
           cache: "pip"
@@ -33,8 +39,10 @@ jobs:
     # without `make ts-types` being run. See libs/spec/README.md.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: "20"
       - name: Regenerate TS types
@@ -51,8 +59,10 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.13"
           cache: "pip"
@@ -91,6 +101,33 @@ jobs:
             exit 1
           fi
 
+  deptry:
+    # Dependency hygiene gate. `pip check` proves the installed set has no
+    # conflicting/missing transitive deps; `make deptry` proves every package
+    # declares what it imports — the replicate/httpx clean-install crash class
+    # (#37/#106). Both run against the editable workspace install (deptry maps
+    # imports to packages via installed metadata). NOTE: `pip install -e`
+    # ignores version constraints, so `pip check` here does NOT exercise
+    # published-pin resolution or floor conflicts — that's the constraint-
+    # respecting wheel install in `make release-smoke` at tag time, and the
+    # per-PR resolve-check is a documented follow-up.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: "**/pyproject.toml"
+      - name: Install workspace (editable, all dev extras; deptry ships in core[dev])
+        run: make install-dev
+      - name: Dependency consistency (pip check)
+        run: pip check
+      - name: Dependency hygiene (deptry)
+        run: make deptry
+
   build:
     # Smoke-build every published package on every PR so packaging
     # regressions (e.g. broken hatch dynamic-version sources, missing
@@ -99,8 +136,10 @@ jobs:
     # build` + `twine check` pipeline against PyPI.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.13"
           cache: "pip"
@@ -133,8 +172,10 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -171,7 +212,7 @@ jobs:
           cd cli && pytest tests/ -v
       - name: Upload coverage
         if: matrix.python-version == '3.13'
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           file: libs/core/coverage.xml
           fail_ci_if_error: false

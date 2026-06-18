@@ -28,6 +28,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected at runtime (it was never honored), so a dynamic caller passing it via
   `config()` / `invoke(config=...)` fails loudly instead of silently bypassing
   cache isolation (#68).
+- **`genblaze-replicate`** (0.3.0 → **0.3.1**): declare `httpx>=0.24` as a
+  direct dependency. `ReplicateProvider._get_client()` imports `httpx`
+  directly to build the client timeout, but the package declared only
+  `replicate`, which pins `httpx>=0.21` — below the `0.22` floor where the
+  `httpx.Timeout(connect=...)` kwarg landed. Pin aligned with the
+  `httpx>=0.24` already used by the nvidia, gmicloud, and stability-audio
+  connectors. Version bumped so a corrected wheel can publish past the
+  `skip-existing` pin-parity gate (#37).
+- **`genblaze-core`** (0.3.2 → **0.3.3**): declare `urllib3>=1.26,<3` as a
+  direct dependency. `storage/transfer.py` imports `urllib3` unguarded at module load
+  (the shared `PoolManager` behind `AssetTransfer`) and `storage/__init__`
+  imports it eagerly, so `import genblaze_core.storage` hard-required urllib3 on
+  a clean install while core declared only `pydantic` + `pillow`. It previously
+  arrived only transitively via a connector's boto3 stack — the same
+  clean-install crash class as the replicate/httpx fix above.
+- **`genblaze-s3`** (0.3.2 → **0.3.3**): declare `botocore>=1.31` (imported
+  directly in `backend.py`) and `aiobotocore>=2.7` in the `async` extra
+  (imported directly in `async_backend.py`). Both always shipped transitively
+  via boto3/aioboto3, which pin their exact versions — so these declarations add
+  honesty for the dependency gate without changing what resolves.
+
+### Added
+
+- `genblaze-core`: `http` (`httpx`), `otel` (`opentelemetry-api`), and
+  `testing` (`pytest`) extras. These advertise previously-undeclared
+  guarded/soft imports. In particular `genblaze_core.testing` (the public
+  `MockProvider` / `ProviderComplianceTests` harness) imports `pytest` at module
+  load and ships in the wheel, so it now installs via
+  `pip install "genblaze-core[testing]"`.
+
+### Changed
+
+- **Repo tooling**: new `make deptry` dependency-hygiene gate
+  (backed by per-package `[tool.deptry]` config) fails on undeclared imports
+  (DEP001), shipped imports of dev-only deps (DEP004), and misclassified
+  transitive deps — the clean-install crash class above. Wired into `make lint`,
+  `make pre-release`, and a new `deptry` CI job that also runs `pip check`
+  against the editable workspace. `libs/meta` is excluded (umbrella metapackage:
+  its deps are install-time bundles, not imports).
 
 ## [0.3.3] - 2026-05-26
 

@@ -71,9 +71,10 @@ jobs:
       spec_version: ${{ steps.read.outputs.spec }}
       dry_run: ${{ steps.read.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
       - id: read
         name: Read CHANGELOG + pyproject versions and validate release tag
         # SECURITY: all GitHub-controlled values (event name, release tag,
@@ -140,9 +141,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
       - name: Ensure CHANGELOG [Unreleased] is empty
         run: |
           # Extract lines BETWEEN `## [Unreleased]` (exclusive) and the next
@@ -173,10 +175,11 @@ jobs:
     timeout-minutes: 20
     needs: [validate-version]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install build twine
@@ -197,10 +200,11 @@ jobs:
     timeout-minutes: 5
     needs: [validate-version]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install packaging
@@ -225,10 +229,11 @@ jobs:
       contents: read
       id-token: write   # Trusted Publishing to PyPI + sigstore attestations.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install build twine
@@ -237,7 +242,7 @@ jobs:
       - name: Validate wheel metadata
         run: twine check libs/core/dist/*
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: libs/core/dist/
           repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
@@ -253,10 +258,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install build twine
@@ -265,7 +271,7 @@ jobs:
       - name: Validate wheel metadata
         run: twine check cli/dist/*
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: cli/dist/
           repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
@@ -303,10 +309,11 @@ jobs:
           - langsmith
           - nvidia
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install build twine
@@ -315,7 +322,7 @@ jobs:
       - name: Validate wheel metadata
         run: twine check libs/connectors/${{ matrix.connector }}/dist/*
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: libs/connectors/${{ matrix.connector }}/dist/
           repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
@@ -337,10 +344,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install build twine
@@ -349,7 +357,7 @@ jobs:
       - name: Validate wheel metadata
         run: twine check libs/meta/dist/*
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: libs/meta/dist/
           repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
@@ -370,10 +378,11 @@ jobs:
       contents: read
       id-token: write   # npm provenance — signed attestation that this tarball was built from this commit by this workflow.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-node@v6
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # zizmor: ignore[cache-poisoning] (publish job sets no cache: input, nothing to poison); v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: "https://registry.npmjs.org"
@@ -412,8 +421,9 @@ jobs:
         working-directory: libs/spec
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ needs.validate-version.outputs.dry_run }}
         run: |
-          if [ "${{ needs.validate-version.outputs.dry_run }}" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run: validating publish without uploading"
             npm publish --access public --dry-run --provenance
           else
@@ -433,7 +443,7 @@ jobs:
     needs: [publish-meta, publish-npm, validate-version]
     if: needs.validate-version.outputs.dry_run != 'true'
     steps:
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Wait for PyPI to index the umbrella
@@ -442,8 +452,10 @@ jobs:
         # Indexing is checked against the umbrella's own version because
         # that's what `pip install genblaze` resolves to — the wave name
         # (which the tag follows) doesn't appear in the package metadata.
+        env:
+          UMBRELLA_VERSION: ${{ needs.validate-version.outputs.umbrella_version }}
         run: |
-          version="${{ needs.validate-version.outputs.umbrella_version }}"
+          version="$UMBRELLA_VERSION"
           for i in $(seq 1 12); do
             if pip index versions genblaze 2>/dev/null | grep -q "$version"; then
               echo "genblaze==$version is visible on PyPI"
@@ -462,8 +474,10 @@ jobs:
         # 0.3.0 s3 drift and the 0.3.2 langsmith/cli drift before they
         # shipped. ``make post-release`` from a maintainer's laptop runs
         # the same check.
+        env:
+          UMBRELLA_VERSION: ${{ needs.validate-version.outputs.umbrella_version }}
         run: |
-          version="${{ needs.validate-version.outputs.umbrella_version }}"
+          version="$UMBRELLA_VERSION"
           python -m venv /tmp/verify
           /tmp/verify/bin/pip install --upgrade pip
           /tmp/verify/bin/pip install "genblaze[all]==$version"
