@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected at runtime (it was never honored), so a dynamic caller passing it via
   `config()` / `invoke(config=...)` fails loudly instead of silently bypassing
   cache isolation (#68).
+- **`genblaze-replicate`** (0.3.0 → **0.3.1**): declare `httpx>=0.24` as a
+  direct dependency. `ReplicateProvider._get_client()` imports `httpx`
+  directly to build the client timeout, but the package declared only
+  `replicate`, which pins `httpx>=0.21` — below the `0.22` floor where the
+  `httpx.Timeout(connect=...)` kwarg landed. Pin aligned with the
+  `httpx>=0.24` already used by the nvidia, gmicloud, and stability-audio
+  connectors. Version bumped so a corrected wheel can publish past the
+  `skip-existing` pin-parity gate (#37).
 
 ## [0.3.3] - 2026-05-26
 
