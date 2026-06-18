@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-06-15 -->
 <h1 align="center" style="border-bottom: none">
     Genblaze
 </h1>
@@ -66,6 +66,7 @@ pip install genblaze-replicate       # Replicate (Flux, SDXL, etc.)
 pip install genblaze-elevenlabs      # ElevenLabs TTS + sound effects
 pip install genblaze-stability-audio # Stability AI Stable Audio (music)
 pip install genblaze-lmnt            # LMNT fast TTS
+pip install genblaze-hume            # Hume AI Octave TTS
 ```
 
 Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`.
@@ -157,6 +158,7 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 | **ElevenLabs** | — | — | TTS + Sound Effects | — |
 | **Stability AI** | — | — | Stable Audio (music) | — |
 | **LMNT** | — | — | TTS | — |
+| **Hume** | — | — | Octave TTS | — |
 
 ## Configure API keys
 
@@ -176,6 +178,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | ElevenLabs (TTS + SFX) | `ELEVENLABS_API_KEY` | [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) |
 | Stability AI (music) | `STABILITY_API_KEY` | [platform.stability.ai](https://platform.stability.ai/account/keys) |
 | LMNT (fast TTS) | `LMNT_API_KEY` | [app.lmnt.com](https://app.lmnt.com/account) |
+| Hume (Octave TTS) | `HUME_API_KEY` | [platform.hume.ai](https://platform.hume.ai/) |
 
 **Example — one provider + B2 storage:**
 

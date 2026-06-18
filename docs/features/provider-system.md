@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-06-15 -->
 # Feature: Provider System
 
 ## Purpose
@@ -110,7 +110,7 @@ Connectors as of 0.3.0:
 
 - `NATIVE`: OpenAI (TTS / DALL-E / Sora), ElevenLabs TTS, Replicate, NVIDIA chat
 - `PARTIAL`: NVIDIA generative endpoints (audio / video / image), GMICloud, Google (Veo / Imagen)
-- `NONE`: Decart, Runway, Luma, Stability-Audio, ElevenLabs SFX, LMNT
+- `NONE`: Decart, Runway, Luma, Stability-Audio, ElevenLabs SFX, LMNT, Hume
 
 ## Error Deduplication
 Each connector family shares a single error mapper module:

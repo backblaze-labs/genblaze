@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-04 -->
+<!-- last_verified: 2026-06-15 -->
 # Pricing recipes
 
 > **Not maintained.** Prices in this document are snapshots taken at the
@@ -78,6 +78,41 @@ fallback, so a `register_pricing("*", ...)` applies universally.
 
 ```python
 provider.models.register_pricing("*", per_input_chars(LMNT_PRICE_PER_CHAR, per=1))
+```
+
+---
+
+## Hume
+
+**Source:** user-registered (the SDK ships no prices for Hume).
+**Snapshot date:** TODO — fill in when you read the rate.
+**Verify at:** [hume.ai/pricing](https://www.hume.ai/pricing) /
+[platform.hume.ai](https://platform.hume.ai/).
+
+Hume Octave TTS bills per character of input text. The same rate applies to
+`octave-1` and `octave-2` (the model is selected via the request `version`
+field, not separate slugs). Replace `RATE` below with the current
+per-character USD rate from Hume's pricing page.
+
+```python
+from genblaze_core.providers import per_input_chars
+from genblaze_hume import HumeTTSProvider
+
+provider = HumeTTSProvider(api_key="...")
+
+# Octave is priced per 1,000 characters of input text.
+HUME_PRICE_PER_1K_CHARS = RATE  # TODO: confirm at hume.ai/pricing
+for slug in ("octave-1", "octave-2"):
+    provider.models.register_pricing(
+        slug, per_input_chars(HUME_PRICE_PER_1K_CHARS, per=1000)
+    )
+```
+
+To cover any Octave slug with one rule, register against `"*"` (the fallback
+spec's id) — the registry routes unmatched slugs through the fallback:
+
+```python
+provider.models.register_pricing("*", per_input_chars(HUME_PRICE_PER_1K_CHARS, per=1000))
 ```
 
 ---

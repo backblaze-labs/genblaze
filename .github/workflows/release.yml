@@ -305,6 +305,7 @@ jobs:
           - elevenlabs
           - stability-audio
           - lmnt
+          - hume
           - gmicloud
           - langsmith
           - nvidia

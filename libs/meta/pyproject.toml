@@ -46,6 +46,7 @@ decart = ["genblaze-decart>=0.3.0,<0.4"]
 elevenlabs = ["genblaze-elevenlabs>=0.3.0,<0.4"]
 stability-audio = ["genblaze-stability-audio>=0.3.0,<0.4"]
 lmnt = ["genblaze-lmnt>=0.3.0,<0.4"]
+hume = ["genblaze-hume>=0.3.0,<0.4"]
 langsmith = ["genblaze-langsmith>=0.2.1,<0.4"]
 nvidia = ["genblaze-nvidia>=0.3.0,<0.4"]
 
@@ -67,6 +68,7 @@ image = [
 audio = [
     "genblaze-elevenlabs>=0.3.0,<0.4",
     "genblaze-lmnt>=0.3.0,<0.4",
+    "genblaze-hume>=0.3.0,<0.4",
     "genblaze-stability-audio>=0.3.0,<0.4",
     "genblaze-gmicloud>=0.3.0,<0.4",
     "genblaze-nvidia>=0.3.0,<0.4",
@@ -82,6 +84,7 @@ all = [
     "genblaze-elevenlabs>=0.3.0,<0.4",
     "genblaze-stability-audio>=0.3.0,<0.4",
     "genblaze-lmnt>=0.3.0,<0.4",
+    "genblaze-hume>=0.3.0,<0.4",
     "genblaze-langsmith>=0.2.1,<0.4",
     "genblaze-nvidia>=0.3.0,<0.4",
 ]
