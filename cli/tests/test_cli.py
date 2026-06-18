@@ -163,8 +163,9 @@ def test_replay_no_dry_run_exits_nonzero_when_run_fails(tmp_path: Path, monkeypa
     )
 
     assert result.exit_code != 0
-    assert "Replay failed" in result.output
-    assert "Replay complete" not in result.output
+    assert "Replay failed" in result.stderr
+    assert "Replay failed" not in result.stdout
+    assert "Replay complete" not in result.stdout
 
 
 def test_index(tmp_path: Path) -> None:
