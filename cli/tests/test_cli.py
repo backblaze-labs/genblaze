@@ -9,8 +9,9 @@ from click.testing import CliRunner
 from genblaze_cli.main import cli
 from genblaze_core.builders import RunBuilder, StepBuilder
 from genblaze_core.media.png import PngHandler
-from genblaze_core.models.enums import Modality
+from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.manifest import Manifest
+from genblaze_core.testing import MockProvider
 from PIL import Image
 
 
@@ -132,6 +133,39 @@ def test_replay_aborts_when_no_allowlist_and_declined(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["replay", str(manifest_path), "--no-dry-run"], input="n\n")
     assert result.exit_code != 0
     assert "Aborted" in result.output or "Execute with provider" in result.output
+
+
+def test_replay_no_dry_run_exits_nonzero_when_run_fails(tmp_path: Path, monkeypatch) -> None:
+    """A replayed failed run must not look successful to automation."""
+
+    class FailingReplayProvider(MockProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                name="test",
+                should_fail=True,
+                error_code=ProviderErrorCode.AUTH_FAILURE,
+                error_message="missing credentials",
+            )
+
+    import genblaze_core.providers.registry as provider_registry
+
+    monkeypatch.setattr(
+        provider_registry,
+        "discover_providers",
+        lambda: {"test": FailingReplayProvider},
+    )
+    manifest_path = _create_manifest_json(tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["replay", str(manifest_path), "--no-dry-run", "--allow-provider", "test"],
+    )
+
+    assert result.exit_code != 0
+    assert "Replay failed" in result.stderr
+    assert "Replay failed" not in result.stdout
+    assert "Replay complete" not in result.stdout
 
 
 def test_index(tmp_path: Path) -> None:
