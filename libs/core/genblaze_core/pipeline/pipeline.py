@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Sequence
@@ -57,6 +58,11 @@ logger = logging.getLogger("genblaze.pipeline")
 # In genblaze-core 0.4.0 the default becomes ``True`` and the sentinel is
 # removed.
 _RAISE_ON_FAILURE_DEFAULT_FLIP_VERSION = "0.4.0"
+_TEXT_METADATA_KEY = "text"
+
+
+def _coerce_str(value: str | bytes | bytearray) -> str:
+    return value if isinstance(value, str) else value.decode("utf-8", errors="replace")
 
 
 def _resolve_raise_on_failure(
@@ -145,7 +151,7 @@ def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, mo
         # token past this guard by passing the UTF-8 bytes of the token
         # instead of the string, and still have it serialized downstream.
         if isinstance(value, (str, bytes, bytearray)):
-            text = value if isinstance(value, str) else value.decode("utf-8", errors="replace")
+            text = _coerce_str(value)
             if _SECRET_PATTERNS.search(text):
                 raise GenblazeError(
                     f"step.params[{path}] for {provider_name}/{model} looks "
@@ -163,6 +169,47 @@ def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, mo
 
     for k, v in params.items():
         _scan(v, str(k))
+
+
+def _text_value(value: Any) -> str | None:
+    """Convert a recognized text-bearing input field into moderation text."""
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray)):
+        text = _coerce_str(value)
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError, OverflowError):
+            text = str(value)
+    return text or None  # Empty text leaves no payload to moderate.
+
+
+def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
+    """Extract textual moderation payloads from input assets.
+
+    The pipeline does not dereference input asset URLs here. It screens text
+    carried in manifest-visible fields that providers commonly consume.
+    """
+    payloads: list[str] = []
+    for asset in inputs:
+        metadata_text = _text_value(asset.metadata.get(_TEXT_METADATA_KEY))
+        if metadata_text is not None:
+            payloads.append(metadata_text)
+    return payloads
+
+
+def _pre_moderation_payload(step: Step) -> str | None:
+    """Build the pre-step moderation text from prompts plus textual inputs."""
+    parts: list[str] = []
+    if step.prompt is not None:
+        parts.append(step.prompt)
+    if step.negative_prompt is not None:
+        parts.append(step.negative_prompt)
+    parts.extend(_input_text_payloads(step.inputs))
+    if not parts:
+        return None
+    return "\n\n".join(parts)
 
 
 if TYPE_CHECKING:
@@ -729,7 +776,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         stage: str,
     ) -> Step:
         """Mark a step as failed due to moderation rejection."""
-        label = "prompt" if stage == "pre" else "output"
+        label = "prompt/input" if stage == "pre" else "output"
         step.status = StepStatus.FAILED
         step.error = f"Moderation rejected {label}: {mod_result.reason or 'no reason given'}"
         step.error_code = ProviderErrorCode.INVALID_INPUT
@@ -811,9 +858,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx: _StepContext,
     ) -> Step:
         """Execute a single step with moderation, caching, and fallback models."""
-        if self._moderation is not None and step.prompt is not None:
+        if (
+            self._moderation is not None
+            and (moderation_payload := _pre_moderation_payload(step)) is not None
+        ):
             try:
-                mod_result = self._moderation.check_prompt(step.prompt, step.params)
+                mod_result = self._moderation.check_prompt(moderation_payload, step.params)
             except Exception as exc:
                 step.status = StepStatus.FAILED
                 step.error = f"Moderation hook error: {exc}"
@@ -869,9 +919,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx: _StepContext,
     ) -> Step:
         """Execute a single step asynchronously with moderation, caching, and fallback."""
-        if self._moderation is not None and step.prompt is not None:
+        if (
+            self._moderation is not None
+            and (moderation_payload := _pre_moderation_payload(step)) is not None
+        ):
             try:
-                mod_result = await self._moderation.acheck_prompt(step.prompt, step.params)
+                mod_result = await self._moderation.acheck_prompt(moderation_payload, step.params)
             except Exception as exc:
                 step.status = StepStatus.FAILED
                 step.error = f"Moderation hook error: {exc}"
