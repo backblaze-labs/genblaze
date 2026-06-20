@@ -985,6 +985,32 @@ class TestManifestHelpers:
         with pytest.raises(SinkError, match="exceeds MAX_MANIFEST_BYTES"):
             sink.read_manifest(run)
 
+    def test_read_manifest_wraps_corrupt_json(self):
+        """Corrupt stored manifests raise ManifestError with key context."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="corrupt", status=RunStatus.COMPLETED)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b"{not json"
+
+        with pytest.raises(ManifestError, match="not valid JSON") as excinfo:
+            sink.read_manifest(run)
+
+        assert key in str(excinfo.value)
+
+    def test_read_manifest_wraps_validation_errors(self):
+        """Schema-invalid stored manifests raise ManifestError with key context."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="invalid", status=RunStatus.COMPLETED)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b'{"schema_version": "1.5", "canonical_hash": "abc"}'
+
+        with pytest.raises(ManifestError, match="is invalid") as excinfo:
+            sink.read_manifest(run)
+
+        assert key in str(excinfo.value)
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_read_manifest_verify_default_catches_tamper(self, mock_urlopen, _mock_dns):

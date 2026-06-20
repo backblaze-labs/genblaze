@@ -10,6 +10,8 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as _futures_wait
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import ManifestError, SinkError, StorageError
 from genblaze_core.models.asset import Asset
@@ -48,6 +50,20 @@ _warned_durable_url_lock = threading.Lock()
 # None/empty" (S3-like backend with no CDN → WARN). Using a private
 # sentinel object instead of ``None`` keeps the three cases unambiguous.
 _PUBLIC_URL_BASE_MISSING = object()
+
+
+def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
+    try:
+        raw = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"Stored manifest at {key} is not valid JSON: {exc}") from exc
+
+    try:
+        return parse_manifest(raw)
+    except ManifestError:
+        raise
+    except (AttributeError, TypeError, ValidationError) as exc:
+        raise ManifestError(f"Stored manifest at {key} is invalid: {exc}") from exc
 
 
 def _warn_durable_url_on_private_bucket(bucket: str, policy: URLPolicy) -> None:
@@ -364,7 +380,7 @@ class ObjectStorageSink(BaseSink):
                 f"Stored manifest at {key} is {len(data)} bytes, exceeds "
                 f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
-        manifest = parse_manifest(json.loads(data))
+        manifest = _parse_stored_manifest(key, data)
         if verify:
             if not manifest.verify_hash():
                 raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
@@ -612,7 +628,7 @@ class ObjectStorageSink(BaseSink):
                 f"Stored manifest at {manifest_key} is {len(data)} bytes, "
                 f"exceeds MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
-        return Manifest.model_validate_json(data)
+        return _parse_stored_manifest(manifest_key, data)
 
     def _asset_index_key(self, asset_id: str) -> str:
         """Storage key for the asset_id → manifest_uri sidecar."""
