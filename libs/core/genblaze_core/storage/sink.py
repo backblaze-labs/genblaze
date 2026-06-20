@@ -516,6 +516,8 @@ class ObjectStorageSink(BaseSink):
         """Return True when ``asset`` already points at bytes in this backend."""
         if not is_valid_sha256(asset.sha256):
             return False
+        if asset.size_bytes is None:
+            return False
         try:
             key = self._backend.key_from_url(asset.url)
         except NotImplementedError:

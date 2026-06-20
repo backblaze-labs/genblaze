@@ -415,6 +415,22 @@ class TestObjectStorageSink:
         assert manifest.verify()
         assert any("manifests" in key for key in backend.store)
 
+    def test_asset_already_transferred_requires_size_bytes(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        key = "test/assets/existing.png"
+        backend.store[key] = b"existing"
+        asset = Asset(
+            url=backend.get_durable_url(key),
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+
+        assert not sink._asset_already_transferred(asset)
+
+        asset.size_bytes = len(backend.store[key])
+        assert sink._asset_already_transferred(asset)
+
 
 def _mock_urlopen():
     """Helper: patch urlopen to return fake image data."""
