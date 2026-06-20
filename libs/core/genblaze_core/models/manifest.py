@@ -361,8 +361,9 @@ class Manifest(BaseModel):
         hash-only checks, or ``verification_report()`` when callers need to
         distinguish a hash mismatch from outputs missing ``sha256``.
 
-        This method verifies that each output declares a syntactically valid
-        ``sha256``. It does not fetch ``asset.url`` or re-hash remote bytes.
+        This method verifies that each output declares a 64-character
+        lowercase hex ``sha256``. It does not fetch ``asset.url`` or re-hash
+        remote bytes.
         """
         return self.verification_report().ok
 
