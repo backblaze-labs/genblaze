@@ -57,6 +57,9 @@ class StepSpan:
                 self._set_otel_attribute("genblaze.retries", self.retries)
                 if self.cost is not None:
                     self._set_otel_attribute("genblaze.cost_usd", self.cost)
+                # Safety net for attributes populated before the OTel span
+                # existed, or mutated directly by callers that already hold
+                # the span object. set_attribute() remains write-through.
                 for key, value in self.attributes.items():
                     self._set_otel_attribute(key, value)
                 # Record exception if one occurred

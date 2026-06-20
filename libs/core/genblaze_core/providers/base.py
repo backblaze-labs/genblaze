@@ -106,25 +106,28 @@ class SubmitResult:
     estimated_seconds: float | None = field(default=None)
 
 
-_NO_PREDICTION = object()
-
-
 @dataclass
 class _StepRetryState:
     """Per-invocation authority for post-submit step retries."""
 
-    prediction_id: Any = field(default=_NO_PREDICTION)
+    prediction_id: Any | None = None
+    resume_failures: int = 0
 
     @property
-    def can_resume(self) -> bool:
-        return self.prediction_id is not _NO_PREDICTION
+    def resume_prediction_id(self) -> Any | None:
+        return self.prediction_id
 
     def clear(self) -> None:
-        self.prediction_id = _NO_PREDICTION
+        self.prediction_id = None
+        self.resume_failures = 0
 
     def record_submit(self, prediction_id: Any) -> None:
         if prediction_id is not None:
             self.prediction_id = prediction_id
+            self.resume_failures = 0
+
+    def record_resume_failure(self) -> None:
+        self.resume_failures += 1
 
 
 def _adaptive_poll_interval(elapsed: float, base: float, max_interval: float = 30.0) -> float:
@@ -1419,6 +1422,101 @@ class BaseProvider(Runnable[Step, Step]):
                 return
             await asyncio.to_thread(self._run_preflight_once)
 
+    def _checkpoint_submit(
+        self,
+        step: Step,
+        config: RunnableConfig | None,
+        prediction_id: Any,
+    ) -> None:
+        """Fire the submit checkpoint callback before polling an upstream job."""
+        on_submit = (config or {}).get("on_submit")
+        if on_submit is not None:
+            on_submit(step.step_id, prediction_id)
+
+    def _poll_fetch_once(
+        self,
+        prediction_id: Any,
+        step: Step,
+        config: RunnableConfig | None,
+        timeout: float,
+        start_time: float,
+        *,
+        timeout_label: str = "Poll",
+    ) -> Step:
+        """Run the shared sync poll-until-done loop and fetch the result."""
+        while True:
+            done = self._retry_phase(
+                lambda: self.poll(prediction_id, config),
+                phase="poll",
+                step=step,
+                config=config,
+                start_time=start_time,
+                timeout=timeout,
+            )
+            if done:
+                break
+            elapsed = time.monotonic() - start_time
+            if elapsed >= timeout:
+                raise ProviderError(
+                    f"{timeout_label} timeout after {elapsed:.1f}s (limit: {timeout}s)"
+                )
+            self._fire_poll_progress(prediction_id, step, config, start_time)
+            interval = _adaptive_poll_interval(elapsed, self.poll_interval)
+            self._sleep_with_heartbeats(interval, step, config, start_time)
+
+        step = self._retry_phase(
+            lambda: self.fetch_output(prediction_id, step),
+            phase="fetch",
+            step=step,
+            config=config,
+            start_time=start_time,
+            timeout=timeout,
+        )
+        self._apply_registry_pricing(step)
+        return step
+
+    async def _apoll_fetch_once(
+        self,
+        prediction_id: Any,
+        step: Step,
+        config: RunnableConfig | None,
+        timeout: float,
+        start_time: float,
+        *,
+        timeout_label: str = "Poll",
+    ) -> Step:
+        """Run the shared async poll-until-done loop and fetch the result."""
+        while True:
+            done = await self._aretry_phase(
+                lambda: asyncio.to_thread(self.poll, prediction_id, config),
+                phase="poll",
+                step=step,
+                config=config,
+                start_time=start_time,
+                timeout=timeout,
+            )
+            if done:
+                break
+            elapsed = time.monotonic() - start_time
+            if elapsed >= timeout:
+                raise ProviderError(
+                    f"{timeout_label} timeout after {elapsed:.1f}s (limit: {timeout}s)"
+                )
+            self._fire_poll_progress(prediction_id, step, config, start_time)
+            interval = _adaptive_poll_interval(elapsed, self.poll_interval)
+            await self._asleep_with_heartbeats(interval, step, config, start_time)
+
+        step = await self._aretry_phase(
+            lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),
+            phase="fetch",
+            step=step,
+            config=config,
+            start_time=start_time,
+            timeout=timeout,
+        )
+        self._apply_registry_pricing(step)
+        return step
+
     def _attempt_once(
         self,
         step: Step,
@@ -1464,10 +1562,7 @@ class BaseProvider(Runnable[Step, Step]):
             if retry_state is not None:
                 retry_state.record_submit(prediction_id)
 
-        # Fire checkpoint callback so callers can persist prediction_id before polling
-        on_submit = (config or {}).get("on_submit")
-        if on_submit is not None:
-            on_submit(step.step_id, prediction_id)
+        self._checkpoint_submit(step, config, prediction_id)
 
         step.status = StepStatus.PROCESSING
 
@@ -1480,33 +1575,7 @@ class BaseProvider(Runnable[Step, Step]):
             if initial_delay > 0:
                 time.sleep(initial_delay)
 
-        while True:
-            done = self._retry_phase(
-                lambda: self.poll(prediction_id, config),
-                phase="poll",
-                step=step,
-                config=config,
-                start_time=start_time,
-                timeout=timeout,
-            )
-            if done:
-                break
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout:
-                raise ProviderError(f"Poll timeout after {elapsed:.1f}s (limit: {timeout}s)")
-            self._fire_poll_progress(prediction_id, step, config, start_time)
-            interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-            self._sleep_with_heartbeats(interval, step, config, start_time)
-
-        step = self._retry_phase(
-            lambda: self.fetch_output(prediction_id, step),
-            phase="fetch",
-            step=step,
-            config=config,
-            start_time=start_time,
-            timeout=timeout,
-        )
-        self._apply_registry_pricing(step)
+        step = self._poll_fetch_once(prediction_id, step, config, timeout, start_time)
         # Only mark succeeded if fetch_output didn't signal failure
         if step.status != StepStatus.FAILED:
             step.status = StepStatus.SUCCEEDED
@@ -1551,13 +1620,6 @@ class BaseProvider(Runnable[Step, Step]):
         logger.warning("Resume failed: %s (code=%s)", step.error, step.error_code)
         return step
 
-    @staticmethod
-    def _step_retry_prediction_id(retry_state: _StepRetryState) -> Any | None:
-        """Return the trusted upstream id when a step-level retry should resume."""
-        if not retry_state.can_resume:
-            return None
-        return retry_state.prediction_id
-
     def _record_step_retry_route(
         self,
         span: StepSpan,
@@ -1571,11 +1633,32 @@ class BaseProvider(Runnable[Step, Step]):
         span.set_attribute("genblaze.step_retry.route", route)
         span.set_attribute("genblaze.step_retry.resumed", resumed)
         logger.info(
-            "Step retry %d/%d for %s route=%s",
+            "Step retry %d/%d for %s step_id=%s run_id=%s route=%s",
             attempt,
             max_retries,
             span.name,
+            span.step_id,
+            span.run_id,
             route,
+        )
+
+    def _record_resume_budget_exhausted(
+        self,
+        span: StepSpan,
+        retry_state: _StepRetryState,
+    ) -> None:
+        """Record that retry budget ended while bound to an existing prediction."""
+        if retry_state.resume_failures == 0:
+            return
+        span.set_attribute("genblaze.step_retry.resume_exhausted", True)
+        span.set_attribute("genblaze.step_retry.resume_failures", retry_state.resume_failures)
+        logger.warning(
+            "Resume retry budget exhausted for %s step_id=%s run_id=%s "
+            "resume_failures=%d no_resubmit=true",
+            span.name,
+            span.step_id,
+            span.run_id,
+            retry_state.resume_failures,
         )
 
     def _resume_once(
@@ -1585,44 +1668,23 @@ class BaseProvider(Runnable[Step, Step]):
         config: RunnableConfig | None,
         timeout: float,
         start_time: float,
+        *,
         progress_status: str = "resumed",
     ) -> Step:
         """Resume polling an in-flight job, raising errors to the caller."""
-        # Keep this poll/fetch body aligned with _attempt_once() and the async
-        # twins below; the async copies differ only in to_thread/await plumbing.
         step.status = StepStatus.PROCESSING
         if step.started_at is None:
             step.started_at = utc_now()
         self._fire_progress(step, config, progress_status, start_time)
 
-        while True:
-            done = self._retry_phase(
-                lambda: self.poll(prediction_id, config),
-                phase="poll",
-                step=step,
-                config=config,
-                start_time=start_time,
-                timeout=timeout,
-            )
-            if done:
-                break
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout:
-                msg = f"Resume poll timeout after {elapsed:.1f}s (limit: {timeout}s)"
-                raise ProviderError(msg)
-            self._fire_poll_progress(prediction_id, step, config, start_time)
-            interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-            self._sleep_with_heartbeats(interval, step, config, start_time)
-
-        step = self._retry_phase(
-            lambda: self.fetch_output(prediction_id, step),
-            phase="fetch",
-            step=step,
-            config=config,
-            start_time=start_time,
-            timeout=timeout,
+        step = self._poll_fetch_once(
+            prediction_id,
+            step,
+            config,
+            timeout,
+            start_time,
+            timeout_label="Resume poll",
         )
-        self._apply_registry_pricing(step)
         return self._finalize_resume_step(step, config, start_time)
 
     def resume(
@@ -1653,6 +1715,7 @@ class BaseProvider(Runnable[Step, Step]):
         config: RunnableConfig | None,
         timeout: float,
         start_time: float,
+        *,
         progress_status: str = "resumed",
     ) -> Step:
         """Async resume path that raises errors to the caller."""
@@ -1661,34 +1724,14 @@ class BaseProvider(Runnable[Step, Step]):
             step.started_at = utc_now()
         self._fire_progress(step, config, progress_status, start_time)
 
-        while True:
-            done = await self._aretry_phase(
-                lambda: asyncio.to_thread(self.poll, prediction_id, config),
-                phase="poll",
-                step=step,
-                config=config,
-                start_time=start_time,
-                timeout=timeout,
-            )
-            if done:
-                break
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout:
-                msg = f"Resume poll timeout after {elapsed:.1f}s (limit: {timeout}s)"
-                raise ProviderError(msg)
-            self._fire_poll_progress(prediction_id, step, config, start_time)
-            interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-            await self._asleep_with_heartbeats(interval, step, config, start_time)
-
-        step = await self._aretry_phase(
-            lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),
-            phase="fetch",
-            step=step,
-            config=config,
-            start_time=start_time,
-            timeout=timeout,
+        step = await self._apoll_fetch_once(
+            prediction_id,
+            step,
+            config,
+            timeout,
+            start_time,
+            timeout_label="Resume poll",
         )
-        self._apply_registry_pricing(step)
         return self._finalize_resume_step(step, config, start_time)
 
     async def aresume(
@@ -1717,14 +1760,18 @@ class BaseProvider(Runnable[Step, Step]):
         max_retries = (config or {}).get("max_retries", 0)
         start_time = time.monotonic()
 
-        span = StepSpan(name=f"{self.name}/{step.model}", step_id=step.step_id)
+        span = StepSpan(
+            name=f"{self.name}/{step.model}",
+            run_id=(config or {}).get("run_id"),
+            step_id=step.step_id,
+        )
         retry_state = _StepRetryState()
 
         with span:
             for attempt in range(max_retries + 1):
                 try:
                     resume_prediction_id = (
-                        self._step_retry_prediction_id(retry_state) if attempt > 0 else None
+                        retry_state.resume_prediction_id if attempt > 0 else None
                     )
                     if attempt > 0:
                         # Reset step state for retry
@@ -1740,13 +1787,14 @@ class BaseProvider(Runnable[Step, Step]):
                         )
 
                     if resume_prediction_id is not None:
+                        self._checkpoint_submit(step, config, resume_prediction_id)
                         step = self._resume_once(
                             resume_prediction_id,
                             step,
                             config,
                             timeout,
                             start_time,
-                            "retry_resumed",
+                            progress_status="retry_resumed",
                         )
                     else:
                         step = self._attempt_once(step, config, timeout, start_time, retry_state)
@@ -1762,6 +1810,8 @@ class BaseProvider(Runnable[Step, Step]):
                         if isinstance(exc, ProviderError) and exc.error_code is not None
                         else classify_api_error(exc)
                     )
+                    if resume_prediction_id is not None:
+                        retry_state.record_resume_failure()
 
                     # Step-level retry: budget from config.max_retries (caller-driven),
                     # retryable codes from the unified RetryPolicy so users tune one knob.
@@ -1773,6 +1823,7 @@ class BaseProvider(Runnable[Step, Step]):
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
                         logger.warning("Step failed: %s (code=%s)", step.error, step.error_code)
+                        self._record_resume_budget_exhausted(span, retry_state)
                         span.retries = step.retries
                         return step
 
@@ -1784,9 +1835,12 @@ class BaseProvider(Runnable[Step, Step]):
                     )
                     backoff = self.retry_policy.compute_delay(attempt + 1, retry_after=retry_after)
                     logger.info(
-                        "Retry %d/%d after %s (backoff=%.1fs)",
+                        "Retry %d/%d for %s step_id=%s run_id=%s after %s (backoff=%.1fs)",
                         attempt + 1,
                         max_retries,
+                        span.name,
+                        span.step_id,
+                        span.run_id,
                         error_code,
                         backoff,
                     )
@@ -1800,6 +1854,7 @@ class BaseProvider(Runnable[Step, Step]):
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
                         logger.warning("Retry aborted: global timeout would be exceeded")
+                        self._record_resume_budget_exhausted(span, retry_state)
                         span.retries = step.retries
                         return step
 
@@ -1862,10 +1917,7 @@ class BaseProvider(Runnable[Step, Step]):
             if retry_state is not None:
                 retry_state.record_submit(prediction_id)
 
-        # Fire checkpoint callback so callers can persist prediction_id before polling
-        on_submit = (config or {}).get("on_submit")
-        if on_submit is not None:
-            on_submit(step.step_id, prediction_id)
+        self._checkpoint_submit(step, config, prediction_id)
 
         step.status = StepStatus.PROCESSING
 
@@ -1878,33 +1930,7 @@ class BaseProvider(Runnable[Step, Step]):
             if initial_delay > 0:
                 await asyncio.sleep(initial_delay)
 
-        while True:
-            done = await self._aretry_phase(
-                lambda: asyncio.to_thread(self.poll, prediction_id, config),
-                phase="poll",
-                step=step,
-                config=config,
-                start_time=start_time,
-                timeout=timeout,
-            )
-            if done:
-                break
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout:
-                raise ProviderError(f"Poll timeout after {elapsed:.1f}s (limit: {timeout}s)")
-            self._fire_poll_progress(prediction_id, step, config, start_time)
-            interval = _adaptive_poll_interval(elapsed, self.poll_interval)
-            await self._asleep_with_heartbeats(interval, step, config, start_time)
-
-        step = await self._aretry_phase(
-            lambda: asyncio.to_thread(self.fetch_output, prediction_id, step),
-            phase="fetch",
-            step=step,
-            config=config,
-            start_time=start_time,
-            timeout=timeout,
-        )
-        self._apply_registry_pricing(step)
+        step = await self._apoll_fetch_once(prediction_id, step, config, timeout, start_time)
         if step.status != StepStatus.FAILED:
             step.status = StepStatus.SUCCEEDED
             step.completed_at = utc_now()
@@ -1919,14 +1945,18 @@ class BaseProvider(Runnable[Step, Step]):
         max_retries = (config or {}).get("max_retries", 0)
         start_time = time.monotonic()
 
-        span = StepSpan(name=f"{self.name}/{step.model}", step_id=step.step_id)
+        span = StepSpan(
+            name=f"{self.name}/{step.model}",
+            run_id=(config or {}).get("run_id"),
+            step_id=step.step_id,
+        )
         retry_state = _StepRetryState()
 
         with span:
             for attempt in range(max_retries + 1):
                 try:
                     resume_prediction_id = (
-                        self._step_retry_prediction_id(retry_state) if attempt > 0 else None
+                        retry_state.resume_prediction_id if attempt > 0 else None
                     )
                     if attempt > 0:
                         step.status = StepStatus.PENDING
@@ -1941,13 +1971,14 @@ class BaseProvider(Runnable[Step, Step]):
                         )
 
                     if resume_prediction_id is not None:
+                        self._checkpoint_submit(step, config, resume_prediction_id)
                         step = await self._aresume_once(
                             resume_prediction_id,
                             step,
                             config,
                             timeout,
                             start_time,
-                            "retry_resumed",
+                            progress_status="retry_resumed",
                         )
                     else:
                         step = await self._attempt_once_async(
@@ -1964,6 +1995,8 @@ class BaseProvider(Runnable[Step, Step]):
                         if isinstance(exc, ProviderError) and exc.error_code is not None
                         else classify_api_error(exc)
                     )
+                    if resume_prediction_id is not None:
+                        retry_state.record_resume_failure()
 
                     retryable = error_code in self.retry_policy.retryable_codes
                     if not retryable or attempt >= max_retries:
@@ -1973,6 +2006,7 @@ class BaseProvider(Runnable[Step, Step]):
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
                         logger.warning("Step failed: %s (code=%s)", step.error, step.error_code)
+                        self._record_resume_budget_exhausted(span, retry_state)
                         span.retries = step.retries
                         return step
 
@@ -1984,9 +2018,12 @@ class BaseProvider(Runnable[Step, Step]):
                     )
                     backoff = self.retry_policy.compute_delay(attempt + 1, retry_after=retry_after)
                     logger.info(
-                        "Retry %d/%d after %s (backoff=%.1fs)",
+                        "Retry %d/%d for %s step_id=%s run_id=%s after %s (backoff=%.1fs)",
                         attempt + 1,
                         max_retries,
+                        span.name,
+                        span.step_id,
+                        span.run_id,
                         error_code,
                         backoff,
                     )
@@ -1999,6 +2036,7 @@ class BaseProvider(Runnable[Step, Step]):
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
                         logger.warning("Retry aborted: global timeout would be exceeded")
+                        self._record_resume_budget_exhausted(span, retry_state)
                         span.retries = step.retries
                         return step
 

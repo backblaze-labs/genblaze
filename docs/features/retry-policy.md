@@ -58,7 +58,10 @@ There are two retry layers. Most users only need to think about the first.
    attempt already produced an upstream prediction ID from the current
    `submit()` call, the retry resumes that existing job instead of calling
    `submit()` again. This also covers a transient `on_submit` checkpoint
-   failure after the upstream job was created. Caller-supplied
+   failure after the upstream job was created: before an automatic resume polls
+   or fetches, the base provider calls `on_submit(step_id, prediction_id)` again
+   with the same prediction ID, so checkpoint callbacks must be idempotent for a
+   given `(step_id, prediction_id)`. Caller-supplied
    `step.metadata["upstream_id"]` is observability data and is not trusted as
    retry authority. Only failures before a current upstream ID exists use a
    fresh submit. The retryable-codes set is now also taken from the policy, so
@@ -74,15 +77,27 @@ Poll/fetch failures have the opposite safety rule: the upstream generation
 already exists, so step-level retries re-run the base poll/fetch resume loop
 against the same in-process prediction ID. This avoids duplicate renders and
 duplicate charges when the transient error happened after generation started.
-Internal step retries do not call provider overrides of the public `resume()`
-method; override `poll()` / `fetch_output()` for behavior shared by public
-resume and automatic retry resume. Public `resume()` progress still emits
-`resumed`; automatic step retry resume emits `retry_resumed`.
+After a prediction ID is recorded for the current invoke, automatic retries stay
+bound to that ID and do not fall back to a fresh submit, because a fresh submit
+can double-bill. If the step-level retry budget is exhausted while resuming, the
+provider logs that the resume budget was exhausted without re-submit and records
+`genblaze.step_retry.resume_exhausted` span metadata.
+
+Internal step retries use the protected `_resume_once()` / `_aresume_once()`
+hooks, which are also used by public `resume()` / `aresume()`, and share the
+same base poll/fetch helper. Provider authors normally customize shared resume
+behavior by overriding `poll()` / `fetch_output()`. Public `resume()` progress
+still emits `resumed`; automatic step retry resume emits `retry_resumed`.
 
 Each step-level retry logs its route at INFO (`route=resume` or
 `route=submit`) and records `genblaze.step_retry.route` /
-`genblaze.step_retry.resumed` span attributes. Upstream prediction IDs are not
-included in retry route logs.
+`genblaze.step_retry.resumed` span attributes. The route log includes `step_id`
+and `run_id` when available. Upstream prediction IDs are not included in retry
+route logs to keep logs concise, but Genblaze treats prediction IDs as
+observability identifiers rather than secrets. They remain available in
+`step.metadata["upstream_id"]`, `ProgressEvent.request_id`, and stream
+completion/failure event `request_id` fields for checkpointing and UI
+correlation.
 
 ## Idempotency keys
 
