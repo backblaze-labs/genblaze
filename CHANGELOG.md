@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invocation when a referenced producer step failed or produced no assets,
   preventing a downstream step from reporting success with empty declared inputs
   (#69). Affected pipelines that previously appeared green can now report
-  `FAILED`/`INVALID_INPUT`, which may increase status-based alerts and changes
+  `FAILED`/`INVALID_INPUT`, which may increase status-based alerts and change
   manifest hashes for those runs. These pre-failed steps carry
   `metadata.failure_reason="input_resolution"` and
   `metadata.provider_invoked=false` for telemetry filtering.
