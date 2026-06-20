@@ -214,6 +214,33 @@ class TestIngestAssets:
             "tenant_id": "tenant-a",
         }
 
+    def test_tenant_ingest_normalizes_tenant_id_before_indexing(self):
+        sink = _stub_sink_that_records_calls()
+        result = Pipeline.ingest(
+            assets=[_ingestable_asset(media_type="image/png")],
+            source="ugc-upload",
+            sink=sink,
+            tenant_id="  tenant-a  ",
+        )
+
+        assert result.run.tenant_id == "tenant-a"
+        assert sink.put_asset.call_args.kwargs == {
+            "manifest_uri": "https://mem/run/manifest.json",
+            "tenant_id": "tenant-a",
+        }
+
+    def test_tenant_ingest_treats_whitespace_tenant_id_as_unset(self):
+        sink = _stub_sink_that_records_calls()
+        result = Pipeline.ingest(
+            assets=[_ingestable_asset(media_type="image/png")],
+            source="ugc-upload",
+            sink=sink,
+            tenant_id="   ",
+        )
+
+        assert result.run.tenant_id is None
+        assert sink.put_asset.call_args.kwargs == {}
+
     def test_source_metadata_cannot_clobber_canonical_source(self):
         """If caller's source_metadata has a 'source' key, the
         canonical 'source' from the source= argument wins."""

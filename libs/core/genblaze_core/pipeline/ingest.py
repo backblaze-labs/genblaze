@@ -30,6 +30,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from genblaze_core._utils import normalize_tenant_id
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, RunStatus, StepStatus, StepType
@@ -95,6 +96,8 @@ def ingest_assets(
             ``None`` for offline builds (manifest only, no upload).
         name: Optional human-readable run name.
         tenant_id: Optional tenant id for multi-tenant deployments.
+            Surrounding whitespace is stripped; empty values are treated
+            as unset.
         step_type: Either :class:`StepType.INGEST` (default — external
             source) or :class:`StepType.IMPORT` (cross-system transfer).
             Both are non-generative; the field is exposed so callers
@@ -150,9 +153,11 @@ def ingest_assets(
         )
         steps.append(step)
 
+    normalized_tenant_id = normalize_tenant_id(tenant_id)
+
     run = Run(
         name=name,
-        tenant_id=tenant_id,
+        tenant_id=normalized_tenant_id,
         status=RunStatus.COMPLETED,
         steps=steps,
     )
