@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
+import types
 from typing import Any
 
 from genblaze_core.models.asset import Asset
@@ -32,6 +34,43 @@ class MockProvider(BaseProvider):
         return step
 
 
+class _FailingAttributeSpan:
+    """Fake OTel span that can reject selected attributes."""
+
+    def __init__(self, fail_keys: set[str]) -> None:
+        self.fail_keys = fail_keys
+        self.attributes: dict[str, Any] = {}
+        self.ended = False
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        if key in self.fail_keys:
+            raise TypeError(f"unsupported attribute {key}")
+        self.attributes[key] = value
+
+    def record_exception(self, exc: BaseException) -> None:
+        self.attributes["recorded_exception"] = type(exc).__name__
+
+    def set_status(self, status: Any, description: str) -> None:
+        self.attributes["status"] = (status, description)
+
+    def end(self) -> None:
+        self.ended = True
+
+
+class _FakeTracer:
+    def __init__(self, span: _FailingAttributeSpan) -> None:
+        self.span = span
+
+    def start_span(self, name: str) -> _FailingAttributeSpan:
+        self.span.attributes["span_name"] = name
+        return self.span
+
+
+def _install_fake_otel(monkeypatch, span: _FailingAttributeSpan) -> None:
+    trace = types.SimpleNamespace(get_tracer=lambda name: _FakeTracer(span))
+    monkeypatch.setitem(sys.modules, "opentelemetry", types.SimpleNamespace(trace=trace))
+
+
 def test_step_span_captures_timing() -> None:
     """StepSpan records start/end times and computes duration."""
     with StepSpan(name="test-span") as span:
@@ -46,6 +85,30 @@ def test_step_span_attributes() -> None:
     assert span.name == "test"
     assert span.step_id == "abc-123"
     assert span.attributes["custom"] is True
+
+
+def test_step_span_enter_ignores_bad_otel_attributes(monkeypatch) -> None:
+    """Bad OTel attributes should not break entering or ending a span."""
+    otel_span = _FailingAttributeSpan(fail_keys={"bad"})
+    _install_fake_otel(monkeypatch, otel_span)
+
+    with StepSpan(name="test", attributes={"bad": object(), "good": True}):
+        pass
+
+    assert otel_span.attributes["good"] is True
+    assert otel_span.ended is True
+
+
+def test_step_span_exit_ends_after_bad_otel_attribute(monkeypatch) -> None:
+    """A bad final attribute should not leave the OTel span open."""
+    otel_span = _FailingAttributeSpan(fail_keys={"genblaze.duration_ms"})
+    _install_fake_otel(monkeypatch, otel_span)
+
+    with StepSpan(name="test", attributes={"good": True}):
+        pass
+
+    assert otel_span.attributes["genblaze.retries"] == 0
+    assert otel_span.ended is True
 
 
 def test_structured_logger_emits_json(capfd) -> None:

@@ -38,7 +38,7 @@ class StepSpan:
             if self.run_id:
                 self._otel_span.set_attribute("genblaze.run_id", self.run_id)
             for key, value in self.attributes.items():
-                self._otel_span.set_attribute(key, value)
+                self._set_otel_attribute(key, value)
         except ImportError:
             pass
         return self
@@ -53,21 +53,28 @@ class StepSpan:
         # End the OTel span with final attributes
         if self._otel_span is not None:
             try:
-                self._otel_span.set_attribute("genblaze.duration_ms", self.duration_ms)
-                self._otel_span.set_attribute("genblaze.retries", self.retries)
+                self._set_otel_attribute("genblaze.duration_ms", self.duration_ms)
+                self._set_otel_attribute("genblaze.retries", self.retries)
                 if self.cost is not None:
-                    self._otel_span.set_attribute("genblaze.cost_usd", self.cost)
+                    self._set_otel_attribute("genblaze.cost_usd", self.cost)
                 for key, value in self.attributes.items():
-                    self._otel_span.set_attribute(key, value)
+                    self._set_otel_attribute(key, value)
                 # Record exception if one occurred
                 if exc_val is not None:
-                    self._otel_span.record_exception(exc_val)
-                    from opentelemetry.trace import StatusCode
+                    try:
+                        self._otel_span.record_exception(exc_val)
+                        from opentelemetry.trace import StatusCode
 
-                    self._otel_span.set_status(StatusCode.ERROR, str(exc_val))
-                self._otel_span.end()
+                        self._otel_span.set_status(StatusCode.ERROR, str(exc_val))
+                    except Exception:  # noqa: S110
+                        pass
             except Exception:  # noqa: S110
                 pass
+            finally:
+                try:
+                    self._otel_span.end()
+                except Exception:  # noqa: S110
+                    pass
 
     @property
     def duration_ms(self) -> float:
@@ -76,6 +83,10 @@ class StepSpan:
     def set_attribute(self, key: str, value: Any) -> None:
         """Record a span attribute locally and on the active OTel span."""
         self.attributes[key] = value
+        self._set_otel_attribute(key, value)
+
+    def _set_otel_attribute(self, key: str, value: Any) -> None:
+        """Best-effort OTel attribute write; tracing must not break execution."""
         if self._otel_span is not None:
             try:
                 self._otel_span.set_attribute(key, value)
