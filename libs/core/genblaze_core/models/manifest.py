@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -118,6 +118,23 @@ _UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE = (
 )
 
 
+def _query_pairs_preserving_plus(query: str) -> list[tuple[str, str]]:
+    """Parse query pairs without treating '+' as a space."""
+    if not query:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for raw_pair in query.split("&"):
+        if not raw_pair:
+            continue
+        raw_name, separator, raw_value = raw_pair.partition("=")
+        pairs.append((unquote(raw_name), unquote(raw_value if separator else "")))
+    return pairs
+
+
+def _encode_query_pairs(pairs: list[tuple[str, str]]) -> str:
+    return "&".join(f"{quote(name, safe='')}={quote(value, safe='')}" for name, value in pairs)
+
+
 @dataclass(frozen=True)
 class _SchemaHashPolicy:
     include_random_ids: bool
@@ -188,7 +205,7 @@ def _canonical_unverified_asset_url(url: str) -> str:
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     netloc = f"{host}:{parts.port}" if parts.port is not None else host
-    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    query_pairs = _query_pairs_preserving_plus(parts.query)
     query_keys = {name.lower() for name, _value in query_pairs}
     # Keep resource-identifying query params so ?id=a and ?id=b do not
     # collide, but strip presign credentials, expiries, response overrides,
@@ -208,7 +225,7 @@ def _canonical_unverified_asset_url(url: str) -> str:
             is_gcs_v2_signed=is_gcs_v2_signed,
         )
     ]
-    query = urlencode(sorted(query_items), doseq=True)
+    query = _encode_query_pairs(sorted(query_items))
     return urlunsplit((scheme, netloc, parts.path, query, ""))
 
 

@@ -13,6 +13,7 @@ from genblaze_core.providers.base import (
     SubmitResult,
     SyncProvider,
     _adaptive_poll_interval,
+    strip_asset_url_credentials,
     validate_asset_url,
 )
 from genblaze_core.runnable.config import RunnableConfig
@@ -149,6 +150,23 @@ def test_validate_asset_url_rejects_file():
 def test_validate_asset_url_rejects_empty():
     with pytest.raises(ProviderError, match="Unsafe asset URL"):
         validate_asset_url("")
+
+
+def test_strip_asset_url_credentials_preserves_plus_as_resource_data():
+    plus = strip_asset_url_credentials(
+        "https://example.com/output.png?id=a+b&sv=2024&sr=b&sig=secret"
+    )
+    encoded_plus = strip_asset_url_credentials(
+        "https://example.com/output.png?id=a%2Bb&sv=2024&sr=b&sig=secret"
+    )
+    space = strip_asset_url_credentials(
+        "https://example.com/output.png?id=a%20b&sv=2024&sr=b&sig=secret"
+    )
+
+    assert plus == "https://example.com/output.png?id=a%2Bb"
+    assert encoded_plus == plus
+    assert space == "https://example.com/output.png?id=a%20b"
+    assert plus != space
 
 
 # --- Compliance test harness ---

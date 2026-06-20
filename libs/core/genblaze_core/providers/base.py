@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 
 from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.exceptions import ProviderError
@@ -217,6 +217,23 @@ _GCS_V2_SIGNED_QUERY_PARAMS = frozenset(
 _CREDENTIAL_QUERY_PREFIX_EXCLUDE = ("x-amz-", "x-goog-", "x-bz-")
 
 
+def _query_pairs_preserving_plus(query: str) -> list[tuple[str, str]]:
+    """Parse query pairs without treating '+' as a space."""
+    if not query:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for raw_pair in query.split("&"):
+        if not raw_pair:
+            continue
+        raw_name, separator, raw_value = raw_pair.partition("=")
+        pairs.append((unquote(raw_name), unquote(raw_value if separator else "")))
+    return pairs
+
+
+def _encode_query_pairs(pairs: list[tuple[str, str]]) -> str:
+    return "&".join(f"{quote(name, safe='')}={quote(value, safe='')}" for name, value in pairs)
+
+
 def validate_asset_url(url: str) -> None:
     """Reject non-HTTPS or malformed URLs to prevent SSRF.
 
@@ -230,7 +247,7 @@ def validate_asset_url(url: str) -> None:
 def strip_asset_url_credentials(url: str) -> str:
     """Strip known signed-URL credentials before persisting provider URLs."""
     parts = urlsplit(url)
-    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    query_pairs = _query_pairs_preserving_plus(parts.query)
     query_keys = {name.lower() for name, _value in query_pairs}
     is_azure_sas = bool(query_keys & {"sv", "se", "sp", "sr", "ss", "srt"})
     is_cloudfront_signed = "key-pair-id" in query_keys
@@ -246,9 +263,8 @@ def strip_asset_url_credentials(url: str) -> str:
             or (is_gcs_v2_signed and key in _GCS_V2_SIGNED_QUERY_PARAMS)
         )
 
-    query = urlencode(
-        [(name, value) for name, value in query_pairs if not is_credential_param(name)],
-        doseq=True,
+    query = _encode_query_pairs(
+        [(name, value) for name, value in query_pairs if not is_credential_param(name)]
     )
     netloc = parts.hostname.lower() if parts.hostname else ""
     if ":" in netloc and not netloc.startswith("["):

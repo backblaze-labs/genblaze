@@ -395,6 +395,19 @@ def test_manifest_v1_6_url_only_hash_keeps_resource_query_params():
     assert manifest_b.verify_hash()
 
 
+def test_manifest_v1_6_url_only_hash_preserves_plus_resource_query_params():
+    plus = _v1_6_hash_for_output_url("https://cdn.example.com/download?id=a+b&X-Amz-Signature=a")
+    encoded_plus = _v1_6_hash_for_output_url(
+        "https://cdn.example.com/download?id=a%2Bb&X-Amz-Signature=a"
+    )
+    space = _v1_6_hash_for_output_url(
+        "https://cdn.example.com/download?id=a%20b&X-Amz-Signature=a"
+    )
+
+    assert plus == encoded_plus
+    assert plus != space
+
+
 @pytest.mark.parametrize("param", ["token", "sig", "signature", "credential", "policy"])
 def test_manifest_v1_6_url_only_hash_keeps_generic_resource_query_params(param):
     base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
