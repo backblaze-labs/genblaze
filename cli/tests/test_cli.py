@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -107,6 +108,22 @@ def test_verify_reports_legacy_unverified_assets(tmp_path: Path) -> None:
     assert "hash mismatch" not in combined
 
 
+def test_extract_summary_and_verify_agree_on_legacy_unverified_assets(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest(schema_version="1.5")
+    png_path = tmp_path / "legacy-url-only.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    PngHandler().embed(png_path, manifest)
+
+    runner = CliRunner()
+    extract_result = runner.invoke(cli, ["extract", "--format", "summary", str(png_path)])
+    verify_result = runner.invoke(cli, ["verify", str(png_path)])
+
+    assert extract_result.exit_code == 0
+    assert "Verified:  False" in extract_result.output
+    assert verify_result.exit_code != 0
+    assert not manifest.verify()
+
+
 def test_verify_no_manifest(tmp_path: Path) -> None:
     png = tmp_path / "bare.png"
     Image.new("RGBA", (1, 1)).save(png)
@@ -148,6 +165,15 @@ def test_replay_warns_on_legacy_unverified_assets(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "output asset bytes are unverified" in combined
     assert "Dry run" in result.output
+
+
+def test_cli_core_dependency_floor_matches_local_core() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    cli_project = tomllib.loads((repo_root / "cli/pyproject.toml").read_text())
+    core_project = tomllib.loads((repo_root / "libs/core/pyproject.toml").read_text())
+
+    expected = f"genblaze-core>={core_project['project']['version']},<0.4"
+    assert expected in cli_project["project"]["dependencies"]
 
 
 def test_replay_redacts_prompts_by_default(tmp_path: Path) -> None:

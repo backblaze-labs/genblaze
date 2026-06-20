@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from genblaze_core.canonical.json import canonical_hash, canonical_json
 from genblaze_core.exceptions import ManifestError
@@ -14,7 +15,7 @@ from genblaze_core.models.run import Run
 if TYPE_CHECKING:
     from genblaze_core.models.policy import EmbedPolicy
 
-SCHEMA_VERSION = "1.6"
+SCHEMA_VERSION = "1.5"
 
 # Operational fields excluded from canonical hash — these are non-deterministic
 # (timestamps, status) or potentially sensitive (error messages, provider payloads).
@@ -53,36 +54,51 @@ _ASSET_HASH_EXCLUDE = frozenset(
         "asset_id",  # Random UUID per execution — not provenance
         "url",  # Transport hint when sha256 is present; varies across
         # re-uploads, presigning, and CDN→durable rewrites. Provenance
-        # identity is sha256 + media_type + size_bytes. In schema 1.6+,
+        # identity is sha256 + media_type + size_bytes. In schema 1.6,
         # _strip_asset_for_hash() keeps a URL-only marker so unhashed
         # assets cannot collapse to the same canonical payload.
     }
 )
 _UNHASHED_ASSET_MARKER = "url_only_unverified"
 _UNHASHED_ASSET_URL_FIELD = "unverified_asset_url"
-_UNHASHED_ASSET_MARKER_SCHEMA = (1, 6)
+
+_SCHEMA_HASH_POLICIES = {
+    "1.0": {"include_random_ids": True, "mark_unhashed_assets": False},
+    "1.1": {"include_random_ids": True, "mark_unhashed_assets": False},
+    "1.2": {"include_random_ids": True, "mark_unhashed_assets": False},
+    "1.3": {"include_random_ids": True, "mark_unhashed_assets": False},
+    "1.4": {"include_random_ids": False, "mark_unhashed_assets": False},
+    "1.5": {"include_random_ids": False, "mark_unhashed_assets": False},
+    # Read support only in this release. SCHEMA_VERSION stays on 1.5 so old
+    # readers are upgraded before new manifests start emitting 1.6 hashes.
+    "1.6": {"include_random_ids": False, "mark_unhashed_assets": True},
+}
+SUPPORTED_SCHEMA_VERSIONS = tuple(_SCHEMA_HASH_POLICIES)
 
 # Schema versions that included random IDs in the canonical hash
-_LEGACY_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})
+_LEGACY_SCHEMA_VERSIONS = frozenset(
+    version for version, policy in _SCHEMA_HASH_POLICIES.items() if policy["include_random_ids"]
+)
 
 # Pre-1.4 exclusion sets (IDs were included in the hash)
 _STEP_HASH_EXCLUDE_V1_3 = _STEP_HASH_EXCLUDE - {"step_id", "run_id"}
 _RUN_HASH_EXCLUDE_V1_3 = _RUN_HASH_EXCLUDE - {"run_id"}
 
 
-def _version_tuple(schema_version: str) -> tuple[int, ...]:
-    """Return a numeric schema tuple for feature gates."""
+def _hash_policy(schema_version: str) -> dict[str, bool]:
+    """Return the explicit hash policy for a supported schema version."""
     try:
-        version = tuple(int(part) for part in schema_version.split("."))
-    except ValueError:
-        raise ManifestError(f"Invalid schema_version: {schema_version!r}") from None
-    if not version:
-        raise ManifestError(f"Invalid schema_version: {schema_version!r}")
-    return version
+        return _SCHEMA_HASH_POLICIES[schema_version]
+    except KeyError:
+        raise ManifestError(f"Unsupported schema_version: {schema_version!r}") from None
 
 
-def _uses_unhashed_asset_markers(schema_version: str) -> bool:
-    return _version_tuple(schema_version) >= _UNHASHED_ASSET_MARKER_SCHEMA
+def _canonical_unverified_asset_url(url: str) -> str:
+    """Return the stable URL form used only for schema 1.6 URL-only hashes."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    return urlunsplit((scheme, netloc, parts.path, "", ""))
 
 
 def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
@@ -93,7 +109,7 @@ def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
         asset.pop(key, None)
     if mark_unhashed and not has_sha256 and url is not None:
         asset["asset_integrity"] = _UNHASHED_ASSET_MARKER
-        asset[_UNHASHED_ASSET_URL_FIELD] = url
+        asset[_UNHASHED_ASSET_URL_FIELD] = _canonical_unverified_asset_url(url)
 
 
 def _unhashed_output_asset_ids(run: Run) -> list[str]:
@@ -109,11 +125,12 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
     """
     run_data = run.model_dump(mode="python")
 
-    # Select exclusion sets based on schema version
-    use_legacy = schema_version in _LEGACY_SCHEMA_VERSIONS
+    # Select exclusion sets based on the explicit schema hash policy.
+    policy = _hash_policy(schema_version)
+    use_legacy = policy["include_random_ids"]
     step_exclude = _STEP_HASH_EXCLUDE_V1_3 if use_legacy else _STEP_HASH_EXCLUDE
     run_exclude = _RUN_HASH_EXCLUDE_V1_3 if use_legacy else _RUN_HASH_EXCLUDE
-    mark_unhashed_assets = _uses_unhashed_asset_markers(schema_version)
+    mark_unhashed_assets = policy["mark_unhashed_assets"]
 
     # Strip run-level operational fields
     for key in run_exclude:
@@ -160,6 +177,13 @@ class Manifest(BaseModel):
         ),
     )
 
+    @field_validator("schema_version")
+    @classmethod
+    def _validate_schema_version(cls, value: str) -> str:
+        if value not in _SCHEMA_HASH_POLICIES:
+            raise ValueError(f"Unsupported schema_version: {value!r}")
+        return value
+
     def __repr__(self) -> str:
         h = self.canonical_hash[:12] if self.canonical_hash else "(unhashed)"
         run_id = self.run.run_id[:8]
@@ -191,17 +215,15 @@ class Manifest(BaseModel):
     def verify(self) -> bool:
         """Verify the manifest hash and output asset byte binding.
 
-        In schema 1.6+, URL-only output assets are included in the canonical
-        payload as metadata, but they do not prove byte integrity. A current
-        manifest containing output assets without ``sha256`` therefore does
-        not verify as asset-integrity provenance.
+        ``verify_hash()`` remains available for callers that only need to
+        check canonical payload integrity. Security-facing verification uses
+        this method and rejects any output asset that lacks ``sha256``,
+        including legacy schemas, so schema downgrades cannot bypass byte
+        binding.
         """
         if not self.verify_hash():
             return False
-        if (
-            _uses_unhashed_asset_markers(self.schema_version)
-            and self.unverified_output_asset_ids()
-        ):
+        if self.output_asset_ids_missing_sha256():
             return False
         return True
 
@@ -210,14 +232,8 @@ class Manifest(BaseModel):
         payload = _hash_payload(self.schema_version, self.run)
         return self.canonical_hash == canonical_hash(payload)
 
-    def unverified_output_asset_ids(self) -> list[str]:
-        """Return output asset IDs missing byte hashes under current semantics."""
-        if not _uses_unhashed_asset_markers(self.schema_version):
-            return []
-        return self.output_asset_ids_missing_sha256()
-
     def output_asset_ids_missing_sha256(self) -> list[str]:
-        """Return output asset IDs missing byte hashes, regardless of schema."""
+        """Return output asset IDs missing byte hashes."""
         return _unhashed_output_asset_ids(self.run)
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
@@ -227,7 +243,8 @@ class Manifest(BaseModel):
           manifest_uri}`` only. The full manifest stays at ``manifest_uri``;
           consumers fetch and :meth:`verify` it there.
         - ``embed_mode='full'`` with no redaction returns the full canonical
-          manifest unchanged — ``verify()`` round-trips.
+          manifest unchanged — ``verify_hash()`` round-trips. ``verify()``
+          also requires every output asset to have ``sha256``.
         - ``embed_mode='full'`` combined with ANY redaction (``PRIVATE``
           prompt, ``include_params=False``, ``include_seed=False``) raises
           :class:`ManifestError`. Writing the pre-redaction

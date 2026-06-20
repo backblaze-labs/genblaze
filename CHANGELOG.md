@@ -9,11 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `genblaze-core`: schema version 1.6 now binds URL-only asset metadata into
-  the canonical manifest hash so distinct asset URLs no longer collapse to the
-  same provenance identity. `Manifest.verify()` also rejects current-schema
-  output assets that lack `sha256`, preserving `verify_hash()` as the
-  hash-only compatibility check for durable-storage reads (#77).
+- `genblaze-core` 0.3.2 → 0.3.3: `Manifest.verify()` now rejects output
+  assets that lack `sha256` for every supported schema version, preventing a
+  schema downgrade from bypassing asset-byte binding. `verify_hash()` remains
+  the hash-only compatibility check for durable-storage reads (#77).
+- `genblaze-core`: schema 1.6 URL-only hash markers are read-supported, with
+  query strings and fragments stripped from the fallback URL so presigned
+  credentials and expiry changes do not affect the metadata hash. Default
+  manifest emission stays on schema 1.5 for an expand-contract rollout (#77).
+- `genblaze-cli` 0.3.0 → 0.3.1: raises its `genblaze-core` floor to the first
+  core version that exposes `verify_hash()` and output-asset byte-binding
+  diagnostics (#77).
 
 ### Added
 

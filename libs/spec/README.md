@@ -108,7 +108,8 @@ drifting apart:
 
 ## Versioning
 
-Schema versioning tracks `Manifest.schema_version` (currently `1.6`).
+Schema versioning tracks `Manifest.schema_version` (currently writing `1.5`;
+`1.6` is read-supported for the URL-only hash-marker rollout).
 Once published to npm (phase 1b), `@genblaze/spec` versions will move
 lockstep with `genblaze-core` — a `genblaze-core@0.3.0` release
 publishes `@genblaze/spec@0.3.0`, even if only Python changed. This

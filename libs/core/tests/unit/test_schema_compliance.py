@@ -70,5 +70,6 @@ def test_schema_version_matches_python() -> None:
     schema = _load_schema("manifest.schema.json")
     allowed = schema["properties"]["schema_version"]["enum"]
     assert SCHEMA_VERSION in allowed
-    # Current version should be the latest in the enum
-    assert allowed[-1] == SCHEMA_VERSION
+    # The enum may include read-supported schema versions that are not emitted
+    # by default until rollout is complete.
+    assert allowed == sorted(allowed, key=lambda version: tuple(map(int, version.split("."))))

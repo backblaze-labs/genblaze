@@ -1009,8 +1009,8 @@ class TestManifestHelpers:
         loaded = sink.read_manifest(run, verify=False)
         assert loaded.run.name == "tampered"
 
-    def test_read_manifest_verify_default_allows_unverified_assets(self):
-        """verify=True checks hash integrity, not output byte binding."""
+    def test_read_manifest_verify_default_rejects_unverified_assets(self, caplog):
+        """verify=True enforces output byte binding by default."""
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="p")
         step = Step(
@@ -1026,7 +1026,11 @@ class TestManifestHelpers:
 
         backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
 
-        loaded = sink.read_manifest(run)
+        with pytest.raises(ManifestError, match="missing sha256"):
+            sink.read_manifest(run)
+        assert "output assets missing sha256" in caplog.text
+
+        loaded = sink.read_manifest(run, allow_unverified_assets=True)
         assert loaded.verify_hash()
         assert not loaded.verify()
 

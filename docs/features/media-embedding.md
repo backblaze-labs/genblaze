@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-17 -->
+<!-- last_verified: 2026-06-20 -->
 # Feature: Media Embedding
 
 ## Purpose
@@ -62,12 +62,11 @@ asset bytes themselves, either:
 1. Hash the upstream artifact (the original asset stored in B2/S3 before embedding), or
 2. Extract the manifest, strip the embed region per format, and re-hash the remainder.
 
-Manifest verification checks the canonical manifest payload. For schema 1.6+,
-`manifest.verify()` also requires output assets to have `sha256`; older schema
-versions preserve their published verification semantics. `genblaze verify
-<file>` reports URL-only output assets as byte-unverified regardless of schema.
-Hash-only callers can use `manifest.verify_hash()`. None of these paths hash
-the post-embed container file. See [trust-modes.md](trust-modes.md#asset-binding-caveat).
+Manifest verification checks the canonical manifest payload and output asset
+byte binding. `manifest.verify()` and `genblaze verify <file>` reject URL-only
+output assets as byte-unverified regardless of schema version; hash-only
+callers can use `manifest.verify_hash()`. None of these paths hash the
+post-embed container file. See [trust-modes.md](trust-modes.md#asset-binding-caveat).
 
 ## WebP lossless preservation
 

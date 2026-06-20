@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-17 -->
+<!-- last_verified: 2026-06-20 -->
 # Object Storage
 
 Upload run assets and manifests to any S3-compatible bucket. **Backblaze B2 is
@@ -163,14 +163,17 @@ re-implement the layout rules or parse `manifest.manifest_uri`:
 ```python
 key = sink.manifest_key_for(run)            # storage key (pure function)
 url = sink.manifest_url_for(run)            # durable, credential-free URL
-manifest = sink.read_manifest(run)          # fetch + parse + hash-verify()
+manifest = sink.read_manifest(run)          # fetch + parse + strict verify()
 assert manifest.verify_hash()               # payload integrity
 assert manifest.verify()                    # payload + output byte binding
 ```
 
-`read_manifest` defaults to `verify=True` (raises `ManifestError` on hash
-mismatch) — pass `verify=False` to skip the rehash on a manifest you just
-wrote yourself. Downloads are capped at 16 MiB to bound OOM blast.
+`read_manifest` defaults to `verify=True` and enforces both hash integrity and
+output byte binding. It raises `ManifestError` on hash mismatch or output
+assets missing `sha256`. Pass `allow_unverified_assets=True` for an explicit
+hash-only read of partially transferred manifests, or `verify=False` to skip
+verification on a manifest you just wrote yourself. Downloads are capped at
+16 MiB to bound OOM blast.
 
 After `write_run` returns, `manifest.manifest_uri` is also populated on
 the in-memory object — including on retries that hit an already-existing

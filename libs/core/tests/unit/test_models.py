@@ -3,7 +3,6 @@
 from datetime import UTC, datetime
 
 import pytest
-from genblaze_core.exceptions import ManifestError
 from genblaze_core.models import (
     Asset,
     Manifest,
@@ -15,6 +14,7 @@ from genblaze_core.models import (
     WordTiming,
 )
 from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepType
+from pydantic import ValidationError
 
 
 def test_asset_defaults():
@@ -70,7 +70,7 @@ def test_manifest_verify_detects_tampering():
 
 
 def test_manifest_url_only_output_assets_do_not_verify():
-    """URL-only outputs are metadata-bound, not asset-byte integrity."""
+    """URL-only outputs are hashable metadata, not asset-byte integrity."""
     base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
     step_a = Step(
         **base,
@@ -84,7 +84,6 @@ def test_manifest_url_only_output_assets_do_not_verify():
     manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
     manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
 
-    assert manifest_a.canonical_hash != manifest_b.canonical_hash
     assert manifest_a.verify_hash()
     assert manifest_b.verify_hash()
     assert not manifest_a.verify()
@@ -118,12 +117,11 @@ def test_manifest_v1_5_url_only_inputs_keep_legacy_hash_rules():
     assert manifest_a.canonical_hash == manifest_b.canonical_hash
     assert manifest_a.verify_hash()
     assert manifest_a.verify()
-    assert manifest_a.unverified_output_asset_ids() == []
     assert manifest_a.output_asset_ids_missing_sha256() == []
 
 
-def test_manifest_current_schema_url_only_inputs_are_metadata_bound():
-    """Schema 1.6+ includes URL-only inputs in the metadata hash payload."""
+def test_manifest_v1_6_url_only_inputs_are_metadata_bound():
+    """Schema 1.6 includes URL-only inputs in the metadata hash payload."""
     base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
     output = Asset(
         url="https://cdn.example.com/output.png",
@@ -141,16 +139,18 @@ def test_manifest_current_schema_url_only_inputs_are_metadata_bound():
         inputs=[Asset(url="https://cdn.example.com/input-b.png", media_type="image/png")],
     )
 
-    manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
-    manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
 
     assert manifest_a.canonical_hash != manifest_b.canonical_hash
     assert manifest_a.verify_hash()
     assert manifest_a.verify()
 
 
-def test_manifest_v1_5_reports_missing_output_sha_without_failing_verify():
-    """Legacy verification is preserved while diagnostics still expose missing hashes."""
+def test_manifest_v1_5_reports_missing_output_sha_and_fails_verify():
+    """Security-facing verification rejects URL-only outputs in legacy schemas."""
     step = Step(
         provider="mock",
         model="m",
@@ -162,17 +162,63 @@ def test_manifest_v1_5_reports_missing_output_sha_without_failing_verify():
     manifest.compute_hash()
 
     assert manifest.verify_hash()
-    assert manifest.verify()
-    assert manifest.unverified_output_asset_ids() == []
+    assert not manifest.verify()
     assert manifest.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
 
 
-def test_manifest_invalid_schema_version_raises_on_hash_gate():
+@pytest.mark.parametrize("schema_version", ["0", "1.7", "2.0", "1.x"])
+def test_manifest_unsupported_schema_version_is_rejected(schema_version):
     step = Step(provider="mock", model="m", prompt="same prompt")
-    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.x")
 
-    with pytest.raises(ManifestError, match="Invalid schema_version"):
-        manifest.compute_hash()
+    with pytest.raises(ValidationError, match="Unsupported schema_version"):
+        Manifest(run=Run(name="same", steps=[step]), schema_version=schema_version)
+
+
+@pytest.mark.parametrize("schema_version", ["1.0", "1.4", "1.5"])
+def test_schema_downgrade_cannot_bypass_url_only_output_verification(schema_version):
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url="https://cdn.example.com/output.png", media_type="image/png")],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version=schema_version)
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert not manifest.verify()
+
+
+def test_manifest_v1_6_url_only_hash_strips_presign_query_params():
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png?X-Amz-Signature=a",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://CDN.EXAMPLE.COM/output.png?X-Amz-Signature=b",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert not manifest_a.verify()
 
 
 def test_manifest_hashed_output_assets_verify_with_url_rewrites():
@@ -360,11 +406,11 @@ def test_new_manifest_gets_current_schema_version():
     """New manifests default to the current SCHEMA_VERSION constant."""
     from genblaze_core.models.manifest import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == "1.6"
+    assert SCHEMA_VERSION == "1.5"
     s = Step(provider="p", model="m")
     r = Run(steps=[s])
     m = Manifest.from_run(r)
-    assert m.schema_version == "1.6"
+    assert m.schema_version == "1.5"
 
 
 def test_equivalent_reruns_produce_same_hash():

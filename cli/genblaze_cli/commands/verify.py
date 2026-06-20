@@ -6,9 +6,10 @@ import click
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media import get_handler, guess_mime
 from genblaze_core.media.sidecar import SidecarHandler
+from genblaze_core.models.manifest import Manifest
 
 
-def _extract_manifest(file: Path):
+def _extract_manifest(file: Path) -> Manifest:
     """Extract manifest, trying format-specific handler then sidecar."""
     mime = guess_mime(file)
     handler = get_handler(mime)

@@ -329,23 +329,33 @@ class ObjectStorageSink(BaseSink):
         """
         return self._backend.get_durable_url(self.manifest_key_for(run))
 
-    def read_manifest(self, run: Run, *, verify: bool = True) -> Manifest:
+    def read_manifest(
+        self,
+        run: Run,
+        *,
+        verify: bool = True,
+        allow_unverified_assets: bool = False,
+    ) -> Manifest:
         """Fetch and parse the stored manifest for this run.
 
         Args:
             run: The run whose manifest to load. Only ``run_id`` /
                 ``tenant_id`` / ``created_at`` are used (to derive the key).
-            verify: When True (default), checks ``manifest.verify_hash()``
-                and raises :class:`ManifestError` on hash mismatch. Pass
-                ``verify=False`` to skip the rehash on a manifest you trust
-                (e.g. one you just wrote). Call ``manifest.verify()`` when
-                you also need to enforce output byte binding; it returns
-                ``False`` for schema 1.6+ URL-only outputs missing ``sha256``.
+            verify: When True (default), checks hash integrity and output
+                asset byte binding. Pass ``verify=False`` to skip all
+                verification on a manifest you trust (e.g. one you just
+                wrote).
+            allow_unverified_assets: When True, ``verify=True`` still checks
+                ``manifest.verify_hash()`` but allows output assets without
+                ``sha256``. This is the explicit hash-only read path for
+                callers that need to inspect partially transferred manifests.
 
         Raises:
             SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
                 Bounds OOM blast from a malicious or corrupt object.
-            ManifestError: when ``verify=True`` and the hash doesn't match.
+            ManifestError: when ``verify=True`` and hash integrity fails, or
+                output assets are missing ``sha256`` without
+                ``allow_unverified_assets=True``.
         """
         key = self.manifest_key_for(run)
         data = self._backend.get(key)
@@ -355,8 +365,35 @@ class ObjectStorageSink(BaseSink):
                 f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
         manifest = Manifest.model_validate_json(data)
-        if verify and not manifest.verify_hash():
-            raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
+        if verify:
+            if not manifest.verify_hash():
+                raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
+
+            if manifest.transfer_failures:
+                logger.warning(
+                    "Stored manifest has transfer failures",
+                    extra={
+                        "manifest_key": key,
+                        "run_id": manifest.run.run_id,
+                        "transfer_failures": manifest.transfer_failures,
+                    },
+                )
+
+            missing_sha_ids = manifest.output_asset_ids_missing_sha256()
+            if missing_sha_ids:
+                logger.warning(
+                    "Stored manifest has output assets missing sha256",
+                    extra={
+                        "manifest_key": key,
+                        "run_id": manifest.run.run_id,
+                        "asset_ids": missing_sha_ids,
+                    },
+                )
+                if not allow_unverified_assets:
+                    raise ManifestError(
+                        f"Stored manifest at {key} has {len(missing_sha_ids)} "
+                        "output asset(s) missing sha256"
+                    )
         return manifest
 
     def _manifest_cache_control(self) -> str:

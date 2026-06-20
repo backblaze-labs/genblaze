@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-17 -->
+<!-- last_verified: 2026-06-20 -->
 # Feature: Trust Modes
 
 ## Purpose
@@ -21,7 +21,7 @@ Genblaze supports a layered trust model. Today only Mode 1 ships in core; Modes 
 - The pipeline run is reproducible: same inputs always produce the same canonical_hash.
 
 **What it does NOT prove:**
-- Byte integrity for URL-only output assets. In schema version 1.6+, URL-only outputs are marked in the canonical payload so different URLs do not collapse to the same hash, but `Manifest.verify()` returns `False` until the asset has `sha256` populated, typically by using `ObjectStorageSink`.
+- Byte integrity for URL-only output assets. Security-facing verification returns `False` until every output asset has `sha256` populated, typically by using `ObjectStorageSink`.
 - That a specific party produced the manifest. Anyone with the SDK can build a self-consistent manifest from arbitrary inputs.
 - Resistance to a determined re-embedder. A tamperer can modify the asset, recompute the manifest, re-embed, and produce a manifest that verifies against itself.
 
@@ -37,8 +37,11 @@ from genblaze_core import Manifest
 # Build + hash
 manifest = Manifest.from_run(run)
 
-# Verify
-assert manifest.verify()  # hash recomputes from canonical payload
+# Verify payload integrity and output byte binding.
+assert manifest.verify()
+
+# Hash-only migration/read path.
+assert manifest.verify_hash()
 
 # CLI
 # $ genblaze verify video.mp4
@@ -77,17 +80,24 @@ assert manifest.verify()  # hash recomputes from canonical payload
 
 ## Asset binding caveat
 
-For schema version 1.6+, `Manifest.verify()` is an asset-byte integrity check:
-a successful output asset without `asset.sha256` does not verify, even though
-`Manifest.compute_hash()` can still compute a metadata hash for the run. Legacy
-schema versions keep their published `verify()` behavior for backwards
-compatibility. Use `ObjectStorageSink` or a provider path that materializes
-bytes locally to populate `sha256` before relying on Mode 1 asset integrity.
+`Manifest.verify()` is an asset-byte integrity check: a successful output asset
+without `asset.sha256` does not verify, even when the manifest hash itself
+matches. This applies to legacy schema versions too, so an attacker cannot set
+`schema_version="1.5"` to bypass output byte binding. Use `ObjectStorageSink`
+or a provider path that materializes bytes locally to populate `sha256` before
+relying on Mode 1 asset integrity.
 
 Use `Manifest.verify_hash()` when a caller only needs to check that
 `canonical_hash` matches the manifest payload. This distinction matters for
 storage reads and replay flows that should report URL-only outputs as
 byte-unverified without treating them as hash tampering.
+
+Schema 1.6 URL-only hash markers are read-supported, but the SDK still writes
+schema 1.5 by default during the expand-contract rollout. Operators should
+upgrade readers before enabling 1.6 manifest emission. If 1.6 manifests are
+written and a rollback is required, keep a reader with 1.6 hash-marker support
+available to re-save or inspect those manifests; older 1.5 readers cannot
+verify the 1.6 URL-only hash payload.
 
 `asset.sha256` in the manifest is computed against the asset bytes at the moment the manifest is built — i.e., **before** embedding. After `SmartEmbedder.embed()` modifies the file to insert the manifest, the on-disk file's sha256 will not match `asset.sha256`. Two paths to verify the asset:
 
@@ -102,7 +112,7 @@ byte-unverified without treating them as hash tampering.
 
 ## Verification
 - Mode 1 test files: `libs/core/tests/unit/test_canonical.py`, `test_canonical_hash_stability.py`, `tests/integration/test_pipeline_embed_roundtrip.py`
-- Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding, current-schema URL-only output assets do not verify
+- Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding, URL-only output assets do not verify
 - Quick verify: `cd libs/core && pytest tests/unit/test_canonical.py tests/integration/test_pipeline_embed_roundtrip.py -v`
 - Full verify: `make test`
-- Pass criteria: hashed-asset roundtrip tests report `manifest.verify() == True`; current-schema URL-only output manifests report `False`
+- Pass criteria: hashed-asset roundtrip tests report `manifest.verify() == True`; URL-only output manifests report `False`
