@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "s3", "backblaze", "b2", "storage", "object-storage"]
 
 dependencies = [
-    "genblaze-core>=0.3.3,<0.4",
+    "genblaze-core>=0.3.4,<0.4",
     "boto3>=1.28",
     # backend.py imports botocore.exceptions directly (unguarded, module load).
     # boto3 always ships it, but declaring the direct import is honest and lets

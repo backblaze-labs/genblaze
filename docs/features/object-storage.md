@@ -163,25 +163,21 @@ re-implement the layout rules or parse `manifest.manifest_uri`:
 ```python
 key = sink.manifest_key_for(run)            # storage key (pure function)
 url = sink.manifest_url_for(run)            # durable, credential-free URL
-manifest = sink.read_manifest(run)          # fetch + parse + strict verify()
+manifest = sink.read_manifest(run)          # fetch + parse + hash verify()
 assert manifest.verify_hash()               # payload integrity
 assert manifest.verify()                    # payload + declared output sha256
 ```
 
 `read_manifest` defaults to `verify=True` and enforces both hash integrity and
-output sha256 coverage. It raises `ManifestError` on hash mismatch and
-`UnverifiedAssetError` when output assets are missing or carry malformed
-`sha256`. Existing historical URL-only manifests will fail this strict read
-until they are backfilled, or until a caller deliberately opts into the
-hash-only path with `allow_unverified_assets=True`. For rolling deployments,
-stage this explicitly with known inspection/backfill call sites, the temporary
-`ObjectStorageSink(..., allow_unverified_manifest_reads=True)` constructor
-switch, or the `GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS=true` environment
-switch. Backfill output hashes, then remove the migration switch once
-historical data is covered. Treat these flags as security-sensitive and never
-bind them directly to request-controlled input. Use `verify=False` only to skip
-verification on a manifest you just wrote yourself. Downloads are capped at 16
-MiB to bound OOM blast.
+logs output sha256 coverage gaps. It raises `ManifestError` on hash mismatch.
+Hard-failing `UnverifiedAssetError` for missing or malformed output `sha256` is
+staged behind `ObjectStorageSink(..., strict_manifest_reads=True)` or
+`GENBLAZE_STRICT_MANIFEST_READS=true` so rolling deployments can backfill
+historical URL-only manifests before enabling strict read failures on hot
+paths. Treat `allow_unverified_assets`, `verify=False`, and the migration env
+switches as security-sensitive and never bind them directly to request-
+controlled input. Use `verify=False` only to skip verification on a manifest you
+just wrote yourself. Downloads are capped at 16 MiB to bound OOM blast.
 
 After `write_run` returns, `manifest.manifest_uri` is also populated on
 the in-memory object — including on retries that hit an already-existing

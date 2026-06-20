@@ -368,6 +368,48 @@ class TestObjectStorageSink:
             "manifests" in key or key.endswith("manifest.json") for key in backend.store
         )
 
+    def test_write_run_retry_reuses_successful_partial_transfers(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        run, manifest = _make_run_and_manifest()
+        transferred_asset = run.steps[0].assets[0]
+        failed_asset = Asset(
+            url="https://cdn.example.com/retry.png",
+            media_type="image/png",
+        )
+        run.steps[0].assets.append(failed_asset)
+        manifest.compute_hash()
+        failed_once = False
+        calls: list[str] = []
+
+        def transfer(asset: Asset, **_kwargs) -> str:
+            nonlocal failed_once
+            calls.append(asset.asset_id)
+            if asset is failed_asset and not failed_once:
+                failed_once = True
+                raise RuntimeError("network down")
+            digest = "a" * 64 if asset is transferred_asset else "b" * 64
+            key = f"test/assets/{asset.asset_id}.png"
+            backend.store[key] = b"png-bytes"
+            asset.url = backend.get_durable_url(key)
+            asset.sha256 = digest
+            asset.size_bytes = len(backend.store[key])
+            return key
+
+        with patch.object(sink._transfer, "transfer", side_effect=transfer):
+            with pytest.raises(SinkError, match="manifest was not uploaded"):
+                sink.write_run(run, manifest)
+            calls_after_failure = list(calls)
+            sink.write_run(run, manifest)
+
+        assert transferred_asset.asset_id in calls_after_failure
+        assert failed_asset.asset_id in calls_after_failure
+        assert calls.count(transferred_asset.asset_id) == 1
+        assert calls.count(failed_asset.asset_id) == 2
+        assert manifest.transfer_failures == []
+        assert manifest.verify()
+        assert any("manifests" in key for key in backend.store)
+
 
 def _mock_urlopen():
     """Helper: patch urlopen to return fake image data."""
@@ -1079,8 +1121,8 @@ class TestManifestHelpers:
         loaded = sink.read_manifest(run, verify=False)
         assert loaded.run.name == "tampered"
 
-    def test_read_manifest_verify_default_rejects_unverified_assets(self, caplog):
-        """verify=True enforces output byte binding by default."""
+    def test_read_manifest_warns_on_unverified_assets_during_staged_rollout(self, caplog):
+        """verify=True warns but returns URL-only manifests until strict mode is enabled."""
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="p")
         step = Step(
@@ -1096,14 +1138,44 @@ class TestManifestHelpers:
 
         backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
 
-        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256") as excinfo:
-            sink.read_manifest(run)
-        assert excinfo.value.asset_ids == (step.assets[0].asset_id,)
-        assert "output assets missing or malformed sha256" in caplog.text
-
-        loaded = sink.read_manifest(run, allow_unverified_assets=True)
+        loaded = sink.read_manifest(run)
         assert loaded.verify_hash()
         assert not loaded.verify()
+        assert "output assets missing or malformed sha256" in caplog.text
+
+    def test_read_manifest_strict_mode_rejects_unverified_assets(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", strict_manifest_reads=True)
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256") as excinfo:
+            sink.read_manifest(run)
+
+        assert excinfo.value.asset_ids == (step.assets[0].asset_id,)
+
+    def test_read_manifest_strict_mode_blocks_per_call_unverified_bypass(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", strict_manifest_reads=True)
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(SinkError, match="Per-call allow_unverified_assets"):
+            sink.read_manifest(run, allow_unverified_assets=True)
 
     def test_read_manifest_constructor_flag_allows_unverified_assets(self):
         backend = MemoryBackend()
@@ -1146,6 +1218,23 @@ class TestManifestHelpers:
         assert loaded.verify_hash()
         assert not loaded.verify()
 
+    def test_read_manifest_env_flag_enables_strict_unverified_asset_rejection(self, monkeypatch):
+        monkeypatch.setenv("GENBLAZE_STRICT_MANIFEST_READS", "true")
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
+            sink.read_manifest(run)
+
     def test_read_manifest_allows_malformed_sha256_escape_hatch(self):
         """Malformed-present sha256 parses but strict verification rejects it."""
         backend = MemoryBackend()
@@ -1166,10 +1255,7 @@ class TestManifestHelpers:
         manifest = Manifest.from_run(run)
         backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
 
-        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
-            sink.read_manifest(run)
-
-        loaded = sink.read_manifest(run, allow_unverified_assets=True)
+        loaded = sink.read_manifest(run)
         assert loaded.verify_hash()
         assert loaded.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
 
@@ -1506,7 +1592,7 @@ class TestReadManifestForAsset:
 
     def test_read_manifest_for_asset_rejects_unverified_output_assets(self):
         backend = _AssetIndexBackend()
-        sink = ObjectStorageSink(backend, prefix="dam")
+        sink = ObjectStorageSink(backend, prefix="dam", strict_manifest_reads=True)
         output = Asset(url="https://cdn.example.com/out.png", media_type="image/png")
         step = Step(
             provider="test",
@@ -1527,10 +1613,15 @@ class TestReadManifestForAsset:
         with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
             sink.read_manifest_for_asset(output.asset_id, tenant_id="tenant-a")
 
-        recovered = sink.read_manifest_for_asset(
+        allow_sink = ObjectStorageSink(
+            backend,
+            prefix="dam",
+            strict_manifest_reads=True,
+            allow_unverified_manifest_reads=True,
+        )
+        recovered = allow_sink.read_manifest_for_asset(
             output.asset_id,
             tenant_id="tenant-a",
-            allow_unverified_assets=True,
         )
         assert recovered is not None
         assert recovered.verify_hash()
@@ -1596,6 +1687,55 @@ class TestReadManifestForAsset:
         assert recovered.canonical_hash == manifest.canonical_hash
         scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
         assert scoped_key in backend.store
+
+    def test_read_manifest_for_asset_reads_legacy_tenantless_index_with_default_tenant(
+        self,
+    ):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(
+            backend,
+            prefix="dam",
+            legacy_index_tenant_id="legacy",
+        )
+        asset = Asset(
+            url="https://cdn.example.com/out.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="r", tenant_id=None, status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        manifest_uri = backend.get_durable_url(manifest_key)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        backend.store[sink._legacy_asset_index_key(asset.asset_id)] = json.dumps(
+            {"manifest_uri": manifest_uri}
+        ).encode("utf-8")
+
+        recovered = sink.read_manifest_for_asset(asset.asset_id, tenant_id="legacy")
+
+        assert recovered is not None
+        assert recovered.canonical_hash == manifest.canonical_hash
+        scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="legacy")
+        assert scoped_key in backend.store
+
+    def test_write_asset_index_dual_writes_legacy_index_for_rolling_readers(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/out.png", media_type="image/png")
+        manifest_uri = "https://mem/dam/manifests/run.json"
+
+        sink._write_asset_index(asset.asset_id, manifest_uri, tenant_id="tenant-a")
+
+        legacy_key = sink._legacy_asset_index_key(asset.asset_id)
+        assert legacy_key in backend.store
+        legacy = json.loads(backend.store[legacy_key])
+        assert legacy == {"manifest_uri": manifest_uri, "tenant_id": "tenant-a"}
 
     def test_write_asset_index_rejects_manifest_remap(self):
         backend = _AssetIndexBackend()

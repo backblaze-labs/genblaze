@@ -80,7 +80,7 @@ assert manifest.verify_hash()
 
 ## Asset binding caveat
 
-`Manifest.verify()` changed in 0.3.3 from hash-only verification to a stricter
+`Manifest.verify()` changed in 0.3.4 from hash-only verification to a stricter
 declared asset-binding check. A successful output asset without `asset.sha256`
 does not verify, even when the manifest hash itself matches. This applies to
 legacy schema versions too, so an attacker cannot set `schema_version="1.5"` to

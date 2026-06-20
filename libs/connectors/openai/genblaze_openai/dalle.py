@@ -57,6 +57,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    strip_asset_url_credentials,
     validate_asset_url,
     validate_chain_input_url,
 )
@@ -593,7 +594,9 @@ class DalleProvider(SyncProvider):
                 url = getattr(img, "url", None)
                 if url:
                     validate_asset_url(url)
-                    step.assets.append(Asset(url=url, media_type=media_type))
+                    step.assets.append(
+                        Asset(url=strip_asset_url_credentials(url), media_type=media_type)
+                    )
 
         if not is_b64 and step.assets:
             logger.warning(

@@ -5,6 +5,7 @@ from genblaze_core.providers.base import (
     ProviderCapabilities,
     SubmitResult,
     SyncProvider,
+    strip_asset_url_credentials,
     validate_asset_url,
     validate_chain_input_url,
 )
@@ -155,6 +156,7 @@ __all__ = [
     "route_keyframes",
     "route_video",
     "tiered",
+    "strip_asset_url_credentials",
     "validate_asset_url",
     "validate_chain_input_url",
 ]

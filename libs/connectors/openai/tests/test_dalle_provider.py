@@ -13,6 +13,7 @@ import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.policy import EmbedPolicy
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
@@ -42,6 +43,35 @@ def test_generate_returns_image_asset(mock_dalle):
     assert result.assets[0].media_type == "image/png"
     _host = urlparse(result.assets[0].url).hostname or ""
     assert _host == "blob.core.windows.net" or _host.endswith(".blob.core.windows.net")
+
+
+def test_generate_strips_azure_sas_credentials_from_asset_url(mock_dalle):
+    provider, client = mock_dalle
+    client.images.generate.return_value = SimpleNamespace(
+        data=[
+            SimpleNamespace(
+                url=(
+                    "https://oaidalleapiprodscus.blob.core.windows.net/private/img.png"
+                    "?st=2026-06-20T00%3A00%3A00Z&se=2026-06-20T01%3A00%3A00Z"
+                    "&sp=r&sv=2024-11-04&sig=secret&tenant_resource=keep"
+                )
+            )
+        ]
+    )
+
+    result = provider.generate(Step(provider="openai-dalle", model="dall-e-3", prompt="cat"))
+
+    url = result.assets[0].url
+    assert "sig=" not in url
+    assert "se=" not in url
+    assert "st=" not in url
+    assert "sp=" not in url
+    assert "sv=" not in url
+    assert "tenant_resource=keep" in url
+    manifest = Manifest.from_run(Run(name="sas", steps=[result]))
+    embedded = manifest.to_embed_json(EmbedPolicy(embed_mode="full"))
+    assert "sig=" not in embedded
+    assert "se=" not in embedded
 
 
 def test_invoke_full_lifecycle(mock_dalle):

@@ -356,8 +356,8 @@ class Manifest(BaseModel):
     def verify(self) -> bool:
         """Verify the manifest hash and declared output asset sha256 coverage.
 
-        Behavior note for 0.3.3: this exported method is stricter than the
-        pre-0.3.3 hash-only contract. Use ``verify_hash()`` for legacy
+        Behavior note for 0.3.4: this exported method is stricter than the
+        pre-0.3.4 hash-only contract. Use ``verify_hash()`` for legacy
         hash-only checks, or ``verification_report()`` when callers need to
         distinguish a hash mismatch from outputs missing ``sha256``.
 

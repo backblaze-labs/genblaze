@@ -84,9 +84,9 @@ class BaseMediaHandler(ABC):
         ...
 
     def verify(self, source: Path) -> bool:
-        """Extract and return ``Manifest.verification_report().ok``."""
+        """Extract and run ``Manifest.verify()``."""
         manifest = self.extract(source)
-        return manifest.verification_report().ok
+        return manifest.verify()
 
     @staticmethod
     @abstractmethod

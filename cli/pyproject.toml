@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-cli"
-version = "0.3.1"
+version = "0.3.2"
 description = "CLI for genblaze manifest operations"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "cli", "command-line"]
 
 dependencies = [
-    "genblaze-core>=0.3.3,<0.4",
+    "genblaze-core>=0.3.4,<0.4",
     "click>=8.0",
 ]
 

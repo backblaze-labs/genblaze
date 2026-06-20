@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `genblaze-core` 0.3.2 → 0.3.3: `Manifest.verify()` now rejects output
+- `genblaze-core` 0.3.2 → 0.3.4: `Manifest.verify()` now rejects output
   assets that lack `sha256` for every supported schema version, preventing a
   schema downgrade from bypassing declared output sha256 coverage. This is an
   intentional security exception to the normal patch-release compatibility
@@ -28,32 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest emission, storage writes, media embedding, and the published JSON
   Schema/TypeScript spec stay on schema 1.5 for an expand-contract rollout
   (#77).
-- `genblaze-cli` 0.3.0 → 0.3.1: raises its `genblaze-core` floor to the first
+- `genblaze-cli` 0.3.0 → 0.3.2: raises its `genblaze-core` floor to the first
   core version that exposes `verify_hash()` and output-asset sha256 diagnostics
   (#77).
-- `genblaze` umbrella package: raises its `genblaze-core` floor to 0.3.3 so
+- `genblaze` umbrella package: raises its `genblaze-core` floor to 0.3.4 so
   umbrella installs receive the verification hardening (#77).
-- Provider and storage connector packages now require `genblaze-core>=0.3.3,<0.4`
+- Provider and storage connector packages now require `genblaze-core>=0.3.4,<0.4`
   so adapter-only installs also receive the URL-only asset verification fix
   (#77).
 - `ObjectStorageSink.read_manifest_for_asset()` now requires `tenant_id`, stores
   tenant-scoped asset index entries, validates `asset_id` as a UUID, falls back
   to legacy flat index entries during migration, rejects manifest pointer
   substitution unless the recovered manifest references the requested asset,
-  and applies the same strict verification defaults as `read_manifest()` (#77).
+  and applies the same staged verification behavior as `read_manifest()` (#77).
 - `ObjectStorageSink.write_run()` now fails the write when an asset transfer
   fails, instead of uploading a success-path manifest that later fails strict
-  verification (#77).
+  verification. Successful transfers from a partial failure are reused on
+  retry and the in-memory manifest hash is recomputed before raising (#77).
 
 ### Changed
 
-- `ObjectStorageSink.read_manifest(verify=True)` is strict by default and raises
-  `UnverifiedAssetError` for hash-valid manifests whose output assets are
-  missing or malformed `sha256`. Historical URL-only manifests must be
-  backfilled, read via the explicit `allow_unverified_assets=True` hash-only
-  path during a staged rollout, or covered by the temporary sink constructor
-  flag / `GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS` environment switch before
-  enabling this on hot read paths (#77).
+- `ObjectStorageSink.read_manifest(verify=True)` verifies canonical hashes by
+  default and logs output assets whose `sha256` is missing or malformed.
+  Hard-failing those unverified outputs is staged behind
+  `strict_manifest_reads=True` or `GENBLAZE_STRICT_MANIFEST_READS=true` so
+  operators can backfill historical URL-only manifests before enabling strict
+  read failures on hot paths (#77).
 
 ### Added
 

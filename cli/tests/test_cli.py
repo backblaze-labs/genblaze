@@ -112,6 +112,16 @@ def test_verify_standalone_manifest_json(tmp_path: Path) -> None:
     assert "OK" in result.output
 
 
+def test_extract_standalone_manifest_json(tmp_path: Path) -> None:
+    manifest_path = _create_manifest_json(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["extract", str(manifest_path)])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["canonical_hash"]
+
+
 def test_verify_standalone_manifest_json_case_insensitive_suffix(tmp_path: Path) -> None:
     manifest_path = _create_manifest_json(tmp_path)
     upper_path = tmp_path / "MANIFEST.JSON"
@@ -180,6 +190,7 @@ def test_verify_ok_does_not_claim_remote_bytes_were_hashed(tmp_path: Path) -> No
 
     assert result.exit_code == 0
     assert "all output assets declare sha256" in result.output
+    assert "Asset bytes were not fetched or compared" in result.output
     assert "asset integrity" not in result.output
 
 
@@ -195,6 +206,20 @@ def test_verify_distinguishes_unverified_assets(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert "1 output asset(s) missing or malformed sha256" in combined
     assert "hash mismatch" not in combined
+
+
+def test_verify_hash_only_preserves_legacy_url_only_exit_code(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest()
+    png_path = tmp_path / "url-only.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    PngHandler().embed(png_path, manifest)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--hash-only", str(png_path)])
+
+    assert result.exit_code == 0
+    assert "manifest hash verified" in result.output
+    assert "Asset bytes were not fetched or compared" in result.output
 
 
 def test_verify_rejects_malformed_output_sha256(tmp_path: Path) -> None:

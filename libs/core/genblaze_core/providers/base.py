@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
 from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.exceptions import ProviderError
@@ -166,6 +166,55 @@ def classify_api_error(exc: Exception | str) -> ProviderErrorCode:
 
 # Allowed URL schemes for asset URLs — shared across all providers
 _ALLOWED_SCHEMES = {"https"}
+_CREDENTIAL_QUERY_EXCLUDE = frozenset(
+    {
+        "access_token",
+        "awsaccesskeyid",
+        "expires",
+        "expires_in",
+        "expiry",
+        "key-pair-id",
+        "response-cache-control",
+        "response-content-disposition",
+        "response-content-encoding",
+        "response-content-language",
+        "response-content-type",
+        "x-id",
+    }
+)
+_AZURE_SAS_QUERY_PARAMS = frozenset(
+    {
+        "se",
+        "sig",
+        "skoid",
+        "sks",
+        "sktid",
+        "skv",
+        "sp",
+        "spr",
+        "sr",
+        "srt",
+        "ss",
+        "st",
+        "sv",
+    }
+)
+_CLOUDFRONT_SIGNED_QUERY_PARAMS = frozenset(
+    {
+        "expires",
+        "key-pair-id",
+        "policy",
+        "signature",
+    }
+)
+_GCS_V2_SIGNED_QUERY_PARAMS = frozenset(
+    {
+        "expires",
+        "googleaccessid",
+        "signature",
+    }
+)
+_CREDENTIAL_QUERY_PREFIX_EXCLUDE = ("x-amz-", "x-goog-", "x-bz-")
 
 
 def validate_asset_url(url: str) -> None:
@@ -176,6 +225,37 @@ def validate_asset_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in _ALLOWED_SCHEMES or not parsed.netloc:
         raise ProviderError(f"Unsafe asset URL '{url}' — only absolute HTTPS URLs allowed")
+
+
+def strip_asset_url_credentials(url: str) -> str:
+    """Strip known signed-URL credentials before persisting provider URLs."""
+    parts = urlsplit(url)
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    query_keys = {name.lower() for name, _value in query_pairs}
+    is_azure_sas = bool(query_keys & {"sv", "se", "sp", "sr", "ss", "srt"})
+    is_cloudfront_signed = "key-pair-id" in query_keys
+    is_gcs_v2_signed = "googleaccessid" in query_keys
+
+    def is_credential_param(name: str) -> bool:
+        key = name.lower()
+        return (
+            key in _CREDENTIAL_QUERY_EXCLUDE
+            or key.startswith(_CREDENTIAL_QUERY_PREFIX_EXCLUDE)
+            or (is_azure_sas and key in _AZURE_SAS_QUERY_PARAMS)
+            or (is_cloudfront_signed and key in _CLOUDFRONT_SIGNED_QUERY_PARAMS)
+            or (is_gcs_v2_signed and key in _GCS_V2_SIGNED_QUERY_PARAMS)
+        )
+
+    query = urlencode(
+        [(name, value) for name, value in query_pairs if not is_credential_param(name)],
+        doseq=True,
+    )
+    netloc = parts.hostname.lower() if parts.hostname else ""
+    if ":" in netloc and not netloc.startswith("["):
+        netloc = f"[{netloc}]"
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme.lower(), netloc, parts.path, query, ""))
 
 
 # Schemes allowed for chain inputs (file:// from local providers, https:// from cloud)
