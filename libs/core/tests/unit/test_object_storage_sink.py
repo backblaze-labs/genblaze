@@ -17,10 +17,24 @@ from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.storage.base import KeyStrategy, ObjectLockConfig, StorageBackend
-from genblaze_core.storage.sink import ObjectStorageSink
+from genblaze_core.storage.sink import ObjectStorageSink, _validation_error_summary
 
 # Fake DNS response — resolves to a public IP (bypasses SSRF check)
 _FAKE_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+class _OldPydanticValidationError:
+    def errors(self, *args, **kwargs):
+        if kwargs:
+            raise TypeError("errors() got an unexpected keyword argument")
+        return [
+            {
+                "loc": ("run", "steps", 0),
+                "type": "missing",
+                "input": {"prompt": "redacted"},
+                "url": "https://errors.pydantic.dev/2/missing",
+            }
+        ]
 
 
 class MemoryBackend(StorageBackend):
@@ -72,6 +86,14 @@ def _make_run_and_manifest():
     manifest = Manifest(run=run)
     manifest.compute_hash()
     return run, manifest
+
+
+def test_validation_error_summary_supports_older_pydantic_errors_api():
+    summary = _validation_error_summary(_OldPydanticValidationError())  # type: ignore[arg-type]
+
+    assert summary == "1 validation error(s): run.steps.0: missing"
+    assert "redacted" not in summary
+    assert "errors.pydantic.dev" not in summary
 
 
 class TestObjectStorageSink:

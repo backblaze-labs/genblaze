@@ -61,13 +61,23 @@ _PUBLIC_URL_BASE_MISSING = object()
 
 
 def _validation_error_summary(exc: ValidationError) -> str:
-    details = exc.errors(include_input=False, include_url=False)
+    try:
+        raw_details = exc.errors(include_input=False, include_url=False)
+    except TypeError:
+        raw_details = exc.errors()
+
+    details = [
+        {key: value for key, value in detail.items() if key not in {"input", "url"}}
+        for detail in raw_details
+    ]
     items: list[str] = []
     for detail in details[:5]:
         loc = ".".join(str(part) for part in detail.get("loc", ())) or "<manifest>"
         items.append(f"{loc}: {detail.get('type', 'validation_error')}")
     suffix = "" if len(details) <= 5 else f"; ... {len(details) - 5} more"
-    return f"{exc.error_count()} validation error(s): {'; '.join(items)}{suffix}"
+    error_count = getattr(exc, "error_count", None)
+    count = error_count() if callable(error_count) else len(details)
+    return f"{count} validation error(s): {'; '.join(items)}{suffix}"
 
 
 def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
