@@ -10,7 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from genblaze_core._utils import MAX_MANIFEST_BYTES
-from genblaze_core.exceptions import ManifestError, SinkError, UnverifiedAssetError
+from genblaze_core.exceptions import (
+    ManifestError,
+    SinkError,
+    UnsupportedSchemaVersionError,
+    UnverifiedAssetError,
+)
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import PromptVisibility, RunStatus, StepStatus
 from genblaze_core.models.manifest import Manifest
@@ -1096,6 +1101,21 @@ class TestManifestHelpers:
 
         assert key in str(excinfo.value)
         assert "input_value" not in str(excinfo.value)
+
+    def test_read_manifest_preserves_unsupported_schema_error(self):
+        """Storage key context must not erase the upgrade-required error type."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="future-schema", status=RunStatus.COMPLETED)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b'{"schema_version": "9.9"}'
+
+        with pytest.raises(
+            UnsupportedSchemaVersionError, match="Unsupported schema_version"
+        ) as excinfo:
+            sink.read_manifest(run)
+
+        assert key in str(excinfo.value)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")

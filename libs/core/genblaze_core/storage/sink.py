@@ -20,6 +20,7 @@ from genblaze_core.exceptions import (
     ManifestError,
     SinkError,
     StorageError,
+    UnsupportedSchemaVersionError,
     UnverifiedAssetError,
 )
 from genblaze_core.models.asset import Asset, is_valid_sha256
@@ -101,7 +102,12 @@ def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
     try:
         return parse_manifest(raw)
     except ManifestError as exc:
-        raise ManifestError(f"Stored manifest at {key} is invalid: {exc}") from exc
+        message = f"Stored manifest at {key} is invalid: {exc}"
+        if isinstance(exc, UnsupportedSchemaVersionError):
+            raise UnsupportedSchemaVersionError(message) from exc
+        if isinstance(exc, UnverifiedAssetError):
+            raise UnverifiedAssetError(message, asset_ids=exc.asset_ids) from exc
+        raise ManifestError(message) from exc
     except ValidationError as exc:
         raise ManifestError(
             f"Stored manifest at {key} is invalid: {_validation_error_summary(exc)}"
