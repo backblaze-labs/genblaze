@@ -55,11 +55,14 @@ There are two retry layers. Most users only need to think about the first.
    long-running video generation. The new policy controls **all of these**.
 2. **Step-level retries** (`config["max_retries"]` passed to `Pipeline.run()`)
    — retry the step after a phase-level budget is exhausted. If the failed
-   attempt already reached poll/fetch and has an upstream prediction ID, the
-   retry resumes that existing job instead of calling `submit()` again. Only
-   failures before an upstream ID exists use a fresh submit. The retryable-codes
-   set is now also taken from the policy, so tuning `RetryPolicy.retryable_codes`
-   affects both layers consistently.
+   attempt already produced an upstream prediction ID from the current
+   `submit()` call, the retry resumes that existing job instead of calling
+   `submit()` again. This also covers a transient `on_submit` checkpoint
+   failure after the upstream job was created. Caller-supplied
+   `step.metadata["upstream_id"]` is observability data and is not trusted as
+   retry authority. Only failures before a current upstream ID exists use a
+   fresh submit. The retryable-codes set is now also taken from the policy, so
+   tuning `RetryPolicy.retryable_codes` affects both layers consistently.
 
 Submit retries have a special rule: only **pre-response** exception types
 (httpx `ConnectError`, `ConnectTimeout`, `PoolTimeout`) are eligible by
@@ -67,10 +70,19 @@ default — replaying a request that may already have hit the server could
 double-bill. Once a provider opts into idempotency-key injection, this
 restriction is safe to widen via your own subclass.
 
-Fetch-phase failures have the opposite safety rule: the upstream generation
-already exists, so step-level retries call `resume(prediction_id, step, config)`
-and re-run poll/fetch against the same prediction. This avoids duplicate renders
-and duplicate charges when the transient error happened after generation started.
+Poll/fetch failures have the opposite safety rule: the upstream generation
+already exists, so step-level retries re-run the base poll/fetch resume loop
+against the same in-process prediction ID. This avoids duplicate renders and
+duplicate charges when the transient error happened after generation started.
+Internal step retries do not call provider overrides of the public `resume()`
+method; override `poll()` / `fetch_output()` for behavior shared by public
+resume and automatic retry resume. Public `resume()` progress still emits
+`resumed`; automatic step retry resume emits `retry_resumed`.
+
+Each step-level retry logs its route at INFO (`route=resume` or
+`route=submit`) and records `genblaze.step_retry.route` /
+`genblaze.step_retry.resumed` span attributes. Upstream prediction IDs are not
+included in retry route logs.
 
 ## Idempotency keys
 

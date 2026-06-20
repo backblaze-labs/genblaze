@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
 
 from genblaze_core.models.enums import ProviderErrorCode, StepStatus
-from genblaze_core.models.step import Step
+from genblaze_core.models.step import UPSTREAM_ID_KEY, Step
 from genblaze_core.providers.base import (
     BaseProvider,
     _adaptive_poll_interval,
@@ -77,10 +79,17 @@ class _PostSubmitRetryProvider(BaseProvider):
 
     name = "post-submit-retry"
 
-    def __init__(self, *, fail_phase: str, fail_count: int) -> None:
+    def __init__(
+        self,
+        *,
+        fail_phase: str,
+        fail_count: int,
+        prediction_ids: list[Any] | None = None,
+    ) -> None:
         super().__init__(retry_policy=RetryPolicy(max_attempts=1, jitter="none"))
         self._fail_phase = fail_phase
         self._fail_count = fail_count
+        self._prediction_ids = prediction_ids
         self.submit_calls = 0
         self.poll_calls = 0
         self.fetch_calls = 0
@@ -91,6 +100,8 @@ class _PostSubmitRetryProvider(BaseProvider):
         self.submit_calls += 1
         if self._fail_phase == "submit" and self.submit_calls <= self._fail_count:
             raise RuntimeError("server error 500 during submit")
+        if self._prediction_ids is not None:
+            return self._prediction_ids[self.submit_calls - 1]
         return f"pred-{self.submit_calls}"
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
@@ -106,6 +117,15 @@ class _PostSubmitRetryProvider(BaseProvider):
         if self._fail_phase == "fetch" and self.fetch_calls <= self._fail_count:
             raise RuntimeError("server error 500 during fetch")
         return step
+
+
+def _failing_on_submit(fail_count: int, calls: list[Any]) -> Callable[[str, Any], None]:
+    def on_submit(step_id: str, prediction_id: Any) -> None:
+        calls.append((step_id, prediction_id))
+        if len(calls) <= fail_count:
+            raise RuntimeError("server error 500 during checkpoint")
+
+    return on_submit
 
 
 @patch("genblaze_core.providers.base.time.sleep")
@@ -135,6 +155,32 @@ def test_step_retry_fetch_failure_resumes_without_resubmit(mock_sleep) -> None:
 
 
 @patch("genblaze_core.providers.base.time.sleep")
+def test_step_retry_on_submit_failure_resumes_without_resubmit(mock_sleep) -> None:
+    """A checkpoint failure after submit resumes the submitted prediction."""
+    provider = _PostSubmitRetryProvider(fail_phase="none", fail_count=0)
+    on_submit_calls: list[Any] = []
+    progress_statuses: list[str] = []
+
+    result = provider.invoke(
+        _make_step(),
+        {
+            "timeout": 60,
+            "max_retries": 1,
+            "on_submit": _failing_on_submit(1, on_submit_calls),
+            "on_progress": lambda event: progress_statuses.append(event.status),
+        },
+    )
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.retries == 1
+    assert provider.submit_calls == 1
+    assert provider.poll_calls == 1
+    assert provider.fetch_calls == 1
+    assert on_submit_calls == [(result.step_id, "pred-1")]
+    assert progress_statuses == ["submitted", "retry_resumed", "succeeded"]
+
+
+@patch("genblaze_core.providers.base.time.sleep")
 def test_step_retry_poll_failure_resumes_without_resubmit(mock_sleep) -> None:
     """A poll-phase step retry resumes the submitted prediction."""
     provider = _PostSubmitRetryProvider(fail_phase="poll", fail_count=2)
@@ -149,17 +195,54 @@ def test_step_retry_poll_failure_resumes_without_resubmit(mock_sleep) -> None:
 
 
 @patch("genblaze_core.providers.base.time.sleep")
+def test_step_retry_preserves_native_prediction_id_type(mock_sleep) -> None:
+    """The in-process resume path uses the native id returned by submit()."""
+    provider = _PostSubmitRetryProvider(
+        fail_phase="fetch",
+        fail_count=1,
+        prediction_ids=[101],
+    )
+    result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 1})
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.metadata[UPSTREAM_ID_KEY] == "101"
+    assert provider.submit_calls == 1
+    assert provider.polled_prediction_ids == [101, 101]
+    assert provider.fetched_prediction_ids == [101, 101]
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_step_retry_ignores_poisoned_upstream_id(mock_sleep) -> None:
+    """Caller-seeded metadata cannot select the prediction polled on retry."""
+    provider = _PostSubmitRetryProvider(fail_phase="poll", fail_count=1)
+    step = _make_step()
+    step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
+
+    result = provider.invoke(step, {"timeout": 60, "max_retries": 1})
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert provider.submit_calls == 1
+    assert provider.polled_prediction_ids == ["pred-1", "pred-1"]
+    assert "foreign-prediction" not in provider.polled_prediction_ids
+    assert "foreign-prediction" not in provider.fetched_prediction_ids
+
+
+@patch("genblaze_core.providers.base.time.sleep")
 def test_step_retry_submit_failure_resubmits(mock_sleep) -> None:
     """A failure before an upstream id exists still uses the submit path."""
     provider = _PostSubmitRetryProvider(fail_phase="submit", fail_count=1)
-    result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 1})
+    step = _make_step()
+    step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
+    result = provider.invoke(step, {"timeout": 60, "max_retries": 1})
 
     assert result.status == StepStatus.SUCCEEDED
     assert result.retries == 1
     assert provider.submit_calls == 2
     assert provider.poll_calls == 1
     assert provider.fetch_calls == 1
-    assert result.metadata["upstream_id"] == "pred-2"
+    assert result.metadata[UPSTREAM_ID_KEY] == "pred-2"
+    assert provider.polled_prediction_ids == ["pred-2"]
+    assert provider.fetched_prediction_ids == ["pred-2"]
 
 
 @patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
@@ -174,6 +257,100 @@ def test_async_step_retry_fetch_failure_resumes_without_resubmit(mock_sleep) -> 
     assert provider.poll_calls == 3
     assert provider.fetch_calls == 3
     assert provider.fetched_prediction_ids == ["pred-1", "pred-1", "pred-1"]
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_async_step_retry_poll_failure_resumes_without_resubmit(mock_sleep) -> None:
+    """Async poll-phase step retry resumes the submitted prediction."""
+    provider = _PostSubmitRetryProvider(fail_phase="poll", fail_count=2)
+    result = asyncio.run(provider.ainvoke(_make_step(), {"timeout": 60, "max_retries": 2}))
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.retries == 2
+    assert provider.submit_calls == 1
+    assert provider.poll_calls == 3
+    assert provider.fetch_calls == 1
+    assert provider.polled_prediction_ids == ["pred-1", "pred-1", "pred-1"]
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_async_step_retry_submit_failure_resubmits(mock_sleep) -> None:
+    """Async submit failure still uses the fresh submit path."""
+    provider = _PostSubmitRetryProvider(fail_phase="submit", fail_count=1)
+    step = _make_step()
+    step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
+    result = asyncio.run(provider.ainvoke(step, {"timeout": 60, "max_retries": 1}))
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.retries == 1
+    assert provider.submit_calls == 2
+    assert provider.poll_calls == 1
+    assert provider.fetch_calls == 1
+    assert result.metadata[UPSTREAM_ID_KEY] == "pred-2"
+    assert provider.polled_prediction_ids == ["pred-2"]
+    assert provider.fetched_prediction_ids == ["pred-2"]
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_async_step_retry_on_submit_failure_resumes_without_resubmit(mock_sleep) -> None:
+    """Async checkpoint failure after submit resumes the submitted prediction."""
+    provider = _PostSubmitRetryProvider(fail_phase="none", fail_count=0)
+    on_submit_calls: list[Any] = []
+    progress_statuses: list[str] = []
+
+    result = asyncio.run(
+        provider.ainvoke(
+            _make_step(),
+            {
+                "timeout": 60,
+                "max_retries": 1,
+                "on_submit": _failing_on_submit(1, on_submit_calls),
+                "on_progress": lambda event: progress_statuses.append(event.status),
+            },
+        )
+    )
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.retries == 1
+    assert provider.submit_calls == 1
+    assert provider.poll_calls == 1
+    assert provider.fetch_calls == 1
+    assert on_submit_calls == [(result.step_id, "pred-1")]
+    assert progress_statuses == ["submitted", "retry_resumed", "succeeded"]
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_async_step_retry_ignores_poisoned_upstream_id(mock_sleep) -> None:
+    """Async retries never poll a caller-seeded upstream id."""
+    provider = _PostSubmitRetryProvider(fail_phase="poll", fail_count=1)
+    step = _make_step()
+    step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
+
+    result = asyncio.run(provider.ainvoke(step, {"timeout": 60, "max_retries": 1}))
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert provider.submit_calls == 1
+    assert provider.polled_prediction_ids == ["pred-1", "pred-1"]
+    assert "foreign-prediction" not in provider.polled_prediction_ids
+    assert "foreign-prediction" not in provider.fetched_prediction_ids
+
+
+@patch("genblaze_core.providers.base.time.sleep")
+def test_step_retry_route_log_redacts_prediction_id(mock_sleep, caplog) -> None:
+    """Resume retry logs do not include raw upstream prediction IDs."""
+    prediction_id = "signed-output-url?token=credential-fixture"
+    provider = _PostSubmitRetryProvider(
+        fail_phase="fetch",
+        fail_count=1,
+        prediction_ids=[prediction_id],
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="genblaze.provider"):
+        result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 1})
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert "route=resume" in caplog.text
+    assert prediction_id not in caplog.text
 
 
 @patch("genblaze_core.providers.base.time.sleep")

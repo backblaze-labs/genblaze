@@ -37,6 +37,8 @@ class StepSpan:
                 self._otel_span.set_attribute("genblaze.step_id", self.step_id)
             if self.run_id:
                 self._otel_span.set_attribute("genblaze.run_id", self.run_id)
+            for key, value in self.attributes.items():
+                self._otel_span.set_attribute(key, value)
         except ImportError:
             pass
         return self
@@ -55,6 +57,8 @@ class StepSpan:
                 self._otel_span.set_attribute("genblaze.retries", self.retries)
                 if self.cost is not None:
                     self._otel_span.set_attribute("genblaze.cost_usd", self.cost)
+                for key, value in self.attributes.items():
+                    self._otel_span.set_attribute(key, value)
                 # Record exception if one occurred
                 if exc_val is not None:
                     self._otel_span.record_exception(exc_val)
@@ -68,3 +72,12 @@ class StepSpan:
     @property
     def duration_ms(self) -> float:
         return (self.end_time - self.start_time) * 1000
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """Record a span attribute locally and on the active OTel span."""
+        self.attributes[key] = value
+        if self._otel_span is not None:
+            try:
+                self._otel_span.set_attribute(key, value)
+            except Exception:  # noqa: S110
+                pass
