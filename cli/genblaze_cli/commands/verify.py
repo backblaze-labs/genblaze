@@ -46,7 +46,7 @@ def _extract_manifest(file: Path) -> Manifest:
 @click.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 def verify(file: Path) -> None:
-    """Verify the integrity of a genblaze manifest in a media file."""
+    """Verify an embedded, sidecar, or standalone genblaze manifest."""
     try:
         manifest = _extract_manifest(file)
         report = manifest.verification_report()

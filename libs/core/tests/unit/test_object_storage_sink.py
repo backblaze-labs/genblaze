@@ -1387,6 +1387,13 @@ class TestReadManifestForAsset:
         missing_id = "11111111-1111-4111-8111-111111111111"
         assert sink.read_manifest_for_asset(missing_id, tenant_id="tenant-a") is None
 
+    def test_read_manifest_for_asset_canonicalizes_uuid_case(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        mixed_case_id = "11111111-1111-4111-8111-AAAAAAAAAAAA"
+
+        assert sink.read_manifest_for_asset(mixed_case_id, tenant_id="tenant-a") is None
+
     def test_read_manifest_for_asset_rejects_invalid_asset_id(self):
         backend = _AssetIndexBackend()
         sink = ObjectStorageSink(backend, prefix="dam")

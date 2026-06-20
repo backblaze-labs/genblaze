@@ -141,10 +141,7 @@ def _require_asset_id(asset_id: str) -> str:
         parsed = uuid.UUID(asset_id)
     except (AttributeError, TypeError, ValueError) as exc:
         raise SinkError(f"asset_id must be a UUID, got {asset_id!r}") from exc
-    canonical = str(parsed)
-    if canonical != asset_id:
-        raise SinkError(f"asset_id must be a canonical UUID string, got {asset_id!r}")
-    return canonical
+    return str(parsed)
 
 
 def _require_tenant_id(tenant_id: str | None) -> str:
