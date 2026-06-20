@@ -142,7 +142,10 @@ def _canonical_unverified_asset_url(url: str) -> str:
     """Return the stable URL form used only for schema 1.6 URL-only hashes."""
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
-    netloc = parts.netloc.lower()
+    host = (parts.hostname or "").lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{parts.port}" if parts.port is not None else host
     # Keep resource-identifying query params so ?id=a and ?id=b do not
     # collide, but strip presign credentials, expiries, response overrides,
     # and fragments because they are volatile transport material.

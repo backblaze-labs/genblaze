@@ -27,11 +27,10 @@ def _extract_manifest(file: Path) -> Manifest:
 def _manifest_json_for_display(manifest: Manifest) -> str:
     """Serialize for inspection without bypassing write-schema guards."""
     try:
-        return manifest.to_canonical_json()
-    except ManifestError as exc:
-        if "read-supported only" not in str(exc):
-            raise
+        manifest.assert_writable_schema()
+    except ManifestError:
         return canonical_json(manifest.model_dump(mode="python"))
+    return manifest.to_canonical_json()
 
 
 @click.command()

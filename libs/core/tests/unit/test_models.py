@@ -310,6 +310,35 @@ def test_manifest_v1_6_url_only_hash_strips_presign_query_params():
     assert not manifest_a.verify()
 
 
+def test_manifest_v1_6_url_only_hash_strips_url_userinfo():
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://alice:secret@cdn.example.com/output.png",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+
+
 def test_manifest_v1_6_url_only_hash_keeps_resource_query_params():
     base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
     step_a = Step(
