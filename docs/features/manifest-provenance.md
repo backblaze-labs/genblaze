@@ -67,7 +67,7 @@ authoritative reference.
 
 ### Self-verification flow
 1. Read the embedded / sidecar manifest JSON (full canonical form).
-2. Parse with `Manifest.model_validate(json.loads(text))`.
+2. Parse with `parse_manifest(json.loads(text))` so schema migrations and manifest invariants are enforced.
 3. Call `manifest.verify_hash()` to check only canonical payload integrity, or `manifest.verify()` to also reject URL-only output assets as byte-unverified.
 
 ### Trust modes

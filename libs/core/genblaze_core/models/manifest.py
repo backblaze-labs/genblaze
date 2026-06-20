@@ -75,11 +75,6 @@ _SCHEMA_HASH_POLICIES = {
 }
 SUPPORTED_SCHEMA_VERSIONS = tuple(_SCHEMA_HASH_POLICIES)
 
-# Schema versions that included random IDs in the canonical hash
-_LEGACY_SCHEMA_VERSIONS = frozenset(
-    version for version, policy in _SCHEMA_HASH_POLICIES.items() if policy["include_random_ids"]
-)
-
 # Pre-1.4 exclusion sets (IDs were included in the hash)
 _STEP_HASH_EXCLUDE_V1_3 = _STEP_HASH_EXCLUDE - {"step_id", "run_id"}
 _RUN_HASH_EXCLUDE_V1_3 = _RUN_HASH_EXCLUDE - {"run_id"}

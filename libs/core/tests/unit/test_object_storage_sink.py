@@ -11,7 +11,7 @@ import pytest
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import ManifestError, SinkError
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import RunStatus, StepStatus
+from genblaze_core.models.enums import PromptVisibility, RunStatus, StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
@@ -1033,6 +1033,24 @@ class TestManifestHelpers:
         loaded = sink.read_manifest(run, allow_unverified_assets=True)
         assert loaded.verify_hash()
         assert not loaded.verify()
+
+    def test_read_manifest_uses_parse_manifest_invariants(self):
+        """Stored manifests go through the same parser as other load paths."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            prompt="secret",
+            prompt_visibility=PromptVisibility.ENCRYPTED,
+            status=StepStatus.SUCCEEDED,
+        )
+        run = Run(name="encrypted", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(ManifestError, match="requires encryption_scheme"):
+            sink.read_manifest(run, verify=False)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")

@@ -14,7 +14,7 @@ from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import ManifestError, SinkError, StorageError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 from genblaze_core.sinks.base import BaseSink
 from genblaze_core.storage.base import KeyStrategy
 from genblaze_core.storage.key_builder import KeyBuilder
@@ -364,7 +364,7 @@ class ObjectStorageSink(BaseSink):
                 f"Stored manifest at {key} is {len(data)} bytes, exceeds "
                 f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
-        manifest = Manifest.model_validate_json(data)
+        manifest = parse_manifest(json.loads(data))
         if verify:
             if not manifest.verify_hash():
                 raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
