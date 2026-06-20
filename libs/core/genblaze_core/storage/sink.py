@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as _futures_wait
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from genblaze_core._utils import MAX_MANIFEST_BYTES
+from genblaze_core._utils import MAX_MANIFEST_BYTES, normalize_tenant_id
 from genblaze_core.exceptions import (
     ManifestError,
     SinkError,
@@ -38,6 +40,7 @@ logger = logging.getLogger("genblaze.storage.sink")
 
 # Max parallel asset uploads within a single write_run call
 _DEFAULT_UPLOAD_WORKERS = 4
+_LOG_ID_SAMPLE_SIZE = 20
 
 # Module-level guard for the "no public_url_base on the backend" warning.
 # Keyed by (bucket, policy) so:
@@ -83,6 +86,76 @@ def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
         ) from exc
     except (AttributeError, TypeError) as exc:
         raise ManifestError(f"Stored manifest at {key} is invalid: {type(exc).__name__}") from exc
+
+
+def _id_log_extra(ids: Sequence[str]) -> dict[str, object]:
+    return {
+        "count": len(ids),
+        "sample": list(ids[:_LOG_ID_SAMPLE_SIZE]),
+        "sample_truncated": len(ids) > _LOG_ID_SAMPLE_SIZE,
+    }
+
+
+def _verify_stored_manifest(
+    key: str,
+    manifest: Manifest,
+    *,
+    verify: bool,
+    allow_unverified_assets: bool,
+) -> None:
+    if not verify:
+        return
+    if not manifest.verify_hash():
+        raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
+
+    if manifest.transfer_failures:
+        logger.warning(
+            "Stored manifest has transfer failures",
+            extra={
+                "manifest_key": key,
+                "run_id": manifest.run.run_id,
+                "transfer_failures": _id_log_extra(manifest.transfer_failures),
+            },
+        )
+
+    missing_sha_ids = manifest.output_asset_ids_missing_sha256()
+    if missing_sha_ids:
+        logger.warning(
+            "Stored manifest has output assets missing sha256",
+            extra={
+                "manifest_key": key,
+                "run_id": manifest.run.run_id,
+                "asset_ids": _id_log_extra(missing_sha_ids),
+            },
+        )
+        if not allow_unverified_assets:
+            raise UnverifiedAssetError(
+                f"Stored manifest at {key} has {len(missing_sha_ids)} "
+                "output asset(s) missing sha256",
+                asset_ids=missing_sha_ids,
+            )
+
+
+def _require_asset_id(asset_id: str) -> str:
+    try:
+        parsed = uuid.UUID(asset_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SinkError(f"asset_id must be a UUID, got {asset_id!r}") from exc
+    canonical = str(parsed)
+    if canonical != asset_id:
+        raise SinkError(f"asset_id must be a canonical UUID string, got {asset_id!r}")
+    return canonical
+
+
+def _require_tenant_id(tenant_id: str | None) -> str:
+    tenant = normalize_tenant_id(tenant_id)
+    if tenant is None:
+        raise SinkError("tenant_id is required for asset manifest reverse lookup")
+    return tenant
+
+
+def _tenant_index_segment(tenant_id: str) -> str:
+    return quote(tenant_id, safe="")
 
 
 def _warn_durable_url_on_private_bucket(bucket: str, policy: URLPolicy) -> None:
@@ -404,36 +477,12 @@ class ObjectStorageSink(BaseSink):
                 f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
         manifest = _parse_stored_manifest(key, data)
-        if verify:
-            if not manifest.verify_hash():
-                raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
-
-            if manifest.transfer_failures:
-                logger.warning(
-                    "Stored manifest has transfer failures",
-                    extra={
-                        "manifest_key": key,
-                        "run_id": manifest.run.run_id,
-                        "transfer_failures": manifest.transfer_failures,
-                    },
-                )
-
-            missing_sha_ids = manifest.output_asset_ids_missing_sha256()
-            if missing_sha_ids:
-                logger.warning(
-                    "Stored manifest has output assets missing sha256",
-                    extra={
-                        "manifest_key": key,
-                        "run_id": manifest.run.run_id,
-                        "asset_ids": missing_sha_ids,
-                    },
-                )
-                if not allow_unverified_assets:
-                    raise UnverifiedAssetError(
-                        f"Stored manifest at {key} has {len(missing_sha_ids)} "
-                        "output asset(s) missing sha256",
-                        asset_ids=missing_sha_ids,
-                    )
+        _verify_stored_manifest(
+            key,
+            manifest,
+            verify=verify,
+            allow_unverified_assets=allow_unverified_assets,
+        )
         return manifest
 
     def _manifest_cache_control(self) -> str:
@@ -448,6 +497,7 @@ class ObjectStorageSink(BaseSink):
         return "private, max-age=3600"
 
     def _write_run_impl(self, run: Run, manifest: Manifest) -> None:
+        manifest.assert_writable_schema()
         date_str = run.created_at.strftime("%Y-%m-%d")
 
         # 1. Resolve transfers. Assets may have been submitted eagerly via
@@ -557,6 +607,7 @@ class ObjectStorageSink(BaseSink):
         asset: Asset,
         *,
         manifest_uri: str | None = None,
+        tenant_id: str | None = None,
     ) -> Asset:
         """Write a single asset to the backend (no Run wrapper required).
 
@@ -567,20 +618,23 @@ class ObjectStorageSink(BaseSink):
         backend's durable URL and ``sha256`` / ``size_bytes`` /
         ``media_type`` are populated when missing.
 
-        When ``manifest_uri`` is supplied, a sidecar index entry is
-        written at ``{prefix}/_index/{asset_id}.json`` so
-        :meth:`read_manifest_for_asset` can discover the manifest
-        later. Pass ``manifest_uri`` for assets that ARE referenced by
-        a manifest; omit for one-off uploads (DAM ingest with no
-        manifest).
+        When both ``manifest_uri`` and ``tenant_id`` are supplied, a
+        tenant-scoped sidecar index entry is written so
+        :meth:`read_manifest_for_asset` can discover the manifest later.
+        Pass both for assets that ARE referenced by a manifest; omit
+        ``manifest_uri`` for one-off uploads (DAM ingest with no
+        manifest). Supplying ``manifest_uri`` without ``tenant_id`` is
+        rejected because a global asset-id index is an authorization
+        boundary in multi-tenant deployments.
         """
         # Drive the existing transfer pipeline. No tenant/date/run_id —
         # under HIERARCHICAL the strategy degrades to {prefix}/runs/assets/...
         # which is fine for standalone writes; under CAS the layout is
         # hash-keyed and tenant/date/run_id were always ignored anyway.
+        tenant = _require_tenant_id(tenant_id) if manifest_uri is not None else None
         self._transfer.transfer(asset)
         if manifest_uri is not None:
-            self._write_asset_index(asset.asset_id, manifest_uri)
+            self._write_asset_index(asset.asset_id, manifest_uri, tenant_id=tenant)
         return asset
 
     def put_assets(
@@ -588,6 +642,7 @@ class ObjectStorageSink(BaseSink):
         assets: Sequence[Asset],
         *,
         manifest_uri: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[Asset]:
         """Bulk variant of :meth:`put_asset`.
 
@@ -606,25 +661,40 @@ class ObjectStorageSink(BaseSink):
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Preserve input order: index → future.
             futures = [
-                pool.submit(self.put_asset, asset, manifest_uri=manifest_uri)
+                pool.submit(
+                    self.put_asset,
+                    asset,
+                    manifest_uri=manifest_uri,
+                    tenant_id=tenant_id,
+                )
                 for asset in assets_list
             ]
             return [fut.result() for fut in futures]
 
-    def read_manifest_for_asset(self, asset_id: str) -> Manifest | None:
+    def read_manifest_for_asset(
+        self,
+        asset_id: str,
+        *,
+        tenant_id: str,
+        verify: bool = True,
+        allow_unverified_assets: bool = False,
+    ) -> Manifest | None:
         """Reverse lookup: ``asset_id`` → :class:`Manifest`.
 
-        Reads the sidecar index at ``{prefix}/_index/{asset_id}.json``
+        Reads the tenant-scoped sidecar index at
+        ``{prefix}/_index/{tenant_id}/{asset_id}.json``
         written by :meth:`put_asset` (when ``manifest_uri=`` was
         supplied), then fetches and parses the manifest from the
-        recorded URI. Returns ``None`` when no index entry exists.
+        recorded URI. Returns ``None`` when no index entry exists or the
+        referenced manifest belongs to a different tenant.
 
         Manifests for assets put without ``manifest_uri=`` are not
         discoverable via this method — by design. Callers needing
-        guaranteed discoverability MUST pass ``manifest_uri=`` to
-        :meth:`put_asset`.
+        guaranteed discoverability MUST pass both ``manifest_uri=`` and
+        ``tenant_id=`` to :meth:`put_asset`.
         """
-        index_key = self._asset_index_key(asset_id)
+        tenant = _require_tenant_id(tenant_id)
+        index_key = self._asset_index_key(asset_id, tenant_id=tenant)
         if not self._backend.exists(index_key):
             return None
         try:
@@ -635,6 +705,16 @@ class ObjectStorageSink(BaseSink):
             entry = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SinkError(f"Asset index at {index_key!r} is not valid JSON: {exc}") from exc
+        if normalize_tenant_id(entry.get("tenant_id")) != tenant:
+            logger.warning(
+                "Asset manifest reverse lookup denied for index tenant mismatch",
+                extra={
+                    "index_key": index_key,
+                    "requested_tenant_id": tenant,
+                    "index_tenant_id": entry.get("tenant_id"),
+                },
+            )
+            return None
         manifest_uri = entry.get("manifest_uri")
         if not manifest_uri:
             return None
@@ -652,19 +732,47 @@ class ObjectStorageSink(BaseSink):
                 f"Stored manifest at {manifest_key} is {len(data)} bytes, "
                 f"exceeds MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
-        return _parse_stored_manifest(manifest_key, data)
+        manifest = _parse_stored_manifest(manifest_key, data)
+        if normalize_tenant_id(manifest.run.tenant_id) != tenant:
+            logger.warning(
+                "Asset manifest reverse lookup denied for tenant mismatch",
+                extra={
+                    "index_key": index_key,
+                    "manifest_key": manifest_key,
+                    "requested_tenant_id": tenant,
+                    "manifest_tenant_id": manifest.run.tenant_id,
+                },
+            )
+            return None
+        _verify_stored_manifest(
+            manifest_key,
+            manifest,
+            verify=verify,
+            allow_unverified_assets=allow_unverified_assets,
+        )
+        return manifest
 
-    def _asset_index_key(self, asset_id: str) -> str:
+    def _asset_index_key(self, asset_id: str, *, tenant_id: str) -> str:
         """Storage key for the asset_id → manifest_uri sidecar."""
-        return self._kb.build("_index", f"{asset_id}.json")
+        asset_id = _require_asset_id(asset_id)
+        tenant = _require_tenant_id(tenant_id)
+        return self._kb.build("_index", _tenant_index_segment(tenant), f"{asset_id}.json")
 
-    def _write_asset_index(self, asset_id: str, manifest_uri: str) -> None:
+    def _write_asset_index(
+        self,
+        asset_id: str,
+        manifest_uri: str,
+        *,
+        tenant_id: str | None,
+    ) -> None:
         """Write the sidecar index entry. Idempotent — re-writes
         the same key on repeat calls (for the same asset, the
         manifest_uri is expected to be stable)."""
-        payload = json.dumps({"manifest_uri": manifest_uri}).encode("utf-8")
+        tenant = _require_tenant_id(tenant_id)
+        asset_id = _require_asset_id(asset_id)
+        payload = json.dumps({"manifest_uri": manifest_uri, "tenant_id": tenant}).encode("utf-8")
         self._backend.put(
-            self._asset_index_key(asset_id),
+            self._asset_index_key(asset_id, tenant_id=tenant),
             payload,
             content_type="application/json",
         )

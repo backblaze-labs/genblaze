@@ -15,28 +15,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   intentional behavior break from the prior hash-only contract; use
   `verify_hash()` for legacy hash-only checks against historical URL-only
   media (#77).
-- `genblaze-core`: `Asset.sha256` is now validated as a 64-character lowercase
-  hex digest. `Manifest.verify()` and `genblaze verify` do not fetch remote
-  asset URLs; consumers must independently hash fetched bytes before trusting
-  those bytes (#77).
+- `genblaze-core`: `Asset.sha256` values remain loadable even when malformed,
+  so historical and cross-producer manifests can still be inspected with
+  `verify=False` or `allow_unverified_assets=True`. `Manifest.verify()` and
+  `genblaze verify` treat missing or malformed `sha256` as unverified output
+  coverage. They do not fetch remote asset URLs; consumers must independently
+  hash fetched bytes before trusting those bytes (#77).
 - `genblaze-core`: schema 1.6 URL-only hash markers are Python read-supported.
   The canonical marker URL strips known credential, expiry, and response
   override query parameters while retaining resource-identifying query
-  parameters. Default manifest emission and the published JSON Schema/TypeScript
-  spec stay on schema 1.5 for an expand-contract rollout (#77).
+  parameters. Default manifest emission, storage writes, media embedding, and
+  the published JSON Schema/TypeScript spec stay on schema 1.5 for an
+  expand-contract rollout (#77).
 - `genblaze-cli` 0.3.0 → 0.3.1: raises its `genblaze-core` floor to the first
   core version that exposes `verify_hash()` and output-asset sha256 diagnostics
   (#77).
 - `genblaze` umbrella package: raises its `genblaze-core` floor to 0.3.3 so
   umbrella installs receive the verification hardening (#77).
+- Provider and storage connector packages now require `genblaze-core>=0.3.3,<0.4`
+  so adapter-only installs also receive the URL-only asset verification fix
+  (#77).
+- `ObjectStorageSink.read_manifest_for_asset()` now requires `tenant_id`, stores
+  tenant-scoped asset index entries, validates `asset_id` as a UUID, checks the
+  recovered manifest tenant before returning it, and applies the same strict
+  verification defaults as `read_manifest()` (#77).
 
 ### Changed
 
 - `ObjectStorageSink.read_manifest(verify=True)` is strict by default and raises
   `UnverifiedAssetError` for hash-valid manifests whose output assets are
-  missing `sha256`. Historical URL-only manifests must be backfilled, read via
-  the explicit `allow_unverified_assets=True` hash-only path, or covered by a
-  documented rollout plan before enabling this on hot read paths (#77).
+  missing or malformed `sha256`. Historical URL-only manifests must be
+  backfilled, read via the explicit `allow_unverified_assets=True` hash-only
+  path during a staged rollout, or covered by a documented deployment flag before
+  enabling this on hot read paths (#77).
 
 ### Added
 
@@ -757,10 +768,11 @@ for the design trail.
     the resulting manifest's canonical hash is **invariant under
     permuted input order** — a podcast app calling ``ingest`` with
     feed entries in any order produces a byte-identical manifest.
-  - When a sink is supplied, ``put_asset`` is called for each asset
-    with a derived ``manifest_uri`` so
+  - When a sink and ``tenant_id`` are supplied, ``put_asset`` is called for
+    each asset with a derived ``manifest_uri`` and tenant context so
     :meth:`BaseSink.read_manifest_for_asset` can later discover the
-    manifest from any asset_id. Sinks that don't implement
+    manifest from that tenant's asset_id. Without ``tenant_id``, assets are
+    uploaded without a reverse-lookup index. Sinks that don't implement
     ``put_asset`` (e.g. ``ParquetSink``) emit a warning and skip
     the upload — manifest still produced for in-memory consumers.
   - New module ``genblaze_core.pipeline.ingest`` houses the
@@ -814,7 +826,7 @@ for the design trail.
   gap where DAM, archival, podcast-hosting, and UGC apps had to
   fabricate `SyncProvider` shims to seed assets through the
   generation-shaped pipeline.
-  - ``BaseSink.put_asset(asset, *, manifest_uri=None) -> Asset`` —
+  - ``BaseSink.put_asset(asset, *, manifest_uri=None, tenant_id=None) -> Asset`` —
     write a single asset's bytes via the sink's storage backend
     (no Run wrapper required). Mutates the asset in place: rewrites
     ``url`` to the durable backend URL, populates ``sha256`` and
@@ -822,16 +834,17 @@ for the design trail.
     URL (``file://`` allowlisted dirs, or SSRF-protected ``https://``).
     Default impl on the ABC raises ``NotImplementedError`` so
     non-storage-backed sinks (``ParquetSink`` etc.) keep working.
-  - ``BaseSink.put_assets(assets, *, manifest_uri=None) ->
+  - ``BaseSink.put_assets(assets, *, manifest_uri=None, tenant_id=None) ->
     list[Asset]`` — bulk variant, parallelizes via
     ``ThreadPoolExecutor`` sized at ``min(max_upload_workers,
     len(assets))``. Returned list preserves input order.
-  - ``BaseSink.read_manifest_for_asset(asset_id) -> Manifest |
+  - ``BaseSink.read_manifest_for_asset(asset_id, *, tenant_id) -> Manifest |
     None`` — reverse-lookup. When ``put_asset`` is called with
-    ``manifest_uri=``, the sink writes a sidecar index entry at
-    ``{prefix}/_index/{asset_id}.json`` so future callers can
-    discover the manifest from just the asset_id. Manifests for
-    assets put without ``manifest_uri=`` are not discoverable
+    ``manifest_uri=`` and ``tenant_id=``, the sink writes a tenant-scoped
+    sidecar index entry at ``{prefix}/_index/{tenant_id}/{asset_id}.json`` so
+    future callers can discover the manifest from the asset_id inside their
+    authorization context. Manifests for assets put without ``manifest_uri=``
+    and ``tenant_id=`` are not discoverable
     via this method (by design — opt-in). Returns ``None`` for
     unknown asset_ids and for foreign-backend manifest URIs that
     don't round-trip through ``key_from_url``.

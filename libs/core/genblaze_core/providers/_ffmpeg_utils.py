@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -12,6 +13,7 @@ from urllib.parse import unquote, urlparse
 
 from genblaze_core._utils import ALLOWED_FILE_ROOTS as _ALLOWED_FILE_ROOTS
 from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import ProviderErrorCode
 
 # Default subprocess timeout for ffmpeg (seconds)
@@ -110,3 +112,15 @@ def get_output_path(step_id: str, ext: str, output_dir: Path | None) -> Path:
     fd, tmp = tempfile.mkstemp(suffix=f".{ext}")
     os.close(fd)
     return Path(tmp)
+
+
+def populate_file_asset_integrity(asset: Asset, path: Path) -> None:
+    """Populate ``asset.sha256`` and ``asset.size_bytes`` from a local file."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+    asset.sha256 = digest.hexdigest()
+    asset.size_bytes = size

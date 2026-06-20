@@ -8,6 +8,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 from genblaze_cli.main import cli
+from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.builders import RunBuilder, StepBuilder
 from genblaze_core.media.png import PngHandler
 from genblaze_core.models.asset import Asset
@@ -92,6 +93,17 @@ def test_verify_standalone_manifest_json(tmp_path: Path) -> None:
     assert "OK" in result.output
 
 
+def test_verify_standalone_manifest_json_case_insensitive_suffix(tmp_path: Path) -> None:
+    manifest_path = _create_manifest_json(tmp_path)
+    upper_path = tmp_path / "MANIFEST.JSON"
+    upper_path.write_text(manifest_path.read_text(encoding="utf-8"), encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(upper_path)])
+
+    assert result.exit_code == 0
+    assert "OK" in result.output
+
+
 def test_verify_direct_sidecar_json(tmp_path: Path) -> None:
     manifest_path = _create_manifest_json(tmp_path)
     sidecar_path = tmp_path / "image.png.genblaze.json"
@@ -101,6 +113,39 @@ def test_verify_direct_sidecar_json(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "OK" in result.output
+
+
+def test_verify_direct_pointer_sidecar_json_has_actionable_error(tmp_path: Path) -> None:
+    sidecar_path = tmp_path / "image.png.genblaze.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.5",
+                "canonical_hash": "a" * 64,
+                "manifest_uri": "https://cdn.example.com/manifest.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(sidecar_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "Sidecar is a pointer" in combined
+    assert "Fetch the full manifest" in combined
+
+
+def test_verify_standalone_manifest_json_size_cap(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    with manifest_path.open("wb") as fh:
+        fh.truncate(MAX_MANIFEST_BYTES + 1)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(manifest_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "exceeds size limit" in combined
 
 
 def test_verify_ok_does_not_claim_remote_bytes_were_hashed(tmp_path: Path) -> None:
@@ -149,7 +194,7 @@ def test_verify_rejects_malformed_output_sha256(tmp_path: Path) -> None:
     combined = result.output + getattr(result, "stderr", "")
 
     assert result.exit_code != 0
-    assert "64-character lowercase hex digest" in combined
+    assert "1 output asset(s) missing sha256" in combined
 
 
 def test_verify_reports_legacy_unverified_assets(tmp_path: Path) -> None:

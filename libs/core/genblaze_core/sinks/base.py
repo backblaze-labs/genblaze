@@ -54,6 +54,7 @@ class BaseSink(ABC):
         asset: Asset,
         *,
         manifest_uri: str | None = None,
+        tenant_id: str | None = None,
     ) -> Asset:
         """Write a single asset's bytes to the sink and return it updated.
 
@@ -63,9 +64,9 @@ class BaseSink(ABC):
         returned for fluent-style use.
 
         ``manifest_uri`` is an optional pointer to a manifest that
-        references this asset. When supplied, the sink may write a
-        reverse-lookup index entry so :meth:`read_manifest_for_asset`
-        can find the manifest later.
+        references this asset. When supplied with ``tenant_id``, the sink
+        may write a tenant-scoped reverse-lookup index entry so
+        :meth:`read_manifest_for_asset` can find the manifest later.
 
         Args:
             asset: An :class:`Asset` whose ``url`` points to the
@@ -75,6 +76,9 @@ class BaseSink(ABC):
                 upload.
             manifest_uri: Optional manifest pointer to record for
                 reverse lookup.
+            tenant_id: Required by storage sinks when ``manifest_uri`` is
+                supplied, so reverse lookups stay scoped to the caller's
+                authorization context.
 
         Returns:
             The same ``asset`` instance, mutated.
@@ -90,6 +94,7 @@ class BaseSink(ABC):
         assets: Sequence[Asset],
         *,
         manifest_uri: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[Asset]:
         """Bulk variant of :meth:`put_asset`.
 
@@ -101,15 +106,22 @@ class BaseSink(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement put_assets()")
 
-    def read_manifest_for_asset(self, asset_id: str) -> Manifest | None:
+    def read_manifest_for_asset(
+        self,
+        asset_id: str,
+        *,
+        tenant_id: str,
+        verify: bool = True,
+        allow_unverified_assets: bool = False,
+    ) -> Manifest | None:
         """Reverse-lookup: given an ``asset_id``, return the manifest
-        that references it (if known to the sink).
+        that references it within ``tenant_id`` (if known to the sink).
 
         Returns ``None`` when no index entry exists for ``asset_id``.
         Storage-backed sinks maintain the index by sidecar files
-        written during :meth:`put_asset` calls that supplied
-        ``manifest_uri=``. Manifests for assets put without
-        ``manifest_uri=`` are not discoverable via this method.
+        written during :meth:`put_asset` calls that supplied both
+        ``manifest_uri=`` and ``tenant_id=``. Manifests for assets put
+        without ``manifest_uri=`` are not discoverable via this method.
 
         Default impl raises :class:`NotImplementedError`.
         """

@@ -84,7 +84,7 @@ class BaseMediaHandler(ABC):
         ...
 
     def verify(self, source: Path) -> bool:
-        """Extract and run Manifest.verify(), including output sha256 checks."""
+        """Extract and return ``Manifest.verification_report().ok``."""
         manifest = self.extract(source)
         return manifest.verification_report().ok
 

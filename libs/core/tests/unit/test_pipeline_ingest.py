@@ -198,6 +198,21 @@ class TestIngestAssets:
         assert len(result.run.steps) == 10
         # put_asset was called once per asset.
         assert sink.put_asset.call_count == 10
+        assert all("manifest_uri" not in call.kwargs for call in sink.put_asset.call_args_list)
+
+    def test_tenant_ingest_requests_tenant_scoped_reverse_index(self):
+        sink = _stub_sink_that_records_calls()
+        Pipeline.ingest(
+            assets=[_ingestable_asset(media_type="image/png")],
+            source="ugc-upload",
+            sink=sink,
+            tenant_id="tenant-a",
+        )
+
+        assert sink.put_asset.call_args.kwargs == {
+            "manifest_uri": "https://mem/run/manifest.json",
+            "tenant_id": "tenant-a",
+        }
 
     def test_source_metadata_cannot_clobber_canonical_source(self):
         """If caller's source_metadata has a 'source' key, the
@@ -297,7 +312,7 @@ class TestErrorHandling:
         and proceeds with manifest-only."""
 
         class _NoPutAssetSink:
-            def put_asset(self, asset, *, manifest_uri=None):
+            def put_asset(self, asset, **kwargs):
                 raise NotImplementedError("test fixture")
 
             def write_run(self, run, manifest):

@@ -67,20 +67,15 @@ _UNVERIFIED_ASSET_QUERY_EXCLUDE = frozenset(
     {
         "access_token",
         "awsaccesskeyid",
-        "credential",
         "expires",
         "expires_in",
         "expiry",
         "key-pair-id",
-        "policy",
         "response-cache-control",
         "response-content-disposition",
         "response-content-encoding",
         "response-content-language",
         "response-content-type",
-        "signature",
-        "sig",
-        "token",
         "x-id",
     }
 )
@@ -90,16 +85,23 @@ _UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE = (
     "x-bz-",
 )
 
-_SCHEMA_HASH_POLICIES = {
-    "1.0": {"include_random_ids": True, "mark_unhashed_assets": False},
-    "1.1": {"include_random_ids": True, "mark_unhashed_assets": False},
-    "1.2": {"include_random_ids": True, "mark_unhashed_assets": False},
-    "1.3": {"include_random_ids": True, "mark_unhashed_assets": False},
-    "1.4": {"include_random_ids": False, "mark_unhashed_assets": False},
-    "1.5": {"include_random_ids": False, "mark_unhashed_assets": False},
+
+@dataclass(frozen=True)
+class _SchemaHashPolicy:
+    include_random_ids: bool
+    mark_unhashed_assets: bool
+
+
+_SCHEMA_HASH_POLICIES: dict[str, _SchemaHashPolicy] = {
+    "1.0": _SchemaHashPolicy(include_random_ids=True, mark_unhashed_assets=False),
+    "1.1": _SchemaHashPolicy(include_random_ids=True, mark_unhashed_assets=False),
+    "1.2": _SchemaHashPolicy(include_random_ids=True, mark_unhashed_assets=False),
+    "1.3": _SchemaHashPolicy(include_random_ids=True, mark_unhashed_assets=False),
+    "1.4": _SchemaHashPolicy(include_random_ids=False, mark_unhashed_assets=False),
+    "1.5": _SchemaHashPolicy(include_random_ids=False, mark_unhashed_assets=False),
     # Read support only in this release. SCHEMA_VERSION stays on 1.5 so old
     # readers are upgraded before new manifests start emitting 1.6 hashes.
-    "1.6": {"include_random_ids": False, "mark_unhashed_assets": True},
+    "1.6": _SchemaHashPolicy(include_random_ids=False, mark_unhashed_assets=True),
 }
 SUPPORTED_SCHEMA_VERSIONS = tuple(_SCHEMA_HASH_POLICIES)
 
@@ -108,12 +110,25 @@ _STEP_HASH_EXCLUDE_V1_3 = _STEP_HASH_EXCLUDE - {"step_id", "run_id"}
 _RUN_HASH_EXCLUDE_V1_3 = _RUN_HASH_EXCLUDE - {"run_id"}
 
 
-def _hash_policy(schema_version: str) -> dict[str, bool]:
+def _schema_version_key(schema_version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in schema_version.split("."))
+
+
+def _is_write_schema_version(schema_version: str) -> bool:
+    return _schema_version_key(schema_version) <= _schema_version_key(SCHEMA_VERSION)
+
+
+def _assert_write_schema_version(schema_version: str) -> None:
+    if not _is_write_schema_version(schema_version):
+        raise ManifestError(
+            f"schema_version {schema_version!r} is read-supported only in this release; "
+            f"the maximum writable schema_version is {SCHEMA_VERSION!r}"
+        )
+
+
+def _hash_policy(schema_version: str) -> _SchemaHashPolicy:
     """Return the explicit hash policy for a supported schema version."""
-    try:
-        return _SCHEMA_HASH_POLICIES[schema_version]
-    except KeyError:
-        raise ManifestError(f"Unsupported schema_version: {schema_version!r}") from None
+    return _SCHEMA_HASH_POLICIES[schema_version]
 
 
 def _is_credential_query_param(name: str) -> bool:
@@ -143,7 +158,7 @@ def _canonical_unverified_asset_url(url: str) -> str:
 def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
     """Strip operational asset fields while marking URL-only assets."""
     url = asset.get("url")
-    has_sha256 = bool(asset.get("sha256"))
+    has_sha256 = is_valid_sha256(asset.get("sha256"))
     for key in _ASSET_HASH_EXCLUDE:
         asset.pop(key, None)
     if mark_unhashed and not has_sha256 and url is not None:
@@ -171,10 +186,10 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
 
     # Select exclusion sets based on the explicit schema hash policy.
     policy = _hash_policy(schema_version)
-    use_legacy = policy["include_random_ids"]
+    use_legacy = policy.include_random_ids
     step_exclude = _STEP_HASH_EXCLUDE_V1_3 if use_legacy else _STEP_HASH_EXCLUDE
     run_exclude = _RUN_HASH_EXCLUDE_V1_3 if use_legacy else _RUN_HASH_EXCLUDE
-    mark_unhashed_assets = policy["mark_unhashed_assets"]
+    mark_unhashed_assets = policy.mark_unhashed_assets
 
     # Strip run-level operational fields
     for key in run_exclude:
@@ -193,7 +208,13 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
 
 @dataclass(frozen=True)
 class ManifestVerification:
-    """Structured manifest verification result used by CLI and API callers."""
+    """Structured manifest verification result used by CLI and API callers.
+
+    ``missing_sha256_ids`` is populated from the manifest payload regardless of
+    ``hash_ok``. Callers must still treat ``hash_ok=False`` as a failed
+    integrity check; the missing-sha list is diagnostic context, not proof that
+    a tampered payload is otherwise trustworthy.
+    """
 
     hash_ok: bool
     missing_sha256_ids: tuple[str, ...]
@@ -237,7 +258,7 @@ class Manifest(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def _validate_schema_version(cls, value: str) -> str:
-        if value not in _SCHEMA_HASH_POLICIES:
+        if value not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(f"Unsupported schema_version: {value!r}")
         return value
 
@@ -263,8 +284,13 @@ class Manifest(BaseModel):
         self.canonical_hash = canonical_hash(payload)
         return self.canonical_hash
 
+    def assert_writable_schema(self) -> None:
+        """Raise if this manifest uses a read-only schema version."""
+        _assert_write_schema_version(self.schema_version)
+
     def to_canonical_json(self) -> str:
         """Return the full manifest as canonical JSON (including hash)."""
+        self.assert_writable_schema()
         if not self.canonical_hash:
             self.compute_hash()
         return canonical_json(self.model_dump(mode="python"))
@@ -291,14 +317,10 @@ class Manifest(BaseModel):
         """Return output asset IDs missing a valid sha256 digest."""
         return _unhashed_output_asset_ids(self.run)
 
-    def has_unverified_output_assets(self) -> bool:
-        """Return True when any output asset lacks a valid sha256 digest."""
-        return bool(self.output_asset_ids_missing_sha256())
-
     def verification_report(self) -> ManifestVerification:
         """Return the shared hash-plus-output-sha256 verification result."""
         hash_ok = self.verify_hash()
-        missing_sha256_ids = tuple(self.output_asset_ids_missing_sha256()) if hash_ok else tuple()
+        missing_sha256_ids = tuple(self.output_asset_ids_missing_sha256())
         return ManifestVerification(hash_ok=hash_ok, missing_sha256_ids=missing_sha256_ids)
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
@@ -319,6 +341,7 @@ class Manifest(BaseModel):
           privacy — pointer mode preserves verifiability while keeping the
           sensitive fields off-media.
         """
+        _assert_write_schema_version(self.schema_version)
         if not self.canonical_hash:
             self.compute_hash()
 

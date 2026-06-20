@@ -163,20 +163,22 @@ serialized just the asset_id to a row in your job queue), you can
 recover the manifest that introduced it:
 
 ```python
-manifest = sink.read_manifest_for_asset(asset.asset_id)
+manifest = sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
 if manifest is not None:
     print(f"Asset {asset.asset_id} ingested in run {manifest.run.run_id}")
     print(f"Source: {manifest.run.steps[0].metadata['source']}")
 ```
 
-The reverse lookup works because `Pipeline.ingest` calls
-`sink.put_asset(asset, manifest_uri=...)` for every asset, and
-`ObjectStorageSink.put_asset` writes a sidecar index entry at
-`{prefix}/_index/{asset_id}.json` mapping each asset to its manifest URI.
+The reverse lookup works because `Pipeline.ingest(..., tenant_id=...)` calls
+`sink.put_asset(asset, manifest_uri=..., tenant_id=...)` for every asset, and
+`ObjectStorageSink.put_asset` writes a tenant-scoped sidecar index entry at
+`{prefix}/_index/{tenant_id}/{asset_id}.json` mapping each asset to its
+manifest URI.
 
 Assets *not* persisted via `Pipeline.ingest` (or via direct
-`sink.put_asset(asset, manifest_uri=...)` with an explicit manifest_uri)
-are not discoverable via this path — by design. The index is opt-in.
+`sink.put_asset(asset, manifest_uri=..., tenant_id=...)` with an explicit
+manifest_uri and tenant) are not discoverable via this path — by design. The
+index is opt-in and tenant-scoped.
 
 ## Manifest determinism
 

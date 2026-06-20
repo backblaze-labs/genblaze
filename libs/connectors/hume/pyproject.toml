@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "hume", "octave", "tts", "audio"]
 
 dependencies = [
-    "genblaze-core>=0.3.0,<0.4",
+    "genblaze-core>=0.3.3,<0.4",
     # The provider passes `version` (octave-1/-2 → Octave version) and
     # `temperature` to synthesize_json; both kwargs only exist together from
     # hume 0.13.13 (earlier 0.x raise TypeError on the octave-* path). Bounded

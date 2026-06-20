@@ -149,11 +149,13 @@ def test_provider_error_code_enum_matches():
 
 
 def test_manifest_schema_version_is_listed():
-    """Current SCHEMA_VERSION constant must be in manifest.schema_version enum."""
+    """Published schema enum must end at the current writable schema version."""
     schema = _load("manifest.schema.json")
-    assert SCHEMA_VERSION in schema["properties"]["schema_version"]["enum"], (
+    allowed = schema["properties"]["schema_version"]["enum"]
+    assert SCHEMA_VERSION in allowed, (
         f"SCHEMA_VERSION={SCHEMA_VERSION!r} missing from manifest.schema.json enum"
     )
+    assert allowed[-1] == SCHEMA_VERSION
 
 
 def _schema_store() -> dict:

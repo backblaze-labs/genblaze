@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.png import PngHandler
-from genblaze_core.models import Manifest
+from genblaze_core.models import Asset, Manifest
 from genblaze_core.models.enums import PromptVisibility, StepStatus
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
@@ -35,6 +35,26 @@ def test_extract_uses_parse_manifest_invariants(tmp_png: Path) -> None:
 
     with pytest.raises(EmbeddingError, match="encrypted"):
         handler.extract(tmp_png)
+
+
+def test_embed_rejects_read_only_schema_version(tmp_png: Path) -> None:
+    step = Step(
+        provider="test",
+        model="test-model",
+        status=StepStatus.SUCCEEDED,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png",
+                media_type="image/png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    manifest = Manifest(run=Run(name="read-only", steps=[step]), schema_version="1.6")
+    manifest.compute_hash()
+
+    with pytest.raises(EmbeddingError, match="read-supported only"):
+        PngHandler().embed(tmp_png, manifest)
 
 
 def test_verify(tmp_png: Path, sample_manifest: Manifest) -> None:

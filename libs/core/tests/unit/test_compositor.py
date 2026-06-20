@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from genblaze_core._utils import compute_sha256
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, VideoMetadata
 from genblaze_core.models.enums import Modality, StepStatus, StepType
@@ -81,6 +82,24 @@ def test_generate_muxes_video_and_audio(mock_run, mock_which):
     # Output asset created
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "video/mp4"
+
+
+@patch(f"{_UTILS}.shutil.which", return_value="/usr/bin/ffmpeg")
+@patch(f"{_UTILS}.subprocess.run")
+def test_compositor_populates_output_sha256(mock_run, mock_which, tmp_path):
+    mock_run.return_value = MagicMock(returncode=0, stderr=b"")
+    out_path = tmp_path / "mux.mp4"
+    payload = b"muxed bytes"
+    out_path.write_bytes(payload)
+
+    compositor = FFmpegCompositor(output_dir=tmp_path)
+    step = _make_step(_make_video_asset(), _make_audio_asset())
+
+    with patch("genblaze_core.providers.compositor.get_output_path", return_value=out_path):
+        result = compositor.generate(step)
+
+    assert result.assets[0].sha256 == compute_sha256(payload)
+    assert result.assets[0].size_bytes == len(payload)
 
 
 def test_generate_no_video_input_raises():

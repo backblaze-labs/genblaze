@@ -17,6 +17,7 @@ from genblaze_core.models.step import Step
 from genblaze_core.providers._ffmpeg_utils import (
     FFMPEG_TIMEOUT,
     get_output_path,
+    populate_file_asset_integrity,
     resolve_ffmpeg,
     resolve_input_path,
     run_ffmpeg,
@@ -137,7 +138,7 @@ class FFmpegCompositor(SyncProvider):
         asset.duration = video_asset.duration
 
         try:
-            asset.size_bytes = out_path.stat().st_size
+            populate_file_asset_integrity(asset, out_path)
         except OSError:
             pass
 

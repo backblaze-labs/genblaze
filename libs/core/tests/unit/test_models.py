@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from genblaze_core.exceptions import ManifestError
 from genblaze_core.models import (
     Asset,
     Manifest,
@@ -25,16 +26,18 @@ def test_asset_defaults():
 
 
 @pytest.mark.parametrize("sha256", ["not-a-sha", "A" * 64, "abc123", "g" * 64])
-def test_asset_rejects_malformed_sha256(sha256):
-    with pytest.raises(ValidationError, match="64-character lowercase hex digest"):
-        Asset(url="https://example.com/img.png", media_type="image/png", sha256=sha256)
+def test_asset_tolerates_malformed_sha256_on_load(sha256):
+    asset = Asset(url="https://example.com/img.png", media_type="image/png", sha256=sha256)
+
+    assert asset.sha256 == sha256
 
 
-def test_asset_rejects_malformed_sha256_assignment():
+def test_asset_tolerates_malformed_sha256_assignment():
     asset = Asset(url="https://example.com/img.png", media_type="image/png")
 
-    with pytest.raises(ValidationError, match="64-character lowercase hex digest"):
-        asset.sha256 = "not-a-sha"
+    asset.sha256 = "not-a-sha"
+
+    assert asset.sha256 == "not-a-sha"
 
 
 def test_step_defaults():
@@ -163,6 +166,29 @@ def test_manifest_v1_6_url_only_inputs_are_metadata_bound():
     assert manifest_a.verify()
 
 
+def test_manifest_v1_6_verify_hash_readable_but_not_serializable():
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png",
+                media_type="image/png",
+                sha256="c" * 64,
+            )
+        ],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.6")
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert manifest.verify()
+    with pytest.raises(ManifestError, match="read-supported only"):
+        manifest.to_canonical_json()
+
+
 def test_manifest_v1_5_reports_missing_output_sha_and_fails_verify():
     """Security-facing verification rejects URL-only outputs in legacy schemas."""
     step = Step(
@@ -188,9 +214,8 @@ def test_manifest_verify_rejects_malformed_output_sha256_if_bypassed():
     asset = Asset(
         url="https://cdn.example.com/output.png",
         media_type="image/png",
-        sha256="a" * 64,
+        sha256="not-a-sha",
     )
-    object.__setattr__(asset, "sha256", "not-a-sha")
     step = Step(
         provider="mock",
         model="m",
@@ -203,6 +228,31 @@ def test_manifest_verify_rejects_malformed_output_sha256_if_bypassed():
     assert manifest.verify_hash()
     assert manifest.output_asset_ids_missing_sha256() == [asset.asset_id]
     assert not manifest.verify()
+
+
+def test_parse_manifest_tolerates_malformed_sha256_but_verify_rejects():
+    from genblaze_core.models.manifest import parse_manifest
+
+    asset = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="SHA256:" + "a" * 64,
+    )
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]))
+    manifest.compute_hash()
+
+    parsed = parse_manifest(manifest.model_dump(mode="python"))
+
+    assert parsed.verify_hash()
+    assert parsed.output_asset_ids_missing_sha256() == [asset.asset_id]
+    assert not parsed.verify()
 
 
 @pytest.mark.parametrize("schema_version", ["0", "1.7", "2.0", "1.x"])
@@ -289,6 +339,36 @@ def test_manifest_v1_6_url_only_hash_keeps_resource_query_params():
     assert manifest_a.canonical_hash != manifest_b.canonical_hash
     assert manifest_a.verify_hash()
     assert manifest_b.verify_hash()
+
+
+@pytest.mark.parametrize("param", ["token", "sig", "signature", "credential", "policy"])
+def test_manifest_v1_6_url_only_hash_keeps_generic_resource_query_params(param):
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url=f"https://cdn.example.com/download?{param}=doc-a",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url=f"https://cdn.example.com/download?{param}=doc-b",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
 
 
 def test_manifest_hashed_output_assets_verify_with_url_rewrites():

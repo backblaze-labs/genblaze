@@ -170,13 +170,17 @@ assert manifest.verify()                    # payload + declared output sha256
 
 `read_manifest` defaults to `verify=True` and enforces both hash integrity and
 output sha256 coverage. It raises `ManifestError` on hash mismatch and
-`UnverifiedAssetError` when output assets are missing `sha256`. Existing
-historical URL-only manifests will fail this strict read until they are
-backfilled, or until a caller deliberately opts into the hash-only path with
-`allow_unverified_assets=True`. Treat that flag as security-sensitive and never
-bind it directly to request-controlled input. Use `verify=False` only to skip
-verification on a manifest you just wrote yourself. Downloads are capped at
-16 MiB to bound OOM blast.
+`UnverifiedAssetError` when output assets are missing or carry malformed
+`sha256`. Existing historical URL-only manifests will fail this strict read
+until they are backfilled, or until a caller deliberately opts into the
+hash-only path with `allow_unverified_assets=True`. For rolling deployments,
+stage this explicitly: first deploy readers that use
+`allow_unverified_assets=True` only on known inspection/backfill paths, backfill
+output hashes, then remove that flag from hot read paths once historical data is
+covered. Treat the flag as security-sensitive and never bind it directly to
+request-controlled input. Use `verify=False` only to skip verification on a
+manifest you just wrote yourself. Downloads are capped at 16 MiB to bound OOM
+blast.
 
 After `write_run` returns, `manifest.manifest_uri` is also populated on
 the in-memory object — including on retries that hit an already-existing

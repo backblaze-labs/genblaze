@@ -64,12 +64,11 @@ def test_manifest_schema_compliance() -> None:
 
 
 def test_schema_version_matches_python() -> None:
-    """Python SCHEMA_VERSION is in the JSON schema's allowed versions."""
+    """The published JSON schema stays capped at Python's write version."""
     from genblaze_core.models.manifest import SCHEMA_VERSION
 
     schema = _load_schema("manifest.schema.json")
     allowed = schema["properties"]["schema_version"]["enum"]
     assert SCHEMA_VERSION in allowed
-    # The enum may include read-supported schema versions that are not emitted
-    # by default until rollout is complete.
     assert allowed == sorted(allowed, key=lambda version: tuple(map(int, version.split("."))))
+    assert allowed[-1] == SCHEMA_VERSION
