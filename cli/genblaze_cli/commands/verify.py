@@ -1,16 +1,20 @@
 """Verify command — check manifest hash and output sha256 coverage."""
 
+import json
 from pathlib import Path
 
 import click
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media import get_handler, guess_mime
 from genblaze_core.media.sidecar import SidecarHandler
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 
 def _extract_manifest(file: Path) -> Manifest:
     """Extract manifest, trying format-specific handler then sidecar."""
+    if file.suffix == ".json":
+        return parse_manifest(json.loads(file.read_text(encoding="utf-8")))
+
     mime = guess_mime(file)
     handler = get_handler(mime)
     if handler is not None:

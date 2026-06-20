@@ -83,6 +83,26 @@ def test_verify_ok(tmp_path: Path) -> None:
     assert "asset integrity" not in result.output
 
 
+def test_verify_standalone_manifest_json(tmp_path: Path) -> None:
+    manifest_path = _create_manifest_json(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(manifest_path)])
+
+    assert result.exit_code == 0
+    assert "OK" in result.output
+
+
+def test_verify_direct_sidecar_json(tmp_path: Path) -> None:
+    manifest_path = _create_manifest_json(tmp_path)
+    sidecar_path = tmp_path / "image.png.genblaze.json"
+    sidecar_path.write_text(manifest_path.read_text(encoding="utf-8"), encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(sidecar_path)])
+
+    assert result.exit_code == 0
+    assert "OK" in result.output
+
+
 def test_verify_ok_does_not_claim_remote_bytes_were_hashed(tmp_path: Path) -> None:
     manifest = _create_url_only_manifest()
     manifest.run.steps[0].assets[0].sha256 = "f" * 64
