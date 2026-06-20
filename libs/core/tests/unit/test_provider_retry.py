@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 from genblaze_core.models.enums import ProviderErrorCode, StepStatus
@@ -45,6 +45,35 @@ class _RetryProvider(BaseProvider):
 
 def _make_step() -> Step:
     return Step(provider="retry-test", model="test-model", prompt="hello")
+
+
+class _CaptureStepSpan:
+    """Test span that captures attributes set by BaseProvider."""
+
+    instances: ClassVar[list[_CaptureStepSpan]] = []
+
+    def __init__(
+        self,
+        name: str,
+        run_id: str | None = None,
+        step_id: str | None = None,
+    ) -> None:
+        self.name = name
+        self.run_id = run_id
+        self.step_id = step_id
+        self.retries = 0
+        self.cost = None
+        self.attributes: dict[str, Any] = {}
+        self.instances.append(self)
+
+    def __enter__(self) -> _CaptureStepSpan:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        self.attributes[key] = value
 
 
 class _ResumableProvider(BaseProvider):
@@ -234,25 +263,27 @@ def test_step_retry_ignores_poisoned_upstream_id(mock_sleep) -> None:
 
 
 @patch("genblaze_core.providers.base.time.sleep")
-def test_step_retry_ignores_poisoned_upstream_id_when_submit_returns_none(mock_sleep) -> None:
-    """Caller metadata is ignored even when submit returns no current id."""
-    provider = _PostSubmitRetryProvider(
-        fail_phase="poll",
-        fail_count=1,
-        prediction_ids=[None, None],
-    )
-    step = _make_step()
-    step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
+def test_step_retry_fails_safely_when_submit_returns_no_prediction_id(mock_sleep) -> None:
+    """Caller metadata is ignored when submit returns no usable upstream id."""
+    for invalid_id in (None, ""):
+        provider = _PostSubmitRetryProvider(
+            fail_phase="none",
+            fail_count=0,
+            prediction_ids=[invalid_id],
+        )
+        step = _make_step()
+        step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
 
-    result = provider.invoke(step, {"timeout": 60, "max_retries": 1})
+        result = provider.invoke(step, {"timeout": 60, "max_retries": 1})
 
-    assert result.status == StepStatus.SUCCEEDED
-    assert provider.submit_calls == 2
-    assert provider.polled_prediction_ids == [None, None]
-    assert provider.fetched_prediction_ids == [None]
-    assert "foreign-prediction" not in provider.polled_prediction_ids
-    assert "foreign-prediction" not in provider.fetched_prediction_ids
-    assert UPSTREAM_ID_KEY not in result.metadata
+        assert result.status == StepStatus.FAILED
+        assert result.error_code == ProviderErrorCode.INVALID_INPUT
+        assert provider.submit_calls == 1
+        assert provider.poll_calls == 0
+        assert provider.fetch_calls == 0
+        assert "foreign-prediction" not in provider.polled_prediction_ids
+        assert "foreign-prediction" not in provider.fetched_prediction_ids
+        assert UPSTREAM_ID_KEY not in result.metadata
 
 
 @patch("genblaze_core.providers.base.time.sleep")
@@ -285,6 +316,23 @@ def test_async_step_retry_fetch_failure_resumes_without_resubmit(mock_sleep) -> 
     assert provider.poll_calls == 3
     assert provider.fetch_calls == 3
     assert provider.fetched_prediction_ids == ["pred-1", "pred-1", "pred-1"]
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_async_step_retry_preserves_native_prediction_id_type(mock_sleep) -> None:
+    """Async in-process resume uses the native id returned by submit()."""
+    provider = _PostSubmitRetryProvider(
+        fail_phase="fetch",
+        fail_count=1,
+        prediction_ids=[101],
+    )
+    result = asyncio.run(provider.ainvoke(_make_step(), {"timeout": 60, "max_retries": 1}))
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.metadata[UPSTREAM_ID_KEY] == "101"
+    assert provider.submit_calls == 1
+    assert provider.polled_prediction_ids == [101, 101]
+    assert provider.fetched_prediction_ids == [101, 101]
 
 
 @patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
@@ -372,31 +420,33 @@ def test_async_step_retry_ignores_poisoned_upstream_id(mock_sleep) -> None:
 
 
 @patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
-def test_async_step_retry_ignores_poisoned_upstream_id_when_submit_returns_none(
+def test_async_step_retry_fails_safely_when_submit_returns_no_prediction_id(
     mock_sleep,
 ) -> None:
-    """Async retries ignore caller metadata when submit returns no current id."""
-    provider = _PostSubmitRetryProvider(
-        fail_phase="poll",
-        fail_count=1,
-        prediction_ids=[None, None],
-    )
-    step = _make_step()
-    step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
+    """Async retries ignore caller metadata when submit returns no usable id."""
+    for invalid_id in (None, ""):
+        provider = _PostSubmitRetryProvider(
+            fail_phase="none",
+            fail_count=0,
+            prediction_ids=[invalid_id],
+        )
+        step = _make_step()
+        step.metadata[UPSTREAM_ID_KEY] = "foreign-prediction"
 
-    result = asyncio.run(provider.ainvoke(step, {"timeout": 60, "max_retries": 1}))
+        result = asyncio.run(provider.ainvoke(step, {"timeout": 60, "max_retries": 1}))
 
-    assert result.status == StepStatus.SUCCEEDED
-    assert provider.submit_calls == 2
-    assert provider.polled_prediction_ids == [None, None]
-    assert provider.fetched_prediction_ids == [None]
-    assert "foreign-prediction" not in provider.polled_prediction_ids
-    assert "foreign-prediction" not in provider.fetched_prediction_ids
-    assert UPSTREAM_ID_KEY not in result.metadata
+        assert result.status == StepStatus.FAILED
+        assert result.error_code == ProviderErrorCode.INVALID_INPUT
+        assert provider.submit_calls == 1
+        assert provider.poll_calls == 0
+        assert provider.fetch_calls == 0
+        assert "foreign-prediction" not in provider.polled_prediction_ids
+        assert "foreign-prediction" not in provider.fetched_prediction_ids
+        assert UPSTREAM_ID_KEY not in result.metadata
 
 
 @patch("genblaze_core.providers.base.time.sleep")
-def test_step_retry_route_log_omits_prediction_id(mock_sleep, caplog) -> None:
+def test_step_retry_route_log_omits_prediction_id(mock_sleep, caplog, monkeypatch) -> None:
     """Route logs omit upstream IDs, but progress surfaces keep request_id."""
     prediction_id = "pred-id-with-query-fragment"
     provider = _PostSubmitRetryProvider(
@@ -405,6 +455,8 @@ def test_step_retry_route_log_omits_prediction_id(mock_sleep, caplog) -> None:
         prediction_ids=[prediction_id],
     )
     progress_events: list[Any] = []
+    _CaptureStepSpan.instances.clear()
+    monkeypatch.setattr("genblaze_core.providers.base.StepSpan", _CaptureStepSpan)
 
     with caplog.at_level(logging.DEBUG, logger="genblaze.provider"):
         result = provider.invoke(
@@ -424,12 +476,20 @@ def test_step_retry_route_log_omits_prediction_id(mock_sleep, caplog) -> None:
     assert prediction_id not in caplog.text
     assert result.metadata[UPSTREAM_ID_KEY] == prediction_id
     assert any(event.request_id == prediction_id for event in progress_events)
+    assert _CaptureStepSpan.instances[-1].attributes["genblaze.step_retry.route"] == "resume"
+    assert _CaptureStepSpan.instances[-1].attributes["genblaze.step_retry.resumed"] is True
 
 
 @patch("genblaze_core.providers.base.time.sleep")
-def test_resume_budget_exhaustion_is_logged_without_resubmit(mock_sleep, caplog) -> None:
+def test_resume_budget_exhaustion_is_logged_without_resubmit(
+    mock_sleep,
+    caplog,
+    monkeypatch,
+) -> None:
     """A stuck resumed prediction fails visibly instead of fresh-submitting."""
     provider = _PostSubmitRetryProvider(fail_phase="fetch", fail_count=99)
+    _CaptureStepSpan.instances.clear()
+    monkeypatch.setattr("genblaze_core.providers.base.StepSpan", _CaptureStepSpan)
 
     with caplog.at_level(logging.WARNING, logger="genblaze.provider"):
         result = provider.invoke(_make_step(), {"timeout": 60, "max_retries": 1})
@@ -439,6 +499,10 @@ def test_resume_budget_exhaustion_is_logged_without_resubmit(mock_sleep, caplog)
     assert provider.fetched_prediction_ids == ["pred-1", "pred-1"]
     assert "Resume retry budget exhausted" in caplog.text
     assert "no_resubmit=true" in caplog.text
+    assert (
+        _CaptureStepSpan.instances[-1].attributes["genblaze.step_retry.resume_exhausted"] is True
+    )
+    assert _CaptureStepSpan.instances[-1].attributes["genblaze.step_retry.resume_failures"] == 1
 
 
 @patch("genblaze_core.providers.base.time.sleep")

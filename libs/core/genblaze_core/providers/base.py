@@ -113,10 +113,6 @@ class _StepRetryState:
     prediction_id: Any | None = None
     resume_failures: int = 0
 
-    @property
-    def resume_prediction_id(self) -> Any | None:
-        return self.prediction_id
-
     def clear(self) -> None:
         self.prediction_id = None
         self.resume_failures = 0
@@ -1433,6 +1429,25 @@ class BaseProvider(Runnable[Step, Step]):
         if on_submit is not None:
             on_submit(step.step_id, prediction_id)
 
+    def _require_prediction_id(self, prediction_id: Any) -> Any:
+        """Reject submit results that cannot identify an upstream job."""
+        if prediction_id is None:
+            raise ProviderError(
+                "submit() returned no upstream prediction id",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        if isinstance(prediction_id, str) and prediction_id == "":
+            raise ProviderError(
+                "submit() returned an empty upstream prediction id",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        if isinstance(prediction_id, (bytes, bytearray)) and len(prediction_id) == 0:
+            raise ProviderError(
+                "submit() returned an empty upstream prediction id",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        return prediction_id
+
     def _poll_fetch_once(
         self,
         prediction_id: Any,
@@ -1554,13 +1569,14 @@ class BaseProvider(Runnable[Step, Step]):
             prediction_id = raw
             estimated_seconds = None
 
+        prediction_id = self._require_prediction_id(prediction_id)
+
         # Stash on the step so subsequent progress events (and the wire-side
         # request_id field) can surface the upstream id. Stored under
         # metadata to keep it out of the canonical manifest hash payload.
-        if prediction_id is not None:
-            step.metadata[UPSTREAM_ID_KEY] = str(prediction_id)
-            if retry_state is not None:
-                retry_state.record_submit(prediction_id)
+        step.metadata[UPSTREAM_ID_KEY] = str(prediction_id)
+        if retry_state is not None:
+            retry_state.record_submit(prediction_id)
 
         self._checkpoint_submit(step, config, prediction_id)
 
@@ -1768,11 +1784,11 @@ class BaseProvider(Runnable[Step, Step]):
         retry_state = _StepRetryState()
 
         with span:
+            # Keep the retry route decision aligned with ainvoke(); only the
+            # fresh-attempt and resume helpers differ by await plumbing.
             for attempt in range(max_retries + 1):
                 try:
-                    resume_prediction_id = (
-                        retry_state.resume_prediction_id if attempt > 0 else None
-                    )
+                    resume_prediction_id = retry_state.prediction_id if attempt > 0 else None
                     if attempt > 0:
                         # Reset step state for retry
                         step.status = StepStatus.PENDING
@@ -1909,13 +1925,14 @@ class BaseProvider(Runnable[Step, Step]):
             prediction_id = raw
             estimated_seconds = None
 
+        prediction_id = self._require_prediction_id(prediction_id)
+
         # Stash on the step so subsequent progress events (and the wire-side
         # request_id field) can surface the upstream id. Stored under
         # metadata to keep it out of the canonical manifest hash payload.
-        if prediction_id is not None:
-            step.metadata[UPSTREAM_ID_KEY] = str(prediction_id)
-            if retry_state is not None:
-                retry_state.record_submit(prediction_id)
+        step.metadata[UPSTREAM_ID_KEY] = str(prediction_id)
+        if retry_state is not None:
+            retry_state.record_submit(prediction_id)
 
         self._checkpoint_submit(step, config, prediction_id)
 
@@ -1953,11 +1970,11 @@ class BaseProvider(Runnable[Step, Step]):
         retry_state = _StepRetryState()
 
         with span:
+            # Keep the retry route decision aligned with invoke(); only the
+            # fresh-attempt and resume helpers differ by await plumbing.
             for attempt in range(max_retries + 1):
                 try:
-                    resume_prediction_id = (
-                        retry_state.resume_prediction_id if attempt > 0 else None
-                    )
+                    resume_prediction_id = retry_state.prediction_id if attempt > 0 else None
                     if attempt > 0:
                         step.status = StepStatus.PENDING
                         step.error = None

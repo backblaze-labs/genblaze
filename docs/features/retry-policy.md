@@ -64,8 +64,10 @@ There are two retry layers. Most users only need to think about the first.
    given `(step_id, prediction_id)`. Caller-supplied
    `step.metadata["upstream_id"]` is observability data and is not trusted as
    retry authority. Only failures before a current upstream ID exists use a
-   fresh submit. The retryable-codes set is now also taken from the policy, so
-   tuning `RetryPolicy.retryable_codes` affects both layers consistently.
+   fresh submit. If `submit()` returns `None` or an empty prediction ID, the
+   step fails without polling, fetching, or trusting stale metadata. The
+   retryable-codes set is now also taken from the policy, so tuning
+   `RetryPolicy.retryable_codes` affects both layers consistently.
 
 Submit retries have a special rule: only **pre-response** exception types
 (httpx `ConnectError`, `ConnectTimeout`, `PoolTimeout`) are eligible by

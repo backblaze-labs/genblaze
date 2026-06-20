@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `genblaze-core`: post-submit step-level retries now resume the existing
   upstream prediction instead of submitting a new one, including transient
-  checkpoint failures after `submit()` returns (#70).
+  checkpoint failures after `submit()` returns by replaying idempotent
+  `on_submit(step_id, prediction_id)` callbacks before retry resume (#70).
 - `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
   when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
   `StepCache.get`/`put`), so a cache shared across tenants no longer serves one
