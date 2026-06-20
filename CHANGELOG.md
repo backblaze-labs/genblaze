@@ -25,7 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preventing a downstream step from reporting success with empty declared inputs
   (#69). Affected pipelines that previously appeared green can now report
   `FAILED`/`INVALID_INPUT`, which may increase status-based alerts and changes
-  manifest hashes for those runs.
+  manifest hashes for those runs. These pre-failed steps carry
+  `metadata.failure_reason="input_resolution"` and
+  `metadata.provider_invoked=false` for telemetry filtering.
+- `genblaze-core`: failed `Step.error` values are uniformly redacted for
+  OpenAI/Anthropic/Google/Replicate keys, AWS access key IDs and secret access
+  keys, Backblaze B2 application keys, JWTs, bearer/token headers, API-key
+  assignments, and basic-auth URL credentials, then truncated to 500 characters
+  before manifest, log, or stream-event emission.
 - `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
   when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
   `StepCache.get`/`put`), so a cache shared across tenants no longer serves one

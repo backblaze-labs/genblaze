@@ -13,7 +13,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from genblaze_core._utils import _SECRET_PATTERNS, new_id, normalize_tenant_id, utc_now
+from genblaze_core._utils import (
+    _SECRET_PATTERNS,
+    new_id,
+    normalize_tenant_id,
+    sanitize_error,
+    utc_now,
+)
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
     BatchPipelineError,
@@ -45,7 +51,7 @@ from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
 from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
 from genblaze_core.progress_display import Spinner, should_auto_enable
-from genblaze_core.providers.base import BaseProvider, _sanitize_error
+from genblaze_core.providers.base import BaseProvider
 from genblaze_core.providers.validation import ValidationOutcome, ValidationResult
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
@@ -55,6 +61,9 @@ logger = logging.getLogger("genblaze.pipeline")
 
 class _InputResolutionError(GenblazeError):
     """Raised when declared upstream step outputs cannot be used as inputs."""
+
+
+_INPUT_RESOLUTION_FAILURE_REASON = "input_resolution"
 
 
 # Sentinel for ``raise_on_failure``. ``None`` means "caller didn't pass it,
@@ -703,15 +712,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                         f"input_from index {idx} is out of range for step {step_index}"
                         f" (only {step_index} prior steps completed)"
                     )
-                    raise GenblazeError(msg)
+                    raise _InputResolutionError(msg)
             assets: list[Asset] = []
             for idx in ps.input_from:
                 upstream = completed_steps[idx]
                 if upstream.status != StepStatus.SUCCEEDED:
                     detail = (
-                        f"; upstream error summary: {_sanitize_error(upstream.error)}"
-                        if upstream.error
-                        else ""
+                        f"; upstream error summary: {upstream.error}" if upstream.error else ""
                     )
                     upstream_label = (
                         "failed upstream step"
@@ -755,7 +762,8 @@ class Pipeline(Runnable[None, PipelineResult]):
     def _is_input_resolution_failure_step(self, step: Step) -> bool:
         """Return True for steps prefailed by _build_or_prefail_step."""
         return (
-            step.status == StepStatus.FAILED and step.error_code == ProviderErrorCode.INVALID_INPUT
+            step.metadata.get("failure_reason") == _INPUT_RESOLUTION_FAILURE_REASON
+            and step.metadata.get("provider_invoked") is False
         )
 
     def _build_input_resolution_failure_step(
@@ -766,10 +774,15 @@ class Pipeline(Runnable[None, PipelineResult]):
         step_id: str | None = None,
     ) -> Step:
         """Build a failed Step when declared input dependencies are unavailable."""
+        # Input resolution failed before a provider input list exists, so this
+        # intentionally records no Step.inputs. Exception failures use
+        # _make_failed_step(), which preserves caller-supplied external_inputs.
         step = self._build_step(ps, None, step_id=step_id)
         step.status = StepStatus.FAILED
-        step.error = _sanitize_error(str(error))
+        step.error = sanitize_error(str(error))
         step.error_code = ProviderErrorCode.INVALID_INPUT
+        step.metadata["failure_reason"] = _INPUT_RESOLUTION_FAILURE_REASON
+        step.metadata["provider_invoked"] = False
         return step
 
     def _emit_tracer_step_start(self, step: Step, ctx: _StepContext) -> None:
@@ -802,6 +815,16 @@ class Pipeline(Runnable[None, PipelineResult]):
 
     def _record_prefailed_step(self, step: Step, ctx: _StepContext) -> Step:
         """Emit tracer lifecycle hooks for a step that failed before provider invoke."""
+        logger.warning(
+            "step.prefailed run_id=%s step_index=%d reason=%s provider=%s model=%s "
+            "error_code=%s provider_invoked=false",
+            ctx.run_id,
+            ctx.step_index,
+            step.metadata.get("failure_reason"),
+            step.provider,
+            step.model,
+            step.error_code.value if step.error_code else None,
+        )
         self._emit_tracer_step_start(step, ctx)
         self._emit_tracer_step_end(step, ctx, duration_ms=0.0)
         return step
@@ -947,7 +970,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
 
         if result.status == StepStatus.FAILED and result.error:
-            result.error = _sanitize_error(result.error)
+            # Providers usually sanitize their own failures. This pipeline
+            # boundary backstops adapters that return failed Steps directly so
+            # manifests, logs, and stream events share the same redaction cap.
+            result.error = sanitize_error(result.error)
 
         return result
 
@@ -1937,13 +1963,13 @@ class Pipeline(Runnable[None, PipelineResult]):
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
         """Create a FAILED step from an unhandled exception."""
-        from genblaze_core.providers.base import _sanitize_error, classify_api_error
+        from genblaze_core.providers.base import classify_api_error
 
         # Preserve external_inputs on the failed-step record so the manifest
         # shows what the step was supposed to consume.
         step = self._build_step(ps, ps.external_inputs)
         step.status = StepStatus.FAILED
-        step.error = _sanitize_error(str(exc))
+        step.error = sanitize_error(str(exc))
         step.error_code = classify_api_error(exc)
         return step
 

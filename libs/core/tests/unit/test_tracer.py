@@ -236,11 +236,14 @@ def test_tracer_hooks_fire_for_input_resolution_failure() -> None:
     assert start_indices == [0, 1]
     assert end_indices == [0, 1]
     prefailed_end = [
-        kwargs
-        for name, _, kwargs in tracer.calls
+        (args[1], kwargs)
+        for name, args, kwargs in tracer.calls
         if name == "on_step_end" and kwargs["step_index"] == 1
     ][0]
-    assert prefailed_end["duration_ms"] == 0.0
+    prefailed_step, prefailed_kwargs = prefailed_end
+    assert prefailed_kwargs["duration_ms"] == 0.0
+    assert prefailed_step.metadata["failure_reason"] == "input_resolution"
+    assert prefailed_step.metadata["provider_invoked"] is False
 
 
 @pytest.mark.asyncio
@@ -268,11 +271,14 @@ async def test_tracer_hooks_fire_for_input_resolution_failure_async() -> None:
     assert start_indices == [0, 1]
     assert end_indices == [0, 1]
     prefailed_end = [
-        kwargs
-        for name, _, kwargs in tracer.calls
+        (args[1], kwargs)
+        for name, args, kwargs in tracer.calls
         if name == "on_step_end" and kwargs["step_index"] == 1
     ][0]
-    assert prefailed_end["duration_ms"] == 0.0
+    prefailed_step, prefailed_kwargs = prefailed_end
+    assert prefailed_kwargs["duration_ms"] == 0.0
+    assert prefailed_step.metadata["failure_reason"] == "input_resolution"
+    assert prefailed_step.metadata["provider_invoked"] is False
 
 
 def test_on_run_end_fires_on_pipeline_timeout() -> None:

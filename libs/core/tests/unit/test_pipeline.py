@@ -1273,18 +1273,25 @@ def test_input_from_overrides_chain_mode() -> None:
     assert p2.received_inputs[0][0].url == "https://example.com/step0.png"
 
 
-def test_input_from_invalid_index_raises() -> None:
-    """Referencing a step index beyond completed steps raises GenblazeError."""
+def test_input_from_invalid_index_prefails_consumer() -> None:
+    """Referencing a future/missing step fails only the dependent consumer."""
     p0 = ChainableProvider()
     p1 = ChainableProvider()
 
-    with pytest.raises(GenblazeError, match="input_from index 5 is out of range"):
-        (
-            Pipeline("fan-in-bad")
-            .step(p0, model="m0", prompt="zero")
-            .step(p1, model="m1", prompt="one", input_from=[5])
-            .run()
-        )
+    result = (
+        Pipeline("fan-in-bad")
+        .step(p0, model="m0", prompt="zero")
+        .step(p1, model="m1", prompt="one", input_from=[5])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert p1.received_inputs == []
 
 
 def test_input_from_none_preserves_existing_behavior() -> None:
@@ -1344,6 +1351,8 @@ def test_input_from_failed_producer_fails_consumer() -> None:
     assert result.run.steps[0].status == StepStatus.FAILED
     assert result.run.steps[1].status == StepStatus.FAILED
     assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
     assert result.run.steps[1].assets == []
     assert result.run.steps[1].error
     assert consumer.received_inputs == []
@@ -1367,6 +1376,8 @@ async def test_input_from_failed_producer_fails_consumer_async() -> None:
     assert result.run.steps[0].status == StepStatus.FAILED
     assert result.run.steps[1].status == StepStatus.FAILED
     assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
     assert result.run.steps[1].assets == []
     assert result.run.steps[1].error
     assert consumer.received_inputs == []
@@ -1445,9 +1456,21 @@ def test_input_from_mixed_producers_fails_consumer_before_invocation() -> None:
 
 def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
     """Unsafe upstream errors are not copied raw into fan-in telemetry."""
-    token = "tok_" + ("a" * 40)
+    bearer = "tok_" + ("a" * 40)
+    aws_secret = "aBcD1234/+" * 4
+    b2_key = "K005" + ("B2keyValue/" * 3)
+    basic_auth_value = "pass" + "word-value-1234567890"
+    basic_url = f"https://user:{basic_auth_value}@example.com/object"
+    jwt = f"eyJ{'a' * 20}.{'b' * 20}.{'c' * 20}"
     oversized_tail = "Z" * 1000
-    raw_error = f"Authorization: Bearer {token}; {oversized_tail}"
+    raw_error = (
+        f"Authorization: Bearer {bearer}; "
+        f"AWS_SECRET_ACCESS_KEY={aws_secret}; "
+        f"B2_APPLICATION_KEY={b2_key}; "
+        f"url={basic_url}; "
+        f"jwt={jwt}; "
+        f"{oversized_tail}"
+    )
     upstream = RawFailedStepProvider(raw_error)
     consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
     caplog.set_level(logging.WARNING, logger="genblaze.pipeline")
@@ -1464,6 +1487,8 @@ def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
     dependent = result.run.steps[1]
     assert dependent.status == StepStatus.FAILED
     assert dependent.error_code == ProviderErrorCode.INVALID_INPUT
+    assert dependent.metadata["failure_reason"] == "input_resolution"
+    assert dependent.metadata["provider_invoked"] is False
     assert dependent.error is not None
     assert len(dependent.error) < 800
 
@@ -1474,8 +1499,15 @@ def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
         "\n".join(record.getMessage() for record in caplog.records),
     ]
     for surface in surfaces:
-        assert token not in surface
-        assert oversized_tail not in surface
+        for secret in [
+            bearer,
+            aws_secret,
+            b2_key,
+            basic_auth_value,
+            jwt,
+            oversized_tail,
+        ]:
+            assert secret not in surface
     assert consumer.received_inputs == []
 
 

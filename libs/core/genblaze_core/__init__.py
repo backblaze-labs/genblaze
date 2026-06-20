@@ -7,6 +7,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Pipeline": ("genblaze_core.pipeline.pipeline", "Pipeline"),
     "PipelineResult": ("genblaze_core.pipeline.result", "PipelineResult"),
     "StepCompleteEvent": ("genblaze_core.pipeline.result", "StepCompleteEvent"),
+    "sanitize_error": ("genblaze_core._utils", "sanitize_error"),
     # pipeline cache
     "StepCache": ("genblaze_core.pipeline.cache", "StepCache"),
     # pipeline templates

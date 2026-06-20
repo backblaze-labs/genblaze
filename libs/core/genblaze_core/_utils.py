@@ -127,21 +127,36 @@ MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
-# Credential pattern detection — used by error sanitization (providers/base.py)
+# Credential pattern detection — used by shared error sanitization
 # AND by Pipeline.step build-time rejection of secret-shaped params values.
 # Centralized here so both call sites share one regex of record.
 # ---------------------------------------------------------------------------
+MAX_ERROR_LENGTH = 500
+
 _SECRET_PATTERNS = re.compile(
     r"(r8_[A-Za-z0-9]{20,})"  # Replicate tokens
     r"|(sk-ant-[A-Za-z0-9\-]{20,})"  # Anthropic API keys (before generic sk-)
     r"|(sk-[A-Za-z0-9]{20,})"  # OpenAI-style keys
     r"|(AIza[A-Za-z0-9_\-]{30,})"  # Google API keys
     r"|(AKIA[A-Z0-9]{16})"  # AWS access key IDs
+    r"|(\b(?:aws[_-]?secret[_-]?access[_-]?key|secret[_-]?access[_-]?key)"
+    r"\s*[=:]\s*[A-Za-z0-9/+]{40})"  # AWS secret access keys with label
+    r"|(\bK[0-9]{3}[A-Za-z0-9+/]{20,})"  # Backblaze B2 application keys
+    r"|(https?://[^/\s:@]+:[^/\s@]+@)"  # Basic-auth URL credentials
+    r"|(\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b)"  # JWTs
     r"|(Bearer\s+[A-Za-z0-9._\-]{20,})"  # Bearer tokens
     r"|(Token\s+[A-Za-z0-9._\-]{20,})"  # Token auth headers
     r"|(\bapi[_-]key[=:]\s*[A-Za-z0-9._\-]{20,})",  # api_key=... / api-key:...
     re.IGNORECASE,
 )
+
+
+def sanitize_error(msg: str) -> str:
+    """Redact potential secrets and truncate error messages for safe storage."""
+    sanitized = _SECRET_PATTERNS.sub("[REDACTED]", msg)
+    if len(sanitized) > MAX_ERROR_LENGTH:
+        sanitized = sanitized[:MAX_ERROR_LENGTH] + "...(truncated)"
+    return sanitized
 
 
 def jittered_backoff(attempt: int) -> float:
