@@ -137,10 +137,7 @@ class FFmpegCompositor(SyncProvider):
         asset.height = video_asset.height
         asset.duration = video_asset.duration
 
-        try:
-            populate_file_asset_integrity(asset, out_path)
-        except OSError:
-            pass
+        populate_file_asset_integrity(asset, out_path)
 
         step.assets.append(asset)
         step.step_type = StepType.MIX

@@ -118,9 +118,15 @@ def populate_file_asset_integrity(asset: Asset, path: Path) -> None:
     """Populate ``asset.sha256`` and ``asset.size_bytes`` from a local file."""
     digest = hashlib.sha256()
     size = 0
-    with path.open("rb") as fh:
-        while chunk := fh.read(1024 * 1024):
-            digest.update(chunk)
-            size += len(chunk)
+    try:
+        with path.open("rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError as exc:
+        raise ProviderError(
+            f"Failed to hash ffmpeg output at {path}: {exc}",
+            error_code=ProviderErrorCode.UNKNOWN,
+        ) from exc
     asset.sha256 = digest.hexdigest()
     asset.size_bytes = size

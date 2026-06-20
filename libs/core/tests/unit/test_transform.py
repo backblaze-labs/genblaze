@@ -9,7 +9,7 @@ import pytest
 from genblaze_core._utils import compute_sha256
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, VideoMetadata
-from genblaze_core.models.enums import Modality, StepStatus, StepType
+from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus, StepType
 from genblaze_core.models.step import Step
 from genblaze_core.providers.transform import FFmpegTransform, _escape_drawtext
 
@@ -171,6 +171,23 @@ def test_transform_populates_output_sha256(mock_run, mock_which, tmp_path):
 
     assert result.assets[0].sha256 == compute_sha256(payload)
     assert result.assets[0].size_bytes == len(payload)
+
+
+@patch(f"{_UTILS}.shutil.which", return_value="/usr/bin/ffmpeg")
+@patch(f"{_UTILS}.subprocess.run")
+def test_transform_raises_when_output_integrity_read_fails(mock_run, mock_which, tmp_path):
+    mock_run.return_value = MagicMock(returncode=0, stderr=b"")
+    missing_out = tmp_path / "missing.mp4"
+    transform = FFmpegTransform(output_dir=tmp_path)
+    step = _make_step("resize", _make_video_asset(), width=1280, height=720)
+
+    with (
+        patch("genblaze_core.providers.transform.get_output_path", return_value=missing_out),
+        pytest.raises(ProviderError, match="Failed to hash ffmpeg output") as exc_info,
+    ):
+        transform.generate(step)
+
+    assert exc_info.value.error_code == ProviderErrorCode.UNKNOWN
 
 
 # --- Error cases ---

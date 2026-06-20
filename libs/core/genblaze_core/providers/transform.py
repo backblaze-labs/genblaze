@@ -350,10 +350,7 @@ class FFmpegTransform(SyncProvider):
             asset.height = input_asset.height
             asset.duration = input_asset.duration
 
-        try:
-            populate_file_asset_integrity(asset, out_path)
-        except OSError:
-            pass
+        populate_file_asset_integrity(asset, out_path)
 
         step.assets.append(asset)
         step.step_type = _OPERATION_STEP_TYPES[operation]
