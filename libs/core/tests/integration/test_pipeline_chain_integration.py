@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, RunStatus, StepStatus
@@ -62,6 +62,16 @@ class FailingProvider(BaseProvider):
         return step
 
 
+def _mock_http_response(
+    data: bytes = b"asset-bytes", content_type: str = "image/png"
+) -> MagicMock:
+    response = MagicMock()
+    response.read.side_effect = [data, b""]
+    response.headers = {"Content-Type": content_type}
+    response.release_conn = MagicMock()
+    return response
+
+
 def test_chain_pipeline_to_parquet_sink(tmp_path) -> None:
     """Chained pipeline writes step inputs to Parquet sink correctly."""
     from genblaze_core.sinks.parquet import ParquetSink
@@ -100,10 +110,15 @@ def test_chain_pipeline_to_parquet_sink(tmp_path) -> None:
     assert steps_table.num_rows == 2
 
 
-def test_chain_pipeline_to_object_storage_sink() -> None:
+@patch("genblaze_core._utils.socket.getaddrinfo")
+@patch("genblaze_core.storage.transfer._http_get_stream")
+def test_chain_pipeline_to_object_storage_sink(mock_get_stream, mock_dns) -> None:
     """Chained pipeline uploads assets and manifest to mocked object storage."""
     from genblaze_core.storage.base import KeyStrategy, StorageBackend
     from genblaze_core.storage.sink import ObjectStorageSink
+
+    mock_dns.return_value = [(2, 1, 6, "", ("93.184.216.34", 0))]
+    mock_get_stream.side_effect = lambda *a, **kw: _mock_http_response()
 
     # Mock backend
     backend = MagicMock(spec=StorageBackend)

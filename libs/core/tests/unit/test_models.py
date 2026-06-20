@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from genblaze_core.exceptions import ManifestError
+from genblaze_core.exceptions import ManifestError, UnsupportedSchemaVersionError
 from genblaze_core.models import (
     Asset,
     Manifest,
@@ -15,6 +15,7 @@ from genblaze_core.models import (
     WordTiming,
 )
 from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepType
+from genblaze_core.models.manifest import parse_manifest
 from pydantic import ValidationError
 
 
@@ -32,7 +33,7 @@ def test_asset_tolerates_malformed_sha256_on_load(sha256):
     assert asset.sha256 == sha256
 
 
-def test_manifest_verify_accepts_uppercase_output_sha256():
+def test_manifest_verify_rejects_uppercase_output_sha256():
     asset = Asset(url="https://example.com/img.png", media_type="image/png", sha256="A" * 64)
     step = Step(
         provider="mock",
@@ -43,8 +44,9 @@ def test_manifest_verify_accepts_uppercase_output_sha256():
     manifest = Manifest(run=Run(name="uppercase-sha", steps=[step]))
     manifest.compute_hash()
 
-    assert manifest.output_asset_ids_missing_sha256() == []
-    assert manifest.verify()
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [asset.asset_id]
+    assert not manifest.verify()
 
 
 def test_asset_tolerates_malformed_sha256_assignment():
@@ -246,8 +248,6 @@ def test_manifest_verify_rejects_malformed_output_sha256_if_bypassed():
 
 
 def test_parse_manifest_tolerates_malformed_sha256_but_verify_rejects():
-    from genblaze_core.models.manifest import parse_manifest
-
     asset = Asset(
         url="https://cdn.example.com/output.png",
         media_type="image/png",
@@ -276,6 +276,16 @@ def test_manifest_unsupported_schema_version_is_rejected(schema_version):
 
     with pytest.raises(ValidationError, match="Unsupported schema_version"):
         Manifest(run=Run(name="same", steps=[step]), schema_version=schema_version)
+
+
+def test_parse_manifest_unsupported_schema_version_has_clear_error():
+    step = Step(provider="mock", model="m", prompt="same prompt")
+    manifest = Manifest.from_run(Run(name="same", steps=[step]))
+    data = manifest.model_dump(mode="python")
+    data["schema_version"] = "1.7"
+
+    with pytest.raises(UnsupportedSchemaVersionError, match="Upgrade genblaze-core"):
+        parse_manifest(data)
 
 
 @pytest.mark.parametrize("schema_version", ["1.0", "1.4", "1.5"])
@@ -413,6 +423,70 @@ def test_manifest_v1_6_url_only_hash_keeps_generic_resource_query_params(param):
     manifest_b.compute_hash()
 
     assert manifest_a.canonical_hash != manifest_b.canonical_hash
+
+
+def _v1_6_hash_for_output_url(url: str) -> str:
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url=url, media_type="image/png")],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.6")
+    manifest.compute_hash()
+    return manifest.canonical_hash
+
+
+def test_manifest_v1_6_url_only_hash_strips_cloudfront_signed_query_params():
+    a = _v1_6_hash_for_output_url(
+        "https://d111.cloudfront.net/output.png?Policy=policy-a&Signature=sig-a&Key-Pair-Id=K123"
+    )
+    b = _v1_6_hash_for_output_url(
+        "https://d111.cloudfront.net/output.png?Policy=policy-b&Signature=sig-b&Key-Pair-Id=K123"
+    )
+    other_resource = _v1_6_hash_for_output_url(
+        "https://d111.cloudfront.net/other.png?Policy=policy-b&Signature=sig-b&Key-Pair-Id=K123"
+    )
+
+    assert a == b
+    assert a != other_resource
+
+
+def test_manifest_v1_6_url_only_hash_strips_azure_sas_query_params():
+    a = _v1_6_hash_for_output_url(
+        "https://acct.blob.core.windows.net/container/output.png?"
+        "sv=2024-11-04&se=2026-01-01T00:00:00Z&sp=r&sr=b&sig=sig-a"
+    )
+    b = _v1_6_hash_for_output_url(
+        "https://acct.blob.core.windows.net/container/output.png?"
+        "sv=2025-05-05&se=2026-02-01T00:00:00Z&sp=r&sr=b&sig=sig-b"
+    )
+    other_resource = _v1_6_hash_for_output_url(
+        "https://acct.blob.core.windows.net/container/other.png?"
+        "sv=2025-05-05&se=2026-02-01T00:00:00Z&sp=r&sr=b&sig=sig-b"
+    )
+
+    assert a == b
+    assert a != other_resource
+
+
+def test_manifest_v1_6_url_only_hash_strips_gcs_v2_signed_query_params():
+    a = _v1_6_hash_for_output_url(
+        "https://storage.googleapis.com/bucket/output.png?"
+        "GoogleAccessId=signer-a&Expires=1800000000&Signature=sig-a"
+    )
+    b = _v1_6_hash_for_output_url(
+        "https://storage.googleapis.com/bucket/output.png?"
+        "GoogleAccessId=signer-b&Expires=1900000000&Signature=sig-b"
+    )
+    other_resource = _v1_6_hash_for_output_url(
+        "https://storage.googleapis.com/bucket/other.png?"
+        "GoogleAccessId=signer-b&Expires=1900000000&Signature=sig-b"
+    )
+
+    assert a == b
+    assert a != other_resource
 
 
 def test_manifest_hashed_output_assets_verify_with_url_rewrites():

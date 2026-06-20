@@ -89,9 +89,9 @@ CI gates or audits where URL-only outputs are expected.
 
 `Manifest.verify()` and `genblaze verify` do not fetch `asset.url` and re-hash
 remote bytes. They verify the canonical manifest hash and require every output
-asset to declare a syntactically valid sha256 digest. Consumers that dereference
-asset URLs must independently hash the fetched bytes and compare them to
-`asset.sha256` before trusting those bytes.
+asset to declare a syntactically valid lowercase sha256 digest. Consumers that
+dereference asset URLs must independently hash the fetched bytes and compare
+them to `asset.sha256` before trusting those bytes.
 
 Use `Manifest.verify_hash()` when a caller only needs to check that
 `canonical_hash` matches the manifest payload. This distinction matters for
@@ -105,6 +105,11 @@ readers before enabling 1.6 manifest emission. If 1.6 manifests are written and
 a rollback is required, keep a reader with 1.6 hash-marker support available to
 re-save or inspect those manifests; older 1.5 readers cannot verify the 1.6
 URL-only hash payload.
+
+Unknown future schema versions are rejected with an upgrade-required manifest
+error. That is deliberate: every schema version defines canonical hash behavior,
+so a reader that does not know the version cannot safely report provenance
+verification.
 
 `asset.sha256` in the manifest is computed against the asset bytes at the moment the manifest is built — i.e., **before** embedding. After `SmartEmbedder.embed()` modifies the file to insert the manifest, the on-disk file's sha256 will not match `asset.sha256`. Two paths to verify the asset:
 

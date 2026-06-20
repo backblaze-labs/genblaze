@@ -175,6 +175,14 @@ The reverse lookup works because `Pipeline.ingest(..., tenant_id=...)` calls
 `{prefix}/_index/{tenant_id}/{asset_id}.json` mapping each asset to its
 manifest URI.
 
+Reverse lookup is an authorization boundary. Callers must pass the tenant (or
+equivalent caller context), the asset ID must be a UUID, the recovered manifest
+must verify, the manifest tenant must match, and the manifest must actually
+reference the requested asset ID before it is returned. During the migration
+from the legacy flat index, a miss on the tenant-scoped key falls back to
+`{prefix}/_index/{asset_id}.json` and backfills the scoped key after those
+checks pass.
+
 Assets *not* persisted via `Pipeline.ingest` (or via direct
 `sink.put_asset(asset, manifest_uri=..., tenant_id=...)` with an explicit
 manifest_uri and tenant) are not discoverable via this path — by design. The

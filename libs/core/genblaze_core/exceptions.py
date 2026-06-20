@@ -62,6 +62,10 @@ class ManifestError(GenblazeError):
     """Raised when manifest creation/validation fails."""
 
 
+class UnsupportedSchemaVersionError(ManifestError):
+    """Raised when a manifest declares a schema version this reader cannot parse."""
+
+
 class UnverifiedAssetError(ManifestError):
     """Raised when a hash-valid manifest has missing or malformed output sha256."""
 

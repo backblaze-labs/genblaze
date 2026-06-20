@@ -10,7 +10,7 @@ generic constructor.
 Pass `sink=storage` to `pipeline.run()`. The `ObjectStorageSink`:
 
 1. **Transfers assets** — downloads from provider CDN, computes SHA-256, uploads to storage
-2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash; any failed output asset that remains URL-only makes `manifest.verify()` return `False` for output sha256 coverage while `manifest.verify_hash()` still reports whether the manifest payload was tampered
+2. **Fails on transfer errors** — records failed asset IDs on the in-memory `manifest.transfer_failures` diagnostic field, then raises before uploading a manifest that would fail strict verification
 3. **Recomputes manifest hash** — the canonical hash reflects post-transfer SHA-256, size, and media metadata. Asset URLs remain transport hints once bytes are hash-bound
 4. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
 5. **Rewrites URLs** — asset URLs in the run now point to your bucket
@@ -174,13 +174,14 @@ output sha256 coverage. It raises `ManifestError` on hash mismatch and
 `sha256`. Existing historical URL-only manifests will fail this strict read
 until they are backfilled, or until a caller deliberately opts into the
 hash-only path with `allow_unverified_assets=True`. For rolling deployments,
-stage this explicitly: first deploy readers that use
-`allow_unverified_assets=True` only on known inspection/backfill paths, backfill
-output hashes, then remove that flag from hot read paths once historical data is
-covered. Treat the flag as security-sensitive and never bind it directly to
-request-controlled input. Use `verify=False` only to skip verification on a
-manifest you just wrote yourself. Downloads are capped at 16 MiB to bound OOM
-blast.
+stage this explicitly with known inspection/backfill call sites, the temporary
+`ObjectStorageSink(..., allow_unverified_manifest_reads=True)` constructor
+switch, or the `GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS=true` environment
+switch. Backfill output hashes, then remove the migration switch once
+historical data is covered. Treat these flags as security-sensitive and never
+bind them directly to request-controlled input. Use `verify=False` only to skip
+verification on a manifest you just wrote yourself. Downloads are capped at 16
+MiB to bound OOM blast.
 
 After `write_run` returns, `manifest.manifest_uri` is also populated on
 the in-memory object — including on retries that hit an already-existing

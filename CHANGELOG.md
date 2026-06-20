@@ -12,21 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `genblaze-core` 0.3.2 → 0.3.3: `Manifest.verify()` now rejects output
   assets that lack `sha256` for every supported schema version, preventing a
   schema downgrade from bypassing declared output sha256 coverage. This is an
-  intentional behavior break from the prior hash-only contract; use
-  `verify_hash()` for legacy hash-only checks against historical URL-only
-  media (#77).
+  intentional security exception to the normal patch-release compatibility
+  policy; use `verify_hash()` for legacy hash-only checks against historical
+  URL-only media (#77).
 - `genblaze-core`: `Asset.sha256` values remain loadable even when malformed,
   so historical and cross-producer manifests can still be inspected with
   `verify=False` or `allow_unverified_assets=True`. `Manifest.verify()` and
-  `genblaze verify` treat missing or malformed `sha256` as unverified output
-  coverage. They do not fetch remote asset URLs; consumers must independently
-  hash fetched bytes before trusting those bytes (#77).
+  `genblaze verify` treat missing, uppercase, or otherwise malformed `sha256`
+  as unverified output coverage. They do not fetch remote asset URLs; consumers
+  must independently hash fetched bytes before trusting those bytes (#77).
 - `genblaze-core`: schema 1.6 URL-only hash markers are Python read-supported.
   The canonical marker URL strips known credential, expiry, and response
-  override query parameters while retaining resource-identifying query
-  parameters. Default manifest emission, storage writes, media embedding, and
-  the published JSON Schema/TypeScript spec stay on schema 1.5 for an
-  expand-contract rollout (#77).
+  override query parameters for AWS/GCS/B2, CloudFront, Azure SAS, and GCS V2
+  signed URLs while retaining resource-identifying query parameters. Default
+  manifest emission, storage writes, media embedding, and the published JSON
+  Schema/TypeScript spec stay on schema 1.5 for an expand-contract rollout
+  (#77).
 - `genblaze-cli` 0.3.0 → 0.3.1: raises its `genblaze-core` floor to the first
   core version that exposes `verify_hash()` and output-asset sha256 diagnostics
   (#77).
@@ -36,9 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so adapter-only installs also receive the URL-only asset verification fix
   (#77).
 - `ObjectStorageSink.read_manifest_for_asset()` now requires `tenant_id`, stores
-  tenant-scoped asset index entries, validates `asset_id` as a UUID, checks the
-  recovered manifest tenant before returning it, and applies the same strict
-  verification defaults as `read_manifest()` (#77).
+  tenant-scoped asset index entries, validates `asset_id` as a UUID, falls back
+  to legacy flat index entries during migration, rejects manifest pointer
+  substitution unless the recovered manifest references the requested asset,
+  and applies the same strict verification defaults as `read_manifest()` (#77).
+- `ObjectStorageSink.write_run()` now fails the write when an asset transfer
+  fails, instead of uploading a success-path manifest that later fails strict
+  verification (#77).
 
 ### Changed
 
@@ -46,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UnverifiedAssetError` for hash-valid manifests whose output assets are
   missing or malformed `sha256`. Historical URL-only manifests must be
   backfilled, read via the explicit `allow_unverified_assets=True` hash-only
-  path during a staged rollout, or covered by a documented deployment flag before
+  path during a staged rollout, or covered by the temporary sink constructor
+  flag / `GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS` environment switch before
   enabling this on hot read paths (#77).
 
 ### Added

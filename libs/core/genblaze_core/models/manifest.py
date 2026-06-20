@@ -9,7 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from genblaze_core.canonical.json import canonical_hash, canonical_json
-from genblaze_core.exceptions import ManifestError
+from genblaze_core.exceptions import ManifestError, UnsupportedSchemaVersionError
 from genblaze_core.models.asset import is_valid_sha256
 from genblaze_core.models.enums import PromptVisibility
 from genblaze_core.models.run import Run
@@ -79,6 +79,38 @@ _UNVERIFIED_ASSET_QUERY_EXCLUDE = frozenset(
         "x-id",
     }
 )
+_AZURE_SAS_QUERY_PARAMS = frozenset(
+    {
+        "se",
+        "sig",
+        "skoid",
+        "sks",
+        "sktid",
+        "skv",
+        "sp",
+        "spr",
+        "sr",
+        "srt",
+        "ss",
+        "st",
+        "sv",
+    }
+)
+_CLOUDFRONT_SIGNED_QUERY_PARAMS = frozenset(
+    {
+        "expires",
+        "key-pair-id",
+        "policy",
+        "signature",
+    }
+)
+_GCS_V2_SIGNED_QUERY_PARAMS = frozenset(
+    {
+        "expires",
+        "googleaccessid",
+        "signature",
+    }
+)
 _UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE = (
     "x-amz-",
     "x-goog-",
@@ -131,10 +163,20 @@ def _hash_policy(schema_version: str) -> _SchemaHashPolicy:
     return _SCHEMA_HASH_POLICIES[schema_version]
 
 
-def _is_credential_query_param(name: str) -> bool:
+def _is_credential_query_param(
+    name: str,
+    *,
+    is_azure_sas: bool,
+    is_cloudfront_signed: bool,
+    is_gcs_v2_signed: bool,
+) -> bool:
     key = name.lower()
-    return key in _UNVERIFIED_ASSET_QUERY_EXCLUDE or key.startswith(
-        _UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE
+    return (
+        key in _UNVERIFIED_ASSET_QUERY_EXCLUDE
+        or key.startswith(_UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE)
+        or (is_azure_sas and key in _AZURE_SAS_QUERY_PARAMS)
+        or (is_cloudfront_signed and key in _CLOUDFRONT_SIGNED_QUERY_PARAMS)
+        or (is_gcs_v2_signed and key in _GCS_V2_SIGNED_QUERY_PARAMS)
     )
 
 
@@ -146,13 +188,25 @@ def _canonical_unverified_asset_url(url: str) -> str:
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     netloc = f"{host}:{parts.port}" if parts.port is not None else host
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    query_keys = {name.lower() for name, _value in query_pairs}
     # Keep resource-identifying query params so ?id=a and ?id=b do not
     # collide, but strip presign credentials, expiries, response overrides,
-    # and fragments because they are volatile transport material.
+    # and fragments because they are volatile transport material. Generic
+    # names such as sig/signature/policy are stripped only when a known signed
+    # URL scheme is present; otherwise they may identify the resource itself.
+    is_azure_sas = bool(query_keys & {"sv", "se", "sp", "sr", "ss", "srt"})
+    is_cloudfront_signed = "key-pair-id" in query_keys
+    is_gcs_v2_signed = "googleaccessid" in query_keys
     query_items = [
         (name, value)
-        for name, value in parse_qsl(parts.query, keep_blank_values=True)
-        if not _is_credential_query_param(name)
+        for name, value in query_pairs
+        if not _is_credential_query_param(
+            name,
+            is_azure_sas=is_azure_sas,
+            is_cloudfront_signed=is_cloudfront_signed,
+            is_gcs_v2_signed=is_gcs_v2_signed,
+        )
     ]
     query = urlencode(sorted(query_items), doseq=True)
     return urlunsplit((scheme, netloc, parts.path, query, ""))
@@ -440,8 +494,17 @@ def parse_manifest(data: dict) -> Manifest:
     """Parse a manifest dict, migrating from older schema versions if needed.
 
     Preserves original schema_version so verify() reproduces the correct hash.
+    Unknown/future schema versions fail with UnsupportedSchemaVersionError so
+    read paths report a deliberate upgrade-required condition rather than a
+    generic validation failure.
     """
     version = data.get("schema_version", "1.0")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise UnsupportedSchemaVersionError(
+            f"Unsupported schema_version {version!r}; this reader supports "
+            f"{', '.join(SUPPORTED_SCHEMA_VERSIONS)}. Upgrade genblaze-core "
+            "before reading manifests emitted with newer schema versions."
+        )
     if version == "1.0":
         data = _migrate_v1_0_to_v1_1(data)
         data = _migrate_v1_1_to_v1_2(data)
