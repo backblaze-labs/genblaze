@@ -439,7 +439,7 @@ class TestPreStepModeration:
         assert step.error_code == ProviderErrorCode.INVALID_INPUT
         assert step.error.startswith("Moderation input error:")
 
-    def test_too_many_text_inputs_rejected_before_hook(self):
+    def test_total_text_input_payload_rejected_before_hook(self):
         hook = TrackingHook()
         provider = MockProvider()
         assets = [
