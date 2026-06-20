@@ -1,12 +1,13 @@
 """Tests for Pipeline API."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import RunStatus, StepStatus
+from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepStatus
 from genblaze_core.models.step import Step
 from genblaze_core.pipeline import Pipeline, StepCache
 from genblaze_core.pipeline.result import PipelineResult
@@ -338,6 +339,32 @@ class FailingProvider(BaseProvider):
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         return step
+
+
+class RawFailedStepProvider(BaseProvider):
+    """Provider that returns a failed Step with an unsanitized error."""
+
+    name = "raw-failed"
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-raw-failed"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+    def invoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        failed = step.model_copy()
+        failed.status = StepStatus.FAILED
+        failed.error = self.error
+        failed.error_code = ProviderErrorCode.SERVER_ERROR
+        return failed
 
 
 class EmptyAssetProvider(BaseProvider):
@@ -1316,9 +1343,9 @@ def test_input_from_failed_producer_fails_consumer() -> None:
     assert len(result.run.steps) == 2
     assert result.run.steps[0].status == StepStatus.FAILED
     assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
     assert result.run.steps[1].assets == []
-    assert "input_from index 0" in (result.run.steps[1].error or "")
-    assert "failed upstream step 0" in (result.run.steps[1].error or "")
+    assert result.run.steps[1].error
     assert consumer.received_inputs == []
 
 
@@ -1339,9 +1366,9 @@ async def test_input_from_failed_producer_fails_consumer_async() -> None:
     assert len(result.run.steps) == 2
     assert result.run.steps[0].status == StepStatus.FAILED
     assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
     assert result.run.steps[1].assets == []
-    assert "input_from index 0" in (result.run.steps[1].error or "")
-    assert "failed upstream step 0" in (result.run.steps[1].error or "")
+    assert result.run.steps[1].error
     assert consumer.received_inputs == []
 
 
@@ -1362,8 +1389,9 @@ def test_input_from_empty_producer_fails_consumer() -> None:
     assert result.run.steps[0].status == StepStatus.SUCCEEDED
     assert result.run.steps[0].assets == []
     assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
     assert result.run.steps[1].assets == []
-    assert "resolved no assets from upstream step 0" in (result.run.steps[1].error or "")
+    assert result.run.steps[1].error
     assert consumer.received_inputs == []
 
 
@@ -1385,8 +1413,69 @@ async def test_input_from_empty_producer_fails_consumer_async() -> None:
     assert result.run.steps[0].status == StepStatus.SUCCEEDED
     assert result.run.steps[0].assets == []
     assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
     assert result.run.steps[1].assets == []
-    assert "resolved no assets from upstream step 0" in (result.run.steps[1].error or "")
+    assert result.run.steps[1].error
+    assert consumer.received_inputs == []
+
+
+def test_input_from_mixed_producers_fails_consumer_before_invocation() -> None:
+    """A fan-in consumer fails if any declared producer failed."""
+    ok = ChainableProvider(output_url="https://example.com/ok.png")
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-mixed-source")
+        .step(ok, model="m0", prompt="audio")
+        .step(failing, model="m1", prompt="video")
+        .step(consumer, model="m2", prompt="compose", input_from=[0, 1])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[2].status == StepStatus.FAILED
+    assert result.run.steps[2].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[2].assets == []
+    assert ok.received_inputs == [[]]
+    assert consumer.received_inputs == []
+
+
+def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
+    """Unsafe upstream errors are not copied raw into fan-in telemetry."""
+    token = "tok_" + ("a" * 40)
+    oversized_tail = "Z" * 1000
+    raw_error = f"Authorization: Bearer {token}; {oversized_tail}"
+    upstream = RawFailedStepProvider(raw_error)
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+    caplog.set_level(logging.WARNING, logger="genblaze.pipeline")
+
+    events = list(
+        Pipeline("fan-in-sanitized-source")
+        .step(upstream, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .stream(heartbeats=False, fail_fast=False, raise_on_failure=False)
+    )
+
+    result = events[-1].result
+    assert result is not None
+    dependent = result.run.steps[1]
+    assert dependent.status == StepStatus.FAILED
+    assert dependent.error_code == ProviderErrorCode.INVALID_INPUT
+    assert dependent.error is not None
+    assert len(dependent.error) < 800
+
+    surfaces = [
+        dependent.error,
+        result.manifest.to_canonical_json(),
+        "\n".join(str(event.to_dict()) for event in events),
+        "\n".join(record.getMessage() for record in caplog.records),
+    ]
+    for surface in surfaces:
+        assert token not in surface
+        assert oversized_tail not in surface
     assert consumer.received_inputs == []
 
 

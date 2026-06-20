@@ -45,7 +45,7 @@ from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
 from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
 from genblaze_core.progress_display import Spinner, should_auto_enable
-from genblaze_core.providers.base import BaseProvider
+from genblaze_core.providers.base import BaseProvider, _sanitize_error
 from genblaze_core.providers.validation import ValidationOutcome, ValidationResult
 from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
@@ -708,7 +708,11 @@ class Pipeline(Runnable[None, PipelineResult]):
             for idx in ps.input_from:
                 upstream = completed_steps[idx]
                 if upstream.status != StepStatus.SUCCEEDED:
-                    detail = f": {upstream.error}" if upstream.error else ""
+                    detail = (
+                        f"; upstream error summary: {_sanitize_error(upstream.error)}"
+                        if upstream.error
+                        else ""
+                    )
                     upstream_label = (
                         "failed upstream step"
                         if upstream.status == StepStatus.FAILED
@@ -716,7 +720,8 @@ class Pipeline(Runnable[None, PipelineResult]):
                     )
                     msg = (
                         f"input_from index {idx} for step {step_index} points to "
-                        f"{upstream_label} {idx} with status {upstream.status.value}{detail}"
+                        f"{upstream_label} {idx} ({upstream.step_id}) with status "
+                        f"{upstream.status.value}{detail}"
                     )
                     raise _InputResolutionError(msg)
                 if not upstream.assets:
@@ -731,6 +736,28 @@ class Pipeline(Runnable[None, PipelineResult]):
             return prev_assets
         return None
 
+    def _build_or_prefail_step(
+        self,
+        ps: _PipelineStep,
+        step_index: int,
+        completed_steps: list[Step],
+        prev_assets: list[Asset],
+        *,
+        step_id: str | None = None,
+    ) -> Step:
+        """Build a runnable step or a FAILED step for unavailable input_from assets."""
+        try:
+            inputs = self._resolve_inputs(ps, step_index, completed_steps, prev_assets)
+        except _InputResolutionError as exc:
+            return self._build_input_resolution_failure_step(ps, exc, step_id=step_id)
+        return self._build_step(ps, inputs, step_id=step_id)
+
+    def _is_input_resolution_failure_step(self, step: Step) -> bool:
+        """Return True for steps prefailed by _build_or_prefail_step."""
+        return (
+            step.status == StepStatus.FAILED and step.error_code == ProviderErrorCode.INVALID_INPUT
+        )
+
     def _build_input_resolution_failure_step(
         self,
         ps: _PipelineStep,
@@ -741,12 +768,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         """Build a failed Step when declared input dependencies are unavailable."""
         step = self._build_step(ps, None, step_id=step_id)
         step.status = StepStatus.FAILED
-        step.error = str(error)
+        step.error = _sanitize_error(str(error))
         step.error_code = ProviderErrorCode.INVALID_INPUT
         return step
 
-    def _record_prefailed_step(self, step: Step, ctx: _StepContext) -> Step:
-        """Emit tracer lifecycle hooks for a step that failed before provider invoke."""
+    def _emit_tracer_step_start(self, step: Step, ctx: _StepContext) -> None:
+        """Emit the tracer start hook with the shared step lifecycle shape."""
         safe_call(
             self._tracer,
             "on_step_start",
@@ -755,15 +782,28 @@ class Pipeline(Runnable[None, PipelineResult]):
             step_index=ctx.step_index,
             total_steps=ctx.total_steps,
         )
-        t0 = time.monotonic()
+
+    def _emit_tracer_step_end(
+        self,
+        step: Step,
+        ctx: _StepContext,
+        *,
+        duration_ms: float,
+    ) -> None:
+        """Emit the tracer end hook with the shared step lifecycle shape."""
         safe_call(
             self._tracer,
             "on_step_end",
             ctx.run_id,
             step,
-            duration_ms=(time.monotonic() - t0) * 1000,
+            duration_ms=duration_ms,
             step_index=ctx.step_index,
         )
+
+    def _record_prefailed_step(self, step: Step, ctx: _StepContext) -> Step:
+        """Emit tracer lifecycle hooks for a step that failed before provider invoke."""
+        self._emit_tracer_step_start(step, ctx)
+        self._emit_tracer_step_end(step, ctx, duration_ms=0.0)
         return step
 
     def _build_step(
@@ -906,6 +946,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
             self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
 
+        if result.status == StepStatus.FAILED and result.error:
+            result.error = _sanitize_error(result.error)
+
         return result
 
     def _execute_step(
@@ -935,14 +978,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
-        safe_call(
-            self._tracer,
-            "on_step_start",
-            ctx.run_id,
-            step,
-            step_index=ctx.step_index,
-            total_steps=ctx.total_steps,
-        )
+        self._emit_tracer_step_start(step, ctx)
         t0 = time.monotonic()
         final: Step = step  # fallback for on_step_end if provider.invoke raises
         try:
@@ -960,13 +996,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             return final
         finally:
-            safe_call(
-                self._tracer,
-                "on_step_end",
-                ctx.run_id,
+            self._emit_tracer_step_end(
                 final,
+                ctx,
                 duration_ms=(time.monotonic() - t0) * 1000,
-                step_index=ctx.step_index,
             )
 
     async def _execute_step_async(
@@ -996,14 +1029,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
-        safe_call(
-            self._tracer,
-            "on_step_start",
-            ctx.run_id,
-            step,
-            step_index=ctx.step_index,
-            total_steps=ctx.total_steps,
-        )
+        self._emit_tracer_step_start(step, ctx)
         t0 = time.monotonic()
         final: Step = step  # fallback for on_step_end if ainvoke raises
         try:
@@ -1058,13 +1084,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             return final
         finally:
-            safe_call(
-                self._tracer,
-                "on_step_end",
-                ctx.run_id,
+            self._emit_tracer_step_end(
                 final,
+                ctx,
                 duration_ms=(time.monotonic() - t0) * 1000,
-                step_index=ctx.step_index,
             )
 
     def _finalize(
@@ -1238,7 +1261,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         )
 
     def _emit_step_complete_event(self, step_event: StepCompleteEvent, run_id: str) -> None:
-        # Tracer already gets on_step_end inside _execute_step; emitter-only here.
+        # Tracer on_step_end is paired in _execute_step, _execute_step_async,
+        # and _record_prefailed_step via _emit_tracer_step_end; emitter-only here.
         if self._event_emitter is not None:
             self._event_emitter.on_step_complete(step_event)
 
@@ -1525,16 +1549,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                         raise PipelineTimeoutError(msg)
 
                 ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
-                try:
-                    inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                except _InputResolutionError as exc:
-                    step = self._build_input_resolution_failure_step(
-                        ps, exc, step_id=step_ids[i - 1]
-                    )
-                    input_resolution_error = True
-                else:
-                    step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
-                    input_resolution_error = False
+                step = self._build_or_prefail_step(
+                    ps,
+                    i - 1,
+                    completed_steps,
+                    prev_assets,
+                    step_id=step_ids[i - 1],
+                )
                 logger.debug(
                     "Executing step %d/%d: %s/%s",
                     i,
@@ -1551,7 +1572,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                         step_index=i - 1,
                         total=total_steps,
                     )
-                if input_resolution_error:
+                # Input-resolution prefail handling is shared; the runner call
+                # site only differs in sync vs async provider invocation.
+                if self._is_input_resolution_failure_step(step):
                     result = self._record_prefailed_step(step, ctx)
                 else:
                     result = self._execute_step(ps, step, config, ctx)
@@ -1732,16 +1755,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                             raise PipelineTimeoutError(msg)
 
                     ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
-                    try:
-                        inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                    except _InputResolutionError as exc:
-                        step = self._build_input_resolution_failure_step(
-                            ps, exc, step_id=step_ids[i - 1]
-                        )
-                        input_resolution_error = True
-                    else:
-                        step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
-                        input_resolution_error = False
+                    step = self._build_or_prefail_step(
+                        ps,
+                        i - 1,
+                        completed_steps,
+                        prev_assets,
+                        step_id=step_ids[i - 1],
+                    )
                     logger.debug(
                         "Executing step %d/%d: %s/%s",
                         i,
@@ -1758,7 +1778,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                             step_index=i - 1,
                             total=total_steps,
                         )
-                    if input_resolution_error:
+                    # Input-resolution prefail handling is shared; the runner call
+                    # site only differs in sync vs async provider invocation.
+                    if self._is_input_resolution_failure_step(step):
                         result = self._record_prefailed_step(step, ctx)
                     else:
                         result = await self._execute_step_async(ps, step, config, ctx)
