@@ -34,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `genblaze` umbrella package: raises its `genblaze-core` floor to 0.3.4 so
   umbrella installs receive the verification hardening (#77).
 - Provider and storage connector packages now require `genblaze-core>=0.3.4,<0.4`
-  so adapter-only installs also receive the URL-only asset verification fix
-  (#77).
+  and carry patch version bumps so adapter-only installs receive republished
+  wheels with the URL-only asset verification fix (#77).
 - `ObjectStorageSink.read_manifest_for_asset()` now requires `tenant_id`, stores
   tenant-scoped asset index entries, validates `asset_id` as a UUID, falls back
   to legacy flat index entries during migration, rejects manifest pointer
