@@ -4,6 +4,7 @@ SubmitResult, and ProviderCapabilities."""
 from __future__ import annotations
 
 import pytest
+from genblaze_core._asset_url import strip_asset_url_credentials
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, StepStatus
@@ -13,7 +14,6 @@ from genblaze_core.providers.base import (
     SubmitResult,
     SyncProvider,
     _adaptive_poll_interval,
-    strip_asset_url_credentials,
     validate_asset_url,
 )
 from genblaze_core.runnable.config import RunnableConfig

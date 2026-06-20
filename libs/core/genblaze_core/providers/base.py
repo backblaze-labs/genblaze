@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote, urlparse
 
-from genblaze_core._asset_url import strip_asset_url_credentials as strip_asset_url_credentials
 from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
