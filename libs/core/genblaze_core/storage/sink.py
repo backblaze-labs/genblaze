@@ -635,12 +635,13 @@ class ObjectStorageSink(BaseSink):
         rejected because a global asset-id index is an authorization
         boundary in multi-tenant deployments.
         """
-        # Drive the existing transfer pipeline. No tenant/date/run_id —
-        # under HIERARCHICAL the strategy degrades to {prefix}/runs/assets/...
-        # which is fine for standalone writes; under CAS the layout is
-        # hash-keyed and tenant/date/run_id were always ignored anyway.
-        tenant = _require_tenant_id(tenant_id) if manifest_uri is not None else None
-        self._transfer.transfer(asset)
+        # Drive the existing transfer pipeline. When a tenant is supplied,
+        # pass it through so HIERARCHICAL standalone asset keys remain scoped
+        # consistently with write_run(); CAS ignores tenant/date/run_id.
+        tenant = normalize_tenant_id(tenant_id)
+        if manifest_uri is not None and tenant is None:
+            raise SinkError("tenant_id is required for asset manifest reverse lookup")
+        self._transfer.transfer(asset, tenant=tenant)
         if manifest_uri is not None:
             self._write_asset_index(asset.asset_id, manifest_uri, tenant_id=tenant)
         return asset

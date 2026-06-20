@@ -1225,6 +1225,35 @@ class TestPutAsset:
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_put_asset_manifest_uri_scopes_hierarchical_key_by_tenant(
+        self, mock_urlopen, _mock_dns
+    ):
+        """Standalone hierarchical uploads use tenant context when indexing."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"png-bytes", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="dam", key_strategy=KeyStrategy.HIERARCHICAL)
+        asset = Asset(url="https://cdn.example.com/cat.png", media_type="image/png")
+
+        sink.put_asset(
+            asset,
+            manifest_uri="https://storage.example.com/manifests/run.json",
+            tenant_id=" tenant-a ",
+        )
+
+        expected_key = f"dam/runs/tenant-a/assets/{asset.asset_id}.png"
+        unscoped_key = f"dam/runs/assets/{asset.asset_id}.png"
+        assert expected_key in backend.store
+        assert unscoped_key not in backend.store
+        assert asset.url == f"https://mem/{expected_key}"
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_put_asset_cas_dedupes_identical_payloads(self, mock_urlopen, _mock_dns):
         """Two assets with identical content land at the same CAS key —
         the second put is skipped."""
