@@ -72,6 +72,7 @@ def main() -> None:
     # and metadata recording the source attribution.
     episodes = fetch_feed_entries()
     feed_url = "https://feeds.example.com/example-podcast.xml"
+    tenant_id = "podcast-demo"
 
     result = Pipeline.ingest(
         assets=episodes,
@@ -82,6 +83,7 @@ def main() -> None:
         },
         sink=sink,
         name="podcast-rss-pull",
+        tenant_id=tenant_id,
     )
 
     # --- Inspect the result ---
@@ -102,9 +104,10 @@ def main() -> None:
     # --- Reverse lookup ---
     # Given just an asset_id (e.g. from a job-queue row), recover the
     # manifest that introduced it. Useful for downstream workers that
-    # need to know "where did this byte stream come from?"
+    # need to know "where did this byte stream come from?" Reverse
+    # lookup is tenant-scoped to preserve the authorization boundary.
     first_asset_id = episodes[0].asset_id
-    recovered = sink.read_manifest_for_asset(first_asset_id)
+    recovered = sink.read_manifest_for_asset(first_asset_id, tenant_id=tenant_id)
     if recovered is not None:
         print(f"Reverse lookup for asset {first_asset_id[:8]}...:")
         print(f"  manifest hash: {recovered.canonical_hash}")
