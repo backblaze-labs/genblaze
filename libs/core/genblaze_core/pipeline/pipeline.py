@@ -1103,8 +1103,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             or has_tracer
             or self._event_emitter is not None
         )
+        merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
+        merged["run_id"] = run_id
         if not needs_install:
-            return config
+            return merged
 
         def _composite_progress(ev: Any) -> None:
             # User callback first so their side effects see the raw ProgressEvent
@@ -1117,7 +1119,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._call_user_callback(user_on_retry, ev, "on_retry")
             self._emit_event(ev)
 
-        merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
         merged["on_progress"] = _composite_progress
         merged["on_retry"] = _composite_retry
         return merged
