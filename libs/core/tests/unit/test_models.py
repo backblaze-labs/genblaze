@@ -659,6 +659,23 @@ def test_parse_manifest_v1_0_verify_roundtrip():
     assert parsed.schema_version == "1.0"
 
 
+def test_parse_manifest_missing_schema_version_preserves_v1_0_policy():
+    """Schema-less historical manifests parse with the v1.0 hash policy."""
+    step = Step(provider="replicate", model="flux", prompt="cat")
+    run = Run(steps=[step])
+    manifest = Manifest(run=run, schema_version="1.0")
+    manifest.compute_hash()
+    data = manifest.model_dump(mode="python")
+    data.pop("schema_version")
+    for step_data in data["run"]["steps"]:
+        step_data.pop("cost_usd", None)
+
+    parsed = parse_manifest(data)
+
+    assert parsed.schema_version == "1.0"
+    assert parsed.verify_hash()
+
+
 # --- EDIT StepType ---
 
 

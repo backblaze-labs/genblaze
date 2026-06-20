@@ -397,7 +397,8 @@ def parse_manifest(data: dict) -> Manifest:
     read paths report a deliberate upgrade-required condition rather than a
     generic validation failure.
     """
-    version = data.get("schema_version", "1.0")
+    version = data.get("schema_version") or "1.0"
+    data["schema_version"] = version
     if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise UnsupportedSchemaVersionError(
             f"Unsupported schema_version {version!r}; this reader supports "
