@@ -714,6 +714,8 @@ class ObjectStorageSink(BaseSink):
             entry = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SinkError(f"Asset index at {index_key!r} is not valid JSON: {exc}") from exc
+        if not isinstance(entry, dict):
+            raise SinkError(f"Asset index at {index_key!r} must be a JSON object")
         if normalize_tenant_id(entry.get("tenant_id")) != tenant:
             logger.warning(
                 "Asset manifest reverse lookup denied for index tenant mismatch",

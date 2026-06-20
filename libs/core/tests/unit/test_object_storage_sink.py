@@ -1365,6 +1365,17 @@ class TestReadManifestForAsset:
 
         assert sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-b") is None
 
+    @pytest.mark.parametrize("payload", [[], "string", 123])
+    def test_read_manifest_for_asset_rejects_non_object_index(self, payload):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        index_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        backend.store[index_key] = json.dumps(payload).encode("utf-8")
+
+        with pytest.raises(SinkError, match="must be a JSON object"):
+            sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
+
     def test_read_manifest_for_asset_denies_manifest_tenant_mismatch(self):
         backend = _AssetIndexBackend()
         sink = ObjectStorageSink(backend, prefix="dam")
