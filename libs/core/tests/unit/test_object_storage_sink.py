@@ -336,6 +336,38 @@ class TestObjectStorageSink:
             "manifests" in key or key.endswith("manifest.json") for key in backend.store
         )
 
+    def test_write_run_rehashes_after_partial_transfer_failure(self):
+        """A failed write still leaves the in-memory manifest hash-consistent."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        run, manifest = _make_run_and_manifest()
+        transferred_asset = run.steps[0].assets[0]
+        failed_asset = Asset(
+            url="https://cdn.example.com/missing.png",
+            media_type="image/png",
+        )
+        run.steps[0].assets.append(failed_asset)
+        manifest.compute_hash()
+
+        def transfer(asset: Asset, **_kwargs) -> str:
+            if asset is failed_asset:
+                raise RuntimeError("network down")
+            asset.url = f"https://mem/test/assets/{asset.asset_id}.png"
+            asset.sha256 = "a" * 64
+            asset.size_bytes = 10
+            return f"test/assets/{asset.asset_id}.png"
+
+        with patch.object(sink._transfer, "transfer", side_effect=transfer):
+            with pytest.raises(SinkError, match="manifest was not uploaded"):
+                sink.write_run(run, manifest)
+
+        assert transferred_asset.sha256 == "a" * 64
+        assert manifest.transfer_failures == [failed_asset.asset_id]
+        assert manifest.verify_hash()
+        assert not any(
+            "manifests" in key or key.endswith("manifest.json") for key in backend.store
+        )
+
 
 def _mock_urlopen():
     """Helper: patch urlopen to return fake image data."""

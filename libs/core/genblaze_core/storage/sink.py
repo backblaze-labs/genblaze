@@ -605,6 +605,7 @@ class ObjectStorageSink(BaseSink):
                 extra={"asset_ids": _id_log_extra(failed_asset_ids)},
             )
             manifest.transfer_failures = list(failed_asset_ids)
+            manifest.compute_hash()
             raise SinkError(
                 f"Run {run.run_id}: {len(failed_asset_ids)}/{len(all_assets)} "
                 "asset transfer(s) failed; manifest was not uploaded"
