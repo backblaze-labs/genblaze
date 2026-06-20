@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from genblaze_core._asset_url import strip_asset_url_credentials
 from genblaze_core.canonical.json import canonical_hash, canonical_json
 from genblaze_core.exceptions import ManifestError, UnsupportedSchemaVersionError
 from genblaze_core.models.asset import is_valid_sha256
@@ -63,76 +63,6 @@ _ASSET_HASH_EXCLUDE = frozenset(
 )
 _UNHASHED_ASSET_MARKER = "url_only_unverified"
 _UNHASHED_ASSET_URL_FIELD = "unverified_asset_url"
-_UNVERIFIED_ASSET_QUERY_EXCLUDE = frozenset(
-    {
-        "access_token",
-        "awsaccesskeyid",
-        "expires",
-        "expires_in",
-        "expiry",
-        "key-pair-id",
-        "response-cache-control",
-        "response-content-disposition",
-        "response-content-encoding",
-        "response-content-language",
-        "response-content-type",
-        "x-id",
-    }
-)
-_AZURE_SAS_QUERY_PARAMS = frozenset(
-    {
-        "se",
-        "sig",
-        "skoid",
-        "sks",
-        "sktid",
-        "skv",
-        "sp",
-        "spr",
-        "sr",
-        "srt",
-        "ss",
-        "st",
-        "sv",
-    }
-)
-_CLOUDFRONT_SIGNED_QUERY_PARAMS = frozenset(
-    {
-        "expires",
-        "key-pair-id",
-        "policy",
-        "signature",
-    }
-)
-_GCS_V2_SIGNED_QUERY_PARAMS = frozenset(
-    {
-        "expires",
-        "googleaccessid",
-        "signature",
-    }
-)
-_UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE = (
-    "x-amz-",
-    "x-goog-",
-    "x-bz-",
-)
-
-
-def _query_pairs_preserving_plus(query: str) -> list[tuple[str, str]]:
-    """Parse query pairs without treating '+' as a space."""
-    if not query:
-        return []
-    pairs: list[tuple[str, str]] = []
-    for raw_pair in query.split("&"):
-        if not raw_pair:
-            continue
-        raw_name, separator, raw_value = raw_pair.partition("=")
-        pairs.append((unquote(raw_name), unquote(raw_value if separator else "")))
-    return pairs
-
-
-def _encode_query_pairs(pairs: list[tuple[str, str]]) -> str:
-    return "&".join(f"{quote(name, safe='')}={quote(value, safe='')}" for name, value in pairs)
 
 
 @dataclass(frozen=True)
@@ -180,55 +110,6 @@ def _hash_policy(schema_version: str) -> _SchemaHashPolicy:
     return _SCHEMA_HASH_POLICIES[schema_version]
 
 
-def _is_credential_query_param(
-    name: str,
-    *,
-    is_azure_sas: bool,
-    is_cloudfront_signed: bool,
-    is_gcs_v2_signed: bool,
-) -> bool:
-    key = name.lower()
-    return (
-        key in _UNVERIFIED_ASSET_QUERY_EXCLUDE
-        or key.startswith(_UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE)
-        or (is_azure_sas and key in _AZURE_SAS_QUERY_PARAMS)
-        or (is_cloudfront_signed and key in _CLOUDFRONT_SIGNED_QUERY_PARAMS)
-        or (is_gcs_v2_signed and key in _GCS_V2_SIGNED_QUERY_PARAMS)
-    )
-
-
-def _canonical_unverified_asset_url(url: str) -> str:
-    """Return the stable URL form used only for schema 1.6 URL-only hashes."""
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    host = (parts.hostname or "").lower()
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    netloc = f"{host}:{parts.port}" if parts.port is not None else host
-    query_pairs = _query_pairs_preserving_plus(parts.query)
-    query_keys = {name.lower() for name, _value in query_pairs}
-    # Keep resource-identifying query params so ?id=a and ?id=b do not
-    # collide, but strip presign credentials, expiries, response overrides,
-    # and fragments because they are volatile transport material. Generic
-    # names such as sig/signature/policy are stripped only when a known signed
-    # URL scheme is present; otherwise they may identify the resource itself.
-    is_azure_sas = bool(query_keys & {"sv", "se", "sp", "sr", "ss", "srt"})
-    is_cloudfront_signed = "key-pair-id" in query_keys
-    is_gcs_v2_signed = "googleaccessid" in query_keys
-    query_items = [
-        (name, value)
-        for name, value in query_pairs
-        if not _is_credential_query_param(
-            name,
-            is_azure_sas=is_azure_sas,
-            is_cloudfront_signed=is_cloudfront_signed,
-            is_gcs_v2_signed=is_gcs_v2_signed,
-        )
-    ]
-    query = _encode_query_pairs(sorted(query_items))
-    return urlunsplit((scheme, netloc, parts.path, query, ""))
-
-
 def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
     """Strip operational asset fields while marking URL-only assets."""
     url = asset.get("url")
@@ -237,7 +118,7 @@ def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
         asset.pop(key, None)
     if mark_unhashed and not has_sha256 and url is not None:
         asset["asset_integrity"] = _UNHASHED_ASSET_MARKER
-        asset[_UNHASHED_ASSET_URL_FIELD] = _canonical_unverified_asset_url(url)
+        asset[_UNHASHED_ASSET_URL_FIELD] = strip_asset_url_credentials(url)
 
 
 def _unhashed_output_asset_ids(run: Run) -> list[str]:
