@@ -72,7 +72,12 @@ def _validation_error_summary(exc: ValidationError) -> str:
     ]
     items: list[str] = []
     for detail in details[:5]:
-        loc = ".".join(str(part) for part in detail.get("loc", ())) or "<manifest>"
+        loc_value = detail.get("loc", ())
+        if isinstance(loc_value, (str, bytes)) or not isinstance(loc_value, Sequence):
+            loc_parts: Sequence[object] = (loc_value,)
+        else:
+            loc_parts = loc_value
+        loc = ".".join(str(part) for part in loc_parts) or "<manifest>"
         items.append(f"{loc}: {detail.get('type', 'validation_error')}")
     suffix = "" if len(details) <= 5 else f"; ... {len(details) - 5} more"
     error_count = getattr(exc, "error_count", None)
