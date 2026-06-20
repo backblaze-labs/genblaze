@@ -803,7 +803,8 @@ class ObjectStorageSink(BaseSink):
         then fetches and parses the manifest from the recorded URI. During the
         migration from the legacy flat index, a missing tenant-scoped entry
         falls back to ``{prefix}/_index/{asset_id}.json`` and backfills the
-        scoped entry after the manifest tenant and asset reference checks pass.
+        scoped entry after manifest verification, tenant, and asset reference
+        checks pass.
         Returns ``None`` when no index entry exists, the referenced manifest
         belongs to a different tenant, or the manifest does not reference the
         requested asset ID.
@@ -918,7 +919,7 @@ class ObjectStorageSink(BaseSink):
             allow_unverified_assets=effective_allow_unverified,
             strict_unverified_assets=self._strict_manifest_reads,
         )
-        if used_legacy_index:
+        if used_legacy_index and verify:
             self._write_asset_index(
                 asset_id,
                 manifest_uri,

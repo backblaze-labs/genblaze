@@ -1708,6 +1708,41 @@ class TestReadManifestForAsset:
         scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
         assert scoped_key in backend.store
 
+    def test_read_manifest_for_asset_does_not_backfill_legacy_index_without_verify(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(
+            url="https://cdn.example.com/out.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        payload = json.loads(manifest.to_canonical_json())
+        payload["canonical_hash"] = "0" * 64
+        manifest_key = sink.manifest_key_for(run)
+        manifest_uri = backend.get_durable_url(manifest_key)
+        backend.store[manifest_key] = json.dumps(payload).encode("utf-8")
+        backend.store[sink._legacy_asset_index_key(asset.asset_id)] = json.dumps(
+            {"manifest_uri": manifest_uri}
+        ).encode("utf-8")
+
+        recovered = sink.read_manifest_for_asset(
+            asset.asset_id,
+            tenant_id="tenant-a",
+            verify=False,
+        )
+
+        assert recovered is not None
+        scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        assert scoped_key not in backend.store
+
     def test_read_manifest_for_asset_reads_legacy_tenantless_index_with_default_tenant(
         self,
     ):
