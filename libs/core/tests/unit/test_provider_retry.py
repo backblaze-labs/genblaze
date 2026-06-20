@@ -160,6 +160,44 @@ def test_resume_skips_submit(mock_sleep) -> None:
 
 
 @patch("genblaze_core.providers.base.time.sleep")
+def test_resume_progress_includes_prediction_id_for_fresh_step(mock_sleep) -> None:
+    """resume() populates request_id even when step metadata starts empty."""
+    provider = _ResumableProvider(polls_until_done=1)
+    progress_events: list[Any] = []
+
+    result = provider.resume(
+        "pred-resume",
+        _make_step(),
+        {"timeout": 60, "on_progress": progress_events.append},
+    )
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.metadata[UPSTREAM_ID_KEY] == "pred-resume"
+    assert progress_events[0].status == "resumed"
+    assert progress_events[0].request_id == "pred-resume"
+
+
+@patch("genblaze_core.providers.base.asyncio.sleep", return_value=None)
+def test_aresume_progress_includes_prediction_id_for_fresh_step(mock_sleep) -> None:
+    """aresume() populates request_id even when step metadata starts empty."""
+    provider = _ResumableProvider(polls_until_done=1)
+    progress_events: list[Any] = []
+
+    result = asyncio.run(
+        provider.aresume(
+            "pred-resume",
+            _make_step(),
+            {"timeout": 60, "on_progress": progress_events.append},
+        )
+    )
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.metadata[UPSTREAM_ID_KEY] == "pred-resume"
+    assert progress_events[0].status == "resumed"
+    assert progress_events[0].request_id == "pred-resume"
+
+
+@patch("genblaze_core.providers.base.time.sleep")
 def test_step_retry_fetch_failure_resumes_without_resubmit(mock_sleep) -> None:
     """A fetch-phase step retry resumes the submitted prediction."""
     provider = _PostSubmitRetryProvider(fail_phase="fetch", fail_count=2)

@@ -1688,6 +1688,7 @@ class BaseProvider(Runnable[Step, Step]):
         progress_status: str = "resumed",
     ) -> Step:
         """Resume polling an in-flight job, raising errors to the caller."""
+        step.metadata[UPSTREAM_ID_KEY] = str(prediction_id)
         step.status = StepStatus.PROCESSING
         if step.started_at is None:
             step.started_at = utc_now()
@@ -1735,6 +1736,7 @@ class BaseProvider(Runnable[Step, Step]):
         progress_status: str = "resumed",
     ) -> Step:
         """Async resume path that raises errors to the caller."""
+        step.metadata[UPSTREAM_ID_KEY] = str(prediction_id)
         step.status = StepStatus.PROCESSING
         if step.started_at is None:
             step.started_at = utc_now()
