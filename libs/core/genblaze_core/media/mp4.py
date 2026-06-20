@@ -20,7 +20,7 @@ from genblaze_core.media.base import (
     MediaCapability,
     atomic_write,
 )
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 # Custom UUID for genblaze manifest box
 GENBLAZE_UUID = uuid.UUID("6d6f6461-6c66-6c6f-7700-000000000001")
@@ -147,7 +147,7 @@ class Mp4Handler(BaseMediaHandler):
 
             if manifest_json is None:
                 raise EmbeddingError(f"No genblaze manifest found in {source}")
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

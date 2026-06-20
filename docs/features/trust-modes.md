@@ -17,7 +17,7 @@ Genblaze supports a layered trust model. Today only Mode 1 ships in core; Modes 
 
 **What it proves:**
 - The manifest content has not changed since it was written (canonical_hash recomputes).
-- The output asset bytes have not changed since the manifest was written when every output asset has `asset.sha256` populated. `asset.sha256` is included in the canonical hash payload — see caveat in [media-embedding.md](media-embedding.md).
+- The manifest commits to each output asset's `asset.sha256` when that field is populated. A caller can prove fetched/stored bytes have not changed by hashing those bytes and comparing them to the committed digest — see caveat in [media-embedding.md](media-embedding.md).
 - The pipeline run is reproducible: same inputs always produce the same canonical_hash.
 
 **What it does NOT prove:**
@@ -37,7 +37,7 @@ from genblaze_core import Manifest
 # Build + hash
 manifest = Manifest.from_run(run)
 
-# Verify payload integrity and output byte binding.
+# Verify payload integrity and declared output sha256 coverage.
 assert manifest.verify()
 
 # Hash-only migration/read path.
@@ -80,24 +80,31 @@ assert manifest.verify_hash()
 
 ## Asset binding caveat
 
-`Manifest.verify()` is an asset-byte integrity check: a successful output asset
-without `asset.sha256` does not verify, even when the manifest hash itself
-matches. This applies to legacy schema versions too, so an attacker cannot set
-`schema_version="1.5"` to bypass output byte binding. Use `ObjectStorageSink`
-or a provider path that materializes bytes locally to populate `sha256` before
-relying on Mode 1 asset integrity.
+`Manifest.verify()` changed in 0.3.3 from hash-only verification to a stricter
+declared asset-binding check. A successful output asset without `asset.sha256`
+does not verify, even when the manifest hash itself matches. This applies to
+legacy schema versions too, so an attacker cannot set `schema_version="1.5"` to
+bypass output sha256 coverage. Use `verify_hash()` for historical hash-only
+CI gates or audits where URL-only outputs are expected.
+
+`Manifest.verify()` and `genblaze verify` do not fetch `asset.url` and re-hash
+remote bytes. They verify the canonical manifest hash and require every output
+asset to declare a syntactically valid sha256 digest. Consumers that dereference
+asset URLs must independently hash the fetched bytes and compare them to
+`asset.sha256` before trusting those bytes.
 
 Use `Manifest.verify_hash()` when a caller only needs to check that
 `canonical_hash` matches the manifest payload. This distinction matters for
 storage reads and replay flows that should report URL-only outputs as
 byte-unverified without treating them as hash tampering.
 
-Schema 1.6 URL-only hash markers are read-supported, but the SDK still writes
-schema 1.5 by default during the expand-contract rollout. Operators should
-upgrade readers before enabling 1.6 manifest emission. If 1.6 manifests are
-written and a rollback is required, keep a reader with 1.6 hash-marker support
-available to re-save or inspect those manifests; older 1.5 readers cannot
-verify the 1.6 URL-only hash payload.
+Schema 1.6 URL-only hash markers are Python read-supported, but the SDK still
+writes schema 1.5 by default and the published JSON Schema/TypeScript spec stay
+capped at 1.5 during the expand-contract rollout. Operators should upgrade all
+readers before enabling 1.6 manifest emission. If 1.6 manifests are written and
+a rollback is required, keep a reader with 1.6 hash-marker support available to
+re-save or inspect those manifests; older 1.5 readers cannot verify the 1.6
+URL-only hash payload.
 
 `asset.sha256` in the manifest is computed against the asset bytes at the moment the manifest is built — i.e., **before** embedding. After `SmartEmbedder.embed()` modifies the file to insert the manifest, the on-disk file's sha256 will not match `asset.sha256`. Two paths to verify the asset:
 

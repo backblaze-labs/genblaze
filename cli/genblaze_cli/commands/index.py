@@ -17,12 +17,12 @@ import click
 )
 def index(manifest_file: Path, output: Path) -> None:
     """Write manifest data to a Parquet sink for querying."""
-    from genblaze_core.models.manifest import Manifest
+    from genblaze_core.models.manifest import parse_manifest
     from genblaze_core.sinks.parquet import ParquetSink
 
     try:
         data = json.loads(manifest_file.read_text(encoding="utf-8"))
-        manifest = Manifest.model_validate(data)
+        manifest = parse_manifest(data)
     except Exception as exc:
         raise click.ClickException(f"Failed to load manifest: {exc}") from exc
 

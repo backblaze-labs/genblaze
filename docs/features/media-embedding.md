@@ -63,10 +63,11 @@ asset bytes themselves, either:
 2. Extract the manifest, strip the embed region per format, and re-hash the remainder.
 
 Manifest verification checks the canonical manifest payload and output asset
-byte binding. `manifest.verify()` and `genblaze verify <file>` reject URL-only
-output assets as byte-unverified regardless of schema version; hash-only
-callers can use `manifest.verify_hash()`. None of these paths hash the
-post-embed container file. See [trust-modes.md](trust-modes.md#asset-binding-caveat).
+sha256 coverage. `manifest.verify()` and `genblaze verify <file>` reject
+URL-only output assets and malformed sha256 declarations regardless of schema
+version; hash-only callers can use `manifest.verify_hash()`. None of these
+paths fetch asset URLs or hash the post-embed container file. See
+[trust-modes.md](trust-modes.md#asset-binding-caveat).
 
 ## WebP lossless preservation
 

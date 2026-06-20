@@ -8,7 +8,7 @@ from pathlib import Path
 
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 TXXX_DESC = "genblaze:manifest"
 
@@ -59,7 +59,7 @@ class Mp3Handler(BaseMediaHandler):
             if frame is None:
                 raise EmbeddingError(f"No genblaze manifest found in {source}")
             manifest_json = frame.text[0]
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from genblaze_core._utils import MAX_MANIFEST_BYTES
-from genblaze_core.exceptions import ManifestError, SinkError
+from genblaze_core.exceptions import ManifestError, SinkError, UnverifiedAssetError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import PromptVisibility, RunStatus, StepStatus
 from genblaze_core.models.manifest import Manifest
@@ -218,7 +218,7 @@ class TestObjectStorageSink:
                 Asset(
                     url="https://cdn-a.example.com/img.png",
                     media_type="image/png",
-                    sha256="abc123",
+                    sha256="a" * 64,
                     size_bytes=1024,
                 ),
             ],
@@ -231,7 +231,7 @@ class TestObjectStorageSink:
                 Asset(
                     url="https://cdn-b.example.com/img.png?X-Amz-Signature=fake",
                     media_type="image/png",
-                    sha256="abc123",
+                    sha256="a" * 64,
                     size_bytes=1024,
                 ),
             ],
@@ -1010,6 +1010,7 @@ class TestManifestHelpers:
             sink.read_manifest(run)
 
         assert key in str(excinfo.value)
+        assert "input_value" not in str(excinfo.value)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
@@ -1052,8 +1053,9 @@ class TestManifestHelpers:
 
         backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
 
-        with pytest.raises(ManifestError, match="missing sha256"):
+        with pytest.raises(UnverifiedAssetError, match="missing sha256") as excinfo:
             sink.read_manifest(run)
+        assert excinfo.value.asset_ids == (step.assets[0].asset_id,)
         assert "output assets missing sha256" in caplog.text
 
         loaded = sink.read_manifest(run, allow_unverified_assets=True)

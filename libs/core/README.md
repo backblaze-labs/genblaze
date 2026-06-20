@@ -5,7 +5,7 @@
 
 `genblaze-core` is the core of [genblaze](https://github.com/backblaze-labs/genblaze), an open-source orchestration framework by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for composing multi-step AI media generation workflows. It gives you a single, provider-agnostic `Pipeline` API for text-to-video, text-to-image, text-to-speech, image-to-video, and audio generation — so you can swap models (Sora, Veo, Runway, Luma, Flux, DALL·E, ElevenLabs, Stable Audio, LMNT, GMICloud) without rewriting pipeline logic.
 
-Every pipeline run emits a canonical, hash-verified **provenance manifest** — a tamper-evident JSON document capturing the provider, model, prompt, parameters, timestamps, and SHA-256 hash of every generated asset. Manifests can be embedded directly into PNG, JPEG, WebP, MP4, MP3, and WAV files, uploaded alongside assets to S3-compatible storage, or exported to Parquet for analytics.
+Every pipeline run emits a canonical, hash-verified **provenance manifest** — a tamper-evident JSON document capturing the provider, model, prompt, parameters, timestamps, and output asset metadata. Outputs are sha256-covered once `sha256` is populated, typically by a storage sink or byte-returning provider path. Manifests can be embedded directly into PNG, JPEG, WebP, MP4, MP3, and WAV files, uploaded alongside assets to S3-compatible storage, or exported to Parquet for analytics.
 
 ## Why genblaze-core
 
@@ -23,7 +23,7 @@ Every pipeline run emits a canonical, hash-verified **provenance manifest** — 
 |---|---|
 | `Pipeline` API | Fluent multi-step generation, fan-in (`input_from`), AV compositing via FFmpeg |
 | Provider discovery | Entry-point–based registry — `pip install genblaze-<provider>` and it's available |
-| Manifest (Pydantic) | `Run`, `Step`, `Asset` models with canonical JSON hashing and `.verify()` |
+| Manifest (Pydantic) | `Run`, `Step`, `Asset` models with canonical JSON hashing, `verify_hash()`, and stricter `.verify()` output sha256 checks |
 | Media embedding | `PngHandler`, `Mp4Handler`, `Mp3Handler`, etc. — embed + extract manifests in-file |
 | Storage sink | `ObjectStorageSink` with hierarchical or content-addressable key layout |
 | Parquet sink | Partitioned run/step/asset tables for downstream analytics |
@@ -71,7 +71,8 @@ run, manifest = (
 )
 
 print(manifest.canonical_hash)   # deterministic SHA-256 of the run
-print(manifest.verify())         # True
+print(manifest.verify_hash())    # True: canonical payload hash matches
+print(manifest.verify())         # True when every output asset declares sha256
 ```
 
 ## Quickstart — Sora + Backblaze B2 storage
@@ -107,6 +108,11 @@ print(result.run.steps[0].assets[0].url)   # durable B2 URL
 print(result.manifest.canonical_hash)      # SHA-256 of the full run
 assert result.manifest.verify()
 ```
+
+`Manifest.verify()` does not fetch remote asset URLs. It verifies the manifest
+hash and requires output assets to declare valid sha256 values. If your code
+fetches `asset.url`, hash those bytes separately and compare them to
+`asset.sha256`.
 
 ## Storage — Backblaze B2 recommended
 

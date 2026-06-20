@@ -11,15 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `genblaze-core` 0.3.2 → 0.3.3: `Manifest.verify()` now rejects output
   assets that lack `sha256` for every supported schema version, preventing a
-  schema downgrade from bypassing asset-byte binding. `verify_hash()` remains
-  the hash-only compatibility check for durable-storage reads (#77).
-- `genblaze-core`: schema 1.6 URL-only hash markers are read-supported, with
-  query strings and fragments stripped from the fallback URL so presigned
-  credentials and expiry changes do not affect the metadata hash. Default
-  manifest emission stays on schema 1.5 for an expand-contract rollout (#77).
+  schema downgrade from bypassing declared output sha256 coverage. This is an
+  intentional behavior break from the prior hash-only contract; use
+  `verify_hash()` for legacy hash-only checks against historical URL-only
+  media (#77).
+- `genblaze-core`: `Asset.sha256` is now validated as a 64-character lowercase
+  hex digest. `Manifest.verify()` and `genblaze verify` do not fetch remote
+  asset URLs; consumers must independently hash fetched bytes before trusting
+  those bytes (#77).
+- `genblaze-core`: schema 1.6 URL-only hash markers are Python read-supported.
+  The canonical marker URL strips known credential, expiry, and response
+  override query parameters while retaining resource-identifying query
+  parameters. Default manifest emission and the published JSON Schema/TypeScript
+  spec stay on schema 1.5 for an expand-contract rollout (#77).
 - `genblaze-cli` 0.3.0 → 0.3.1: raises its `genblaze-core` floor to the first
-  core version that exposes `verify_hash()` and output-asset byte-binding
-  diagnostics (#77).
+  core version that exposes `verify_hash()` and output-asset sha256 diagnostics
+  (#77).
+- `genblaze` umbrella package: raises its `genblaze-core` floor to 0.3.3 so
+  umbrella installs receive the verification hardening (#77).
+
+### Changed
+
+- `ObjectStorageSink.read_manifest(verify=True)` is strict by default and raises
+  `UnverifiedAssetError` for hash-valid manifests whose output assets are
+  missing `sha256`. Historical URL-only manifests must be backfilled, read via
+  the explicit `allow_unverified_assets=True` hash-only path, or covered by a
+  documented rollout plan before enabling this on hot read paths (#77).
 
 ### Added
 

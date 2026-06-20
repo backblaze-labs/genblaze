@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from genblaze_core.canonical.json import canonical_hash, canonical_json
 from genblaze_core.exceptions import ManifestError
+from genblaze_core.models.asset import is_valid_sha256
 from genblaze_core.models.enums import PromptVisibility
 from genblaze_core.models.run import Run
 
@@ -61,6 +63,32 @@ _ASSET_HASH_EXCLUDE = frozenset(
 )
 _UNHASHED_ASSET_MARKER = "url_only_unverified"
 _UNHASHED_ASSET_URL_FIELD = "unverified_asset_url"
+_UNVERIFIED_ASSET_QUERY_EXCLUDE = frozenset(
+    {
+        "access_token",
+        "awsaccesskeyid",
+        "credential",
+        "expires",
+        "expires_in",
+        "expiry",
+        "key-pair-id",
+        "policy",
+        "response-cache-control",
+        "response-content-disposition",
+        "response-content-encoding",
+        "response-content-language",
+        "response-content-type",
+        "signature",
+        "sig",
+        "token",
+        "x-id",
+    }
+)
+_UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE = (
+    "x-amz-",
+    "x-goog-",
+    "x-bz-",
+)
 
 _SCHEMA_HASH_POLICIES = {
     "1.0": {"include_random_ids": True, "mark_unhashed_assets": False},
@@ -88,12 +116,28 @@ def _hash_policy(schema_version: str) -> dict[str, bool]:
         raise ManifestError(f"Unsupported schema_version: {schema_version!r}") from None
 
 
+def _is_credential_query_param(name: str) -> bool:
+    key = name.lower()
+    return key in _UNVERIFIED_ASSET_QUERY_EXCLUDE or key.startswith(
+        _UNVERIFIED_ASSET_QUERY_PREFIX_EXCLUDE
+    )
+
+
 def _canonical_unverified_asset_url(url: str) -> str:
     """Return the stable URL form used only for schema 1.6 URL-only hashes."""
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
     netloc = parts.netloc.lower()
-    return urlunsplit((scheme, netloc, parts.path, "", ""))
+    # Keep resource-identifying query params so ?id=a and ?id=b do not
+    # collide, but strip presign credentials, expiries, response overrides,
+    # and fragments because they are volatile transport material.
+    query_items = [
+        (name, value)
+        for name, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not _is_credential_query_param(name)
+    ]
+    query = urlencode(sorted(query_items), doseq=True)
+    return urlunsplit((scheme, netloc, parts.path, query, ""))
 
 
 def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
@@ -108,8 +152,13 @@ def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
 
 
 def _unhashed_output_asset_ids(run: Run) -> list[str]:
-    """Return output asset IDs that cannot be verified against content bytes."""
-    return [asset.asset_id for step in run.steps for asset in step.assets if not asset.sha256]
+    """Return output asset IDs missing a syntactically valid content hash."""
+    return [
+        asset.asset_id
+        for step in run.steps
+        for asset in step.assets
+        if not is_valid_sha256(asset.sha256)
+    ]
 
 
 def _hash_payload(schema_version: str, run: Run) -> dict:
@@ -140,6 +189,19 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
             for inp in step.get("inputs", []):
                 _strip_asset_for_hash(inp, mark_unhashed=mark_unhashed_assets)
     return {"schema_version": schema_version, "run": run_data}
+
+
+@dataclass(frozen=True)
+class ManifestVerification:
+    """Structured manifest verification result used by CLI and API callers."""
+
+    hash_ok: bool
+    missing_sha256_ids: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        """True when hash verification passes and all outputs have valid sha256."""
+        return self.hash_ok and not self.missing_sha256_ids
 
 
 class Manifest(BaseModel):
@@ -208,19 +270,17 @@ class Manifest(BaseModel):
         return canonical_json(self.model_dump(mode="python"))
 
     def verify(self) -> bool:
-        """Verify the manifest hash and output asset byte binding.
+        """Verify the manifest hash and declared output asset sha256 coverage.
 
-        ``verify_hash()`` remains available for callers that only need to
-        check canonical payload integrity. Security-facing verification uses
-        this method and rejects any output asset that lacks ``sha256``,
-        including legacy schemas, so schema downgrades cannot bypass byte
-        binding.
+        Behavior note for 0.3.3: this exported method is stricter than the
+        pre-0.3.3 hash-only contract. Use ``verify_hash()`` for legacy
+        hash-only checks, or ``verification_report()`` when callers need to
+        distinguish a hash mismatch from outputs missing ``sha256``.
+
+        This method verifies that each output declares a syntactically valid
+        ``sha256``. It does not fetch ``asset.url`` or re-hash remote bytes.
         """
-        if not self.verify_hash():
-            return False
-        if self.output_asset_ids_missing_sha256():
-            return False
-        return True
+        return self.verification_report().ok
 
     def verify_hash(self) -> bool:
         """Verify only that ``canonical_hash`` matches the canonical payload."""
@@ -228,8 +288,18 @@ class Manifest(BaseModel):
         return self.canonical_hash == canonical_hash(payload)
 
     def output_asset_ids_missing_sha256(self) -> list[str]:
-        """Return output asset IDs missing byte hashes."""
+        """Return output asset IDs missing a valid sha256 digest."""
         return _unhashed_output_asset_ids(self.run)
+
+    def has_unverified_output_assets(self) -> bool:
+        """Return True when any output asset lacks a valid sha256 digest."""
+        return bool(self.output_asset_ids_missing_sha256())
+
+    def verification_report(self) -> ManifestVerification:
+        """Return the shared hash-plus-output-sha256 verification result."""
+        hash_ok = self.verify_hash()
+        missing_sha256_ids = tuple(self.output_asset_ids_missing_sha256()) if hash_ok else tuple()
+        return ManifestVerification(hash_ok=hash_ok, missing_sha256_ids=missing_sha256_ids)
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
         """Return canonical JSON for embedding per policy.

@@ -69,6 +69,8 @@ def test_extract_summary(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["extract", "--format", "summary", str(png)])
     assert result.exit_code == 0
     assert "Run ID:" in result.output
+    assert "Hash OK:" in result.output
+    assert "Output sha256:" in result.output
     assert "Verified:" in result.output
 
 
@@ -78,6 +80,23 @@ def test_verify_ok(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["verify", str(png)])
     assert result.exit_code == 0
     assert "OK" in result.output
+    assert "asset integrity" not in result.output
+
+
+def test_verify_ok_does_not_claim_remote_bytes_were_hashed(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest()
+    manifest.run.steps[0].assets[0].sha256 = "f" * 64
+    manifest.compute_hash()
+    png_path = tmp_path / "declared-sha.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    PngHandler().embed(png_path, manifest)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(png_path)])
+
+    assert result.exit_code == 0
+    assert "all output assets declare sha256" in result.output
+    assert "asset integrity" not in result.output
 
 
 def test_verify_distinguishes_unverified_assets(tmp_path: Path) -> None:
@@ -92,6 +111,25 @@ def test_verify_distinguishes_unverified_assets(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert "1 output asset(s) missing sha256" in combined
     assert "hash mismatch" not in combined
+
+
+def test_verify_rejects_malformed_output_sha256(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest()
+    object.__setattr__(manifest.run.steps[0].assets[0], "sha256", "not-a-sha")
+    manifest.compute_hash()
+    png_path = tmp_path / "bad-sha.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    png_path.with_suffix(png_path.suffix + ".genblaze.json").write_text(
+        manifest.to_canonical_json(),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(png_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "64-character lowercase hex digest" in combined
 
 
 def test_verify_reports_legacy_unverified_assets(tmp_path: Path) -> None:
@@ -119,6 +157,8 @@ def test_extract_summary_and_verify_agree_on_legacy_unverified_assets(tmp_path: 
     verify_result = runner.invoke(cli, ["verify", str(png_path)])
 
     assert extract_result.exit_code == 0
+    assert "Hash OK:   True" in extract_result.output
+    assert "Output sha256: 1 missing" in extract_result.output
     assert "Verified:  False" in extract_result.output
     assert verify_result.exit_code != 0
     assert not manifest.verify()
@@ -150,7 +190,7 @@ def test_replay_warns_on_unverified_assets_without_abort(tmp_path: Path) -> None
     result = runner.invoke(cli, ["replay", str(manifest_path)])
     combined = result.output + getattr(result, "stderr", "")
     assert result.exit_code == 0
-    assert "output asset bytes are unverified" in combined
+    assert "output asset bytes are not bound" in combined
     assert "Dry run" in result.output
 
 
@@ -163,7 +203,7 @@ def test_replay_warns_on_legacy_unverified_assets(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["replay", str(manifest_path)])
     combined = result.output + getattr(result, "stderr", "")
     assert result.exit_code == 0
-    assert "output asset bytes are unverified" in combined
+    assert "output asset bytes are not bound" in combined
     assert "Dry run" in result.output
 
 
@@ -174,6 +214,15 @@ def test_cli_core_dependency_floor_matches_local_core() -> None:
 
     expected = f"genblaze-core>={core_project['project']['version']},<0.4"
     assert expected in cli_project["project"]["dependencies"]
+
+
+def test_umbrella_core_dependency_floor_matches_local_core() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    meta_project = tomllib.loads((repo_root / "libs/meta/pyproject.toml").read_text())
+    core_project = tomllib.loads((repo_root / "libs/core/pyproject.toml").read_text())
+
+    expected = f"genblaze-core>={core_project['project']['version']},<0.4"
+    assert expected in meta_project["project"]["dependencies"]
 
 
 def test_replay_redacts_prompts_by_default(tmp_path: Path) -> None:

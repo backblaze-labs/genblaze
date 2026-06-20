@@ -62,6 +62,14 @@ class ManifestError(GenblazeError):
     """Raised when manifest creation/validation fails."""
 
 
+class UnverifiedAssetError(ManifestError):
+    """Raised when a manifest is hash-valid but outputs lack sha256."""
+
+    def __init__(self, message: str, *, asset_ids: list[str] | tuple[str, ...]):
+        super().__init__(message)
+        self.asset_ids = tuple(asset_ids)
+
+
 class EmbeddingError(GenblazeError):
     """Raised when media embedding or extraction fails."""
 

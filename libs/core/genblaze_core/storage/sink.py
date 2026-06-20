@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from genblaze_core._utils import MAX_MANIFEST_BYTES
-from genblaze_core.exceptions import ManifestError, SinkError, StorageError
+from genblaze_core.exceptions import (
+    ManifestError,
+    SinkError,
+    StorageError,
+    UnverifiedAssetError,
+)
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest, parse_manifest
@@ -52,6 +57,16 @@ _warned_durable_url_lock = threading.Lock()
 _PUBLIC_URL_BASE_MISSING = object()
 
 
+def _validation_error_summary(exc: ValidationError) -> str:
+    details = exc.errors(include_input=False, include_url=False)
+    items: list[str] = []
+    for detail in details[:5]:
+        loc = ".".join(str(part) for part in detail.get("loc", ())) or "<manifest>"
+        items.append(f"{loc}: {detail.get('type', 'validation_error')}")
+    suffix = "" if len(details) <= 5 else f"; ... {len(details) - 5} more"
+    return f"{exc.error_count()} validation error(s): {'; '.join(items)}{suffix}"
+
+
 def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
     try:
         raw = json.loads(data)
@@ -62,8 +77,12 @@ def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
         return parse_manifest(raw)
     except ManifestError as exc:
         raise ManifestError(f"Stored manifest at {key} is invalid: {exc}") from exc
-    except (AttributeError, TypeError, ValidationError) as exc:
-        raise ManifestError(f"Stored manifest at {key} is invalid: {exc}") from exc
+    except ValidationError as exc:
+        raise ManifestError(
+            f"Stored manifest at {key} is invalid: {_validation_error_summary(exc)}"
+        ) from exc
+    except (AttributeError, TypeError) as exc:
+        raise ManifestError(f"Stored manifest at {key} is invalid: {type(exc).__name__}") from exc
 
 
 def _warn_durable_url_on_private_bucket(bucket: str, policy: URLPolicy) -> None:
@@ -358,20 +377,22 @@ class ObjectStorageSink(BaseSink):
             run: The run whose manifest to load. Only ``run_id`` /
                 ``tenant_id`` / ``created_at`` are used (to derive the key).
             verify: When True (default), checks hash integrity and output
-                asset byte binding. Pass ``verify=False`` to skip all
-                verification on a manifest you trust (e.g. one you just
+                asset ``sha256`` declarations. Pass ``verify=False`` to skip
+                all verification on a manifest you trust (e.g. one you just
                 wrote).
             allow_unverified_assets: When True, ``verify=True`` still checks
                 ``manifest.verify_hash()`` but allows output assets without
                 ``sha256``. This is the explicit hash-only read path for
                 callers that need to inspect partially transferred manifests.
+                Treat this as security-sensitive; do not bind it directly to
+                request or tenant-controlled input.
 
         Raises:
             SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
                 Bounds OOM blast from a malicious or corrupt object.
-            ManifestError: when ``verify=True`` and hash integrity fails, or
-                output assets are missing ``sha256`` without
-                ``allow_unverified_assets=True``.
+            ManifestError: when ``verify=True`` and hash integrity fails.
+            UnverifiedAssetError: when output assets are missing ``sha256``
+                without ``allow_unverified_assets=True``.
         """
         key = self.manifest_key_for(run)
         data = self._backend.get(key)
@@ -406,9 +427,10 @@ class ObjectStorageSink(BaseSink):
                     },
                 )
                 if not allow_unverified_assets:
-                    raise ManifestError(
+                    raise UnverifiedAssetError(
                         f"Stored manifest at {key} has {len(missing_sha_ids)} "
-                        "output asset(s) missing sha256"
+                        "output asset(s) missing sha256",
+                        asset_ids=missing_sha_ids,
                     )
         return manifest
 
@@ -484,7 +506,7 @@ class ObjectStorageSink(BaseSink):
         # payload (see manifest._RUN_HASH_EXCLUDE). transfer_failures is a
         # non-hashed Manifest field, so writing it here doesn't affect the
         # canonical payload. Any failed asset that remains URL-only will still
-        # make Manifest.verify() return False for asset-byte integrity.
+        # make Manifest.verify() return False for output sha256 coverage.
         if failed_asset_ids:
             manifest.transfer_failures = list(failed_asset_ids)
 

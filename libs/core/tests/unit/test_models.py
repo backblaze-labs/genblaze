@@ -24,6 +24,19 @@ def test_asset_defaults():
     assert a.metadata == {}
 
 
+@pytest.mark.parametrize("sha256", ["not-a-sha", "A" * 64, "abc123", "g" * 64])
+def test_asset_rejects_malformed_sha256(sha256):
+    with pytest.raises(ValidationError, match="64-character lowercase hex digest"):
+        Asset(url="https://example.com/img.png", media_type="image/png", sha256=sha256)
+
+
+def test_asset_rejects_malformed_sha256_assignment():
+    asset = Asset(url="https://example.com/img.png", media_type="image/png")
+
+    with pytest.raises(ValidationError, match="64-character lowercase hex digest"):
+        asset.sha256 = "not-a-sha"
+
+
 def test_step_defaults():
     s = Step(provider="replicate", model="flux-schnell")
     assert s.step_id
@@ -86,6 +99,7 @@ def test_manifest_url_only_output_assets_do_not_verify():
 
     assert manifest_a.verify_hash()
     assert manifest_b.verify_hash()
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
     assert not manifest_a.verify()
     assert not manifest_b.verify()
 
@@ -164,6 +178,31 @@ def test_manifest_v1_5_reports_missing_output_sha_and_fails_verify():
     assert manifest.verify_hash()
     assert not manifest.verify()
     assert manifest.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
+    report = manifest.verification_report()
+    assert report.hash_ok
+    assert report.missing_sha256_ids == (step.assets[0].asset_id,)
+    assert not report.ok
+
+
+def test_manifest_verify_rejects_malformed_output_sha256_if_bypassed():
+    asset = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="a" * 64,
+    )
+    object.__setattr__(asset, "sha256", "not-a-sha")
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest.from_run(Run(name="same", steps=[step]))
+
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [asset.asset_id]
+    assert not manifest.verify()
 
 
 @pytest.mark.parametrize("schema_version", ["0", "1.7", "2.0", "1.x"])
@@ -221,8 +260,39 @@ def test_manifest_v1_6_url_only_hash_strips_presign_query_params():
     assert not manifest_a.verify()
 
 
+def test_manifest_v1_6_url_only_hash_keeps_resource_query_params():
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/download?id=benign&X-Amz-Signature=a",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/download?id=evil&X-Amz-Signature=a",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_b.verify_hash()
+
+
 def test_manifest_hashed_output_assets_verify_with_url_rewrites():
-    """sha256, not URL, is the provenance identity once bytes are bound."""
+    """sha256, not URL, is the provenance identity once bytes are declared."""
     base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
     step_a = Step(
         **base,
@@ -253,6 +323,7 @@ def test_manifest_hashed_output_assets_verify_with_url_rewrites():
     assert manifest_a.canonical_hash == manifest_b.canonical_hash
     assert manifest_a.verify()
     assert manifest_b.verify()
+    assert manifest_a.verification_report().ok
 
 
 def test_hash_excludes_operational_fields():

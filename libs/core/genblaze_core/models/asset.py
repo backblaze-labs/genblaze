@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from genblaze_core._utils import compute_sha256, new_id
+
+_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+
+
+def is_valid_sha256(value: str | None) -> bool:
+    """Return True for syntactically valid SHA-256 hex digests."""
+    return value is not None and bool(_SHA256_RE.fullmatch(value))
 
 
 class WordTiming(BaseModel):
@@ -72,6 +80,8 @@ class Track(BaseModel):
 class Asset(BaseModel):
     """A generated media artifact with URL, MIME type, and optional hash."""
 
+    model_config = ConfigDict(validate_assignment=True)
+
     asset_id: str = Field(default_factory=new_id, description="Unique asset identifier (UUID).")
     url: str = Field(
         description=(
@@ -99,6 +109,13 @@ class Asset(BaseModel):
         default=None, description="Media tracks in this container asset."
     )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata.")
+
+    @field_validator("sha256")
+    @classmethod
+    def _validate_sha256(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_sha256(value):
+            raise ValueError("sha256 must be a 64-character lowercase hex digest")
+        return value
 
     def set_hash(self, data: bytes) -> None:
         """Compute and set sha256 + size_bytes from raw asset bytes."""

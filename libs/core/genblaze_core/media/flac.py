@@ -9,7 +9,7 @@ from pathlib import Path
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 # Vorbis comment tag for genblaze manifest
 VORBIS_TAG = "GENBLAZE_MANIFEST"
@@ -62,7 +62,7 @@ class FlacHandler(BaseMediaHandler):
                     f"Embedded manifest exceeds size limit "
                     f"({len(manifest_json)} > {MAX_MANIFEST_BYTES} bytes)"
                 )
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

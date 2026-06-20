@@ -118,6 +118,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "StorageError": ("genblaze_core.exceptions", "StorageError"),
     "ProviderError": ("genblaze_core.exceptions", "ProviderError"),
     "ManifestError": ("genblaze_core.exceptions", "ManifestError"),
+    "UnverifiedAssetError": ("genblaze_core.exceptions", "UnverifiedAssetError"),
     "SinkError": ("genblaze_core.exceptions", "SinkError"),
     "WebhookError": ("genblaze_core.exceptions", "WebhookError"),
     # webhooks

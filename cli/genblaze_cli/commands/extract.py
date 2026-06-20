@@ -33,9 +33,12 @@ def extract(file: Path, fmt: str) -> None:
         if fmt == "json":
             click.echo(manifest.to_canonical_json())
         else:
+            report = manifest.verification_report()
             click.echo(f"Run ID:    {manifest.run.run_id}")
             click.echo(f"Steps:     {len(manifest.run.steps)}")
             click.echo(f"Hash:      {manifest.canonical_hash}")
-            click.echo(f"Verified:  {manifest.verify()}")
+            click.echo(f"Hash OK:   {report.hash_ok}")
+            click.echo(f"Output sha256: {len(report.missing_sha256_ids)} missing")
+            click.echo(f"Verified:  {report.ok}")
     except Exception as exc:
         raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc

@@ -1,4 +1,4 @@
-"""Verify command — check manifest hash and asset-byte integrity."""
+"""Verify command — check manifest hash and output sha256 coverage."""
 
 from pathlib import Path
 
@@ -29,17 +29,17 @@ def verify(file: Path) -> None:
     """Verify the integrity of a genblaze manifest in a media file."""
     try:
         manifest = _extract_manifest(file)
-        if not manifest.verify_hash():
+        report = manifest.verification_report()
+        if not report.hash_ok:
             click.echo("FAIL — manifest hash mismatch.", err=True)
             raise click.exceptions.Exit(1)
-        missing_sha_ids = manifest.output_asset_ids_missing_sha256()
-        if missing_sha_ids:
+        if report.missing_sha256_ids:
             click.echo(
-                f"FAIL — {len(missing_sha_ids)} output asset(s) missing sha256.",
+                f"FAIL — {len(report.missing_sha256_ids)} output asset(s) missing sha256.",
                 err=True,
             )
             raise click.exceptions.Exit(1)
-        click.echo("OK — manifest hash and output asset integrity verified.")
+        click.echo("OK — manifest hash verified; all output assets declare sha256.")
     except click.exceptions.Exit:
         raise
     except Exception as exc:

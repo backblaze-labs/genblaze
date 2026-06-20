@@ -10,7 +10,7 @@ generic constructor.
 Pass `sink=storage` to `pipeline.run()`. The `ObjectStorageSink`:
 
 1. **Transfers assets** — downloads from provider CDN, computes SHA-256, uploads to storage
-2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash; any failed output asset that remains URL-only makes `manifest.verify()` return `False` for asset-byte integrity while `manifest.verify_hash()` still reports whether the manifest payload was tampered
+2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash; any failed output asset that remains URL-only makes `manifest.verify()` return `False` for output sha256 coverage while `manifest.verify_hash()` still reports whether the manifest payload was tampered
 3. **Recomputes manifest hash** — the canonical hash reflects post-transfer SHA-256, size, and media metadata. Asset URLs remain transport hints once bytes are hash-bound
 4. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
 5. **Rewrites URLs** — asset URLs in the run now point to your bucket
@@ -165,13 +165,16 @@ key = sink.manifest_key_for(run)            # storage key (pure function)
 url = sink.manifest_url_for(run)            # durable, credential-free URL
 manifest = sink.read_manifest(run)          # fetch + parse + strict verify()
 assert manifest.verify_hash()               # payload integrity
-assert manifest.verify()                    # payload + output byte binding
+assert manifest.verify()                    # payload + declared output sha256
 ```
 
 `read_manifest` defaults to `verify=True` and enforces both hash integrity and
-output byte binding. It raises `ManifestError` on hash mismatch or output
-assets missing `sha256`. Pass `allow_unverified_assets=True` for an explicit
-hash-only read of partially transferred manifests, or `verify=False` to skip
+output sha256 coverage. It raises `ManifestError` on hash mismatch and
+`UnverifiedAssetError` when output assets are missing `sha256`. Existing
+historical URL-only manifests will fail this strict read until they are
+backfilled, or until a caller deliberately opts into the hash-only path with
+`allow_unverified_assets=True`. Treat that flag as security-sensitive and never
+bind it directly to request-controlled input. Use `verify=False` only to skip
 verification on a manifest you just wrote yourself. Downloads are capped at
 16 MiB to bound OOM blast.
 

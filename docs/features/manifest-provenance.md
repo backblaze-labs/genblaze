@@ -10,7 +10,7 @@ Produce hash-verified, canonical JSON manifests that capture full provenance of 
 
 ## Core Functions
 - `Manifest.from_run(run)` — Construct manifest from run and compute hash
-- `Manifest.verify()` — Validate canonical_hash matches content and output assets are byte-bound with `sha256`
+- `Manifest.verify()` — Validate canonical_hash matches content and every output asset declares a valid `sha256`
 - `Manifest.verify_hash()` — Validate only that canonical_hash matches the canonical payload
 - `canonical_json()` — Deterministic serialization (sorted keys, normalized floats, NFC unicode)
 - `Manifest.to_embed_json()` — Policy-filtered JSON for embedding
@@ -34,7 +34,7 @@ Produce hash-verified, canonical JSON manifests that capture full provenance of 
 - SHA-256 hash computed over canonical bytes
 - Hash stored as `canonical_hash`
 - `verify_hash()` re-serializes and compares the canonical hash
-- `verify()` calls `verify_hash()` and returns `False` when any output asset lacks `sha256`
+- `verify()` calls `verify_hash()` and returns `False` when any output asset lacks a valid `sha256`
 
 ## Edge Cases
 - Float precision differences → normalization ensures consistency
@@ -57,7 +57,7 @@ are version-keyed:
 
 - `_RUN_HASH_EXCLUDE` — run_id, status, created_at, started_at, completed_at, idempotency_key, parent_run_id
 - `_STEP_HASH_EXCLUDE` — step_id, run_id, status, error, error_code, retries, cost_usd, started_at, completed_at, provider_payload, step_index
-- `_ASSET_HASH_EXCLUDE` — asset_id, url. Schema 1.6 read support keeps an explicit `asset_integrity=url_only_unverified` marker plus a canonicalized `unverified_asset_url` for assets without `sha256`. The URL form strips query parameters and fragments so presigned credentials and expiry changes do not affect the hash. Schema versions 1.4 and 1.5 preserve the previous URL-stripping rules for backwards verification, and the SDK continues to write schema 1.5 by default during rollout.
+- `_ASSET_HASH_EXCLUDE` — asset_id, url. Schema 1.6 Python read support keeps an explicit `asset_integrity=url_only_unverified` marker plus a canonicalized `unverified_asset_url` for assets without `sha256`. The URL form strips known presign credential/expiry parameters and fragments while retaining resource-identifying query parameters. Schema versions 1.4 and 1.5 preserve the previous URL-stripping rules for backwards verification, and the SDK plus published language-neutral spec continue to write/declare schema 1.5 during rollout.
 - Schema versions ≤ 1.3 used the legacy exclusion set (random IDs were included in the hash)
 - Unsupported schema versions are rejected instead of inheriting the latest hash policy.
 
@@ -68,7 +68,8 @@ authoritative reference.
 ### Self-verification flow
 1. Read the embedded / sidecar manifest JSON (full canonical form).
 2. Parse with `parse_manifest(json.loads(text))` so schema migrations and manifest invariants are enforced.
-3. Call `manifest.verify_hash()` to check only canonical payload integrity, or `manifest.verify()` to also reject URL-only output assets as byte-unverified.
+3. Call `manifest.verify_hash()` to check only canonical payload integrity, or `manifest.verify()` to also reject URL-only output assets and malformed sha256 declarations.
+4. If you will fetch asset URLs, hash those fetched bytes separately and compare them with `asset.sha256`; manifest verification does not perform network reads.
 
 ### Trust modes
 The hash provides **integrity**, not **authentication**. See
