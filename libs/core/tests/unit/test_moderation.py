@@ -212,6 +212,36 @@ class TestPreStepModeration:
         assert len(hook.prompt_calls) == 1
         assert hook.prompt_calls[0][0] == "blocked user text"
 
+    def test_url_borne_and_non_text_metadata_inputs_are_not_pre_moderated(self):
+        hook = RejectContainingHook("blocked user text")
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/blocked-user-text.txt",
+            media_type="text/plain",
+            metadata={"caption": "blocked user text"},
+        )
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .run()
+        )
+
+        assert provider.call_count == 1
+        assert result.run.steps[0].status == StepStatus.SUCCEEDED
+        assert len(hook.prompt_calls) == 0
+        assert (
+            _pre_moderation_payload(
+                Step(provider="mock", model="m", prompt=None, inputs=[text_asset])
+            )
+            is None
+        )
+
     def test_prompt_and_input_text_combined_into_single_payload(self):
         hook = TrackingHook()
         provider = MockProvider()
