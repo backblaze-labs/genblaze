@@ -334,6 +334,50 @@ def test_umbrella_core_dependency_floor_matches_local_core() -> None:
     assert expected in meta_project["project"]["dependencies"]
 
 
+def test_umbrella_s3_dependency_floor_matches_local_s3() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    meta_project = tomllib.loads((repo_root / "libs/meta/pyproject.toml").read_text())
+    s3_project = tomllib.loads((repo_root / "libs/connectors/s3/pyproject.toml").read_text())
+
+    expected = f"genblaze-s3>={s3_project['project']['version']},<0.4"
+    assert expected in meta_project["project"]["dependencies"]
+
+
+def test_umbrella_connector_extra_floors_match_local_versions() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    meta_project = tomllib.loads((repo_root / "libs/meta/pyproject.toml").read_text())
+    connector_dirs = [
+        "decart",
+        "elevenlabs",
+        "gmicloud",
+        "google",
+        "hume",
+        "langsmith",
+        "lmnt",
+        "luma",
+        "nvidia",
+        "openai",
+        "replicate",
+        "runway",
+        "stability-audio",
+    ]
+    requirements = [
+        requirement
+        for values in meta_project["project"]["optional-dependencies"].values()
+        for requirement in values
+    ]
+
+    for connector_dir in connector_dirs:
+        project = tomllib.loads(
+            (repo_root / f"libs/connectors/{connector_dir}/pyproject.toml").read_text()
+        )
+        package = project["project"]["name"]
+        expected = f"{package}>={project['project']['version']},<0.4"
+        matching = [requirement for requirement in requirements if requirement.startswith(package)]
+        assert matching
+        assert set(matching) == {expected}
+
+
 def test_replay_redacts_prompts_by_default(tmp_path: Path) -> None:
     """Dry-run summary must redact prompts unless --show-prompts is passed."""
     manifest_path = _create_manifest_json(tmp_path)
