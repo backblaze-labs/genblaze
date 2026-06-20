@@ -121,7 +121,8 @@ def replay(
         if report.missing_sha256_ids:
             click.echo(
                 "WARNING: Manifest hash matches, but output asset bytes are not "
-                f"bound for {len(report.missing_sha256_ids)} asset(s) missing sha256.",
+                f"bound for {len(report.missing_sha256_ids)} asset(s) "
+                "missing or malformed sha256.",
                 err=True,
             )
 

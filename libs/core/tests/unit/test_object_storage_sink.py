@@ -1054,10 +1054,10 @@ class TestManifestHelpers:
 
         backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
 
-        with pytest.raises(UnverifiedAssetError, match="missing sha256") as excinfo:
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256") as excinfo:
             sink.read_manifest(run)
         assert excinfo.value.asset_ids == (step.assets[0].asset_id,)
-        assert "output assets missing sha256" in caplog.text
+        assert "output assets missing or malformed sha256" in caplog.text
 
         loaded = sink.read_manifest(run, allow_unverified_assets=True)
         assert loaded.verify_hash()
@@ -1083,7 +1083,7 @@ class TestManifestHelpers:
         manifest = Manifest.from_run(run)
         backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
 
-        with pytest.raises(UnverifiedAssetError, match="missing sha256"):
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
             sink.read_manifest(run)
 
         loaded = sink.read_manifest(run, allow_unverified_assets=True)
@@ -1368,7 +1368,7 @@ class TestReadManifestForAsset:
             tenant_id="tenant-a",
         )
 
-        with pytest.raises(UnverifiedAssetError, match="missing sha256"):
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
             sink.read_manifest_for_asset(output.asset_id, tenant_id="tenant-a")
 
         recovered = sink.read_manifest_for_asset(

@@ -63,7 +63,7 @@ class ManifestError(GenblazeError):
 
 
 class UnverifiedAssetError(ManifestError):
-    """Raised when a manifest is hash-valid but outputs lack sha256."""
+    """Raised when a hash-valid manifest has missing or malformed output sha256."""
 
     def __init__(self, message: str, *, asset_ids: list[str] | tuple[str, ...]):
         super().__init__(message)

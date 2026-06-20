@@ -121,7 +121,7 @@ def _verify_stored_manifest(
     missing_sha_ids = manifest.output_asset_ids_missing_sha256()
     if missing_sha_ids:
         logger.warning(
-            "Stored manifest has output assets missing sha256",
+            "Stored manifest has output assets missing or malformed sha256",
             extra={
                 "manifest_key": key,
                 "run_id": manifest.run.run_id,
@@ -131,7 +131,7 @@ def _verify_stored_manifest(
         if not allow_unverified_assets:
             raise UnverifiedAssetError(
                 f"Stored manifest at {key} has {len(missing_sha_ids)} "
-                "output asset(s) missing sha256",
+                "output asset(s) missing or malformed sha256",
                 asset_ids=missing_sha_ids,
             )
 
@@ -453,18 +453,19 @@ class ObjectStorageSink(BaseSink):
                 decoded and parsed through ``parse_manifest()``, so schema
                 validation and manifest invariants still apply.
             allow_unverified_assets: When True, ``verify=True`` still checks
-                ``manifest.verify_hash()`` but allows output assets without
-                ``sha256``. This is the explicit hash-only read path for
-                callers that need to inspect partially transferred manifests.
-                Treat this as security-sensitive; do not bind it directly to
-                request or tenant-controlled input.
+                ``manifest.verify_hash()`` but allows output assets whose
+                ``sha256`` is missing or malformed. This is the explicit
+                hash-only read path for callers that need to inspect partially
+                transferred or historical manifests. Treat this as
+                security-sensitive; do not bind it directly to request or
+                tenant-controlled input.
 
         Raises:
             SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
                 Bounds OOM blast from a malicious or corrupt object.
             ManifestError: when ``verify=True`` and hash integrity fails.
-            UnverifiedAssetError: when output assets are missing ``sha256``
-                without ``allow_unverified_assets=True``.
+            UnverifiedAssetError: when output assets have missing or malformed
+                ``sha256`` without ``allow_unverified_assets=True``.
         """
         key = self.manifest_key_for(run)
         data = self._backend.get(key)

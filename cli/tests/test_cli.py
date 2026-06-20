@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from genblaze_cli.main import cli
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.builders import RunBuilder, StepBuilder
+from genblaze_core.canonical.json import canonical_json
 from genblaze_core.media.png import PngHandler
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
@@ -62,6 +63,24 @@ def test_extract_json(tmp_path: Path) -> None:
     data = json.loads(result.output)
     assert "canonical_hash" in data
     assert "run" in data
+
+
+def test_extract_json_read_only_schema_is_inspectable(tmp_path: Path) -> None:
+    manifest = _create_url_only_manifest(schema_version="1.6")
+    png_path = tmp_path / "read-only-schema.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    png_path.with_suffix(png_path.suffix + ".genblaze.json").write_text(
+        canonical_json(manifest.model_dump(mode="python")),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["extract", str(png_path)])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["schema_version"] == "1.6"
+    assert data["canonical_hash"] == manifest.canonical_hash
 
 
 def test_extract_summary(tmp_path: Path) -> None:
@@ -174,7 +193,7 @@ def test_verify_distinguishes_unverified_assets(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["verify", str(png_path)])
     combined = result.output + getattr(result, "stderr", "")
     assert result.exit_code != 0
-    assert "1 output asset(s) missing sha256" in combined
+    assert "1 output asset(s) missing or malformed sha256" in combined
     assert "hash mismatch" not in combined
 
 
@@ -194,7 +213,7 @@ def test_verify_rejects_malformed_output_sha256(tmp_path: Path) -> None:
     combined = result.output + getattr(result, "stderr", "")
 
     assert result.exit_code != 0
-    assert "1 output asset(s) missing sha256" in combined
+    assert "1 output asset(s) missing or malformed sha256" in combined
 
 
 def test_verify_reports_legacy_unverified_assets(tmp_path: Path) -> None:
@@ -207,7 +226,7 @@ def test_verify_reports_legacy_unverified_assets(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["verify", str(png_path)])
     combined = result.output + getattr(result, "stderr", "")
     assert result.exit_code != 0
-    assert "1 output asset(s) missing sha256" in combined
+    assert "1 output asset(s) missing or malformed sha256" in combined
     assert "hash mismatch" not in combined
 
 
@@ -223,7 +242,7 @@ def test_extract_summary_and_verify_agree_on_legacy_unverified_assets(tmp_path: 
 
     assert extract_result.exit_code == 0
     assert "Hash OK:   True" in extract_result.output
-    assert "Output sha256: 1 missing" in extract_result.output
+    assert "Output sha256: 1 missing or malformed" in extract_result.output
     assert "Verified:  False" in extract_result.output
     assert verify_result.exit_code != 0
     assert not manifest.verify()
