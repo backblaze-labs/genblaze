@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
-from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
@@ -111,19 +110,12 @@ def test_invoke_full_lifecycle(mock_luma):
 def test_url_only_output_manifest_does_not_verify_without_sink(mock_luma):
     provider, _ = mock_luma
     result = provider.invoke(Step(provider="luma", model="ray-2", prompt="a sunset"))
-    other = Step(
-        provider="luma",
-        model="ray-2",
-        prompt="a sunset",
-        status=StepStatus.SUCCEEDED,
-        assets=[Asset(url="https://luma-output.com/other.mp4", media_type="video/mp4")],
-    )
 
     manifest = Manifest.from_run(Run(name="same", steps=[result]))
-    other_manifest = Manifest.from_run(Run(name="same", steps=[other]))
 
     assert result.assets[0].sha256 is None
-    assert manifest.canonical_hash != other_manifest.canonical_hash
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [result.assets[0].asset_id]
     assert not manifest.verify()
 
 

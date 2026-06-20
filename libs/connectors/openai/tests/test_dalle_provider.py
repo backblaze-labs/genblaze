@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
-from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
@@ -56,24 +55,12 @@ def test_invoke_full_lifecycle(mock_dalle):
 def test_url_only_output_manifest_does_not_verify_without_sink(mock_dalle):
     provider, _ = mock_dalle
     result = provider.invoke(Step(provider="openai-dalle", model="dall-e-3", prompt="a cat"))
-    other = Step(
-        provider="openai-dalle",
-        model="dall-e-3",
-        prompt="a cat",
-        status=StepStatus.SUCCEEDED,
-        assets=[
-            Asset(
-                url="https://oaidalleapiprodscus.blob.core.windows.net/other.png",
-                media_type="image/png",
-            )
-        ],
-    )
 
     manifest = Manifest.from_run(Run(name="same", steps=[result]))
-    other_manifest = Manifest.from_run(Run(name="same", steps=[other]))
 
     assert result.assets[0].sha256 is None
-    assert manifest.canonical_hash != other_manifest.canonical_hash
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [result.assets[0].asset_id]
     assert not manifest.verify()
 
 
