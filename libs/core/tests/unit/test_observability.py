@@ -99,6 +99,17 @@ def test_step_span_enter_ignores_bad_otel_attributes(monkeypatch) -> None:
     assert otel_span.ended is True
 
 
+def test_step_span_enter_ignores_bad_otel_ids(monkeypatch) -> None:
+    """Bad OTel base IDs should not break entering or ending a span."""
+    otel_span = _FailingAttributeSpan(fail_keys={"genblaze.step_id", "genblaze.run_id"})
+    _install_fake_otel(monkeypatch, otel_span)
+
+    with StepSpan(name="test", step_id="step-123", run_id="run-123"):
+        pass
+
+    assert otel_span.ended is True
+
+
 def test_step_span_exit_ends_after_bad_otel_attribute(monkeypatch) -> None:
     """A bad final attribute should not leave the OTel span open."""
     otel_span = _FailingAttributeSpan(fail_keys={"genblaze.duration_ms"})

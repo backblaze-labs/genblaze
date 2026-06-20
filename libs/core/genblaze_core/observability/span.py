@@ -34,9 +34,9 @@ class StepSpan:
             tracer = trace.get_tracer("genblaze")
             self._otel_span = tracer.start_span(self.name)
             if self.step_id:
-                self._otel_span.set_attribute("genblaze.step_id", self.step_id)
+                self._set_otel_attribute("genblaze.step_id", self.step_id)
             if self.run_id:
-                self._otel_span.set_attribute("genblaze.run_id", self.run_id)
+                self._set_otel_attribute("genblaze.run_id", self.run_id)
             for key, value in self.attributes.items():
                 self._set_otel_attribute(key, value)
         except ImportError:
