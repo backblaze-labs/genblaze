@@ -55,21 +55,28 @@ _GCS_V2_SIGNED_QUERY_PARAMS = frozenset(
 _CREDENTIAL_QUERY_PREFIX_EXCLUDE = ("x-amz-", "x-goog-", "x-bz-")
 
 
-def _query_pairs_preserving_plus(query: str) -> list[tuple[str, str]]:
+def _query_pairs_preserving_plus(query: str) -> list[tuple[str, str | None]]:
     """Parse query pairs without treating '+' as a space."""
     if not query:
         return []
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[str, str | None]] = []
     for raw_pair in query.split("&"):
         if not raw_pair:
             continue
         raw_name, separator, raw_value = raw_pair.partition("=")
-        pairs.append((unquote(raw_name), unquote(raw_value if separator else "")))
+        pairs.append((unquote(raw_name), unquote(raw_value) if separator else None))
     return pairs
 
 
-def _encode_query_pairs(pairs: list[tuple[str, str]]) -> str:
-    return "&".join(f"{quote(name, safe='')}={quote(value, safe='')}" for name, value in pairs)
+def _encode_query_pairs(pairs: list[tuple[str, str | None]]) -> str:
+    encoded: list[str] = []
+    for name, value in pairs:
+        encoded_name = quote(name, safe="")
+        if value is None:
+            encoded.append(encoded_name)
+        else:
+            encoded.append(f"{encoded_name}={quote(value, safe='')}")
+    return "&".join(encoded)
 
 
 def _is_credential_query_param(
@@ -108,7 +115,9 @@ def strip_asset_url_credentials(url: str) -> str:
             is_gcs_v2_signed=is_gcs_v2_signed,
         )
     ]
-    query = _encode_query_pairs(sorted(query_items))
+    query = _encode_query_pairs(
+        sorted(query_items, key=lambda item: (item[0], item[1] is not None, item[1] or ""))
+    )
 
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()

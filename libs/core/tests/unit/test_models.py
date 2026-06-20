@@ -408,6 +408,13 @@ def test_manifest_v1_6_url_only_hash_preserves_plus_resource_query_params():
     assert plus != space
 
 
+def test_manifest_v1_6_url_only_hash_preserves_bare_query_params():
+    bare = _v1_6_hash_for_output_url("https://cdn.example.com/download?flag&X-Amz-Signature=a")
+    empty = _v1_6_hash_for_output_url("https://cdn.example.com/download?flag=&X-Amz-Signature=a")
+
+    assert bare != empty
+
+
 @pytest.mark.parametrize("param", ["token", "sig", "signature", "credential", "policy"])
 def test_manifest_v1_6_url_only_hash_keeps_generic_resource_query_params(param):
     base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)

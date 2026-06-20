@@ -169,6 +169,19 @@ def test_strip_asset_url_credentials_preserves_plus_as_resource_data():
     assert plus != space
 
 
+def test_strip_asset_url_credentials_preserves_bare_query_params():
+    bare = strip_asset_url_credentials(
+        "https://example.com/output.png?flag&sv=2024&sr=b&sig=secret"
+    )
+    empty = strip_asset_url_credentials(
+        "https://example.com/output.png?flag=&sv=2024&sr=b&sig=secret"
+    )
+
+    assert bare == "https://example.com/output.png?flag"
+    assert empty == "https://example.com/output.png?flag="
+    assert bare != empty
+
+
 # --- Compliance test harness ---
 
 
