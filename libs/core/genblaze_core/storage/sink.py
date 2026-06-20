@@ -60,8 +60,8 @@ def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
 
     try:
         return parse_manifest(raw)
-    except ManifestError:
-        raise
+    except ManifestError as exc:
+        raise ManifestError(f"Stored manifest at {key} is invalid: {exc}") from exc
     except (AttributeError, TypeError, ValidationError) as exc:
         raise ManifestError(f"Stored manifest at {key} is invalid: {exc}") from exc
 

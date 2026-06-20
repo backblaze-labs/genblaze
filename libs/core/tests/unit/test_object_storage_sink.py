@@ -1073,10 +1073,13 @@ class TestManifestHelpers:
         )
         run = Run(name="encrypted", status=RunStatus.COMPLETED, steps=[step])
         manifest = Manifest.from_run(run)
-        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+        key = sink.manifest_key_for(run)
+        backend.store[key] = manifest.to_canonical_json().encode("utf-8")
 
-        with pytest.raises(ManifestError, match="requires encryption_scheme"):
+        with pytest.raises(ManifestError, match="requires encryption_scheme") as excinfo:
             sink.read_manifest(run, verify=False)
+
+        assert key in str(excinfo.value)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
