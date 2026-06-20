@@ -9,8 +9,8 @@ from pathlib import Path
 from click.testing import CliRunner
 from genblaze_cli.main import cli
 from genblaze_core.builders import RunBuilder, StepBuilder
-from genblaze_core.models.asset import Asset
 from genblaze_core.media.png import PngHandler
+from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.testing import MockProvider

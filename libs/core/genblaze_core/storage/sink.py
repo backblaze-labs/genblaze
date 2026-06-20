@@ -378,8 +378,10 @@ class ObjectStorageSink(BaseSink):
                 ``tenant_id`` / ``created_at`` are used (to derive the key).
             verify: When True (default), checks hash integrity and output
                 asset ``sha256`` declarations. Pass ``verify=False`` to skip
-                all verification on a manifest you trust (e.g. one you just
-                wrote).
+                only those hash and output-sha256 checks on a manifest you
+                trust (e.g. one you just wrote). Stored bytes are always JSON
+                decoded and parsed through ``parse_manifest()``, so schema
+                validation and manifest invariants still apply.
             allow_unverified_assets: When True, ``verify=True`` still checks
                 ``manifest.verify_hash()`` but allows output assets without
                 ``sha256``. This is the explicit hash-only read path for
