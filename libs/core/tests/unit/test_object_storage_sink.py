@@ -1376,6 +1376,22 @@ class TestReadManifestForAsset:
         with pytest.raises(SinkError, match="must be a JSON object"):
             sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
 
+    @pytest.mark.parametrize("tenant_value", [[], 123])
+    def test_read_manifest_for_asset_rejects_non_string_index_tenant(self, tenant_value):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        index_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        backend.store[index_key] = json.dumps(
+            {
+                "manifest_uri": "https://storage.example.com/manifest.json",
+                "tenant_id": tenant_value,
+            }
+        ).encode("utf-8")
+
+        with pytest.raises(SinkError, match="has non-string tenant_id"):
+            sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
+
     def test_read_manifest_for_asset_denies_manifest_tenant_mismatch(self):
         backend = _AssetIndexBackend()
         sink = ObjectStorageSink(backend, prefix="dam")
@@ -1462,6 +1478,14 @@ class TestReadManifestForAsset:
 
         with pytest.raises(SinkError, match="asset_id must be a UUID"):
             sink.read_manifest_for_asset("never-put", tenant_id="tenant-a")
+
+    def test_read_manifest_for_asset_rejects_non_string_tenant_id(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset_id = "11111111-1111-4111-8111-111111111111"
+
+        with pytest.raises(SinkError, match="tenant_id must be a string"):
+            sink.read_manifest_for_asset(asset_id, tenant_id=123)
 
     def test_put_asset_with_manifest_uri_requires_tenant_id(self):
         backend = _AssetIndexBackend()

@@ -154,8 +154,14 @@ def _require_asset_id(asset_id: str) -> str:
     return str(parsed)
 
 
-def _require_tenant_id(tenant_id: str | None) -> str:
-    tenant = normalize_tenant_id(tenant_id)
+def _normalize_tenant_id_or_sink_error(tenant_id: object, *, message: str) -> str | None:
+    if tenant_id is not None and not isinstance(tenant_id, str):
+        raise SinkError(message)
+    return normalize_tenant_id(tenant_id)
+
+
+def _require_tenant_id(tenant_id: object) -> str:
+    tenant = _normalize_tenant_id_or_sink_error(tenant_id, message="tenant_id must be a string")
     if tenant is None:
         raise SinkError("tenant_id is required for asset manifest reverse lookup")
     return tenant
@@ -638,7 +644,9 @@ class ObjectStorageSink(BaseSink):
         # Drive the existing transfer pipeline. When a tenant is supplied,
         # pass it through so HIERARCHICAL standalone asset keys remain scoped
         # consistently with write_run(); CAS ignores tenant/date/run_id.
-        tenant = normalize_tenant_id(tenant_id)
+        tenant = _normalize_tenant_id_or_sink_error(
+            tenant_id, message="tenant_id must be a string"
+        )
         if manifest_uri is not None and tenant is None:
             raise SinkError("tenant_id is required for asset manifest reverse lookup")
         self._transfer.transfer(asset, tenant=tenant)
@@ -716,13 +724,17 @@ class ObjectStorageSink(BaseSink):
             raise SinkError(f"Asset index at {index_key!r} is not valid JSON: {exc}") from exc
         if not isinstance(entry, dict):
             raise SinkError(f"Asset index at {index_key!r} must be a JSON object")
-        if normalize_tenant_id(entry.get("tenant_id")) != tenant:
+        index_tenant = _normalize_tenant_id_or_sink_error(
+            entry.get("tenant_id"),
+            message=f"Asset index at {index_key!r} has non-string tenant_id",
+        )
+        if index_tenant != tenant:
             logger.warning(
                 "Asset manifest reverse lookup denied for index tenant mismatch",
                 extra={
                     "index_key": index_key,
                     "requested_tenant_id": tenant,
-                    "index_tenant_id": entry.get("tenant_id"),
+                    "index_tenant_id": index_tenant,
                 },
             )
             return None
