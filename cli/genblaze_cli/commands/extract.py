@@ -48,7 +48,7 @@ def extract(file: Path, fmt: str) -> None:
             click.echo(f"Steps:     {len(manifest.run.steps)}")
             click.echo(f"Hash:      {manifest.canonical_hash}")
             click.echo(f"Hash OK:   {report.hash_ok}")
-            click.echo(f"Output sha256: {len(report.missing_sha256_ids)} missing or malformed")
+            click.echo(f"Output sha256: {len(report.unverified_sha256_ids)} missing or malformed")
             click.echo(f"Verified:  {report.ok}")
     except Exception as exc:
         raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc

@@ -53,9 +53,9 @@ def verify(file: Path) -> None:
         if not report.hash_ok:
             click.echo("FAIL — manifest hash mismatch.", err=True)
             raise click.exceptions.Exit(1)
-        if report.missing_sha256_ids:
+        if report.unverified_sha256_ids:
             click.echo(
-                f"FAIL — {len(report.missing_sha256_ids)} output asset(s) "
+                f"FAIL — {len(report.unverified_sha256_ids)} output asset(s) "
                 "missing or malformed sha256.",
                 err=True,
             )

@@ -206,7 +206,7 @@ def test_manifest_v1_5_reports_missing_output_sha_and_fails_verify():
     assert manifest.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
     report = manifest.verification_report()
     assert report.hash_ok
-    assert report.missing_sha256_ids == (step.assets[0].asset_id,)
+    assert report.unverified_sha256_ids == (step.assets[0].asset_id,)
     assert not report.ok
 
 

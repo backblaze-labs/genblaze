@@ -213,19 +213,20 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
 class ManifestVerification:
     """Structured manifest verification result used by CLI and API callers.
 
-    ``missing_sha256_ids`` is populated from the manifest payload regardless of
-    ``hash_ok``. Callers must still treat ``hash_ok=False`` as a failed
-    integrity check; the missing-sha list is diagnostic context, not proof that
-    a tampered payload is otherwise trustworthy.
+    ``unverified_sha256_ids`` contains output asset IDs whose ``sha256`` value
+    is missing or malformed. It is populated from the manifest payload
+    regardless of ``hash_ok``. Callers must still treat ``hash_ok=False`` as a
+    failed integrity check; the unverified-sha list is diagnostic context, not
+    proof that a tampered payload is otherwise trustworthy.
     """
 
     hash_ok: bool
-    missing_sha256_ids: tuple[str, ...]
+    unverified_sha256_ids: tuple[str, ...]
 
     @property
     def ok(self) -> bool:
         """True when hash verification passes and all outputs have valid sha256."""
-        return self.hash_ok and not self.missing_sha256_ids
+        return self.hash_ok and not self.unverified_sha256_ids
 
 
 class Manifest(BaseModel):
@@ -317,14 +318,17 @@ class Manifest(BaseModel):
         return self.canonical_hash == canonical_hash(payload)
 
     def output_asset_ids_missing_sha256(self) -> list[str]:
-        """Return output asset IDs missing a valid sha256 digest."""
+        """Return output asset IDs missing or carrying malformed sha256."""
         return _unhashed_output_asset_ids(self.run)
 
     def verification_report(self) -> ManifestVerification:
         """Return the shared hash-plus-output-sha256 verification result."""
         hash_ok = self.verify_hash()
-        missing_sha256_ids = tuple(self.output_asset_ids_missing_sha256())
-        return ManifestVerification(hash_ok=hash_ok, missing_sha256_ids=missing_sha256_ids)
+        unverified_sha256_ids = tuple(self.output_asset_ids_missing_sha256())
+        return ManifestVerification(
+            hash_ok=hash_ok,
+            unverified_sha256_ids=unverified_sha256_ids,
+        )
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
         """Return canonical JSON for embedding per policy.
