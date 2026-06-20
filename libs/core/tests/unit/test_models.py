@@ -25,11 +25,26 @@ def test_asset_defaults():
     assert a.metadata == {}
 
 
-@pytest.mark.parametrize("sha256", ["not-a-sha", "A" * 64, "abc123", "g" * 64])
+@pytest.mark.parametrize("sha256", ["not-a-sha", "z" * 64, "abc123", "g" * 64])
 def test_asset_tolerates_malformed_sha256_on_load(sha256):
     asset = Asset(url="https://example.com/img.png", media_type="image/png", sha256=sha256)
 
     assert asset.sha256 == sha256
+
+
+def test_manifest_verify_accepts_uppercase_output_sha256():
+    asset = Asset(url="https://example.com/img.png", media_type="image/png", sha256="A" * 64)
+    step = Step(
+        provider="mock",
+        model="m",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest(run=Run(name="uppercase-sha", steps=[step]))
+    manifest.compute_hash()
+
+    assert manifest.output_asset_ids_missing_sha256() == []
+    assert manifest.verify()
 
 
 def test_asset_tolerates_malformed_sha256_assignment():

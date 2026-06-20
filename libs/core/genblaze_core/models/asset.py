@@ -12,11 +12,11 @@ _SHA256_HEX_CHARS = frozenset("0123456789abcdef")
 
 
 def is_valid_sha256(value: str | None) -> bool:
-    """Return True for syntactically valid SHA-256 hex digests."""
+    """Return True for syntactically valid case-insensitive SHA-256 hex digests."""
     return (
         isinstance(value, str)
         and len(value) == 64
-        and all(char in _SHA256_HEX_CHARS for char in value)
+        and all(char in _SHA256_HEX_CHARS for char in value.lower())
     )
 
 
