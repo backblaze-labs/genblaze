@@ -1588,6 +1588,8 @@ class BaseProvider(Runnable[Step, Step]):
         progress_status: str = "resumed",
     ) -> Step:
         """Resume polling an in-flight job, raising errors to the caller."""
+        # Keep this poll/fetch body aligned with _attempt_once() and the async
+        # twins below; the async copies differ only in to_thread/await plumbing.
         step.status = StepStatus.PROCESSING
         if step.started_at is None:
             step.started_at = utc_now()
