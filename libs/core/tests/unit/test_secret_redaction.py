@@ -1,6 +1,10 @@
 """Tests for secret redaction in provider error messages."""
 
-from genblaze_core import sanitize_error
+from genblaze_core._utils import MAX_ERROR_LENGTH, TRUNCATION_MARKER, sanitize_error
+
+
+def _aws_credential_value() -> str:
+    return "wJalr" + "XUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
 
 class TestSecretRedaction:
@@ -59,8 +63,8 @@ class TestSecretRedaction:
     def test_truncation(self):
         msg = "x" * 600
         result = sanitize_error(msg)
-        assert len(result) < 600
-        assert "...(truncated)" in result
+        assert len(result) == MAX_ERROR_LENGTH + len(TRUNCATION_MARKER)
+        assert result.endswith(TRUNCATION_MARKER)
 
     def test_google_api_key_redacted(self):
         # Google-shaped key assembled at runtime so the literal isn't a static
@@ -88,10 +92,31 @@ class TestSecretRedaction:
         assert sanitize_error(msg) == msg
 
     def test_aws_secret_access_key_redacted(self):
-        secret = "aBcD1234/+" * 4
-        msg = f"AWS_SECRET_ACCESS_KEY={secret}"
+        credential = _aws_credential_value()
+        msg = f"AWS_SECRET_ACCESS_KEY={credential}"
         result = sanitize_error(msg)
-        assert secret not in result
+        assert credential not in result
+        assert "[REDACTED]" in result
+
+    def test_aws_secret_access_key_json_redacted(self):
+        credential = _aws_credential_value()
+        msg = f'{{"SecretAccessKey": "{credential}"}}'
+        result = sanitize_error(msg)
+        assert credential not in result
+        assert "[REDACTED]" in result
+
+    def test_aws_secret_access_key_repr_redacted(self):
+        credential = _aws_credential_value()
+        msg = f"aws_secret_access_key='{credential}'"
+        result = sanitize_error(msg)
+        assert credential not in result
+        assert "[REDACTED]" in result
+
+    def test_aws_secret_access_key_bare_redacted(self):
+        credential = _aws_credential_value()
+        msg = f"SignatureDoesNotMatch computed with key {credential}"
+        result = sanitize_error(msg)
+        assert credential not in result
         assert "[REDACTED]" in result
 
     def test_b2_application_key_redacted(self):
@@ -114,3 +139,26 @@ class TestSecretRedaction:
         result = sanitize_error(msg)
         assert token not in result
         assert "[REDACTED]" in result
+
+    def test_benign_k_token_not_redacted(self):
+        token = "K123" + ("A" * 24)
+        msg = f"Request id {token} was not found"
+        assert sanitize_error(msg) == msg
+
+    def test_short_userinfo_url_not_redacted(self):
+        msg = "Fetch failed: https://user:id@example.com/object"
+        assert sanitize_error(msg) == msg
+
+    def test_large_error_scans_bounded_window(self):
+        secret = "sk-" + ("a" * 40)
+        msg = f"prefix {secret} " + ("x" * (MAX_ERROR_LENGTH * 20))
+        result = sanitize_error(msg)
+        assert secret not in result
+        assert result.endswith(TRUNCATION_MARKER)
+        assert len(result) == MAX_ERROR_LENGTH + len(TRUNCATION_MARKER)
+
+    def test_sanitize_error_does_not_nest_truncation_marker(self):
+        msg = ("x" * MAX_ERROR_LENGTH) + TRUNCATION_MARKER
+        result = sanitize_error(msg)
+        assert result.endswith(TRUNCATION_MARKER)
+        assert result.count(TRUNCATION_MARKER) == 1

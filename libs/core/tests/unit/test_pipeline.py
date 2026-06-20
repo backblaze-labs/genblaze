@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from genblaze_core._utils import MAX_ERROR_LENGTH, TRUNCATION_MARKER
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepStatus
@@ -496,6 +497,40 @@ class ChainableProvider(BaseProvider):
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         step.assets.append(Asset(url=self.output_url, media_type="image/png"))
         return step
+
+
+class HookTrackingProvider(BaseProvider):
+    """Provider whose hooks must not run when a consumer is prefailed."""
+
+    name = "hook-tracking"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hook_calls: list[str] = []
+
+    def normalize_params(self, params, modality=None):
+        self.hook_calls.append("normalize_params")
+        raise AssertionError("normalize_params should not run for prefailed consumers")
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.hook_calls.append("submit")
+        raise AssertionError("submit should not run for prefailed consumers")
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        self.hook_calls.append("poll")
+        raise AssertionError("poll should not run for prefailed consumers")
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        self.hook_calls.append("fetch_output")
+        raise AssertionError("fetch_output should not run for prefailed consumers")
+
+    def invoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        self.hook_calls.append("invoke")
+        raise AssertionError("invoke should not run for prefailed consumers")
+
+    async def ainvoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        self.hook_calls.append("ainvoke")
+        raise AssertionError("ainvoke should not run for prefailed consumers")
 
 
 def test_chain_passes_outputs_as_inputs() -> None:
@@ -1294,6 +1329,45 @@ def test_input_from_invalid_index_prefails_consumer() -> None:
     assert p1.received_inputs == []
 
 
+def test_input_from_invalid_index_default_run_returns_failed_result() -> None:
+    """Default run() treats invalid input_from as a failed step, not an exception."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    with pytest.warns(DeprecationWarning):
+        result = (
+            Pipeline("fan-in-bad-default")
+            .step(p0, model="m0", prompt="zero")
+            .step(p1, model="m1", prompt="one", input_from=[5])
+            .run()
+        )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert p1.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_invalid_index_default_arun_returns_failed_result() -> None:
+    """Default arun() treats invalid input_from as a failed step, not an exception."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    with pytest.warns(DeprecationWarning):
+        result = await (
+            Pipeline("fan-in-bad-default-async")
+            .step(p0, model="m0", prompt="zero")
+            .step(p1, model="m1", prompt="one", input_from=[5])
+            .arun()
+        )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert p1.received_inputs == []
+
+
 def test_input_from_none_preserves_existing_behavior() -> None:
     """Chain mode works normally when input_from is not set."""
     p0 = ChainableProvider(output_url="https://example.com/chain0.png")
@@ -1355,6 +1429,8 @@ def test_input_from_failed_producer_fails_consumer() -> None:
     assert result.run.steps[1].metadata["provider_invoked"] is False
     assert result.run.steps[1].assets == []
     assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
     assert consumer.received_inputs == []
 
 
@@ -1380,6 +1456,8 @@ async def test_input_from_failed_producer_fails_consumer_async() -> None:
     assert result.run.steps[1].metadata["provider_invoked"] is False
     assert result.run.steps[1].assets == []
     assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
     assert consumer.received_inputs == []
 
 
@@ -1403,6 +1481,8 @@ def test_input_from_empty_producer_fails_consumer() -> None:
     assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
     assert result.run.steps[1].assets == []
     assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
     assert consumer.received_inputs == []
 
 
@@ -1427,7 +1507,44 @@ async def test_input_from_empty_producer_fails_consumer_async() -> None:
     assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
     assert result.run.steps[1].assets == []
     assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
     assert consumer.received_inputs == []
+
+
+def test_input_from_prefail_does_not_call_consumer_provider_hooks() -> None:
+    """A prefailed consumer is built without downstream provider hooks."""
+    failing = FailingProvider()
+    consumer = HookTrackingProvider()
+
+    result = (
+        Pipeline("fan-in-no-consumer-hooks")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert consumer.hook_calls == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_prefail_does_not_call_consumer_provider_hooks_async() -> None:
+    """Async prefailed consumers also avoid downstream provider hooks."""
+    failing = FailingProvider()
+    consumer = HookTrackingProvider()
+
+    result = await (
+        Pipeline("fan-in-no-consumer-hooks-async")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert consumer.hook_calls == []
 
 
 def test_input_from_mixed_producers_fails_consumer_before_invocation() -> None:
@@ -1490,7 +1607,7 @@ def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
     assert dependent.metadata["failure_reason"] == "input_resolution"
     assert dependent.metadata["provider_invoked"] is False
     assert dependent.error is not None
-    assert len(dependent.error) < 800
+    assert len(dependent.error) <= MAX_ERROR_LENGTH + len(TRUNCATION_MARKER)
 
     surfaces = [
         dependent.error,

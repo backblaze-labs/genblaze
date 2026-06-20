@@ -63,6 +63,14 @@ class _InputResolutionError(GenblazeError):
     """Raised when declared upstream step outputs cannot be used as inputs."""
 
 
+@dataclass(frozen=True)
+class _PreparedStep:
+    """A step plus the internal routing decision for runner dispatch."""
+
+    step: Step
+    prefailed: bool = False
+
+
 _INPUT_RESOLUTION_FAILURE_REASON = "input_resolution"
 
 
@@ -717,9 +725,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             for idx in ps.input_from:
                 upstream = completed_steps[idx]
                 if upstream.status != StepStatus.SUCCEEDED:
-                    detail = (
-                        f"; upstream error summary: {upstream.error}" if upstream.error else ""
-                    )
                     upstream_label = (
                         "failed upstream step"
                         if upstream.status == StepStatus.FAILED
@@ -728,7 +733,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     msg = (
                         f"input_from index {idx} for step {step_index} points to "
                         f"{upstream_label} {idx} ({upstream.step_id}) with status "
-                        f"{upstream.status.value}{detail}"
+                        f"{upstream.status.value}"
                     )
                     raise _InputResolutionError(msg)
                 if not upstream.assets:
@@ -751,20 +756,14 @@ class Pipeline(Runnable[None, PipelineResult]):
         prev_assets: list[Asset],
         *,
         step_id: str | None = None,
-    ) -> Step:
+    ) -> _PreparedStep:
         """Build a runnable step or a FAILED step for unavailable input_from assets."""
         try:
             inputs = self._resolve_inputs(ps, step_index, completed_steps, prev_assets)
         except _InputResolutionError as exc:
-            return self._build_input_resolution_failure_step(ps, exc, step_id=step_id)
-        return self._build_step(ps, inputs, step_id=step_id)
-
-    def _is_input_resolution_failure_step(self, step: Step) -> bool:
-        """Return True for steps prefailed by _build_or_prefail_step."""
-        return (
-            step.metadata.get("failure_reason") == _INPUT_RESOLUTION_FAILURE_REASON
-            and step.metadata.get("provider_invoked") is False
-        )
+            step = self._build_input_resolution_failure_step(ps, exc, step_id=step_id)
+            return _PreparedStep(step=step, prefailed=True)
+        return _PreparedStep(step=self._build_step(ps, inputs, step_id=step_id))
 
     def _build_input_resolution_failure_step(
         self,
@@ -774,16 +773,47 @@ class Pipeline(Runnable[None, PipelineResult]):
         step_id: str | None = None,
     ) -> Step:
         """Build a failed Step when declared input dependencies are unavailable."""
+        if isinstance(ps.prompt, PromptTemplate):
+            msg = (
+                "Step prompt is a PromptTemplate but was not rendered. "
+                "Use batch_run() with dicts or call template.render() "
+                "before passing to step()."
+            )
+            raise GenblazeError(msg)
+
         # Input resolution failed before a provider input list exists, so this
-        # intentionally records no Step.inputs. Exception failures use
-        # _make_failed_step(), which preserves caller-supplied external_inputs.
-        step = self._build_step(ps, None, step_id=step_id)
-        step.status = StepStatus.FAILED
-        step.error = sanitize_error(str(error))
-        step.error_code = ProviderErrorCode.INVALID_INPUT
-        step.metadata["failure_reason"] = _INPUT_RESOLUTION_FAILURE_REASON
-        step.metadata["provider_invoked"] = False
-        return step
+        # intentionally records no Step.inputs and never calls provider hooks
+        # such as normalize_params(). Exception failures use _make_failed_step(),
+        # which preserves caller-supplied external_inputs.
+        params = dict(ps.params)
+        _reject_credentials_in_params(params, ps.provider.name, ps.model)
+        seed = params.pop("seed", None)
+        negative_prompt = params.pop("negative_prompt", None)
+        metadata = self._build_step_metadata(ps)
+        metadata["failure_reason"] = _INPUT_RESOLUTION_FAILURE_REASON
+        metadata["provider_invoked"] = False
+        now = utc_now()
+        step_kwargs: dict[str, Any] = dict(
+            provider=ps.provider.name,
+            model=ps.model,
+            prompt=ps.prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            params=params,
+            modality=ps.modality,
+            step_type=ps.step_type,
+            status=StepStatus.FAILED,
+            inputs=[],
+            assets=[],
+            error=sanitize_error(str(error)),
+            error_code=ProviderErrorCode.INVALID_INPUT,
+            started_at=now,
+            completed_at=now,
+            metadata=metadata,
+        )
+        if step_id is not None:
+            step_kwargs["step_id"] = step_id
+        return Step(**step_kwargs)
 
     def _emit_tracer_step_start(self, step: Step, ctx: _StepContext) -> None:
         """Emit the tracer start hook with the shared step lifecycle shape."""
@@ -829,6 +859,15 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._emit_tracer_step_end(step, ctx, duration_ms=0.0)
         return step
 
+    def _build_step_metadata(self, ps: _PipelineStep) -> dict[str, Any]:
+        """Build persisted pipeline graph metadata for a deferred step."""
+        metadata: dict[str, Any] = {}
+        if ps.fallback_models:
+            metadata["_fallback_models"] = ps.fallback_models
+        if ps.input_from is not None:
+            metadata["_input_from"] = ps.input_from
+        return metadata
+
     def _build_step(
         self,
         ps: _PipelineStep,
@@ -867,11 +906,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         negative_prompt = normalized.pop("negative_prompt", None)
 
         # Persist pipeline graph info in metadata for faithful replay
-        metadata: dict[str, Any] = {}
-        if ps.fallback_models:
-            metadata["_fallback_models"] = ps.fallback_models
-        if ps.input_from is not None:
-            metadata["_input_from"] = ps.input_from
+        metadata = self._build_step_metadata(ps)
 
         step_kwargs: dict[str, Any] = dict(
             provider=ps.provider.name,
@@ -1575,13 +1610,14 @@ class Pipeline(Runnable[None, PipelineResult]):
                         raise PipelineTimeoutError(msg)
 
                 ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
-                step = self._build_or_prefail_step(
+                prepared = self._build_or_prefail_step(
                     ps,
                     i - 1,
                     completed_steps,
                     prev_assets,
                     step_id=step_ids[i - 1],
                 )
+                step = prepared.step
                 logger.debug(
                     "Executing step %d/%d: %s/%s",
                     i,
@@ -1600,7 +1636,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     )
                 # Input-resolution prefail handling is shared; the runner call
                 # site only differs in sync vs async provider invocation.
-                if self._is_input_resolution_failure_step(step):
+                if prepared.prefailed:
                     result = self._record_prefailed_step(step, ctx)
                 else:
                     result = self._execute_step(ps, step, config, ctx)
@@ -1781,13 +1817,14 @@ class Pipeline(Runnable[None, PipelineResult]):
                             raise PipelineTimeoutError(msg)
 
                     ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
-                    step = self._build_or_prefail_step(
+                    prepared = self._build_or_prefail_step(
                         ps,
                         i - 1,
                         completed_steps,
                         prev_assets,
                         step_id=step_ids[i - 1],
                     )
+                    step = prepared.step
                     logger.debug(
                         "Executing step %d/%d: %s/%s",
                         i,
@@ -1806,7 +1843,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                     # Input-resolution prefail handling is shared; the runner call
                     # site only differs in sync vs async provider invocation.
-                    if self._is_input_resolution_failure_step(step):
+                    if prepared.prefailed:
                         result = self._record_prefailed_step(step, ctx)
                     else:
                         result = await self._execute_step_async(ps, step, config, ctx)

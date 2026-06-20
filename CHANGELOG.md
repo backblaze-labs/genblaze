@@ -21,18 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `genblaze-core`: fan-in consumers using `input_from` now fail before provider
-  invocation when a referenced producer step failed or produced no assets,
-  preventing a downstream step from reporting success with empty declared inputs
-  (#69). Affected pipelines that previously appeared green can now report
-  `FAILED`/`INVALID_INPUT`, which may increase status-based alerts and change
-  manifest hashes for those runs. These pre-failed steps carry
-  `metadata.failure_reason="input_resolution"` and
-  `metadata.provider_invoked=false` for telemetry filtering.
-- `genblaze-core`: failed `Step.error` values are uniformly redacted for
+  invocation when a referenced producer step failed, produced no assets, or
+  points at an out-of-range prior step, preventing a downstream step from
+  reporting success with empty declared inputs (#69). Affected pipelines that
+  previously appeared green can now report `FAILED`/`INVALID_INPUT`, which may
+  increase status-based alerts and change manifest hashes once during rollout.
+  Route or re-baseline those alerts using
+  `metadata.failure_reason="input_resolution"`; these pre-failed steps also
+  carry `metadata.provider_invoked=false` for telemetry filtering.
+- `genblaze-core`: failed `Step.error` values now use the shared sanitizer for
   OpenAI/Anthropic/Google/Replicate keys, AWS access key IDs and secret access
   keys, Backblaze B2 application keys, JWTs, bearer/token headers, API-key
-  assignments, and basic-auth URL credentials, then truncated to 500 characters
-  before manifest, log, or stream-event emission.
+  assignments, and basic-auth URL credentials, then truncate to 500 characters
+  before manifest, log, or stream-event emission. This redaction hardening ships
+  with #69 because fan-in pre-fail telemetry can otherwise re-surface untrusted
+  upstream provider errors on dependent steps.
 - `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
   when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
   `StepCache.get`/`put`), so a cache shared across tenants no longer serves one
