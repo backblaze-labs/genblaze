@@ -48,7 +48,10 @@ class RunBuilder:
         return self
 
     def add_step(self, step: Step) -> RunBuilder:
-        """Append a ``Step`` to this run. The step's ``run_id`` and ``step_index`` are set by ``.build()``."""
+        """Append a ``Step`` to this run.
+
+        The step's ``run_id`` and ``step_index`` are set by ``.build()``.
+        """
         self._steps.append(step)
         return self
 

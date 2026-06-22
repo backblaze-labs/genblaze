@@ -59,7 +59,10 @@ class StepBuilder:
         return self
 
     def input_asset(self, url: str, media_type: str, **kwargs) -> StepBuilder:
-        """Add an input asset URL and MIME type. Accepts keyword arguments forwarded to ``Asset``."""
+        """Add an input asset URL and MIME type.
+
+        Extra keyword arguments are forwarded to ``Asset``.
+        """
         self._data.setdefault("inputs", []).append(Asset(url=url, media_type=media_type, **kwargs))
         return self
 
@@ -74,7 +77,10 @@ class StepBuilder:
         return self
 
     def asset(self, url: str, media_type: str, **kwargs) -> StepBuilder:
-        """Add an output asset URL and MIME type. Accepts keyword arguments forwarded to ``Asset``."""
+        """Add an output asset URL and MIME type.
+
+        Extra keyword arguments are forwarded to ``Asset``.
+        """
         self._data.setdefault("assets", []).append(Asset(url=url, media_type=media_type, **kwargs))
         return self
 
