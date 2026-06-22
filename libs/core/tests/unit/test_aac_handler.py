@@ -16,10 +16,19 @@ def tmp_m4a(tmp_path: Path) -> Path:
     p = tmp_path / "test.m4a"
     # Minimal MP4/M4A: ftyp + moov boxes (mutagen needs moov to parse)
     ftyp = b"\x00\x00\x00\x18" + b"ftyp" + b"M4A " + b"\x00\x00\x00\x00" + b"M4A " + b"mp42"
-    # Minimal moov box with mvhd sub-box
-    mvhd = (
-        b"\x00\x00\x00\x6c" + b"mvhd" + b"\x00" * 100  # version + flags + fields (simplified)
+    # Minimal moov box with mvhd sub-box. The timescale field (payload bytes
+    # 12-15) MUST be non-zero: mutagen derives track length as duration/timescale
+    # and mutagen 1.48.0 raises MP4StreamInfoError ("division by zero") on a zero
+    # timescale, whereas 1.47 tolerated it. Keep payload at 100 bytes (box 0x6c).
+    mvhd_payload = (
+        b"\x00\x00\x00\x00"  # version + flags
+        + b"\x00\x00\x00\x00"  # creation_time
+        + b"\x00\x00\x00\x00"  # modification_time
+        + b"\x00\x00\x03\xe8"  # timescale = 1000 (non-zero)
+        + b"\x00\x00\x03\xe8"  # duration = 1000
+        + b"\x00" * 80  # remaining mvhd fields
     )
+    mvhd = b"\x00\x00\x00\x6c" + b"mvhd" + mvhd_payload
     moov = b"\x00\x00\x00\x74" + b"moov" + mvhd
     mdat = b"\x00\x00\x00\x08" + b"mdat"
     p.write_bytes(ftyp + moov + mdat)
