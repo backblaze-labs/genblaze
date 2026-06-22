@@ -34,9 +34,11 @@ class StepSpan:
             tracer = trace.get_tracer("genblaze")
             self._otel_span = tracer.start_span(self.name)
             if self.step_id:
-                self._otel_span.set_attribute("genblaze.step_id", self.step_id)
+                self._set_otel_attribute("genblaze.step_id", self.step_id)
             if self.run_id:
-                self._otel_span.set_attribute("genblaze.run_id", self.run_id)
+                self._set_otel_attribute("genblaze.run_id", self.run_id)
+            for key, value in self.attributes.items():
+                self._set_otel_attribute(key, value)
         except ImportError:
             pass
         return self
@@ -51,20 +53,45 @@ class StepSpan:
         # End the OTel span with final attributes
         if self._otel_span is not None:
             try:
-                self._otel_span.set_attribute("genblaze.duration_ms", self.duration_ms)
-                self._otel_span.set_attribute("genblaze.retries", self.retries)
+                self._set_otel_attribute("genblaze.duration_ms", self.duration_ms)
+                self._set_otel_attribute("genblaze.retries", self.retries)
                 if self.cost is not None:
-                    self._otel_span.set_attribute("genblaze.cost_usd", self.cost)
+                    self._set_otel_attribute("genblaze.cost_usd", self.cost)
+                # Safety net for attributes populated before the OTel span
+                # existed, or mutated directly by callers that already hold
+                # the span object. set_attribute() remains write-through.
+                for key, value in self.attributes.items():
+                    self._set_otel_attribute(key, value)
                 # Record exception if one occurred
                 if exc_val is not None:
-                    self._otel_span.record_exception(exc_val)
-                    from opentelemetry.trace import StatusCode
+                    try:
+                        self._otel_span.record_exception(exc_val)
+                        from opentelemetry.trace import StatusCode
 
-                    self._otel_span.set_status(StatusCode.ERROR, str(exc_val))
-                self._otel_span.end()
+                        self._otel_span.set_status(StatusCode.ERROR, str(exc_val))
+                    except Exception:  # noqa: S110
+                        pass
             except Exception:  # noqa: S110
                 pass
+            finally:
+                try:
+                    self._otel_span.end()
+                except Exception:  # noqa: S110
+                    pass
 
     @property
     def duration_ms(self) -> float:
         return (self.end_time - self.start_time) * 1000
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """Record a span attribute locally and on the active OTel span."""
+        self.attributes[key] = value
+        self._set_otel_attribute(key, value)
+
+    def _set_otel_attribute(self, key: str, value: Any) -> None:
+        """Best-effort OTel attribute write; tracing must not break execution."""
+        if self._otel_span is not None:
+            try:
+                self._otel_span.set_attribute(key, value)
+            except Exception:  # noqa: S110
+                pass

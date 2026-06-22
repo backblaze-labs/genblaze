@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-25 -->
+<!-- last_verified: 2026-06-17 -->
 # Retry Policy
 
 `RetryPolicy` is the user-tunable knob for how `BaseProvider` retries transient
@@ -54,8 +54,19 @@ There are two retry layers. Most users only need to think about the first.
    of `submit / poll / fetch_output` so a single 5xx mid-poll doesn't fail a
    long-running video generation. The new policy controls **all of these**.
 2. **Step-level retries** (`config["max_retries"]` passed to `Pipeline.run()`)
-   — restart the *whole* step from scratch (state reset, fresh prediction
-   ID). The retryable-codes set is now also taken from the policy, so tuning
+   — retry the step after a phase-level budget is exhausted. If the failed
+   attempt already produced an upstream prediction ID from the current
+   `submit()` call, the retry resumes that existing job instead of calling
+   `submit()` again. This also covers a transient `on_submit` checkpoint
+   failure after the upstream job was created: before an automatic resume polls
+   or fetches, the base provider calls `on_submit(step_id, prediction_id)` again
+   with the same prediction ID, so checkpoint callbacks must be idempotent for a
+   given `(step_id, prediction_id)`. Caller-supplied
+   `step.metadata["upstream_id"]` is observability data and is not trusted as
+   retry authority. Only failures before a current upstream ID exists use a
+   fresh submit. If `submit()` returns `None` or an empty prediction ID, the
+   step fails without polling, fetching, or trusting stale metadata. The
+   retryable-codes set is now also taken from the policy, so tuning
    `RetryPolicy.retryable_codes` affects both layers consistently.
 
 Submit retries have a special rule: only **pre-response** exception types
@@ -63,6 +74,32 @@ Submit retries have a special rule: only **pre-response** exception types
 default — replaying a request that may already have hit the server could
 double-bill. Once a provider opts into idempotency-key injection, this
 restriction is safe to widen via your own subclass.
+
+Poll/fetch failures have the opposite safety rule: the upstream generation
+already exists, so step-level retries re-run the base poll/fetch resume loop
+against the same in-process prediction ID. This avoids duplicate renders and
+duplicate charges when the transient error happened after generation started.
+After a prediction ID is recorded for the current invoke, automatic retries stay
+bound to that ID and do not fall back to a fresh submit, because a fresh submit
+can double-bill. If the step-level retry budget is exhausted while resuming, the
+provider logs that the resume budget was exhausted without re-submit and records
+`genblaze.step_retry.resume_exhausted` span metadata.
+
+Internal step retries use the protected `_resume_once()` / `_aresume_once()`
+hooks, which are also used by public `resume()` / `aresume()`, and share the
+same base poll/fetch helper. Provider authors normally customize shared resume
+behavior by overriding `poll()` / `fetch_output()`. Public `resume()` progress
+still emits `resumed`; automatic step retry resume emits `retry_resumed`.
+
+Each step-level retry logs its route at INFO (`route=resume` or
+`route=submit`) and records `genblaze.step_retry.route` /
+`genblaze.step_retry.resumed` span attributes. The route log includes `step_id`
+and `run_id` when available. Upstream prediction IDs are not included in retry
+route logs to keep logs concise, but Genblaze treats prediction IDs as
+observability identifiers rather than secrets. They remain available in
+`step.metadata["upstream_id"]`, `ProgressEvent.request_id`, and stream
+completion/failure event `request_id` fields for checkpointing and UI
+correlation.
 
 ## Idempotency keys
 

@@ -13,7 +13,8 @@ class ProgressEvent:
         step_id: ID of the step being executed.
         provider: Provider name (e.g. "runway", "luma").
         model: Model identifier.
-        status: Current status — "submitted", "processing", "succeeded", "failed".
+        status: Current status — "submitted", "processing", "resumed",
+            "retry_resumed", "succeeded", "failed".
         progress_pct: 0.0–1.0 if the provider reports progress, else None.
         elapsed_sec: Seconds elapsed since step start.
         message: Optional human-readable status message.

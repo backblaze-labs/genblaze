@@ -20,9 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `genblaze-core`: post-submit step-level retries now resume the existing
+  upstream prediction instead of submitting a new one, including transient
+  checkpoint failures after `submit()` returns by replaying idempotent
+  `on_submit(step_id, prediction_id)` callbacks before retry resume (#70).
 - `genblaze-core`: fan-in consumers using `input_from` now fail before provider
   invocation when a referenced producer step failed, produced no assets, or
-  points at an out-of-range prior step, preventing a downstream step from
+  points at an out-of-range prior step, preventing a downstream step from 
   reporting success with empty declared inputs (#69). Affected pipelines that
   previously appeared green can now report `FAILED`/`INVALID_INPUT`, which may
   increase status-based alerts and change manifest hashes once during rollout.

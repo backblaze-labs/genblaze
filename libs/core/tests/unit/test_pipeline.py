@@ -32,6 +32,18 @@ class MockProvider(BaseProvider):
         return step
 
 
+class ConfigCaptureProvider(MockProvider):
+    """Provider that records the config passed into submit()."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submit_config: RunnableConfig | None = None
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.submit_config = config
+        return super().submit(step, config)
+
+
 def test_pipeline_single_step() -> None:
     provider = MockProvider()
     result = Pipeline("test").step(provider, model="test-model", prompt="a cat").run()
@@ -708,6 +720,15 @@ def test_pipeline_run_max_retries_kwarg() -> None:
     provider = MockProvider()
     result = Pipeline("retries").step(provider, model="m", prompt="p").run(max_retries=2)
     assert result.run.steps[0].status == StepStatus.SUCCEEDED
+
+
+def test_pipeline_run_injects_run_id_into_provider_config() -> None:
+    """Pipeline.run() passes the active run_id to provider spans and retry logs."""
+    provider = ConfigCaptureProvider()
+    result = Pipeline("run-id").step(provider, model="m", prompt="p").run()
+
+    assert provider.submit_config is not None
+    assert provider.submit_config["run_id"] == result.run.run_id
 
 
 # --- Runnable conformance tests ---
