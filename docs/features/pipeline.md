@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-16 -->
+<!-- last_verified: 2026-06-20 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -47,6 +47,14 @@ Fluent API for building and executing multi-step generative media workflows with
 | `chain=True` (Pipeline-level) | Every step consumes the previous step's outputs implicitly. | `Pipeline("chain", chain=True).step(gen).step(refine)` |
 
 Precedence inside `_resolve_inputs`: **external_inputs > input_from > chain mode > none**.
+
+For `input_from`, every referenced index must point to a prior step that succeeded and
+produced at least one asset. If a reference is out of range, a producer failed, or a
+producer returned no assets, the dependent step is marked `FAILED` with
+`error_code=INVALID_INPUT` before its provider is invoked. The pre-failed
+consumer records `metadata.failure_reason="input_resolution"` and
+`metadata.provider_invoked=false`, so telemetry can separate zero-duration pre-fail spans
+from real provider calls.
 
 `external_inputs` and `input_from` are mutually exclusive at construction (raises `GenblazeError`). Pass an Asset with `sha256` populated; without it, both the step cache key and the manifest canonical hash will drift across reruns when the URL rotates (e.g., presigned). The reserved kwargs `inputs=` and `input=` raise a friendly error pointing at `external_inputs=`.
 

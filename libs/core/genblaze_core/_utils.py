@@ -127,21 +127,47 @@ MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
-# Credential pattern detection — used by error sanitization (providers/base.py)
+# Credential pattern detection — used by shared error sanitization
 # AND by Pipeline.step build-time rejection of secret-shaped params values.
 # Centralized here so both call sites share one regex of record.
 # ---------------------------------------------------------------------------
+MAX_ERROR_LENGTH = 500
+TRUNCATION_MARKER = "...(truncated)"
+_SANITIZE_SCAN_LIMIT = MAX_ERROR_LENGTH * 4
+_AWS_CREDENTIAL_VALUE_RE = (
+    r"(?<![A-Za-z0-9/+])"
+    r"(?=[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))"
+    r"(?=[A-Za-z0-9/+]*[+/])"
+    r"(?=[A-Za-z0-9/+]*[A-Z])"
+    r"(?=[A-Za-z0-9/+]*[a-z])"
+    r"[A-Za-z0-9/+]{40}"
+)
+
 _SECRET_PATTERNS = re.compile(
     r"(r8_[A-Za-z0-9]{20,})"  # Replicate tokens
     r"|(sk-ant-[A-Za-z0-9\-]{20,})"  # Anthropic API keys (before generic sk-)
     r"|(sk-[A-Za-z0-9]{20,})"  # OpenAI-style keys
     r"|(AIza[A-Za-z0-9_\-]{30,})"  # Google API keys
     r"|(AKIA[A-Z0-9]{16})"  # AWS access key IDs
+    rf"|({_AWS_CREDENTIAL_VALUE_RE})"  # AWS secret access keys
+    r"|(\bK005[A-Za-z0-9+/]{20,})"  # Backblaze B2 application keys
+    r"|(https?://[^/\s:@]+:[^/\s@]{12,}@)"  # Basic-auth URL credentials
+    r"|(\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b)"  # JWTs
     r"|(Bearer\s+[A-Za-z0-9._\-]{20,})"  # Bearer tokens
     r"|(Token\s+[A-Za-z0-9._\-]{20,})"  # Token auth headers
     r"|(\bapi[_-]key[=:]\s*[A-Za-z0-9._\-]{20,})",  # api_key=... / api-key:...
     re.IGNORECASE,
 )
+
+
+def sanitize_error(msg: str) -> str:
+    """Redact potential secrets and truncate error messages for safe storage."""
+    bounded = msg[:_SANITIZE_SCAN_LIMIT]
+    input_truncated = len(msg) > _SANITIZE_SCAN_LIMIT
+    sanitized = _SECRET_PATTERNS.sub("[REDACTED]", bounded)
+    if input_truncated or len(sanitized) > MAX_ERROR_LENGTH:
+        sanitized = sanitized[:MAX_ERROR_LENGTH] + TRUNCATION_MARKER
+    return sanitized
 
 
 def jittered_backoff(attempt: int) -> float:
