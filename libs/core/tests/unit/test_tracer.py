@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.observability.events import StepProgressEvent
@@ -209,6 +210,75 @@ def test_on_step_end_fires_when_step_fails() -> None:
 
     seq = _hook_sequence(tracer)
     assert seq.count("on_step_start") == seq.count("on_step_end") == 1
+
+
+def test_tracer_hooks_fire_for_input_resolution_failure() -> None:
+    """Input resolution failures still produce paired step tracer hooks."""
+    tracer = _RecordingTracer()
+
+    result = (
+        Pipeline("t", tracer=tracer)
+        .step(_RaisingProvider(), model="m0", prompt="fails")
+        .step(_OKProvider(), model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert [step.status for step in result.run.steps] == [
+        StepStatus.FAILED,
+        StepStatus.FAILED,
+    ]
+    start_indices = [
+        kwargs["step_index"] for name, _, kwargs in tracer.calls if name == "on_step_start"
+    ]
+    end_indices = [
+        kwargs["step_index"] for name, _, kwargs in tracer.calls if name == "on_step_end"
+    ]
+    assert start_indices == [0, 1]
+    assert end_indices == [0, 1]
+    prefailed_end = [
+        (args[1], kwargs)
+        for name, args, kwargs in tracer.calls
+        if name == "on_step_end" and kwargs["step_index"] == 1
+    ][0]
+    prefailed_step, prefailed_kwargs = prefailed_end
+    assert prefailed_kwargs["duration_ms"] == 0.0
+    assert prefailed_step.metadata["failure_reason"] == "input_resolution"
+    assert prefailed_step.metadata["provider_invoked"] is False
+
+
+@pytest.mark.asyncio
+async def test_tracer_hooks_fire_for_input_resolution_failure_async() -> None:
+    """Async input resolution failures still produce paired step tracer hooks."""
+    tracer = _RecordingTracer()
+
+    result = await (
+        Pipeline("t", tracer=tracer)
+        .step(_RaisingProvider(), model="m0", prompt="fails")
+        .step(_OKProvider(), model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert [step.status for step in result.run.steps] == [
+        StepStatus.FAILED,
+        StepStatus.FAILED,
+    ]
+    start_indices = [
+        kwargs["step_index"] for name, _, kwargs in tracer.calls if name == "on_step_start"
+    ]
+    end_indices = [
+        kwargs["step_index"] for name, _, kwargs in tracer.calls if name == "on_step_end"
+    ]
+    assert start_indices == [0, 1]
+    assert end_indices == [0, 1]
+    prefailed_end = [
+        (args[1], kwargs)
+        for name, args, kwargs in tracer.calls
+        if name == "on_step_end" and kwargs["step_index"] == 1
+    ][0]
+    prefailed_step, prefailed_kwargs = prefailed_end
+    assert prefailed_kwargs["duration_ms"] == 0.0
+    assert prefailed_step.metadata["failure_reason"] == "input_resolution"
+    assert prefailed_step.metadata["provider_invoked"] is False
 
 
 def test_on_run_end_fires_on_pipeline_timeout() -> None:

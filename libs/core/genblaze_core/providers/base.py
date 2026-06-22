@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote, urlparse
 
-from genblaze_core._utils import _SECRET_PATTERNS, new_id, utc_now
+from genblaze_core._utils import new_id, sanitize_error, utc_now
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import (
@@ -64,9 +64,6 @@ DEFAULT_TIMEOUT = 600.0  # 10 minutes
 # proxies, load balancers, and impatient users see the connection is alive.
 _HEARTBEAT_THRESHOLD_SEC = 15.0
 _HEARTBEAT_CHUNK_SEC = 10.0
-
-# Max error message length stored in step.error (prevents bloated manifests)
-_MAX_ERROR_LENGTH = 500
 
 # Max consecutive transient poll() errors tolerated inside a single invoke().
 # Guards against misclassification in connectors that wrap httpx/boto exceptions
@@ -133,14 +130,6 @@ def _adaptive_poll_interval(elapsed: float, base: float, max_interval: float = 3
     """
     doublings = int(elapsed / 30)
     return min(base * (2**doublings), max_interval)
-
-
-def _sanitize_error(msg: str) -> str:
-    """Redact potential secrets and truncate error messages for safe storage."""
-    sanitized = _SECRET_PATTERNS.sub("[REDACTED]", msg)
-    if len(sanitized) > _MAX_ERROR_LENGTH:
-        sanitized = sanitized[:_MAX_ERROR_LENGTH] + "...(truncated)"
-    return sanitized
 
 
 def classify_api_error(exc: Exception | str) -> ProviderErrorCode:
@@ -1303,7 +1292,7 @@ class BaseProvider(Runnable[Step, Step]):
                 max_attempts=max_attempts,
                 delay_sec=delay,
                 error_code=str(code) if code else None,
-                error=_sanitize_error(str(exc)),
+                error=sanitize_error(str(exc)),
             )
         )
 
@@ -1629,7 +1618,7 @@ class BaseProvider(Runnable[Step, Step]):
             else classify_api_error(exc)
         )
         step.status = StepStatus.FAILED
-        step.error = _sanitize_error(str(exc))
+        step.error = sanitize_error(str(exc))
         step.error_code = error_code
         step.completed_at = utc_now()
         self._fire_progress(step, config, "failed", start_time)
@@ -1836,7 +1825,7 @@ class BaseProvider(Runnable[Step, Step]):
                     retryable = error_code in self.retry_policy.retryable_codes
                     if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
-                        step.error = _sanitize_error(str(exc))
+                        step.error = sanitize_error(str(exc))
                         step.error_code = error_code
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
@@ -1867,7 +1856,7 @@ class BaseProvider(Runnable[Step, Step]):
                     elapsed = time.monotonic() - start_time
                     if elapsed + backoff >= timeout:
                         step.status = StepStatus.FAILED
-                        step.error = _sanitize_error(str(exc))
+                        step.error = sanitize_error(str(exc))
                         step.error_code = error_code
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
@@ -2020,7 +2009,7 @@ class BaseProvider(Runnable[Step, Step]):
                     retryable = error_code in self.retry_policy.retryable_codes
                     if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
-                        step.error = _sanitize_error(str(exc))
+                        step.error = sanitize_error(str(exc))
                         step.error_code = error_code
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)
@@ -2050,7 +2039,7 @@ class BaseProvider(Runnable[Step, Step]):
                     elapsed = time.monotonic() - start_time
                     if elapsed + backoff >= timeout:
                         step.status = StepStatus.FAILED
-                        step.error = _sanitize_error(str(exc))
+                        step.error = sanitize_error(str(exc))
                         step.error_code = error_code
                         step.completed_at = utc_now()
                         self._fire_progress(step, config, "failed", start_time)

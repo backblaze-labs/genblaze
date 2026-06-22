@@ -13,7 +13,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from genblaze_core._utils import _SECRET_PATTERNS, new_id, normalize_tenant_id, utc_now
+from genblaze_core._utils import (
+    _SECRET_PATTERNS,
+    new_id,
+    normalize_tenant_id,
+    sanitize_error,
+    utc_now,
+)
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
     BatchPipelineError,
@@ -51,6 +57,21 @@ from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
 logger = logging.getLogger("genblaze.pipeline")
+
+
+class _InputResolutionError(GenblazeError):
+    """Raised when declared upstream step outputs cannot be used as inputs."""
+
+
+@dataclass(frozen=True)
+class _PreparedStep:
+    """A step plus the internal routing decision for runner dispatch."""
+
+    step: Step
+    prefailed: bool = False
+
+
+_INPUT_RESOLUTION_FAILURE_REASON = "input_resolution"
 
 
 # Sentinel for ``raise_on_failure``. ``None`` means "caller didn't pass it,
@@ -699,14 +720,153 @@ class Pipeline(Runnable[None, PipelineResult]):
                         f"input_from index {idx} is out of range for step {step_index}"
                         f" (only {step_index} prior steps completed)"
                     )
-                    raise GenblazeError(msg)
+                    raise _InputResolutionError(msg)
             assets: list[Asset] = []
             for idx in ps.input_from:
-                assets.extend(completed_steps[idx].assets)
+                upstream = completed_steps[idx]
+                if upstream.status != StepStatus.SUCCEEDED:
+                    upstream_label = (
+                        "failed upstream step"
+                        if upstream.status == StepStatus.FAILED
+                        else "upstream step"
+                    )
+                    msg = (
+                        f"input_from index {idx} for step {step_index} points to "
+                        f"{upstream_label} {idx} ({upstream.step_id}) with status "
+                        f"{upstream.status.value}"
+                    )
+                    raise _InputResolutionError(msg)
+                if not upstream.assets:
+                    msg = (
+                        f"input_from index {idx} for step {step_index} resolved no assets "
+                        f"from upstream step {idx}"
+                    )
+                    raise _InputResolutionError(msg)
+                assets.extend(upstream.assets)
             return assets
         if self._chain:
             return prev_assets
         return None
+
+    def _build_or_prefail_step(
+        self,
+        ps: _PipelineStep,
+        step_index: int,
+        completed_steps: list[Step],
+        prev_assets: list[Asset],
+        *,
+        step_id: str | None = None,
+    ) -> _PreparedStep:
+        """Build a runnable step or a FAILED step for unavailable input_from assets."""
+        try:
+            inputs = self._resolve_inputs(ps, step_index, completed_steps, prev_assets)
+        except _InputResolutionError as exc:
+            step = self._build_input_resolution_failure_step(ps, exc, step_id=step_id)
+            return _PreparedStep(step=step, prefailed=True)
+        return _PreparedStep(step=self._build_step(ps, inputs, step_id=step_id))
+
+    def _build_input_resolution_failure_step(
+        self,
+        ps: _PipelineStep,
+        error: _InputResolutionError,
+        *,
+        step_id: str | None = None,
+    ) -> Step:
+        """Build a failed Step when declared input dependencies are unavailable."""
+        if isinstance(ps.prompt, PromptTemplate):
+            msg = (
+                "Step prompt is a PromptTemplate but was not rendered. "
+                "Use batch_run() with dicts or call template.render() "
+                "before passing to step()."
+            )
+            raise GenblazeError(msg)
+
+        # Input resolution failed before a provider input list exists, so this
+        # intentionally records no Step.inputs and never calls provider hooks
+        # such as normalize_params(). Exception failures use _make_failed_step(),
+        # which preserves caller-supplied external_inputs.
+        params = dict(ps.params)
+        _reject_credentials_in_params(params, ps.provider.name, ps.model)
+        seed = params.pop("seed", None)
+        negative_prompt = params.pop("negative_prompt", None)
+        metadata = self._build_step_metadata(ps)
+        metadata["failure_reason"] = _INPUT_RESOLUTION_FAILURE_REASON
+        metadata["provider_invoked"] = False
+        now = utc_now()
+        step_kwargs: dict[str, Any] = dict(
+            provider=ps.provider.name,
+            model=ps.model,
+            prompt=ps.prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            params=params,
+            modality=ps.modality,
+            step_type=ps.step_type,
+            status=StepStatus.FAILED,
+            inputs=[],
+            assets=[],
+            error=sanitize_error(str(error)),
+            error_code=ProviderErrorCode.INVALID_INPUT,
+            started_at=now,
+            completed_at=now,
+            metadata=metadata,
+        )
+        if step_id is not None:
+            step_kwargs["step_id"] = step_id
+        return Step(**step_kwargs)
+
+    def _emit_tracer_step_start(self, step: Step, ctx: _StepContext) -> None:
+        """Emit the tracer start hook with the shared step lifecycle shape."""
+        safe_call(
+            self._tracer,
+            "on_step_start",
+            ctx.run_id,
+            step,
+            step_index=ctx.step_index,
+            total_steps=ctx.total_steps,
+        )
+
+    def _emit_tracer_step_end(
+        self,
+        step: Step,
+        ctx: _StepContext,
+        *,
+        duration_ms: float,
+    ) -> None:
+        """Emit the tracer end hook with the shared step lifecycle shape."""
+        safe_call(
+            self._tracer,
+            "on_step_end",
+            ctx.run_id,
+            step,
+            duration_ms=duration_ms,
+            step_index=ctx.step_index,
+        )
+
+    def _record_prefailed_step(self, step: Step, ctx: _StepContext) -> Step:
+        """Emit tracer lifecycle hooks for a step that failed before provider invoke."""
+        logger.warning(
+            "step.prefailed run_id=%s step_index=%d reason=%s provider=%s model=%s "
+            "error_code=%s provider_invoked=false",
+            ctx.run_id,
+            ctx.step_index,
+            step.metadata.get("failure_reason"),
+            step.provider,
+            step.model,
+            step.error_code.value if step.error_code else None,
+        )
+        self._emit_tracer_step_start(step, ctx)
+        self._emit_tracer_step_end(step, ctx, duration_ms=0.0)
+        return step
+
+    def _build_step_metadata(self, ps: _PipelineStep) -> dict[str, Any]:
+        """Build persisted pipeline graph metadata for a deferred step."""
+        metadata: dict[str, Any] = {}
+        if ps.fallback_models:
+            metadata["_fallback_models"] = ps.fallback_models
+        if ps.input_from is not None:
+            metadata["_input_from"] = ps.input_from
+        return metadata
 
     def _build_step(
         self,
@@ -746,11 +906,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         negative_prompt = normalized.pop("negative_prompt", None)
 
         # Persist pipeline graph info in metadata for faithful replay
-        metadata: dict[str, Any] = {}
-        if ps.fallback_models:
-            metadata["_fallback_models"] = ps.fallback_models
-        if ps.input_from is not None:
-            metadata["_input_from"] = ps.input_from
+        metadata = self._build_step_metadata(ps)
 
         step_kwargs: dict[str, Any] = dict(
             provider=ps.provider.name,
@@ -848,6 +1004,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
             self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
 
+        if result.status == StepStatus.FAILED and result.error:
+            # Providers usually sanitize their own failures. This pipeline
+            # boundary backstops adapters that return failed Steps directly so
+            # manifests, logs, and stream events share the same redaction cap.
+            result.error = sanitize_error(result.error)
+
         return result
 
     def _execute_step(
@@ -877,14 +1039,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
-        safe_call(
-            self._tracer,
-            "on_step_start",
-            ctx.run_id,
-            step,
-            step_index=ctx.step_index,
-            total_steps=ctx.total_steps,
-        )
+        self._emit_tracer_step_start(step, ctx)
         t0 = time.monotonic()
         final: Step = step  # fallback for on_step_end if provider.invoke raises
         try:
@@ -902,13 +1057,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             return final
         finally:
-            safe_call(
-                self._tracer,
-                "on_step_end",
-                ctx.run_id,
+            self._emit_tracer_step_end(
                 final,
+                ctx,
                 duration_ms=(time.monotonic() - t0) * 1000,
-                step_index=ctx.step_index,
             )
 
     async def _execute_step_async(
@@ -938,14 +1090,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
-        safe_call(
-            self._tracer,
-            "on_step_start",
-            ctx.run_id,
-            step,
-            step_index=ctx.step_index,
-            total_steps=ctx.total_steps,
-        )
+        self._emit_tracer_step_start(step, ctx)
         t0 = time.monotonic()
         final: Step = step  # fallback for on_step_end if ainvoke raises
         try:
@@ -1000,13 +1145,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             return final
         finally:
-            safe_call(
-                self._tracer,
-                "on_step_end",
-                ctx.run_id,
+            self._emit_tracer_step_end(
                 final,
+                ctx,
                 duration_ms=(time.monotonic() - t0) * 1000,
-                step_index=ctx.step_index,
             )
 
     def _finalize(
@@ -1181,7 +1323,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         )
 
     def _emit_step_complete_event(self, step_event: StepCompleteEvent, run_id: str) -> None:
-        # Tracer already gets on_step_end inside _execute_step; emitter-only here.
+        # Tracer on_step_end is paired in _execute_step, _execute_step_async,
+        # and _record_prefailed_step via _emit_tracer_step_end; emitter-only here.
         if self._event_emitter is not None:
             self._event_emitter.on_step_complete(step_event)
 
@@ -1467,8 +1610,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg)
 
-                inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                prepared = self._build_or_prefail_step(
+                    ps,
+                    i - 1,
+                    completed_steps,
+                    prev_assets,
+                    step_id=step_ids[i - 1],
+                )
+                step = prepared.step
                 logger.debug(
                     "Executing step %d/%d: %s/%s",
                     i,
@@ -1476,7 +1626,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                     ps.provider.name,
                     ps.model,
                 )
-                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                 self._emit_step_start(ctx, step, ps)
                 if spinner is not None:
                     spinner.step_starting(
@@ -1486,7 +1635,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                         step_index=i - 1,
                         total=total_steps,
                     )
-                result = self._execute_step(ps, step, config, ctx)
+                # Input-resolution prefail handling is shared; the runner call
+                # site only differs in sync vs async provider invocation.
+                if prepared.prefailed:
+                    result = self._record_prefailed_step(step, ctx)
+                else:
+                    result = self._execute_step(ps, step, config, ctx)
                 if spinner is not None:
                     spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                 completed_steps.append(result)
@@ -1663,8 +1817,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                             )
                             raise PipelineTimeoutError(msg)
 
-                    inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                    step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                    prepared = self._build_or_prefail_step(
+                        ps,
+                        i - 1,
+                        completed_steps,
+                        prev_assets,
+                        step_id=step_ids[i - 1],
+                    )
+                    step = prepared.step
                     logger.debug(
                         "Executing step %d/%d: %s/%s",
                         i,
@@ -1672,7 +1833,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                         ps.provider.name,
                         ps.model,
                     )
-                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                     self._emit_step_start(ctx, step, ps)
                     if spinner is not None:
                         spinner.step_starting(
@@ -1682,7 +1842,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                             step_index=i - 1,
                             total=total_steps,
                         )
-                    result = await self._execute_step_async(ps, step, config, ctx)
+                    # Input-resolution prefail handling is shared; the runner call
+                    # site only differs in sync vs async provider invocation.
+                    if prepared.prefailed:
+                        result = self._record_prefailed_step(step, ctx)
+                    else:
+                        result = await self._execute_step_async(ps, step, config, ctx)
                     if spinner is not None:
                         spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                     completed_steps.append(result)
@@ -1836,13 +2001,13 @@ class Pipeline(Runnable[None, PipelineResult]):
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
         """Create a FAILED step from an unhandled exception."""
-        from genblaze_core.providers.base import _sanitize_error, classify_api_error
+        from genblaze_core.providers.base import classify_api_error
 
         # Preserve external_inputs on the failed-step record so the manifest
         # shows what the step was supposed to consume.
         step = self._build_step(ps, ps.external_inputs)
         step.status = StepStatus.FAILED
-        step.error = _sanitize_error(str(exc))
+        step.error = sanitize_error(str(exc))
         step.error_code = classify_api_error(exc)
         return step
 

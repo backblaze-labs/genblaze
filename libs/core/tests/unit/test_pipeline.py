@@ -1,12 +1,14 @@
 """Tests for Pipeline API."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
+from genblaze_core._utils import MAX_ERROR_LENGTH, TRUNCATION_MARKER
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import RunStatus, StepStatus
+from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepStatus
 from genblaze_core.models.step import Step
 from genblaze_core.pipeline import Pipeline, StepCache
 from genblaze_core.pipeline.result import PipelineResult
@@ -352,6 +354,47 @@ class FailingProvider(BaseProvider):
         return step
 
 
+class RawFailedStepProvider(BaseProvider):
+    """Provider that returns a failed Step with an unsanitized error."""
+
+    name = "raw-failed"
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-raw-failed"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+    def invoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        failed = step.model_copy()
+        failed.status = StepStatus.FAILED
+        failed.error = self.error
+        failed.error_code = ProviderErrorCode.SERVER_ERROR
+        return failed
+
+
+class EmptyAssetProvider(BaseProvider):
+    """Provider that succeeds without returning any assets."""
+
+    name = "empty"
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-empty"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+
 def test_pipeline_fail_fast_stops_on_failure() -> None:
     """With fail_fast=True (default), pipeline stops after first failed step."""
     failing = FailingProvider()
@@ -466,6 +509,40 @@ class ChainableProvider(BaseProvider):
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         step.assets.append(Asset(url=self.output_url, media_type="image/png"))
         return step
+
+
+class HookTrackingProvider(BaseProvider):
+    """Provider whose hooks must not run when a consumer is prefailed."""
+
+    name = "hook-tracking"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hook_calls: list[str] = []
+
+    def normalize_params(self, params, modality=None):
+        self.hook_calls.append("normalize_params")
+        raise AssertionError("normalize_params should not run for prefailed consumers")
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.hook_calls.append("submit")
+        raise AssertionError("submit should not run for prefailed consumers")
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        self.hook_calls.append("poll")
+        raise AssertionError("poll should not run for prefailed consumers")
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        self.hook_calls.append("fetch_output")
+        raise AssertionError("fetch_output should not run for prefailed consumers")
+
+    def invoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        self.hook_calls.append("invoke")
+        raise AssertionError("invoke should not run for prefailed consumers")
+
+    async def ainvoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        self.hook_calls.append("ainvoke")
+        raise AssertionError("ainvoke should not run for prefailed consumers")
 
 
 def test_chain_passes_outputs_as_inputs() -> None:
@@ -1252,18 +1329,64 @@ def test_input_from_overrides_chain_mode() -> None:
     assert p2.received_inputs[0][0].url == "https://example.com/step0.png"
 
 
-def test_input_from_invalid_index_raises() -> None:
-    """Referencing a step index beyond completed steps raises GenblazeError."""
+def test_input_from_invalid_index_prefails_consumer() -> None:
+    """Referencing a future/missing step fails only the dependent consumer."""
     p0 = ChainableProvider()
     p1 = ChainableProvider()
 
-    with pytest.raises(GenblazeError, match="input_from index 5 is out of range"):
-        (
-            Pipeline("fan-in-bad")
+    result = (
+        Pipeline("fan-in-bad")
+        .step(p0, model="m0", prompt="zero")
+        .step(p1, model="m1", prompt="one", input_from=[5])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert p1.received_inputs == []
+
+
+def test_input_from_invalid_index_default_run_returns_failed_result() -> None:
+    """Default run() treats invalid input_from as a failed step, not an exception."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    with pytest.warns(DeprecationWarning):
+        result = (
+            Pipeline("fan-in-bad-default")
             .step(p0, model="m0", prompt="zero")
             .step(p1, model="m1", prompt="one", input_from=[5])
             .run()
         )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert p1.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_invalid_index_default_arun_returns_failed_result() -> None:
+    """Default arun() treats invalid input_from as a failed step, not an exception."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    with pytest.warns(DeprecationWarning):
+        result = await (
+            Pipeline("fan-in-bad-default-async")
+            .step(p0, model="m0", prompt="zero")
+            .step(p1, model="m1", prompt="one", input_from=[5])
+            .arun()
+        )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert p1.received_inputs == []
 
 
 def test_input_from_none_preserves_existing_behavior() -> None:
@@ -1304,6 +1427,226 @@ async def test_input_from_arun() -> None:
     urls = {a.url for a in p2.received_inputs[0]}
     assert "https://example.com/async0.png" in urls
     assert "https://example.com/async1.png" in urls
+
+
+def test_input_from_failed_producer_fails_consumer() -> None:
+    """A fan-in consumer cannot succeed on assets from a failed producer."""
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-failed-source")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_failed_producer_fails_consumer_async() -> None:
+    """Async fan-in also fails before invoking a consumer with missing inputs."""
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = await (
+        Pipeline("fan-in-failed-source-async")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+def test_input_from_empty_producer_fails_consumer() -> None:
+    """A successful producer with no assets cannot feed a fan-in consumer."""
+    empty = EmptyAssetProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-empty-source")
+        .step(empty, model="m0", prompt="empty")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[0].assets == []
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_empty_producer_fails_consumer_async() -> None:
+    """Async fan-in fails before consuming an upstream step with no assets."""
+    empty = EmptyAssetProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = await (
+        Pipeline("fan-in-empty-source-async")
+        .step(empty, model="m0", prompt="empty")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[0].assets == []
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+def test_input_from_prefail_does_not_call_consumer_provider_hooks() -> None:
+    """A prefailed consumer is built without downstream provider hooks."""
+    failing = FailingProvider()
+    consumer = HookTrackingProvider()
+
+    result = (
+        Pipeline("fan-in-no-consumer-hooks")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert consumer.hook_calls == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_prefail_does_not_call_consumer_provider_hooks_async() -> None:
+    """Async prefailed consumers also avoid downstream provider hooks."""
+    failing = FailingProvider()
+    consumer = HookTrackingProvider()
+
+    result = await (
+        Pipeline("fan-in-no-consumer-hooks-async")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert consumer.hook_calls == []
+
+
+def test_input_from_mixed_producers_fails_consumer_before_invocation() -> None:
+    """A fan-in consumer fails if any declared producer failed."""
+    ok = ChainableProvider(output_url="https://example.com/ok.png")
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-mixed-source")
+        .step(ok, model="m0", prompt="audio")
+        .step(failing, model="m1", prompt="video")
+        .step(consumer, model="m2", prompt="compose", input_from=[0, 1])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[2].status == StepStatus.FAILED
+    assert result.run.steps[2].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[2].assets == []
+    assert ok.received_inputs == [[]]
+    assert consumer.received_inputs == []
+
+
+def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
+    """Unsafe upstream errors are not copied raw into fan-in telemetry."""
+    bearer = "tok_" + ("a" * 40)
+    aws_secret = "aBcD1234/+" * 4
+    b2_key = "K005" + ("B2keyValue/" * 3)
+    basic_auth_value = "pass" + "word-value-1234567890"
+    basic_url = f"https://user:{basic_auth_value}@example.com/object"
+    jwt = f"eyJ{'a' * 20}.{'b' * 20}.{'c' * 20}"
+    oversized_tail = "Z" * 1000
+    raw_error = (
+        f"Authorization: Bearer {bearer}; "
+        f"AWS_SECRET_ACCESS_KEY={aws_secret}; "
+        f"B2_APPLICATION_KEY={b2_key}; "
+        f"url={basic_url}; "
+        f"jwt={jwt}; "
+        f"{oversized_tail}"
+    )
+    upstream = RawFailedStepProvider(raw_error)
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+    caplog.set_level(logging.WARNING, logger="genblaze.pipeline")
+
+    events = list(
+        Pipeline("fan-in-sanitized-source")
+        .step(upstream, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .stream(heartbeats=False, fail_fast=False, raise_on_failure=False)
+    )
+
+    result = events[-1].result
+    assert result is not None
+    dependent = result.run.steps[1]
+    assert dependent.status == StepStatus.FAILED
+    assert dependent.error_code == ProviderErrorCode.INVALID_INPUT
+    assert dependent.metadata["failure_reason"] == "input_resolution"
+    assert dependent.metadata["provider_invoked"] is False
+    assert dependent.error is not None
+    assert len(dependent.error) <= MAX_ERROR_LENGTH + len(TRUNCATION_MARKER)
+
+    surfaces = [
+        dependent.error,
+        result.manifest.to_canonical_json(),
+        "\n".join(str(event.to_dict()) for event in events),
+        "\n".join(record.getMessage() for record in caplog.records),
+    ]
+    for surface in surfaces:
+        for secret in [
+            bearer,
+            aws_secret,
+            b2_key,
+            basic_auth_value,
+            jwt,
+            oversized_tail,
+        ]:
+            assert secret not in surface
+    assert consumer.received_inputs == []
 
 
 # --- Chain failure propagation tests (fail_fast=False) ---
