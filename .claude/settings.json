@@ -19,6 +19,11 @@
       "Bash(git show:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue comment:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)"
     ],

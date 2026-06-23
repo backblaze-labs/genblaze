@@ -6,6 +6,7 @@
 #
 # Usage:
 #   .claude/agents/genblaze-maintainer/run.sh                    # Full audit
+#   .claude/agents/genblaze-maintainer/run.sh --issue 70         # Resolve issue #70 → PR
 #   .claude/agents/genblaze-maintainer/run.sh --domain security  # Security only
 #   .claude/agents/genblaze-maintainer/run.sh --fix              # Auto-fix P0/P1
 #   .claude/agents/genblaze-maintainer/run.sh --report-only      # Read-only
@@ -27,12 +28,17 @@ CONFIG="$SCRIPT_DIR/config.json"
 
 # ── Parse arguments ──────────────────────────────────────
 DOMAIN=""
+ISSUE=""
 FIX_MODE=false
 REPORT_ONLY=false
 MODEL="sonnet"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --issue)
+            ISSUE="${2#\#}"   # strip a leading '#' if present
+            shift 2
+            ;;
         --domain)
             DOMAIN="$2"
             shift 2
@@ -55,6 +61,7 @@ while [[ $# -gt 0 ]]; do
             echo "Genblaze Maintainer — autonomous repo guardian"
             echo ""
             echo "Options:"
+            echo "  --issue N         Resolve GitHub issue #N end-to-end and open a PR"
             echo "  --domain DOMAIN   Focus on specific domain:"
             echo "                    functional, security, code-quality,"
             echo "                    documentation, agent-standards, dependencies"
@@ -85,6 +92,36 @@ if [[ ! -f "$REPO_ROOT/Makefile" ]]; then
 fi
 
 # ── Build the prompt ─────────────────────────────────────
+# Issue Resolution mode takes precedence over the audit modes.
+if [[ -n "$ISSUE" ]]; then
+    PROMPT="You are the Genblaze Maintainer in ISSUE RESOLUTION mode. Resolve GitHub issue #${ISSUE} end-to-end."
+    PROMPT+="\n\nFollow the Issue Resolution Protocol in your agent instructions and the playbook at .claude/agents/genblaze-maintainer/checklists/issue-resolution.md. Branch off origin/main, fix with TDD, verify (make test/lint/typecheck), update docs and CHANGELOG, then run the Pre-PR Triangulated Review (three independent sub-agent reviewers) and resolve every blocking finding before pushing."
+    PROMPT+="\n\nFinish by pushing the branch and opening a merge-ready PR with 'Closes #${ISSUE}'. STOP for human review — do not merge, auto-merge, or approve."
+    TODAY=$(date +%Y-%m-%d)
+    PROMPT+="\n\nToday's date: $TODAY"
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Genblaze Maintainer — Issue Resolution"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Issue:   #${ISSUE}"
+    echo "  Model:   $MODEL"
+    echo "  Date:    $TODAY"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    cd "$REPO_ROOT"
+    claude --agent genblaze-maintainer \
+        --model "$MODEL" \
+        --allowedTools "Bash(make*),Bash(pytest*),Bash(python3*),Bash(pip*),Bash(grep*),Bash(find*),Bash(git*),Bash(gh*),Bash(ruff*),Bash(ls*),Bash(cat*),Read,Write,Edit,Glob,Grep,Agent" \
+        -p "$(echo -e "$PROMPT")"
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Issue #${ISSUE} session complete — review the PR before merging."
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    exit 0
+fi
+
 PROMPT="You are the Genblaze Maintainer. Follow the Execution Protocol in your agent instructions."
 
 if [[ -n "$DOMAIN" ]]; then
@@ -117,8 +154,8 @@ cd "$REPO_ROOT"
 
 claude --agent genblaze-maintainer \
     --model "$MODEL" \
-    --prompt "$(echo -e "$PROMPT")" \
-    --allowedTools "Bash(make*),Bash(pytest*),Bash(python3*),Bash(pip*),Bash(grep*),Bash(find*),Bash(git*),Bash(ruff*),Bash(ls*),Bash(cat*),Read,Write,Edit,Glob,Grep"
+    --allowedTools "Bash(make*),Bash(pytest*),Bash(python3*),Bash(pip*),Bash(grep*),Bash(find*),Bash(git*),Bash(ruff*),Bash(ls*),Bash(cat*),Read,Write,Edit,Glob,Grep" \
+    -p "$(echo -e "$PROMPT")"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -10,6 +10,14 @@
     "mode": "standard",
     "domain": "all"
   },
+  "workflows": {
+    "issue-resolution": {
+      "playbook": "checklists/issue-resolution.md",
+      "description": "Resolve a GitHub issue end-to-end: branch off origin/main, TDD fix, verify, triangulated 3-reviewer check, then open a merge-ready PR and stop for human review",
+      "review": "Three independent Agent sub-agents (correctness, security, architecture) triangulate findings before push; P0 or any finding raised by 2+ reviewers blocks the PR",
+      "stops_before": "merge"
+    }
+  },
   "domains": {
     "functional": {
       "checklist": "checklists/functional.md",
