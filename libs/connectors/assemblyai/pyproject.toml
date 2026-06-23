@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-assemblyai"
+version = "0.3.0"
+description = "AssemblyAI (speech-to-text / transcription) provider adapter for genblaze"
+authors = [{name = "Eduardo Pavez", email = "epavez@backblaze.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia",
+    "Topic :: Software Development :: Libraries",
+]
+keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "assemblyai", "speech-to-text", "transcription", "audio"]
+
+dependencies = [
+    "genblaze-core>=0.3.0,<0.4",
+    # The provider uses Transcriber().submit() (non-blocking) and
+    # aai.Transcript.get_by_id(id) for polling; both have been stable across
+    # the 0.x line. Floored at 0.40 and bounded below 1.0 so a future major
+    # can't silently reshape these call sites.
+    "assemblyai>=0.40,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
+Documentation = "https://github.com/backblaze-labs/genblaze"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.entry-points."genblaze.providers"]
+assemblyai = "genblaze_assemblyai:AssemblyAIProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_assemblyai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.deptry]
+# Treat the `dev` extra as dev-only tooling so deptry does not flag pytest
+# (and other test-only deps) as unused declared deps (DEP002).
+optional_dependencies_dev_groups = ["dev"]

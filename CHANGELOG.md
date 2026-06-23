@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pricing (register per-character rates via the recipe in
   `docs/reference/pricing-recipes.md`). Available as `pip install genblaze-hume`
   or the `genblaze[hume]` / `genblaze[audio]` extras.
+- `genblaze-assemblyai`: new provider adapter for **AssemblyAI** speech-to-text
+  / transcription — the first connector that *consumes* audio and *produces*
+  text. Async `BaseProvider` (submit / poll / fetch_output) that resolves an
+  audio URL (`step.inputs[0]` → `params["audio_url"]` → `prompt`, SSRF-validated
+  via `validate_chain_input_url`) and emits a hash-verified **TEXT asset**
+  (`text:{sha256}`, `media_type="text/plain"`, transcript in `metadata["text"]`)
+  with word-level timings on `AudioMetadata.word_timings` (converted ms → s).
+  `step.model` is sent on the SDK's plural `speech_models` field (the live API
+  has deprecated the singular `speech_model` field and the legacy best/nano
+  aliases). Ships a pattern-keyed `assemblyai-speech` family (`universal-3-pro`
+  / `universal-2`) with a permissive TEXT fallback,
+  `DiscoverySupport.NONE`, and no hardcoded pricing (register
+  per-minute-of-input-audio rates via the recipe in
+  `docs/reference/pricing-recipes.md`). Available as
+  `pip install genblaze-assemblyai` or the `genblaze[assemblyai]` extra.
 
 ### Fixed
 

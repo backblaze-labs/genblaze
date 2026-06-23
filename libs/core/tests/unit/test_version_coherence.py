@@ -67,7 +67,7 @@ class TestVersionCoherence:
 class TestConnectorVersionCoherence:
     """Each genblaze-* connector's ``__version__`` must read from
     ``importlib.metadata`` rather than a hardcoded string. Plan 5
-    Phase 1B closed the version-drift class of bug across all 14
+    Phase 1B closed the version-drift class of bug across all 15
     connector packages."""
 
     @staticmethod
@@ -127,3 +127,6 @@ class TestConnectorVersionCoherence:
 
     def test_genblaze_langsmith(self):
         self._check("genblaze_langsmith", "genblaze-langsmith")
+
+    def test_genblaze_assemblyai(self):
+        self._check("genblaze_assemblyai", "genblaze-assemblyai")
