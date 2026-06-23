@@ -50,6 +50,9 @@ git switch -c <type>/issue-<N>-<slug> origin/main   # type: fix | feat | docs | 
 - [ ] Public functions get docstrings; errors say what failed + what to try next
 
 ## 5. Verify (must be green before the PR)
+> **CI (`.github/workflows/ci.yml`) is the authoritative gate** — it re-runs
+> these on the PR in a clean environment. Local green is fast feedback, not the
+> final word; never treat a local pass as a substitute for green CI.
 - [ ] `make test` — full suite passes (or `/test-package <pkg>` while iterating,
       then `make test` before the PR)
 - [ ] `make lint` — clean

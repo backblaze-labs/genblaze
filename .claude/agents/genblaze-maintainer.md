@@ -93,8 +93,10 @@ below are the contract.
    refactors or performance work unless the issue is about that. Honor every
    `AGENTS.md` invariant.
 5. **Verify green** — `make test`, `make lint`, `make typecheck`, `make coverage`
-   (≥70%). If you changed a `libs/core` Pydantic model, update the JSON schema,
-   run `make ts-types`, and **commit the regenerated `libs/spec/ts/genblaze.d.ts`**.
+   (≥70%). CI (`.github/workflows/ci.yml`) is the authoritative gate and re-runs
+   these on the PR; local green is fast feedback, not a substitute for green CI.
+   If you changed a `libs/core` Pydantic model, update the JSON schema, run
+   `make ts-types`, and **commit the regenerated `libs/spec/ts/genblaze.d.ts`**.
 6. **Docs + changelog in the same PR** — update affected docs and add a
    `CHANGELOG.md` `[Unreleased]` bullet under the **correct package heading**
    (the release gate depends on it).
