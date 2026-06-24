@@ -103,6 +103,7 @@ PACKAGES: list[str] = [
     "libs/connectors/gmicloud",
     "libs/connectors/langsmith",
     "libs/connectors/nvidia",
+    "libs/connectors/assemblyai",
     "cli",
     "libs/meta",
 ]
