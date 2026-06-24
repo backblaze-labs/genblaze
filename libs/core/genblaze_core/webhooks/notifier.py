@@ -194,7 +194,16 @@ class WebhookNotifier:
                     logger.debug("Webhook 5xx (%d), retrying in %.1fs", status, backoff)
                     time.sleep(backoff)
                     continue
-                if status >= 400:
+                if 300 <= status < 400:
+                    # http.client does not follow redirects (SSRF-safe), so a 3xx
+                    # means the endpoint never accepted the payload. Treat it as a
+                    # non-retryable delivery failure rather than silently dropping it.
+                    logger.warning(
+                        "Webhook delivery failed: endpoint returned redirect HTTP %d; "
+                        "redirects are not followed, configure the final URL",
+                        status,
+                    )
+                elif status >= 400:
                     logger.warning("Webhook delivery failed: HTTP %d", status)
                 return
             except WebhookError:

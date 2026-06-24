@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import time
 from unittest.mock import MagicMock, patch
@@ -392,6 +393,24 @@ class TestWebhookRedirectSsrf:
             _drain_notifier(notifier)
         # Exactly one HTTP attempt — redirect not followed
         assert conn.request.call_count == 1
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_DNS)
+    def test_redirect_logged_as_delivery_failure(self, _mock_dns, caplog):
+        """A 3xx is logged as a failed delivery (not silently dropped) and not retried."""
+        conn = _make_mock_conn(status=302)
+        with (
+            _make_http_patches(conn),
+            patch("genblaze_core.webhooks.notifier.time.sleep"),
+            caplog.at_level(logging.WARNING, logger="genblaze.webhook"),
+        ):
+            notifier = WebhookNotifier(
+                WebhookConfig(url="https://hooks.example.com/ep", max_retries=2)
+            )
+            notifier.notify_pipeline_started("r", "p", 1)
+            _drain_notifier(notifier)
+        # Non-retryable: a redirect is not transient, so only one attempt is made.
+        assert conn.request.call_count == 1
+        assert any("redirect HTTP 302" in r.message for r in caplog.records)
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_DNS)
     def test_redirect_location_never_dns_resolved(self, mock_dns):
