@@ -26,9 +26,13 @@ dependencies = [
     "genblaze-core>=0.3.0,<0.4",
     # The provider uses Transcriber().submit() (non-blocking) and
     # aai.Transcript.get_by_id(id) for polling; both have been stable across
-    # the 0.x line. Floored at 0.40 and bounded below 1.0 so a future major
+    # the 0.x line. The floor is 0.45, not 0.40: submit() always sends the
+    # speech model on TranscriptionConfig's plural ``speech_models`` field,
+    # which the SDK only added in 0.45.0 — 0.40.0–0.44.3 raise
+    # ``TypeError: ... unexpected keyword argument 'speech_models'`` before the
+    # request ever leaves the process. Bounded below 1.0 so a future major
     # can't silently reshape these call sites.
-    "assemblyai>=0.40,<1",
+    "assemblyai>=0.45,<1",
 ]
 
 [project.urls]
