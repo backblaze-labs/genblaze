@@ -178,6 +178,10 @@ def open_pinned_https_connection(
 
     pinned_ip, host, port = resolve_ssrf(url, exc_type=exc_type)
     ctx = ssl.create_default_context()
+    # Explicitly require TLS 1.2+ — create_default_context() already does this
+    # in CPython 3.10+, but setting it explicitly silences static analyzers and
+    # makes the minimum-version contract clear to future readers.
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     raw_sock: _socket.socket | None = None
     try:
         raw_sock = _socket.create_connection((pinned_ip, port), timeout=timeout)
