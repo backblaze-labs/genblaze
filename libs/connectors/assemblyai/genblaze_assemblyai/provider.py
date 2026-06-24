@@ -38,6 +38,8 @@ import logging
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, WordTiming
@@ -103,6 +105,26 @@ def _status_str(transcript: Any) -> str:
     status = getattr(transcript, "status", None)
     value = getattr(status, "value", None)
     return str(value if value is not None else status).lower()
+
+
+def _audio_ref_for_sdk(audio_url: str) -> str:
+    """Shape a resolved audio URL into the form ``Transcriber.submit()`` wants.
+
+    The AssemblyAI SDK treats any non-HTTP string as a *local file path* and
+    opens it with ``open(ref, "rb")``. A ``file://`` URI — the form chained
+    SyncProvider outputs take, percent-encoded via ``quote()`` — would be
+    opened literally as the filename ``file:///tmp/a.wav`` and fail. Convert
+    validated ``file://`` URIs to a real filesystem path (``url2pathname``
+    handles percent-decoding and platform path conversion); pass ``https://``
+    URLs through untouched so the SDK fetches them remotely.
+
+    Assumes the URL already passed ``validate_chain_input_url`` (so the scheme
+    is ``https`` or ``file`` and any ``file://`` netloc is empty/``localhost``).
+    """
+    parsed = urlparse(audio_url)
+    if parsed.scheme == "file":
+        return url2pathname(parsed.path)
+    return audio_url
 
 
 def _serialize_utterances(utterances: Any) -> list[dict[str, Any]]:
@@ -264,7 +286,10 @@ class AssemblyAIProvider(BaseProvider):
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         """Submit a transcription job (non-blocking) and return its id."""
         aai = self._get_client()
-        audio_url = self._resolve_audio_url(step)
+        # Resolve + SSRF-validate, then shape for the SDK: a validated file://
+        # chain input must reach Transcriber.submit() as a local filesystem
+        # path, since the SDK open()s any non-HTTP string literally.
+        audio_ref = _audio_ref_for_sdk(self._resolve_audio_url(step))
         try:
             cfg_kwargs = self.normalize_params(dict(step.params), step.modality)
             # audio_url is the submit() argument, not a TranscriptionConfig field.
@@ -277,7 +302,7 @@ class AssemblyAIProvider(BaseProvider):
                 cfg_kwargs["speech_models"] = [step.model]
             transcription_config = aai.TranscriptionConfig(**cfg_kwargs)
             transcriber = aai.Transcriber()
-            transcript = transcriber.submit(audio_url, config=transcription_config)
+            transcript = transcriber.submit(audio_ref, config=transcription_config)
             return transcript.id
         except ProviderError:
             raise

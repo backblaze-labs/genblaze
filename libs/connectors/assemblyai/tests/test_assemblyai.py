@@ -149,6 +149,44 @@ def test_submit_strips_audio_url_from_config():
     assert cfg.speaker_labels is True
 
 
+def test_submit_converts_file_uri_to_local_path():
+    # A validated file:// chain input (e.g. a generate-audio step's output)
+    # must reach the SDK as a local filesystem PATH — the SDK open()s any
+    # non-HTTP string literally, so forwarding "file:///tmp/clip.wav" would try
+    # to open that exact filename and fail.
+    provider = _make_provider()
+    step = _make_step(prompt="file:///srv/audio/clip.wav")
+    provider.submit(step)
+    assert _FakeTranscriber.last_submit["audio_url"] == "/srv/audio/clip.wav"
+
+
+def test_submit_decodes_percent_encoded_file_uri():
+    # Sibling connectors emit file:// URLs via quote(), so a path with spaces
+    # arrives percent-encoded; it must be decoded back to the real path.
+    provider = _make_provider()
+    step = _make_step(prompt="file:///srv/audio/my%20clip.wav")
+    provider.submit(step)
+    assert _FakeTranscriber.last_submit["audio_url"] == "/srv/audio/my clip.wav"
+
+
+def test_submit_file_uri_localhost_netloc_to_local_path():
+    # RFC 8089 'file://localhost/...' (allowed by validate_chain_input_url)
+    # drops the localhost host and resolves to the bare path.
+    provider = _make_provider()
+    step = _make_step(prompt="file://localhost/srv/audio/clip.wav")
+    provider.submit(step)
+    assert _FakeTranscriber.last_submit["audio_url"] == "/srv/audio/clip.wav"
+
+
+def test_submit_https_url_passes_through_unchanged():
+    # https:// inputs are uploaded/fetched remotely by the SDK — not opened
+    # locally — so they must reach submit() byte-for-byte unchanged.
+    provider = _make_provider()
+    step = _make_step(prompt=AUDIO_URL)
+    provider.submit(step)
+    assert _FakeTranscriber.last_submit["audio_url"] == AUDIO_URL
+
+
 # --- full lifecycle -------------------------------------------------------
 
 
