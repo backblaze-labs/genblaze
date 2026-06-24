@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import socket
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -556,6 +557,87 @@ def test_gpt_image_2_pricing_none_by_default(mock_b64_dalle):
     )
     result = provider.generate(step)
     assert result.cost_usd is None
+
+
+# --- _download_https_to_temp SSRF tests ---
+
+
+# Patch target: dalle imports open_pinned_https_connection directly.
+_DALLE_CONN_PATCH = "genblaze_openai.dalle.open_pinned_https_connection"
+_PUBLIC_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+_PRIVATE_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
+
+
+def _make_dalle_conn(status: int = 200, body: bytes = b"px") -> MagicMock:
+    resp = MagicMock()
+    resp.status = status
+    # Simulate reading body then EOF
+    resp.read.side_effect = [body, b""]
+    conn = MagicMock()
+    conn.getresponse.return_value = resp
+    return conn
+
+
+class TestDownloadHttpsToTemp:
+    """SSRF / DNS-pinning coverage for _download_https_to_temp."""
+
+    def test_private_ip_rejected(self):
+        """A URL whose hostname resolves to a private IP must raise ProviderError."""
+        with patch(
+            "genblaze_core._utils.socket.getaddrinfo",
+            return_value=_PRIVATE_DNS,
+        ):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            with pytest.raises(ProviderError, match="Private/loopback"):
+                _download_https_to_temp("https://internal.example.com/img.png", timeout=5.0)
+
+    def test_dns_rebinding_connect_target_is_pinned_ip(self):
+        """open_pinned_https_connection must be called — the conn target is
+        the pinned public IP returned by resolve_ssrf, not a re-resolution."""
+        conn = _make_dalle_conn(status=200, body=b"imagedata")
+
+        with patch(_DALLE_CONN_PATCH, return_value=conn) as mock_open:
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            result = _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+
+        # open_pinned_https_connection was called (SSRF guard ran)
+        mock_open.assert_called_once()
+        call_kw = mock_open.call_args
+        assert call_kw.args[0] == "https://oai.example.com/img.png"
+        # connection was closed after download
+        conn.close.assert_called()
+        # temp file was written and returned
+        assert result.exists()
+        result.unlink(missing_ok=True)
+
+    def test_3xx_raises_provider_error_not_followed(self):
+        """A 3xx response must raise ProviderError — not silently followed."""
+        conn = _make_dalle_conn(status=302, body=b"")
+        conn.getresponse.return_value.read.return_value = b""
+
+        with patch(_DALLE_CONN_PATCH, return_value=conn):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            with pytest.raises(ProviderError, match="HTTP 302"):
+                _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+
+        # conn.close() still called even on 3xx
+        conn.close.assert_called()
+
+    def test_connection_closed_on_error(self):
+        """If conn.request() raises, the connection is still closed (no FD leak)."""
+        conn = MagicMock()
+        conn.request.side_effect = OSError("network down")
+
+        with patch(_DALLE_CONN_PATCH, return_value=conn):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            with pytest.raises(OSError):
+                _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+
+        conn.close.assert_called()
 
 
 # --- Compliance harness ---

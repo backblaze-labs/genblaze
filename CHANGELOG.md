@@ -18,6 +18,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/reference/pricing-recipes.md`). Available as `pip install genblaze-hume`
   or the `genblaze[hume]` / `genblaze[audio]` extras.
 
+### Security
+
+- `genblaze-core`: DNS pinning closes the rebinding / TOCTOU window on all
+  outbound HTTP paths. `resolve_ssrf` resolves the hostname once, validates
+  every returned IP, and returns the pinned address. Callers connect to that
+  IP directly — the HTTP client never performs a second independent resolution.
+  TLS SNI and cert verification continue to use the original hostname. Affects
+  `storage/transfer.py` (urllib3 `HTTPSConnectionPool` per hop), and
+  `webhooks/notifier.py` and `genblaze_openai/dalle.py` (direct
+  `http.client.HTTPSConnection` with pre-connected pinned socket) (#9).
+- `genblaze-core`: SSRF guard now validates every HTTP redirect hop in the
+  asset transfer path (`storage/transfer.py`). Previously, `check_ssrf` ran
+  only on the initial URL; a CDN redirect to a private/loopback/IMDS address
+  bypassed the guard entirely. Redirects are now followed manually with a
+  bounded loop (max 5 hops); each `Location` is re-resolved and re-pinned
+  before following, and downgrade to non-HTTPS is rejected (#9).
+- `genblaze-core`: Webhook delivery (`webhooks/notifier.py`) switched from
+  `urllib.request` to `http.client.HTTPSConnection` directly. `http.client`
+  has no redirect handler, so a 3xx response is treated as a delivery failure
+  rather than following the `Location` header, preventing a server-side
+  redirect to an internal host from bypassing the SSRF guard (#9).
+- `genblaze-openai`: `_download_https_to_temp` now uses `http.client`
+  directly with a pinned DNS connection, closing both the redirect-bypass and
+  DNS rebinding vectors for edit-input downloads (#9).
+- `genblaze-core`: IPv4-mapped IPv6 addresses (`::ffff:169.254.x.x`,
+  `::ffff:10.x.x.x`, etc.) are now normalized to their IPv4 form before the
+  SSRF blocklist check. Previously, a DNS response returning an IPv4-mapped
+  address bypassed all IPv4 `BLOCKED_NETWORKS` entries (#9).
+- `genblaze-core`: HTTP `Location` headers in redirect chains are now resolved
+  with `urljoin` before re-validation, so RFC-legal relative redirects work
+  and relative redirects to private targets are still rejected (#9).
+- **Egress proxy note:** DNS pinning requires a direct TCP connection to the
+  validated IP; `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` env vars are ignored
+  by design on all pinned outbound paths (transfer, webhook, dalle). Deployments
+  that require an egress proxy should allowlist the target hosts at the proxy
+  instead of relying on env-var forwarding.
+
 ### Fixed
 
 - `genblaze-core`: post-submit step-level retries now resume the existing

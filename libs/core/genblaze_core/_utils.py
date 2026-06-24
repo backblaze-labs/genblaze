@@ -90,11 +90,23 @@ ALLOWED_FILE_ROOTS: tuple[Path, ...] = tuple(
 )
 
 
-def check_ssrf(url: str, *, exc_type: type[Exception] = ValueError) -> None:
-    """Reject non-HTTPS URLs and hostnames resolving to private IP ranges.
+def resolve_ssrf(url: str, *, exc_type: type[Exception] = ValueError) -> tuple[str, str, int]:
+    """Validate a URL against SSRF rules and return the pinned IP for the connection.
 
-    Shared SSRF guard used by storage transfers and webhook dispatch.
-    Callers pass their domain-specific exception type via ``exc_type``.
+    Resolves DNS once, validates every returned address against BLOCKED_NETWORKS,
+    and returns the first safe IP string. Callers MUST connect to this IP (rather
+    than re-resolving the hostname) so that the validated address is the one
+    actually reached — eliminating the DNS rebinding / TOCTOU window where the
+    HTTP client would independently re-resolve and potentially reach a different,
+    private address.
+
+    Returns:
+        (pinned_ip, hostname, port) — use ``pinned_ip`` as the connection target,
+        ``hostname`` as the TLS SNI / Host header, ``port`` as the TCP port
+        (443 when not specified in the URL).
+
+    Raises:
+        exc_type: on scheme violation, private/loopback IP, or DNS failure.
     """
     parsed = _urlparse(url)
     if parsed.scheme not in ("https",):
@@ -104,18 +116,90 @@ def check_ssrf(url: str, *, exc_type: type[Exception] = ValueError) -> None:
     if host.lower() == "localhost":
         raise exc_type(f"Private/loopback URLs are not allowed: {host}")
 
+    port = parsed.port or 443
+
     try:
-        addrinfos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        addrinfos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise exc_type(f"Cannot resolve hostname: {host}") from exc
 
+    pinned_ip: str | None = None
     for _, _, _, _, sockaddr in addrinfos:
+        raw_ip = str(sockaddr[0])
         try:
-            ip = ipaddress.ip_address(str(sockaddr[0]))
+            ip = ipaddress.ip_address(raw_ip)
         except ValueError:
             continue
+        # Normalize IPv4-mapped IPv6 (::ffff:169.254.x.x, ::ffff:10.x.x.x, etc.)
+        # so the IPv4 BLOCKED_NETWORKS entries match. Without this, an attacker
+        # who controls DNS can return an IPv4-mapped address that bypasses the
+        # IPv4 blocklist entries while the OS connects to the private IPv4 target.
+        if ip.version == 6 and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
         if any(ip in net for net in BLOCKED_NETWORKS):
             raise exc_type(f"Private/loopback URLs are not allowed: {host}")
+        if pinned_ip is None:
+            pinned_ip = raw_ip  # pin to the first validated address
+
+    if pinned_ip is None:
+        raise exc_type(f"Cannot resolve hostname: {host}")
+
+    return pinned_ip, host, port
+
+
+def open_pinned_https_connection(
+    url: str,
+    *,
+    timeout: float,
+    exc_type: type[Exception] = ValueError,
+) -> Any:
+    """Validate ``url``, resolve DNS once, and return a TLS-connected HTTPSConnection.
+
+    The TCP socket is opened to the pinned IP returned by ``resolve_ssrf``
+    rather than letting ``http.client`` re-resolve the hostname. This closes
+    the DNS rebinding / TOCTOU window. TLS SNI and certificate verification
+    still use the original hostname, so the TLS handshake is meaningful.
+
+    The caller MUST close the returned connection (``conn.close()``) in a
+    ``finally`` block — not just on the success path. The connection is live;
+    leaking it leaves the underlying OS socket open until GC collects it.
+
+    Note: outbound connections bypass HTTP(S)_PROXY / NO_PROXY env vars by
+    design — IP pinning requires a direct TCP connection to the validated
+    address; routing through a proxy would re-introduce the TOCTOU window.
+
+    Raises:
+        exc_type: on scheme violation, private/loopback IP, DNS failure, or
+            any socket/TLS error encountered while establishing the connection.
+    """
+    import http.client
+    import socket as _socket
+    import ssl
+
+    pinned_ip, host, port = resolve_ssrf(url, exc_type=exc_type)
+    ctx = ssl.create_default_context()
+    raw_sock: _socket.socket | None = None
+    try:
+        raw_sock = _socket.create_connection((pinned_ip, port), timeout=timeout)
+        tls_sock = ctx.wrap_socket(raw_sock, server_hostname=host)
+        conn = http.client.HTTPSConnection(host, port, context=ctx)
+        conn.sock = tls_sock  # inject pre-connected + TLS-wrapped socket
+    except Exception:
+        if raw_sock is not None:
+            raw_sock.close()
+        raise
+    return conn
+
+
+def check_ssrf(url: str, *, exc_type: type[Exception] = ValueError) -> None:
+    """Reject non-HTTPS URLs and hostnames resolving to private IP ranges.
+
+    Shared SSRF guard used where the caller does not need the resolved IP.
+    For paths that establish HTTP connections, prefer ``resolve_ssrf`` which
+    returns the pinned IP — connecting to it eliminates the DNS rebinding
+    TOCTOU window.
+    """
+    resolve_ssrf(url, exc_type=exc_type)  # validate; discard pinned IP
 
 
 # ---------------------------------------------------------------------------

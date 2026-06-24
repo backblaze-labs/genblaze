@@ -94,6 +94,27 @@ class TestCheckSsrf:
         with pytest.raises(ValueError, match="Cannot resolve"):
             check_ssrf("https://nxdomain.invalid/path")
 
+    def test_ipv4_mapped_ipv6_imds_rejected(self):
+        """::ffff:169.254.169.254 is the IPv4-mapped IPv6 form of the IMDS address.
+        Without normalization it bypasses all IPv4 BLOCKED_NETWORKS entries.
+        The normalized form must match the 169.254.0.0/16 block."""
+        # AF_INET6 with an IPv4-mapped address in the sockaddr
+        mapped_imds = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:169.254.169.254", 0, 0, 0))
+        ]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=mapped_imds):
+            with pytest.raises(ValueError, match="Private/loopback"):
+                check_ssrf("https://sneaky.example.com/path")
+
+    def test_ipv4_mapped_ipv6_private_rejected(self):
+        """::ffff:10.0.0.1 (RFC 1918 via IPv4-mapped IPv6) must be blocked."""
+        mapped_private = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:10.0.0.1", 0, 0, 0))
+        ]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=mapped_private):
+            with pytest.raises(ValueError, match="Private/loopback"):
+                check_ssrf("https://sneaky.example.com/path")
+
 
 class TestComputeSha256:
     def test_known_digest(self):
