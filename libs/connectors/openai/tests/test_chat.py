@@ -8,7 +8,7 @@ import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage
 from genblaze_core.models.enums import ProviderErrorCode
-from genblaze_openai.chat import _calc_cost, _lookup_rate, achat, chat
+from genblaze_openai.chat import achat, chat
 
 
 def _mock_completion(
@@ -254,27 +254,10 @@ def test_api_error_wrapped(mock_client):
     assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
 
 
-def test_cost_computed_for_known_model(mock_client):
+def test_cost_usd_always_none(mock_client):
+    # cost_usd is always None — callers register rates via PricingContext.
     resp = chat("gpt-4o", prompt="hi", client=mock_client)
-    # 10 in * 2.50/1M + 5 out * 10.00/1M = 0.000025 + 0.00005 = 7.5e-5
-    assert resp.cost_usd is not None
-    assert abs(resp.cost_usd - 7.5e-5) < 1e-9
-
-
-def test_cost_none_for_unknown_model(mock_client):
-    mock_client.chat.completions.create.return_value = _mock_completion(model="foo-bar")
-    resp = chat("foo-bar", prompt="hi", client=mock_client)
     assert resp.cost_usd is None
-
-
-def test_lookup_rate_strips_dated_suffix():
-    assert _lookup_rate("gpt-4o-2024-11-20") == _lookup_rate("gpt-4o")
-    assert _lookup_rate("gpt-4o-mini-2024-07-18") == _lookup_rate("gpt-4o-mini")
-
-
-def test_calc_cost_returns_none_when_tokens_missing():
-    assert _calc_cost("gpt-4o", None, 5) is None
-    assert _calc_cost("gpt-4o", 5, None) is None
 
 
 def test_achat_runs_in_thread(mock_client):

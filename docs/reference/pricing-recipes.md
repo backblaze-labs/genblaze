@@ -458,7 +458,10 @@ are live before registering rates against them.
 per-model `pricing={(quality, size): rate}` tables in
 `genblaze_openai/dalle.py` prior to `genblaze-core 0.3.0`. Sora pricing
 was always `None` (correct formula requires per-second `(model, size,
-seconds)` billing; a flat dict misreports 10x+).
+seconds)` billing; a flat dict misreports 10x+). The standalone
+`genblaze_openai.chat()` helper returns `cost_usd=None` unconditionally
+— compute cost yourself, e.g.
+`cost = tokens_in/1e6 * in_rate + tokens_out/1e6 * out_rate`.
 **Snapshot date:** 2026-05-05.
 **Verify at:** [openai.com/pricing](https://openai.com/pricing).
 
@@ -550,9 +553,9 @@ tables and register the new slugs as they appear in the catalog.
 
 **Source:** `_VEO_PER_SECOND_RATES` in `genblaze_google/provider.py` and
 `_IMAGEN_PER_IMAGE_RATES` in `genblaze_google/imagen.py` prior to
-`genblaze-core 0.3.0`. Standalone `genblaze_google.chat()` retains its
-own per-token table — chat is out of scope for the catalog-decoupling
-effort because it isn't a Pipeline-Step provider.
+`genblaze-core 0.3.0`. As of 0.3.0 the standalone `genblaze_google.chat()`
+helper returns `cost_usd=None` unconditionally — compute cost from
+`tokens_in`/`tokens_out` and your own rates if needed.
 **Snapshot date:** 2026-05-05.
 **Verify at:** [ai.google.dev/pricing](https://ai.google.dev/pricing)
 and [cloud.google.com/vertex-ai/generative-ai/pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing).
