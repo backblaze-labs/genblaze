@@ -54,6 +54,7 @@ PACKAGES=(
     "libs/connectors/gmicloud"
     "libs/connectors/langsmith"
     "libs/connectors/nvidia"
+    "libs/connectors/assemblyai"
     "cli"
     "libs/meta"
 )
@@ -113,6 +114,7 @@ connectors = [
     "genblaze_gmicloud",
     "genblaze_langsmith",
     "genblaze_nvidia",
+    "genblaze_assemblyai",
     "genblaze",
 ]
 failures = []
