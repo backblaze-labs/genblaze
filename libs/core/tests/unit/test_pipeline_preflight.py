@@ -14,6 +14,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import re
 import threading
@@ -399,3 +400,35 @@ class TestWarnOnceConcurrency:
             f"got {sum(results)} winners out of {n_threads}."
         )
         assert key in pipe._warned_preflight
+
+
+class TestPipelineCopySemantics:
+    """Issue #56: the preflight lock must not break copy.deepcopy.
+
+    The threading.Lock added for the WARN-dedup is not copyable, so a custom
+    __deepcopy__ rebuilds it. Two clone paths must stay correct: shallow
+    copy.copy (used by batch_run/abatch_run) shares the lock+set so a batch
+    dedups as a unit, while deepcopy yields a fully independent pipeline.
+    """
+
+    def test_deepcopy_succeeds_and_isolates_lock(self) -> None:
+        p = Pipeline("orig")
+        p._warned_preflight.add(("seed", "model"))
+
+        clone = copy.deepcopy(p)
+
+        # deepcopy => independent lock and dedup set (no shared mutation).
+        assert clone._warned_preflight_lock is not p._warned_preflight_lock
+        assert clone._warned_preflight is not p._warned_preflight
+        p._warned_preflight.add(("prov", "model"))
+        assert ("prov", "model") not in clone._warned_preflight
+
+    def test_shallow_copy_shares_lock_for_batch_clones(self) -> None:
+        p = Pipeline("orig")
+
+        clone = copy.copy(p)
+
+        # abatch_run relies on clones sharing the lock+set so _warn_once dedups
+        # across the whole batch — this must NOT change.
+        assert clone._warned_preflight_lock is p._warned_preflight_lock
+        assert clone._warned_preflight is p._warned_preflight

@@ -346,6 +346,27 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._tracer = NoOpTracer()
         self._event_emitter: QueueEmitter | None = None
 
+    def __deepcopy__(self, memo: dict) -> Pipeline:
+        """Deep-copy support: ``threading.Lock`` is not copyable, so rebuild it.
+
+        ``copy.copy`` (shallow — used by ``batch_run``/``abatch_run``)
+        intentionally shares the lock and dedup set across clones so a batch
+        dedups WARNs as a unit. ``deepcopy`` semantics instead yield a fully
+        independent Pipeline: the clone gets its own fresh lock and a deep copy
+        of every other attribute. Without this, the lock added for #56 would
+        make ``copy.deepcopy(Pipeline(...))`` raise ``TypeError``.
+        """
+        import copy
+
+        clone = self.__class__.__new__(self.__class__)
+        memo[id(self)] = clone
+        for key, value in self.__dict__.items():
+            if key == "_warned_preflight_lock":
+                clone.__dict__[key] = threading.Lock()
+            else:
+                clone.__dict__[key] = copy.deepcopy(value, memo)
+        return clone
+
     @staticmethod
     def _reject_config_tenant(cfg: RunnableConfig | None) -> None:
         """Reject a per-call ``tenant_id`` in ``RunnableConfig``.
@@ -383,8 +404,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         When enabled (the default), ``run()`` calls ``validate_model()`` on
         each step's provider before issuing any generation calls. ``NOT_FOUND``
         raises ``ProviderError(MODEL_ERROR)``; ``OK_PROVISIONAL`` and
-        ``UNKNOWN_PERMISSIVE`` emit a one-per-process WARN; ``OK_AUTHORITATIVE``
-        is silent.
+        ``UNKNOWN_PERMISSIVE`` emit a WARN once per (provider, slug) per
+        Pipeline instance; ``OK_AUTHORITATIVE`` is silent.
 
         Disable for hot paths where preflight overhead matters and the
         caller has already validated models out-of-band, or when running
