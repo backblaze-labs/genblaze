@@ -564,7 +564,6 @@ def test_gpt_image_2_pricing_none_by_default(mock_b64_dalle):
 
 # Patch target: dalle imports open_pinned_https_connection directly.
 _DALLE_CONN_PATCH = "genblaze_openai.dalle.open_pinned_https_connection"
-_PUBLIC_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 _PRIVATE_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
 
 
