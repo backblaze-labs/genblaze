@@ -249,14 +249,31 @@ class TestWebhookNotifier:
         assert payload["step_id"] == "s1"
 
     def test_bounded_queue_drops_and_counts(self):
-        """A full queue drops oldest and increments dropped_count rather than blocking."""
+        """A full queue drops and increments dropped_count rather than blocking."""
+        from genblaze_core.webhooks.notifier import _STOP
+
         notifier = WebhookNotifier(WebhookConfig(url="https://example.com"), queue_maxsize=2)
-        notifier.close(timeout=0.1)  # stop worker so queue fills
+        # Stop the worker draining without marking the notifier closed, so the
+        # enqueue path exercises the queue-full branch (not the closed branch).
+        notifier._queue.put(_STOP)
+        notifier._worker.join(timeout=1.0)
 
         for i in range(20):
             notifier.enqueue({"event": "step.completed", "n": i})
 
         assert notifier.dropped_count > 0
+
+    def test_enqueue_after_close_drops_and_warns(self, caplog):
+        """A WebhookSink reused after close() (e.g. across runs now that the
+        pipeline closes the sink) must not silently queue events to a stopped
+        worker — it drops them and warns (issue #57)."""
+        notifier = WebhookNotifier(WebhookConfig(url="https://example.com"))
+        notifier.close(timeout=1.0)
+        assert notifier._closed
+        with caplog.at_level(logging.WARNING, logger="genblaze.webhook"):
+            notifier.enqueue({"event": "step.completed", "n": 1})
+        assert notifier.dropped_count == 1
+        assert any("notifier is closed" in r.message for r in caplog.records)
 
     def test_ssrf_check_runs_per_delivery(self):
         """open_pinned_https_connection (which calls resolve_ssrf) must be invoked
@@ -436,6 +453,25 @@ class TestWebhookRedirectSsrf:
 
 
 class TestWebhookSink:
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_DNS)
+    def test_not_closed_by_pipeline_run_and_reusable(self, _mock_dns):
+        """WebhookSink is fire-and-forget (_close_with_run=False): run() must not
+        close (and block-join) it, so it stays usable across multiple runs.
+        Regression guard for the 5s teardown stall + per-run close (issue #57)."""
+        assert WebhookSink._close_with_run is False
+
+        conn = _make_mock_conn()
+        with _make_http_patches(conn):
+            sink = WebhookSink(WebhookConfig(url="https://example.com"))
+            Pipeline("wh-1").step(MockProvider(), model="m").run(sink=sink)
+            assert not sink._notifier._closed, "run() must not close a WebhookSink"
+            # Reusable: a second run on the same sink still delivers.
+            Pipeline("wh-2").step(MockProvider(), model="m").run(sink=sink)
+            assert not sink._notifier._closed
+            # Explicit close still works (and flushes).
+            sink.close()
+            assert sink._notifier._closed
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_DNS)
     def test_write_run_posts_completed(self, _mock_dns):
         conn = _make_mock_conn()

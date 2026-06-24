@@ -130,6 +130,19 @@ class WebhookNotifier:
         event = payload.get("event", "")
         if not self._should_send(event):
             return
+        # The worker is one-shot: close() joins it and it never restarts. Warn
+        # once rather than silently queueing events that nothing will deliver if
+        # a caller enqueues after explicitly closing the notifier/sink.
+        if self._closed:
+            self._dropped_count += 1
+            if self._dropped_count == 1 or self._dropped_count % 100 == 0:
+                logger.warning(
+                    "Webhook event dropped: notifier is closed (dropped %d so far). "
+                    "Create a new WebhookSink/WebhookNotifier rather than reusing one "
+                    "after close().",
+                    self._dropped_count,
+                )
+            return
         try:
             self._queue.put_nowait(payload)
         except queue.Full:

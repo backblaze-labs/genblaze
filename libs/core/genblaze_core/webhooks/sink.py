@@ -22,6 +22,12 @@ class WebhookSink(BaseSink):
         Pipeline("my-pipe").step(...).run(sink=sink)
     """
 
+    # Fire-and-forget: the notifier's daemon worker flushes via atexit, so the
+    # pipeline must NOT close (and block joining) this sink at end of run. That
+    # keeps delivery non-blocking and the sink reusable across runs. Callers who
+    # want a synchronous flush still call close()/`with sink:` explicitly.
+    _close_with_run = False
+
     def __init__(self, config: WebhookConfig) -> None:
         self._notifier = WebhookNotifier(config)
 

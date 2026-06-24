@@ -78,6 +78,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `asyncio.to_thread`, allowing concurrent coroutines to keep running during
   the preflight window. Cheap capability checks (modality, chain-input) still
   run synchronously. `Pipeline.run()` behavior is unchanged (#56).
+- `genblaze-core`: `Pipeline.run()`/`arun()` now release a sink's run-scoped
+  resources in their `finally` block (and on early preflight/validation
+  failure), shutting down the `ObjectStorageSink` eager-upload
+  `ThreadPoolExecutor` and releasing the backend connection pool —
+  `S3StorageBackend.close()` now closes the boto3 client. Previously non-daemon
+  worker threads stayed alive after `run()` returned and in-flight eager-upload
+  futures leaked on error paths that bypassed `write_run`. Sinks declare
+  lifecycle ownership via `BaseSink._close_with_run` (default `True`):
+  run-scoped sinks (`ObjectStorageSink`) are closed by the pipeline and are
+  single-use, while fire-and-forget `WebhookSink` opts out (`False`) so it is
+  never closed — keeping webhook delivery non-blocking and the sink reusable
+  across runs. `batch_run()`/`abatch_run()` close their shared sink once after
+  the whole batch rather than after the first item. `BaseSink` gains
+  `__enter__`/`__exit__` for callers that manage the lifecycle outside a
+  `run()`. **Behavior change:** a run-scoped sink passed to `run()`/`arun()` is
+  closed afterward — construct a fresh one per run rather than reusing it (#57).
 - `genblaze-core`: post-submit step-level retries now resume the existing
   upstream prediction instead of submitting a new one, including transient
   checkpoint failures after `submit()` returns by replaying idempotent

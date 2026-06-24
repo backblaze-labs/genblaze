@@ -1580,6 +1580,27 @@ class Pipeline(Runnable[None, PipelineResult]):
         effective_config = config if config is not None else self._config
         return await self.arun(_config_override=effective_config)
 
+    @staticmethod
+    def _close_sink_quietly(sink: BaseSink | None) -> None:
+        """Release a sink's run-scoped resources, swallowing teardown errors.
+
+        No-op when ``sink`` is None or the sink opts out via
+        ``_close_with_run = False`` (process-scoped/fire-and-forget sinks such
+        as WebhookSink manage their own lifecycle and must not be closed — or
+        joined — by the pipeline). A failed close is logged, never raised, so it
+        cannot mask the run's real result. Shared by run()/arun()/batch teardown.
+        """
+        if sink is None or not getattr(sink, "_close_with_run", True):
+            return
+        try:
+            sink.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup; log and continue
+            logger.warning(
+                "%s.close() raised during pipeline teardown; resources may not have been released",
+                type(sink).__name__,
+                exc_info=True,
+            )
+
     def run(
         self,
         *,
@@ -1594,11 +1615,17 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_step_complete: Any = None,
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
+        _owns_sink: bool = True,
     ) -> PipelineResult:
         """Execute all steps synchronously and return a PipelineResult.
 
         Args:
-            sink: Optional sink to write run data to.
+            sink: Optional sink to write run data to. Sinks with run-scoped
+                resources (e.g. ObjectStorageSink) are closed automatically when
+                the run finishes (their ``close()`` fires in a ``finally`` block),
+                so such a sink is spent afterward — construct a fresh one per run.
+                Fire-and-forget sinks like WebhookSink opt out
+                (``_close_with_run = False``) and stay open/reusable.
             fail_fast: If True (default), stop on first failed step.
             raise_on_failure: If ``True``, raise :class:`PipelineError` when any
                 step ends in ``StepStatus.FAILED``. If ``False``, the failed
@@ -1639,11 +1666,19 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
-        # Reject an invalid config-level tenant before model preflight (which may
-        # do network work), so a bad invoke(config={"tenant_id": ...}) fails fast.
-        self._reject_config_tenant(config)
-
-        self._validate_steps()
+        # Preflight runs before the main try/finally. When run() owns the sink
+        # it must still close it on an early preflight/validation failure
+        # (issue #57) — share the same teardown helper, no duplicated close.
+        try:
+            # Reject an invalid config-level tenant before model preflight (which
+            # may do network work), so a bad invoke(config={"tenant_id": ...})
+            # fails fast.
+            self._reject_config_tenant(config)
+            self._validate_steps()
+        except BaseException:
+            if _owns_sink:
+                self._close_sink_quietly(sink)
+            raise
 
         run_id = new_id()
         spinner: Spinner | None = None
@@ -1772,6 +1807,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             if spinner is not None:
                 spinner.stop()
+            # Release the sink's run-scoped resources (eager-upload pool, backend
+            # connection pool). The pipeline is the last user of the sink for
+            # this run, so this fires in the finally to cover both normal
+            # completion and any error path that bypasses write_run (issue #57).
+            # Skipped when a caller (e.g. batch_run) owns the sink across runs,
+            # or when the sink opts out via _close_with_run=False.
+            if _owns_sink:
+                self._close_sink_quietly(sink)
 
     async def arun(
         self,
@@ -1788,6 +1831,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_step_complete: Any = None,
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
+        _owns_sink: bool = True,
     ) -> PipelineResult:
         """Execute steps asynchronously and return a PipelineResult.
 
@@ -1795,7 +1839,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         When chain=True, steps run sequentially (each feeds the next).
 
         Args:
-            sink: Optional sink to write run data to.
+            sink: Optional sink to write run data to. Sinks with run-scoped
+                resources (e.g. ObjectStorageSink) are closed automatically when
+                the run finishes (their ``close()`` fires in a ``finally`` block),
+                so such a sink is spent afterward — construct a fresh one per run.
+                Fire-and-forget sinks like WebhookSink opt out
+                (``_close_with_run = False``) and stay open/reusable.
             fail_fast: If True (default), stop on first failed step.
             timeout: Per-step timeout in seconds (builds RunnableConfig internally).
             max_retries: Per-step max retries (builds RunnableConfig internally).
@@ -1838,13 +1887,22 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
-        # Reject an invalid config-level tenant before model preflight (which may
-        # do network work), so a bad ainvoke(config={"tenant_id": ...}) fails fast.
-        self._reject_config_tenant(config)
-
-        # Offload blocking preflight (ThreadPoolExecutor + provider discovery)
-        # to a thread so the event loop stays free during the preflight window.
-        await self._validate_steps_async()
+        # Preflight runs before the main try/finally. When arun() owns the sink
+        # it must still close it on an early preflight/validation failure
+        # (issue #57); offload the blocking close to a thread to keep the loop
+        # responsive. Share the same teardown helper — no duplicated close.
+        try:
+            # Reject an invalid config-level tenant before model preflight (which
+            # may do network work), so a bad ainvoke(config={"tenant_id": ...})
+            # fails fast.
+            self._reject_config_tenant(config)
+            # Offload blocking preflight (ThreadPoolExecutor + provider discovery)
+            # to a thread so the event loop stays free during the preflight window.
+            await self._validate_steps_async()
+        except BaseException:
+            if _owns_sink:
+                await asyncio.to_thread(self._close_sink_quietly, sink)
+            raise
 
         run_id = new_id()
         # input_from requires sequential execution (needs prior step results)
@@ -2082,6 +2140,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             if spinner is not None:
                 spinner.stop()
+            # Release the sink's run-scoped resources (issue #57). close() is
+            # blocking (ThreadPoolExecutor.shutdown) — offload to a thread so the
+            # event loop stays responsive while it drains. If the surrounding
+            # task is cancelled mid-await the close keeps running in its thread
+            # but is no longer awaited here; acceptable for cleanup. Skipped when
+            # a caller owns the sink (batch) or it opts out (_close_with_run).
+            if _owns_sink:
+                await asyncio.to_thread(self._close_sink_quietly, sink)
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
         """Create a FAILED step from an unhandled exception."""
@@ -2267,7 +2333,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                 ``aspect_ratio``, ``quality``, etc. Mutually exclusive with
                 ``prompts=``.
             max_concurrency: Max concurrent pipeline executions (``abatch_run``).
-            sink: Optional sink to write each run to.
+            sink: Optional sink to write each run to. Shared across all items
+                and closed once after the whole batch (not per item), unless the
+                sink opts out via ``_close_with_run = False``.
             fail_fast: If True (default), stop each pipeline on first failure.
             raise_on_failure: See :meth:`run`. Applied per pipeline.
             timeout: Per-step timeout in seconds.
@@ -2299,6 +2367,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         # if requested. Aborting mid-batch on the first failed item would
         # silently lose the remaining results, which is rarely what callers
         # actually want for asset packs / aspect-ratio sweeps / A/B fan-outs.
+        # The batch owns the shared sink across all items: per-item runs must
+        # NOT close it (_owns_sink=False), or item 2+ would write to a closed
+        # sink. The batch closes it once after the loop (issue #57).
         def _run_one(rebuild_steps: list[_PipelineStep]) -> PipelineResult:
             return _build_pipe(rebuild_steps).run(
                 sink=sink,
@@ -2309,23 +2380,28 @@ class Pipeline(Runnable[None, PipelineResult]):
                 on_progress=on_progress,
                 pipeline_timeout=pipeline_timeout,
                 on_step_complete=on_step_complete,
+                _owns_sink=False,
             )
 
         results: list[PipelineResult] = []
-        if items is not None:
-            for item in items:
-                results.append(_run_one(self._apply_item_to_steps(self._steps, item)))
-        else:
-            assert prompts is not None  # narrowed by _validate_batch_args
-            for prompt_or_vars in prompts:
-                results.append(
-                    _run_one(
-                        [
-                            replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars))
-                            for ps in self._steps
-                        ]
+        try:
+            if items is not None:
+                for item in items:
+                    results.append(_run_one(self._apply_item_to_steps(self._steps, item)))
+            else:
+                assert prompts is not None  # narrowed by _validate_batch_args
+                for prompt_or_vars in prompts:
+                    results.append(
+                        _run_one(
+                            [
+                                replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars))
+                                for ps in self._steps
+                            ]
+                        )
                     )
-                )
+        finally:
+            # finally so a pipeline-level error mid-batch still releases the sink.
+            self._close_sink_quietly(sink)
         _maybe_raise_batch_error(results, resolved_raise)
         return results
 
@@ -2367,6 +2443,8 @@ class Pipeline(Runnable[None, PipelineResult]):
             pipe._steps = rebuild_steps
             return pipe
 
+        # The batch owns the shared sink: per-item runs must NOT close it
+        # (_owns_sink=False). The batch closes it once after gather (issue #57).
         async def _run(rebuild_steps: list[_PipelineStep]) -> PipelineResult:
             async with sem:
                 return await _build_pipe(rebuild_steps).arun(
@@ -2378,6 +2456,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     on_progress=on_progress,
                     pipeline_timeout=pipeline_timeout,
                     on_step_complete=on_step_complete,
+                    _owns_sink=False,
                 )
 
         if items is not None:
@@ -2388,23 +2467,29 @@ class Pipeline(Runnable[None, PipelineResult]):
                 _run([replace(ps, prompt=self._resolve_prompt(ps, p)) for ps in self._steps])
                 for p in prompts
             ]
-        # ``return_exceptions=True`` is load-bearing — without it, a single
-        # ``PipelineTimeoutError`` (or any other non-step exception) would
-        # propagate immediately and cancel every other in-flight task,
-        # silently breaking the "every batch item runs to completion"
-        # promise. Per-item ``PipelineError``s are already suppressed via
-        # ``raise_on_failure=False`` so they never reach this list; anything
-        # we DO see here is a genuine pipeline-level error worth surfacing.
-        results_or_excs = await asyncio.gather(*tasks, return_exceptions=True)
-        results: list[PipelineResult] = []
-        for r in results_or_excs:
-            if isinstance(r, BaseException):
-                # Re-raise the first non-result item so callers see the
-                # original error (timeout, validation, etc.) instead of a
-                # generic BatchPipelineError. Every task has already finished
-                # by the time we get here, so we're not aborting work in flight.
-                raise r
-            results.append(r)
+        try:
+            # ``return_exceptions=True`` is load-bearing — without it, a single
+            # ``PipelineTimeoutError`` (or any other non-step exception) would
+            # propagate immediately and cancel every other in-flight task,
+            # silently breaking the "every batch item runs to completion"
+            # promise. Per-item ``PipelineError``s are already suppressed via
+            # ``raise_on_failure=False`` so they never reach this list; anything
+            # we DO see here is a genuine pipeline-level error worth surfacing.
+            results_or_excs = await asyncio.gather(*tasks, return_exceptions=True)
+            results: list[PipelineResult] = []
+            for r in results_or_excs:
+                if isinstance(r, BaseException):
+                    # Re-raise the first non-result item so callers see the
+                    # original error (timeout, validation, etc.) instead of a
+                    # generic BatchPipelineError. Every task has already finished
+                    # by the time we get here, so we're not aborting work in flight.
+                    raise r
+                results.append(r)
+        finally:
+            # finally so the re-raise path above still releases the shared sink.
+            # Every task has completed before gather returns, so closing once
+            # here cannot race a concurrent on_step_complete/write_run.
+            await asyncio.to_thread(self._close_sink_quietly, sink)
         _maybe_raise_batch_error(results, resolved_raise)
         return results
 
