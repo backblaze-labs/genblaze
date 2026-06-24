@@ -37,13 +37,12 @@ import logging
 import os
 import re
 import tempfile
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, unquote, urlparse
 
-from genblaze_core._utils import check_ssrf
+from genblaze_core._utils import open_pinned_https_connection
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
@@ -317,32 +316,57 @@ def _resolve_local_file(url: str, extra_root: Path | None) -> Path:
 
 
 def _download_https_to_temp(url: str, timeout: float) -> Path:
-    """Download an https:// URL to a temp file. SSRF-checked. Caller unlinks."""
-    check_ssrf(url, exc_type=ProviderError)
+    """Download an https:// URL to a temp file. SSRF-checked with DNS pinning.
+
+    Uses ``open_pinned_https_connection`` which connects to the validated pinned
+    IP rather than letting the HTTP client re-resolve the hostname. This closes
+    the DNS rebinding / TOCTOU window. TLS SNI and cert verification still use
+    the original hostname. http.client has no redirect handler, so a 3xx raises.
+
+    Note: outbound connections bypass HTTP(S)_PROXY / NO_PROXY env vars by
+    design — see ``open_pinned_https_connection`` for rationale.
+
+    Caller is responsible for unlinking the returned temp file.
+    """
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    host = parsed.hostname or ""
+
     fd, tmp = tempfile.mkstemp(suffix=".img")
     os.close(fd)
     tmp_path = Path(tmp)
+    conn = None
     try:
-        req = urllib.request.Request(  # noqa: S310 (SSRF-checked above)
-            url, headers={"User-Agent": "genblaze-openai"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (SSRF-checked above)
-            size = 0
-            with tmp_path.open("wb") as f:
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > _MAX_INPUT_BYTES:
-                        raise ProviderError(
-                            f"Edit input exceeds {_MAX_INPUT_BYTES} byte limit",
-                            error_code=ProviderErrorCode.INVALID_INPUT,
-                        )
-                    f.write(chunk)
+        conn = open_pinned_https_connection(url, timeout=timeout, exc_type=ProviderError)
+        conn.request("GET", path, headers={"User-Agent": "genblaze-openai", "Host": host})
+        resp = conn.getresponse()
+        if resp.status >= 300:
+            resp.read()
+            raise ProviderError(
+                f"HTTP {resp.status} downloading edit input from {url}",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        size = 0
+        with tmp_path.open("wb") as f:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_INPUT_BYTES:
+                    raise ProviderError(
+                        f"Edit input exceeds {_MAX_INPUT_BYTES} byte limit",
+                        error_code=ProviderErrorCode.INVALID_INPUT,
+                    )
+                f.write(chunk)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+    finally:
+        if conn is not None:
+            conn.close()
     return tmp_path
 
 

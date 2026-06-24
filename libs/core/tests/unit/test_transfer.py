@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
+import urllib3
+from genblaze_core._utils import check_ssrf
 from genblaze_core.exceptions import StorageError
 from genblaze_core.models.asset import Asset
 from genblaze_core.storage.base import KeyStrategy, StorageBackend
@@ -16,7 +18,6 @@ from genblaze_core.storage.transfer import (
     AssetTransfer,
     _build_key,
     _read_local_file,
-    _validate_url,
 )
 
 # Fake DNS response for test hostnames — resolves to a public IP
@@ -57,57 +58,64 @@ class FakeBackend(StorageBackend):
         return f"https://storage.example.com/{key}"
 
 
-class TestValidateUrl:
+class TestTransferUrlValidation:
+    """The transfer path validates URLs via check_ssrf with StorageError.
+
+    Core SSRF semantics live in test_utils.py::TestCheckSsrf; these cases
+    pin the per-range blocklist coverage to the StorageError-typed guard the
+    transfer path relies on.
+    """
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     def test_https_allowed(self, _mock_dns):
-        _validate_url("https://cdn.example.com/img.png")
+        check_ssrf("https://cdn.example.com/img.png", exc_type=StorageError)
 
     def test_http_rejected(self):
         with pytest.raises(StorageError, match="Only HTTPS"):
-            _validate_url("http://cdn.example.com/img.png")
+            check_ssrf("http://cdn.example.com/img.png", exc_type=StorageError)
 
     def test_file_rejected(self):
         with pytest.raises(StorageError, match="Only HTTPS"):
-            _validate_url("file:///etc/passwd")
+            check_ssrf("file:///etc/passwd", exc_type=StorageError)
 
     def test_localhost_rejected(self):
         with pytest.raises(StorageError, match="Private/loopback"):
-            _validate_url("https://localhost/img.png")
+            check_ssrf("https://localhost/img.png", exc_type=StorageError)
 
     def test_private_ip_rejected(self):
         """Private IPs (resolved via DNS) are blocked."""
         private_addr = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.1", 0))]
         with patch("genblaze_core._utils.socket.getaddrinfo", return_value=private_addr):
             with pytest.raises(StorageError, match="Private/loopback"):
-                _validate_url("https://internal.example.com/img.png")
+                check_ssrf("https://internal.example.com/img.png", exc_type=StorageError)
 
     def test_172_private_ip_rejected(self):
         """172.16.x.x range is blocked."""
         private_addr = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.16.0.1", 0))]
         with patch("genblaze_core._utils.socket.getaddrinfo", return_value=private_addr):
             with pytest.raises(StorageError, match="Private/loopback"):
-                _validate_url("https://internal.example.com/img.png")
+                check_ssrf("https://internal.example.com/img.png", exc_type=StorageError)
 
     def test_imds_ip_rejected(self):
         """169.254.x.x (IMDS/link-local) is blocked."""
         imds_addr = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
         with patch("genblaze_core._utils.socket.getaddrinfo", return_value=imds_addr):
             with pytest.raises(StorageError, match="Private/loopback"):
-                _validate_url("https://metadata.example.com/latest")
+                check_ssrf("https://metadata.example.com/latest", exc_type=StorageError)
 
     def test_cgn_ip_rejected(self):
         """100.64.x.x (Carrier-grade NAT) is blocked."""
         cgn_addr = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.1", 0))]
         with patch("genblaze_core._utils.socket.getaddrinfo", return_value=cgn_addr):
             with pytest.raises(StorageError, match="Private/loopback"):
-                _validate_url("https://cgn.example.com/img.png")
+                check_ssrf("https://cgn.example.com/img.png", exc_type=StorageError)
 
     def test_loopback_ip_rejected(self):
         """127.0.0.1 is blocked."""
         lo_addr = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
         with patch("genblaze_core._utils.socket.getaddrinfo", return_value=lo_addr):
             with pytest.raises(StorageError, match="Private/loopback"):
-                _validate_url("https://sneaky.example.com/img.png")
+                check_ssrf("https://sneaky.example.com/img.png", exc_type=StorageError)
 
     def test_unresolvable_host_rejected(self):
         """Unresolvable hostnames are rejected."""
@@ -116,7 +124,7 @@ class TestValidateUrl:
             side_effect=socket.gaierror("Name not found"),
         ):
             with pytest.raises(StorageError, match="Cannot resolve"):
-                _validate_url("https://doesnotexist.invalid/img.png")
+                check_ssrf("https://doesnotexist.invalid/img.png", exc_type=StorageError)
 
 
 class TestBuildKey:
@@ -433,64 +441,160 @@ class TestConnectionLifecycle:
         mock_resp.release_conn.assert_called_once()
 
 
+def _make_pool_mock(resp: MagicMock) -> MagicMock:
+    """Return a mock urllib3.HTTPSConnectionPool whose request() returns resp."""
+    pool = MagicMock()
+    pool.request.return_value = resp
+    return pool
+
+
 class TestHttpPool:
-    """urllib3 connection pool — the shared download path."""
+    """_http_get_stream — per-hop HTTPSConnectionPool with DNS pinning."""
 
-    def test_pool_is_singleton(self):
-        """A module-level pool means connections reuse across asset transfers
-        AND across runs in the same process. Re-importing must not rebuild it."""
-        from genblaze_core.storage import transfer
-        from genblaze_core.storage.transfer import _HTTP_POOL
-
-        assert _HTTP_POOL is transfer._HTTP_POOL
-
-    def test_pool_retries_on_transient_failures(self):
-        """429/5xx responses should be retried without the caller seeing them.
-        Without this, a single transient 503 during a batch run takes out
-        the whole transfer instead of bouncing off boto3's server."""
-        import urllib3
-        from genblaze_core.storage.transfer import _HTTP_POOL
-
-        retries = _HTTP_POOL.connection_pool_kw.get("retries")
-        # urllib3 stores the Retry on the PoolManager after being set via kwarg
-        # or as the default. Inspect either the pool_kw or the manager's own retry.
-        if retries is None:
-            retries = _HTTP_POOL.retries
-        assert isinstance(retries, urllib3.Retry)
-        assert retries.total is not None and retries.total >= 3
-        assert 429 in retries.status_forcelist
-        assert 503 in retries.status_forcelist
+    def _ok_resp(self) -> MagicMock:
+        resp = MagicMock()
+        resp.status = 200
+        resp.headers = {"Content-Type": "image/png"}
+        resp.release_conn = MagicMock()
+        return resp
 
     def test_get_stream_raises_on_http_error_status(self):
-        """4xx/5xx after retries-exhausted should surface as StorageError,
-        not a raw urllib3 response object the caller would then try to read()."""
-        from unittest.mock import MagicMock, patch
-
+        """4xx/5xx should surface as StorageError."""
         from genblaze_core.storage.transfer import _http_get_stream
 
         mock_resp = MagicMock()
         mock_resp.status = 404
         mock_resp.release_conn = MagicMock()
-        with patch("genblaze_core.storage.transfer._HTTP_POOL.request", return_value=mock_resp):
+        pool = _make_pool_mock(mock_resp)
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with (
+            patch("genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool", return_value=pool),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=public_dns),
+        ):
             with pytest.raises(StorageError, match="HTTP 404"):
                 _http_get_stream("https://cdn.example.com/missing.png", timeout=30.0)
-        # Must release the connection even on the error path.
         mock_resp.release_conn.assert_called_once()
 
     def test_get_stream_wraps_urllib3_errors(self):
-        """Transport errors from urllib3 surface as StorageError with
-        provenance preserved in the exception chain."""
-        from unittest.mock import patch
-
-        import urllib3
+        """Transport errors from urllib3 surface as StorageError."""
         from genblaze_core.storage.transfer import _http_get_stream
 
-        with patch(
-            "genblaze_core.storage.transfer._HTTP_POOL.request",
-            side_effect=urllib3.exceptions.ConnectTimeoutError(None, "connect timeout"),
+        pool = MagicMock()
+        pool.request.side_effect = urllib3.exceptions.ConnectTimeoutError(None, "connect timeout")
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with (
+            patch("genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool", return_value=pool),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=public_dns),
         ):
             with pytest.raises(StorageError, match="Download failed"):
                 _http_get_stream("https://slow.example.com/img.png", timeout=30.0)
+
+    def test_dns_pinning_connects_to_resolved_ip(self):
+        """_http_get_stream must open the pool to the pinned IP, not the hostname.
+        This prevents DNS rebinding: the HTTP client re-resolving at connect time
+        is replaced by a direct connection to the IP validate_ssrf returned."""
+        from genblaze_core.storage.transfer import _http_get_stream
+
+        ok_resp = MagicMock()
+        ok_resp.status = 200
+        ok_resp.headers = {"Content-Type": "image/png"}
+        ok_resp.release_conn = MagicMock()
+        pool = _make_pool_mock(ok_resp)
+        pool_calls: list = []
+
+        def pool_factory(host, **kwargs):
+            pool_calls.append(host)
+            return pool
+
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=pool_factory,
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=public_dns),
+        ):
+            _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+
+        # Pool must be opened to the pinned IP, not the original hostname
+        assert pool_calls == ["93.184.216.34"], (
+            "HTTPSConnectionPool must be constructed with the pinned IP"
+        )
+
+    def test_pool_constructed_with_server_hostname_for_sni(self):
+        """HTTPSConnectionPool must receive server_hostname=host (not the pinned IP).
+        Without it urllib3 sends the IP literal as the TLS SNI extension, which
+        CDNs (CloudFront, Fastly, Cloudflare) reject — they rely on SNI to pick
+        the virtual host and certificate."""
+        from genblaze_core.storage.transfer import _http_get_stream
+
+        ok_resp = self._ok_resp()
+        pool_kwargs: list[dict] = []
+
+        def pool_factory(host, **kwargs):
+            pool_kwargs.append({"host": host, **kwargs})
+            return _make_pool_mock(ok_resp)
+
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=pool_factory,
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=public_dns),
+        ):
+            _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+
+        assert len(pool_kwargs) == 1
+        kw = pool_kwargs[0]
+        assert kw["host"] == "93.184.216.34", "pool must connect to pinned IP"
+        assert kw.get("server_hostname") == "cdn.example.com", (
+            "server_hostname must be the original hostname for TLS SNI"
+        )
+        assert kw.get("assert_hostname") == "cdn.example.com", (
+            "assert_hostname must be the original hostname for cert verification"
+        )
+
+    def test_dns_rebinding_blocked(self):
+        """DNS rebinding: first resolution → public IP (validation passes), but if
+        the HTTP client were to re-resolve it would get a private IP. With pinning,
+        the pool is opened to the validated public IP regardless of subsequent DNS."""
+        from genblaze_core.storage.transfer import _http_get_stream
+
+        ok_resp = MagicMock()
+        ok_resp.status = 200
+        ok_resp.headers = {"Content-Type": "image/png"}
+        ok_resp.release_conn = MagicMock()
+        pool = _make_pool_mock(ok_resp)
+        pool_calls: list = []
+
+        def pool_factory(host, **kwargs):
+            pool_calls.append(host)
+            return pool
+
+        # First call returns public (validation); subsequent calls return private (rebind).
+        call_n = 0
+
+        def dns_side_effect(*args, **kwargs):
+            nonlocal call_n
+            call_n += 1
+            if call_n == 1:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=pool_factory,
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", side_effect=dns_side_effect),
+        ):
+            _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+
+        # The pool must have been opened to the public IP (from the pinned first resolution)
+        assert pool_calls == ["93.184.216.34"], (
+            "Must connect to the DNS-pinned public IP, not re-resolve to the private one"
+        )
 
 
 class TestHashingStreamReader:
@@ -735,6 +839,187 @@ class TestBackendCopy:
         assert backend.store["dst"] == b"payload"
         # Source remains — copy is not a move.
         assert backend.store["src"] == b"payload"
+
+
+def _pool_factory_for(responses: list[MagicMock]):
+    """Return an HTTPSConnectionPool factory that cycles through responses.
+
+    Each call to urllib3.HTTPSConnectionPool(...) returns a new pool whose
+    request() returns the next response in the list. Used to simulate multi-hop
+    redirect chains where a fresh pool is created per hop.
+    """
+    resp_iter = iter(responses)
+
+    def factory(*args, **kwargs):
+        pool = MagicMock()
+        pool.request.return_value = next(resp_iter)
+        return pool
+
+    return factory
+
+
+class TestRedirectSsrf:
+    """Redirect-following must re-validate and re-pin DNS on every Location hop."""
+
+    _PUBLIC_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    _PRIVATE_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
+
+    def _redirect_resp(self, location: str) -> MagicMock:
+        """Build a 301 mock response pointing at location."""
+        resp = MagicMock()
+        resp.status = 301
+        resp.headers = {"Location": location}
+        resp.release_conn = MagicMock()
+        return resp
+
+    def _ok_resp(self, chunks: list[bytes]) -> MagicMock:
+        """Build a 200 mock response with the given body chunks."""
+        resp = MagicMock()
+        resp.status = 200
+        resp.headers = {"Content-Type": "image/png"}
+        resp.read.side_effect = chunks + [b""]
+        resp.release_conn = MagicMock()
+        return resp
+
+    def test_redirect_to_private_ip_rejected(self):
+        """A 301 whose Location resolves to a private IP must be blocked."""
+        redirect_resp = self._redirect_resp("https://internal.example.com/secret")
+
+        def dns_side_effect(host, *args, **kwargs):
+            if "internal" in host:
+                return self._PRIVATE_DNS
+            return self._PUBLIC_DNS
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for([redirect_resp]),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", side_effect=dns_side_effect),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            with pytest.raises(StorageError, match="Private/loopback"):
+                _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+        redirect_resp.release_conn.assert_called_once()
+
+    def test_redirect_to_http_rejected(self):
+        """A redirect downgrading from HTTPS to HTTP must be rejected."""
+        redirect_resp = self._redirect_resp("http://cdn.example.com/img.png")
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for([redirect_resp]),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=self._PUBLIC_DNS),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            with pytest.raises(StorageError, match="Only HTTPS"):
+                _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+        redirect_resp.release_conn.assert_called_once()
+
+    def test_relative_redirect_to_valid_target_followed(self):
+        """RFC 7231 §7.1.2: a relative Location like '/new-path' must be
+        resolved against the current URL via urljoin before re-validation."""
+        # Server replies to /img.png with a relative redirect to /new.png
+        redirect_resp = self._redirect_resp("/new.png")
+        ok_resp = self._ok_resp([b"image-data"])
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for([redirect_resp, ok_resp]),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=self._PUBLIC_DNS),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            resp = _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+            assert resp is ok_resp
+        redirect_resp.release_conn.assert_called_once()
+
+    def test_relative_redirect_to_private_target_rejected(self):
+        """A relative redirect whose resolved target is private must be blocked."""
+        # /new-path is relative; urljoin resolves it to https://internal.example.com/new-path
+        # but the DNS for that host returns a private IP.
+        redirect_resp = self._redirect_resp("https://internal.example.com/secret")
+
+        def dns_side_effect(host, *args, **kwargs):
+            if "internal" in host:
+                return self._PRIVATE_DNS
+            return self._PUBLIC_DNS
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for([redirect_resp]),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", side_effect=dns_side_effect),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            with pytest.raises(StorageError, match="Private/loopback"):
+                _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+
+    def test_redirect_loop_limit_enforced(self):
+        """Infinite redirect chains must be capped and raise.
+        _MAX_REDIRECT_HOPS = 5: loop runs 6 iterations (5 redirects + 1 final
+        fetch slot), so providing 7 redirect responses exhausts the limit."""
+        # 7 redirects > _MAX_REDIRECT_HOPS (5); the 6th iteration is the final
+        # fetch slot, and the 7th redirect triggers "Too many redirects".
+        resps = [self._redirect_resp("https://cdn.example.com/loop") for _ in range(7)]
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for(resps),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=self._PUBLIC_DNS),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            with pytest.raises(StorageError, match="Too many redirect"):
+                _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+
+    def test_valid_redirect_followed(self):
+        """A single redirect to a public HTTPS URL is allowed and followed."""
+        redirect_resp = self._redirect_resp("https://cdn2.example.com/img.png")
+        ok_resp = self._ok_resp([b"image-data"])
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for([redirect_resp, ok_resp]),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=self._PUBLIC_DNS),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            resp = _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+            assert resp is ok_resp
+        redirect_resp.release_conn.assert_called_once()
+
+    def test_redirect_releases_intermediate_connections(self):
+        """Each intermediate redirect response must have release_conn() called."""
+        hop1 = self._redirect_resp("https://cdn2.example.com/img.png")
+        hop2 = self._redirect_resp("https://cdn3.example.com/img.png")
+        final = self._ok_resp([b"data"])
+
+        with (
+            patch(
+                "genblaze_core.storage.transfer.urllib3.HTTPSConnectionPool",
+                side_effect=_pool_factory_for([hop1, hop2, final]),
+            ),
+            patch("genblaze_core._utils.socket.getaddrinfo", return_value=self._PUBLIC_DNS),
+        ):
+            from genblaze_core.storage.transfer import _http_get_stream
+
+            resp = _http_get_stream("https://cdn.example.com/img.png", timeout=30.0)
+            assert resp is final
+        hop1.release_conn.assert_called_once()
+        hop2.release_conn.assert_called_once()
 
 
 class TestPerformanceDefaults:

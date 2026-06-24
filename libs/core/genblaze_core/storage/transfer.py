@@ -9,11 +9,11 @@ import mimetypes
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import urllib3
 
-from genblaze_core._utils import ALLOWED_FILE_ROOTS, check_ssrf
+from genblaze_core._utils import ALLOWED_FILE_ROOTS, resolve_ssrf
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import KeyStrategy
@@ -60,24 +60,11 @@ _CAS_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _HIERARCHICAL_CACHE_CONTROL = "private, max-age=3600"
 
 
-# Shared HTTPS connection pool for asset downloads. urllib.request opens a
-# fresh TCP + TLS handshake per call; at 150 ms per handshake a batch run
-# with 50 images from the same CDN burns 7.5 s purely on connection setup.
-# urllib3's PoolManager reuses connections across the sink's worker threads
-# (thread-safe) and across subsequent runs in the same process.
-#
-# Retry on 429/5xx is built into urllib3, giving us transient-failure
-# resilience the previous urllib path lacked entirely.
-_HTTP_POOL = urllib3.PoolManager(
-    num_pools=10,
-    maxsize=20,
-    retries=urllib3.Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=("GET",),
-    ),
-)
+# Maximum number of redirects to follow before raising StorageError.
+# The loop runs _MAX_REDIRECT_HOPS + 1 iterations: up to _MAX_REDIRECT_HOPS
+# redirect responses plus one final successful fetch. 5 is generous; a CDN
+# chain is almost never more than 2 hops.
+_MAX_REDIRECT_HOPS = 5
 
 
 class _HashingStreamReader:
@@ -144,31 +131,96 @@ class _HashingStreamReader:
 
 
 def _http_get_stream(url: str, *, timeout: float) -> Any:
-    """Open a streaming GET via the shared urllib3 pool.
+    """Open a streaming GET, following redirects safely with DNS pinning.
 
     Returns a ``urllib3.HTTPResponse`` in ``preload_content=False`` mode so
     the caller can read chunks via ``resp.read(n)``. The caller MUST call
     ``resp.release_conn()`` in a ``finally`` to return the connection to
     the pool — otherwise the pool exhausts under load.
 
-    Raises ``StorageError`` on HTTP errors and transport failures so
-    ``AssetTransfer`` sees a single exception type regardless of the
-    underlying failure mode.
+    DNS pinning: on every hop (initial request and each redirect), the hostname
+    is resolved once via ``resolve_ssrf``, the returned IP is validated against
+    the SSRF blocklist, and the connection is opened to that exact IP with the
+    original hostname used for TLS SNI (``assert_hostname``) and the Host header.
+    This closes the DNS rebinding / TOCTOU window where the HTTP client would
+    independently re-resolve at connect time and potentially reach a different,
+    private address.
+
+    Redirects are followed manually: each ``Location`` header is re-validated and
+    re-pinned before the next hop. Intermediate redirect responses have
+    ``release_conn()`` called immediately to avoid leaking connections from the pool.
+
+    Raises ``StorageError`` on HTTP errors, SSRF violations, and transport
+    failures so ``AssetTransfer`` sees a single exception type.
     """
-    try:
-        resp = _HTTP_POOL.request(
-            "GET",
-            url,
-            preload_content=False,
+    from urllib.parse import urlparse
+
+    current_url = url
+    for _ in range(_MAX_REDIRECT_HOPS + 1):  # up to _MAX_REDIRECT_HOPS redirects + final fetch
+        # Resolve and validate DNS once; connect to the pinned IP to prevent rebinding.
+        pinned_ip, host, port = resolve_ssrf(current_url, exc_type=StorageError)
+        parsed = urlparse(current_url)
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+
+        # Connect to the pinned IP for SSRF safety.
+        # server_hostname drives TLS SNI — without it urllib3 sends the IP literal as
+        # the server name, which CDNs (CloudFront, Fastly, Cloudflare) do not match to
+        # a virtual host and serve the wrong cert. assert_hostname controls cert-name
+        # matching only; SNI requires server_hostname.
+        #
+        # Perf note: a fresh pool per hop/asset means one TLS handshake per asset
+        # (the shared _HTTP_POOL we removed amortised handshakes across a batch;
+        # 50 same-CDN images saved ~7.5 s). The per-hop cost is the correct tradeoff
+        # for DNS-pinned security. A pool cache keyed by (pinned_ip, host, port) would
+        # recover the reuse benefit — tracked in tech-debt as optional optimisation.
+        pool = urllib3.HTTPSConnectionPool(
+            pinned_ip,
+            port=port,
             timeout=urllib3.Timeout(connect=30.0, read=timeout),
-            headers={"User-Agent": _USER_AGENT},
+            server_hostname=host,  # TLS SNI — must be the hostname, not the pinned IP
+            assert_hostname=host,  # cert-name verification uses the original hostname
+            retries=urllib3.Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=("GET",),
+                redirect=0,  # redirects handled manually below
+            ),
         )
-    except urllib3.exceptions.HTTPError as exc:
-        raise StorageError(f"Download failed for {url}: {exc}") from exc
-    if resp.status >= 400:
-        resp.release_conn()
-        raise StorageError(f"HTTP {resp.status} downloading {url}")
-    return resp
+        try:
+            resp = pool.request(
+                "GET",
+                path,
+                preload_content=False,
+                redirect=False,
+                headers={
+                    "User-Agent": _USER_AGENT,
+                    "Host": host,  # original hostname, not the pinned IP
+                },
+            )
+        except urllib3.exceptions.HTTPError as exc:
+            raise StorageError(f"Download failed for {current_url}: {exc}") from exc
+
+        if resp.status in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location") or ""
+            resp.release_conn()
+            if not location:
+                raise StorageError(f"Redirect with no Location header from {current_url}")
+            # RFC 7231 §7.1.2: Location may be relative. urljoin resolves it
+            # against the current URL before the SSRF check so that valid
+            # relative redirects (e.g. /new-path) work and relative redirects
+            # to private targets (e.g. //../internal) are still rejected.
+            current_url = urljoin(current_url, location)
+            continue
+
+        if resp.status >= 400:
+            resp.release_conn()
+            raise StorageError(f"HTTP {resp.status} downloading {current_url}")
+        return resp
+
+    raise StorageError(f"Too many redirects (>{_MAX_REDIRECT_HOPS}) fetching {url}")
 
 
 def _cache_control_for(strategy: KeyStrategy) -> str:
@@ -176,11 +228,6 @@ def _cache_control_for(strategy: KeyStrategy) -> str:
     if strategy == KeyStrategy.CONTENT_ADDRESSABLE:
         return _CAS_CACHE_CONTROL
     return _HIERARCHICAL_CACHE_CONTROL
-
-
-def _validate_url(url: str) -> None:
-    """Reject non-HTTPS URLs and private/reserved IP ranges (SSRF protection)."""
-    check_ssrf(url, exc_type=StorageError)
 
 
 def _guess_extension(url: str, content_type: str | None) -> str:
@@ -333,9 +380,9 @@ class AssetTransfer:
                     extra_args={"CacheControl": _cache_control_for(self._strategy)},
                 )
         else:
-            # Remote URL → validate, then either stream to temp file (default)
-            # or pipeline directly into the multipart upload (opt-in).
-            _validate_url(asset.url)
+            # Remote URL — _http_get_stream's first hop runs resolve_ssrf, so no
+            # pre-check needed here. A pre-check would double-resolve DNS and
+            # open a TOCTOU window between validation and the actual connection.
             if self._pipelined_transfer:
                 key, sha256, size = self._transfer_pipelined(
                     asset, tenant=tenant, date_str=date_str, run_id=run_id
