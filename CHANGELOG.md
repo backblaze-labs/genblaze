@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `genblaze-core`: `Pipeline.arun()` no longer blocks the event loop during
+  model preflight. The network-bound phase (`_validate_models`, which uses a
+  `ThreadPoolExecutor` for provider discovery fetches) is now offloaded via
+  `asyncio.to_thread`, allowing concurrent coroutines to keep running during
+  the preflight window. Cheap capability checks (modality, chain-input) still
+  run synchronously. `Pipeline.run()` behavior is unchanged (#56).
 - `genblaze-core`: post-submit step-level retries now resume the existing
   upstream prediction instead of submitting a new one, including transient
   checkpoint failures after `submit()` returns by replaying idempotent

@@ -8,12 +8,16 @@ Coverage:
 - Suggestions surface in NOT_FOUND error messages.
 - ``ThreadPoolExecutor`` parallelism — preflight runs validate_model
   on every step, sync codebase, no asyncio.run_until_complete (RT-2).
+- Issue #56: ``arun()`` must not block the event loop during preflight.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import threading
+import time
 
 import pytest
 from genblaze_core import Pipeline
@@ -276,3 +280,122 @@ class TestValidatorExceptionHandling:
         # The broken validator surfaces as UNKNOWN_PERMISSIVE → preflight.unknown.
         unknown_warns = [r for r in caplog.records if "preflight.unknown" in r.getMessage()]
         assert len(unknown_warns) == 1
+
+
+class TestArunDoesNotBlockEventLoop:
+    """Issue #56: ``arun()`` preflight must not stall the event loop.
+
+    Strategy: a provider whose ``validate_model`` does blocking I/O
+    (simulated with ``time.sleep``). A concurrent heartbeat coroutine
+    increments a counter every 10 ms. If preflight blocks the event
+    loop the counter never ticks during the preflight window.
+    After the fix (offloading via ``asyncio.to_thread``), the counter
+    accumulates multiple ticks while preflight runs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_event_loop_not_blocked_during_preflight(self) -> None:
+        PREFLIGHT_SLEEP = 0.15  # simulated blocking network call
+
+        class _SlowProvider(BaseProvider):
+            name = "slow-preflight"
+            discovery_support = DiscoverySupport.NONE
+
+            def validate_model(self, model_id: str, *, refresh: bool = False):  # type: ignore[no-untyped-def,override]
+                # Simulate a blocking discovery fetch (the root cause of #56).
+                time.sleep(PREFLIGHT_SLEEP)
+                from genblaze_core.providers.validation import (
+                    ValidationResult,
+                    ValidationSource,
+                )
+
+                return ValidationResult.ok_authoritative(ValidationSource.DISCOVERY)
+
+            def get_capabilities(self) -> ProviderCapabilities:
+                return ProviderCapabilities(supported_modalities=[Modality.IMAGE], models=[])
+
+            def submit(self, step, config=None):  # type: ignore[no-untyped-def]
+                return "pid"
+
+            def poll(self, prediction_id, config=None):  # type: ignore[no-untyped-def]
+                return True
+
+            def fetch_output(self, prediction_id, step):  # type: ignore[no-untyped-def]
+                return step
+
+        # Heartbeat that ticks every 10 ms while the event loop is free.
+        tick_count = 0
+        running = True
+
+        async def heartbeat() -> None:
+            nonlocal tick_count
+            while running:
+                await asyncio.sleep(0.01)
+                tick_count += 1
+
+        p = _SlowProvider()
+        pipe = Pipeline("t", preflight=True).step(
+            p, model="any", modality=Modality.IMAGE, prompt="hi"
+        )
+
+        hb_task = asyncio.create_task(heartbeat())
+        try:
+            # Call arun() — the actual public call site — to verify the event loop
+            # is not blocked at the preflight call site, not just on the helper.
+            await pipe.arun(raise_on_failure=False)
+        finally:
+            running = False
+            hb_task.cancel()
+            try:
+                await hb_task
+            except asyncio.CancelledError:
+                pass
+
+        # With a 150 ms preflight sleep and 10 ms heartbeat interval we expect
+        # ~14 ticks; assert >= 3 for generous CI-jitter margin. A blocked loop
+        # yields 0-1 (the heartbeat's first sleep may fire before preflight
+        # begins blocking).
+        assert tick_count >= 3, (
+            f"Event loop was blocked during preflight: heartbeat ticked only "
+            f"{tick_count} time(s) during a {PREFLIGHT_SLEEP * 1000:.0f} ms "
+            f"preflight window (expected >= 3)."
+        )
+
+
+class TestWarnOnceConcurrency:
+    """Issue #56: ``_warn_once`` must dedup atomically across threads.
+
+    Preflight now runs off the event loop via ``asyncio.to_thread`` and
+    ``abatch_run`` clones share the ``_warned_preflight`` set (shallow
+    ``copy.copy``), so multiple worker threads can call ``_warn_once`` on the
+    same key concurrently. Exactly one caller must win the claim, else a
+    duplicate WARN leaks. This locks in the contract so the guarding lock
+    cannot be silently dropped in a future refactor.
+    """
+
+    def test_warn_once_claims_key_exactly_once_under_contention(self) -> None:
+        pipe = Pipeline("warn-once")
+        key = ("prov", "model-x")
+        n_threads = 32
+        # Barrier maximizes the check-then-add overlap window across threads.
+        barrier = threading.Barrier(n_threads)
+        results: list[bool] = []
+        results_lock = threading.Lock()
+
+        def claim() -> None:
+            barrier.wait()
+            won = pipe._warn_once(key)
+            with results_lock:
+                results.append(won)
+
+        threads = [threading.Thread(target=claim) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert sum(results) == 1, (
+            f"_warn_once must grant the claim to exactly one thread, "
+            f"got {sum(results)} winners out of {n_threads}."
+        )
+        assert key in pipe._warned_preflight
