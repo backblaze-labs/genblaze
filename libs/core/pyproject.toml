@@ -48,7 +48,9 @@ Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 parquet = ["pyarrow>=14.0"]
-audio = ["mutagen>=1.47"]
+# <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
+# test fixture (#108); cap until 1.49 is vetted against the test suite.
+audio = ["mutagen>=1.47,<1.49"]
 # Soft integrations: imported behind guards (try/except ImportError or
 # function-local), so core stays installable without them. Advertised as
 # extras so callers can opt in explicitly. http floor matches the connectors
@@ -68,7 +70,9 @@ dev = [
     "mypy>=1.8",
     "deptry>=0.23",
     "pyarrow>=14.0",
-    "mutagen>=1.47",
+    # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
+    # test fixture (#108); cap until 1.49 is vetted against the test suite.
+    "mutagen>=1.47,<1.49",
     "jsonschema>=4.0",
     "hypothesis>=6.0",
     "httpx>=0.24",
