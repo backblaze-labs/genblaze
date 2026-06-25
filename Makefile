@@ -59,6 +59,7 @@ test:
 	cd libs/connectors/assemblyai && pytest -v
 	cd cli && pytest tests/ -v
 	cd libs/meta && pytest tests/ -v
+	pytest tools/tests/ -v
 
 lint:
 	ruff check libs/ cli/ examples/

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `tools/check_pin_parity.py`: extend the pre-publish drift guard to
+  compare `[project.optional-dependencies]` as well as base
+  `[project.dependencies]`. Previously the gate reported
+  `0 drift` for the `genblaze` umbrella even when connector pins in
+  the `all`, `video`, `image`, or `audio` extras diverged from the
+  published wheel, because `Requires-Dist` extras entries were
+  silently filtered out. The gate now groups PyPI extras by name and
+  diffs each extra independently, naming the extra in the drift
+  report (e.g. `[all]`). Adds `tools/tests/test_check_pin_parity.py`
+  and wires `pytest tools/tests/` into `make test`. Updates
+  RELEASING.md to accurately describe the gate's scope (#23).
+
 ### Added
 
 - `genblaze-hume`: new provider adapter for Hume AI **Octave TTS** (audio /
