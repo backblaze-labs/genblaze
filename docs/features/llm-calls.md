@@ -66,13 +66,15 @@ pipe = Pipeline("hero").step(SoraProvider(), model="sora-2", prompt=description)
   outbound-text-only.
 - Gemini's `system=` kwarg, when set, supersedes any system message in the
   `messages` list. OpenAI / GMICloud keep both (provider behavior).
-- Pricing tables: OpenAI (gpt-4o family, gpt-4.1, gpt-4-turbo, o-series,
-  gpt-3.5), Gemini (1.5 / 2.0 / 2.5 families). GMICloud returns
-  `cost_usd=None` — fleet shifts faster than a table tracks.
+- `cost_usd` is always `None` for all standalone `chat()` helpers
+  (OpenAI, Gemini, GMICloud). Vendor prices drift too fast for static
+  tables to stay accurate, and `chat()` has no model registry. Compute
+  cost from `tokens_in`/`tokens_out` using your own rates (see
+  `docs/reference/pricing-recipes.md`). `PricingContext` populates cost
+  only on the Pipeline-Step provider path, not here.
 - Model ids pass through verbatim — unknown models aren't blocked
-  client-side, they just get `cost_usd=None` until registered. Matches
-  the "unknown models pass through" convention used by the media
-  provider classes.
+  client-side. Matches the "unknown models pass through" convention used
+  by the media provider classes.
 - Errors are wrapped in `ProviderError` with a classified `error_code`.
 
 ## Verification

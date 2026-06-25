@@ -94,6 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__enter__`/`__exit__` for callers that manage the lifecycle outside a
   `run()`. **Behavior change:** a run-scoped sink passed to `run()`/`arun()` is
   closed afterward — construct a fresh one per run rather than reusing it (#57).
+- **`genblaze-openai`**, **`genblaze-google`**: remove hardcoded USD per-token
+  rate tables (`_RATES`) from the standalone `chat()` helpers and return
+  `cost_usd=None` unconditionally, consistent with the 0.3.0 contract that
+  connector modules ship zero static rate tables (Pipeline-Step providers
+  register rates via `PricingContext`/`ModelSpec`). The standalone `chat()`
+  helpers have no model registry, so callers that relied on
+  `ChatResponse.cost_usd` being non-`None` for known models must now compute
+  cost from `tokens_in`/`tokens_out` with their own rates (see
+  `docs/reference/pricing-recipes.md`). Adds
+  `test_pricing_phaseout.py` to `genblaze-core` — a lint-style CI guard that
+  fails if any future connector reintroduces a `_RATES`/`_PRICING` constant (#13).
 - `genblaze-core`: post-submit step-level retries now resume the existing
   upstream prediction instead of submitting a new one, including transient
   checkpoint failures after `submit()` returns by replaying idempotent
