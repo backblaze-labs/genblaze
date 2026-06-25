@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import pickle
 import re
 import threading
 import time
@@ -403,12 +404,13 @@ class TestWarnOnceConcurrency:
 
 
 class TestPipelineCopySemantics:
-    """Issue #56: the preflight lock must not break copy.deepcopy.
+    """Issue #56: the preflight lock must not break copy/pickle.
 
-    The threading.Lock added for the WARN-dedup is not copyable, so a custom
-    __deepcopy__ rebuilds it. Two clone paths must stay correct: shallow
-    copy.copy (used by batch_run/abatch_run) shares the lock+set so a batch
-    dedups as a unit, while deepcopy yields a fully independent pipeline.
+    The threading.Lock added for the WARN-dedup is neither copyable nor
+    picklable. Three protocols must stay correct: shallow copy.copy (used by
+    batch_run/abatch_run) shares the lock+set so a batch dedups as a unit,
+    while deepcopy and pickle each yield a fully independent pipeline with a
+    freshly built lock.
     """
 
     def test_deepcopy_succeeds_and_isolates_lock(self) -> None:
@@ -422,6 +424,19 @@ class TestPipelineCopySemantics:
         assert clone._warned_preflight is not p._warned_preflight
         p._warned_preflight.add(("prov", "model"))
         assert ("prov", "model") not in clone._warned_preflight
+
+    def test_pickle_roundtrip_succeeds_and_rebuilds_lock(self) -> None:
+        p = Pipeline("orig")
+        p._warned_preflight.add(("seed", "model"))
+
+        clone = pickle.loads(pickle.dumps(p))  # noqa: S301 — round-tripping our own pipeline in a test
+
+        # pickle => independent pipeline with a usable, freshly built lock.
+        assert isinstance(clone, Pipeline)
+        assert clone._warned_preflight == {("seed", "model")}
+        assert clone._warned_preflight is not p._warned_preflight
+        # The rebuilt lock must be a real, acquirable lock.
+        assert clone._warn_once(("new", "model")) is True
 
     def test_shallow_copy_shares_lock_for_batch_clones(self) -> None:
         p = Pipeline("orig")

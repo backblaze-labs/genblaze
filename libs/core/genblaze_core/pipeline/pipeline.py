@@ -346,26 +346,31 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._tracer = NoOpTracer()
         self._event_emitter: QueueEmitter | None = None
 
-    def __deepcopy__(self, memo: dict) -> Pipeline:
-        """Deep-copy support: ``threading.Lock`` is not copyable, so rebuild it.
+    # --- Copy / serialization protocols ---------------------------------
+    # The WARN-dedup ``threading.Lock`` added for #56 is neither copyable nor
+    # picklable, so each protocol is handled explicitly:
+    #   * copy.copy  -> __copy__: shallow, SHARES the lock + dedup set so a
+    #     batch_run/abatch_run batch dedups each preflight WARN once as a unit.
+    #   * copy.deepcopy / pickle -> __getstate__/__setstate__: a fully
+    #     independent clone with a freshly built lock.
+    # Defining __copy__ is required: without it, __getstate__/__setstate__
+    # would also drive copy.copy and silently break the shared-lock contract.
 
-        ``copy.copy`` (shallow — used by ``batch_run``/``abatch_run``)
-        intentionally shares the lock and dedup set across clones so a batch
-        dedups WARNs as a unit. ``deepcopy`` semantics instead yield a fully
-        independent Pipeline: the clone gets its own fresh lock and a deep copy
-        of every other attribute. Without this, the lock added for #56 would
-        make ``copy.deepcopy(Pipeline(...))`` raise ``TypeError``.
-        """
-        import copy
-
+    def __copy__(self) -> Pipeline:
+        """Shallow copy that shares the WARN-dedup lock and set across clones."""
         clone = self.__class__.__new__(self.__class__)
-        memo[id(self)] = clone
-        for key, value in self.__dict__.items():
-            if key == "_warned_preflight_lock":
-                clone.__dict__[key] = threading.Lock()
-            else:
-                clone.__dict__[key] = copy.deepcopy(value, memo)
+        clone.__dict__.update(self.__dict__)
         return clone
+
+    def __getstate__(self) -> dict:
+        """Omit the unpicklable lock for pickle/deepcopy; rebuilt in setstate."""
+        state = self.__dict__.copy()
+        state.pop("_warned_preflight_lock", None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._warned_preflight_lock = threading.Lock()
 
     @staticmethod
     def _reject_config_tenant(cfg: RunnableConfig | None) -> None:
