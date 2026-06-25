@@ -121,13 +121,21 @@ Notes on the graph:
   imports every connector. Catches version-pin mismatches before PyPI
   sees them.
 * **`pin-parity`** — for every package, compares source
-  `[project.dependencies]` against the wheel already on PyPI at the
-  same version. Fails the release if they diverge. Closes the
+  `[project.dependencies]` **and** `[project.optional-dependencies]`
+  against the wheel already on PyPI at the same version. Fails the
+  release if either base deps or any extra group diverges. Closes the
   `skip-existing` trap that shipped twice (s3 in 0.3.0, langsmith +
   cli in 0.3.2): without this gate, a package whose pin was widened
   in source but whose version was never bumped will be silently
-  skipped on every release, leaving the broken wheel resolvable. Run
-  locally via `make pypi-pin-parity` (also bundled into
+  skipped on every release, leaving the broken wheel resolvable. This
+  is especially important for the `genblaze` umbrella, whose
+  connector pins and `video`/`image`/`audio`/`all` bundles all live
+  under `[project.optional-dependencies]`. **Every** extra the wheel
+  ships is compared — including tooling extras like `dev`/`testing` —
+  since a stale pin in any published extra is still silently kept by
+  `skip-existing`. Extra names match case- and separator-insensitively
+  (PEP 685), so `stability-audio` and `stability_audio` are one extra.
+  Run locally via `make pypi-pin-parity` (also bundled into
   `make pre-release`).
 * **`publish-core`** — must publish first; everything else pins it.
 * **`publish-cli` + `publish-connectors`** — fan out in parallel. The
