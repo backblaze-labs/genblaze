@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- Add new entries here. -->
+
+## [0.4.0] - 2026-06-25
+
 ### Security
 
 - `genblaze-core` 0.3.2 → 0.3.4: `Manifest.verify()` now rejects output
