@@ -20,15 +20,15 @@ to update the `genblaze-core>=0.3.4` floor.
 - `genblaze` (umbrella) 0.4.0 → **0.4.1** — patch republish to refresh extras
   and connector floors. PyPI cannot overwrite an existing version; all changed
   pins ship only when a new wheel is published.
-- `genblaze-core` 0.3.3 → **0.3.4** (URL-only asset verification hardening,
+- `genblaze-core` 0.3.2 → **0.3.4** (URL-only asset verification hardening,
   SSRF DNS pinning + redirect guard, fan-in failure propagation, sink lifecycle
   fix, async preflight offload, error sanitiser, tenant-scoped step cache)
-- `genblaze-s3` 0.3.3 → **0.3.4** (bumps `genblaze-core` floor to 0.3.4;
+- `genblaze-s3` 0.3.2 → **0.3.4** (bumps `genblaze-core` floor to 0.3.4;
   region-probe close on `S3StorageBackend`, backend `close()` shuts boto3
   client to release thread pool connections on `run()` teardown)
 - `genblaze-cli` 0.3.0 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4;
   exposes `verify_hash()` and output-asset sha256 diagnostics)
-- `genblaze-replicate` 0.3.1 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-replicate` 0.3.0 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4)
 - `genblaze-gmicloud` 0.3.1 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4)
 - `genblaze-hume` — **new at 0.3.1** (Hume Octave TTS provider)
 - `genblaze-assemblyai` — **new at 0.3.0** (AssemblyAI speech-to-text provider)
