@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import Awaitable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -318,7 +319,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._max_concurrency = max_concurrency
         self._moderation = moderation
         # Model preflight (default ON, soft-launch posture):
-        # _validate_steps() calls validate_model() on each step's provider.
+        # preflight (_check_step_capabilities + _validate_models) calls
+        # validate_model() on each step's provider.
         # NOT_FOUND raises before any wire calls; OK_PROVISIONAL and
         # UNKNOWN_PERMISSIVE emit a single WARN per (provider, slug) per
         # Pipeline instance (the dedup set below resets on each Pipeline
@@ -328,7 +330,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         # Tracks (provider_name, slug) tuples already warned about so the
         # WARN log is one-per-pipeline-lifetime, mirroring the
         # _warned_deprecated dedup pattern in ModelRegistry.
+        # The lock makes the check-then-add atomic across threads: arun()
+        # offloads _validate_models via asyncio.to_thread, and abatch_run
+        # clones share this set (shallow copy.copy), so several clones can
+        # mutate it concurrently from different worker threads.
         self._warned_preflight: set[tuple[str, str]] = set()
+        self._warned_preflight_lock = threading.Lock()
         # Tracer resolution: explicit arg wins; legacy structured_log=True maps
         # to LoggingTracer so existing callers keep their JSON event stream.
         if tracer is not None:
@@ -338,6 +345,32 @@ class Pipeline(Runnable[None, PipelineResult]):
         else:
             self._tracer = NoOpTracer()
         self._event_emitter: QueueEmitter | None = None
+
+    # --- Copy / serialization protocols ---------------------------------
+    # The WARN-dedup ``threading.Lock`` added for #56 is neither copyable nor
+    # picklable, so each protocol is handled explicitly:
+    #   * copy.copy  -> __copy__: shallow, SHARES the lock + dedup set so a
+    #     batch_run/abatch_run batch dedups each preflight WARN once as a unit.
+    #   * copy.deepcopy / pickle -> __getstate__/__setstate__: a fully
+    #     independent clone with a freshly built lock.
+    # Defining __copy__ is required: without it, __getstate__/__setstate__
+    # would also drive copy.copy and silently break the shared-lock contract.
+
+    def __copy__(self) -> Pipeline:
+        """Shallow copy that shares the WARN-dedup lock and set across clones."""
+        clone = self.__class__.__new__(self.__class__)
+        clone.__dict__.update(self.__dict__)
+        return clone
+
+    def __getstate__(self) -> dict:
+        """Omit the unpicklable lock for pickle/deepcopy; rebuilt in setstate."""
+        state = self.__dict__.copy()
+        state.pop("_warned_preflight_lock", None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._warned_preflight_lock = threading.Lock()
 
     @staticmethod
     def _reject_config_tenant(cfg: RunnableConfig | None) -> None:
@@ -376,8 +409,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         When enabled (the default), ``run()`` calls ``validate_model()`` on
         each step's provider before issuing any generation calls. ``NOT_FOUND``
         raises ``ProviderError(MODEL_ERROR)``; ``OK_PROVISIONAL`` and
-        ``UNKNOWN_PERMISSIVE`` emit a one-per-process WARN; ``OK_AUTHORITATIVE``
-        is silent.
+        ``UNKNOWN_PERMISSIVE`` emit a WARN once per (provider, slug) per
+        Pipeline instance; ``OK_AUTHORITATIVE`` is silent.
 
         Disable for hot paths where preflight overhead matters and the
         caller has already validated models out-of-band, or when running
@@ -554,14 +587,19 @@ class Pipeline(Runnable[None, PipelineResult]):
         )
         return self
 
-    def _validate_steps(self) -> None:
-        """Validate step capabilities before execution. Fails loud on mismatches."""
+    def _check_step_capabilities(self) -> None:
+        """Validate modality support and chain-input compatibility for every step.
+
+        CPU-only checks (no network I/O). Separated from ``_validate_models`` so
+        the fast, cheap assertions can run inline on the event loop while the
+        slow model-preflight can be offloaded to a thread in async contexts.
+        """
         for i, ps in enumerate(self._steps):
             caps = ps.provider.get_capabilities()
             if caps is None:
                 continue
 
-            # Check modality support
+            # Modality support
             if caps.supported_modalities and ps.modality not in caps.supported_modalities:
                 supported = ", ".join(str(m) for m in caps.supported_modalities)
                 msg = (
@@ -585,11 +623,41 @@ class Pipeline(Runnable[None, PipelineResult]):
                 )
                 raise GenblazeError(msg)
 
+    def _validate_steps(self) -> None:
+        """Validate step capabilities and run model preflight. Fails loud on mismatches."""
+        self._check_step_capabilities()
+
         # Model preflight runs after capability validation so a misconfigured
         # step (wrong modality, missing chain support) surfaces a clear error
         # before the slug-validity question even comes up.
         if self._preflight:
             self._validate_models()
+
+    async def _validate_steps_async(self) -> None:
+        """Async variant of ``_validate_steps`` that keeps the event loop free.
+
+        Cheap capability checks run synchronously (CPU-only, negligible). The
+        network-bound ``_validate_models`` phase (ThreadPoolExecutor + provider
+        discovery fetches) is offloaded via ``asyncio.to_thread`` so concurrent
+        coroutines keep running during the preflight window.
+
+        The single-flight discovery/probe cache inside each provider makes
+        off-thread dispatch safe -- concurrent fetches deduplicate at the
+        provider level.
+
+        Cancellation note: cancelling the awaiting task raises CancelledError
+        here, but the offloaded worker runs to completion (Python can't
+        interrupt the blocking fetch). The only residue is benign -- cache
+        fill and a possible WARN may land after the caller has gone.
+        """
+        # Capabilities before model preflight (see _validate_steps): a
+        # misconfigured step must surface before the slug-validity question.
+        # Cheap modality/chain-input checks run inline, no I/O.
+        self._check_step_capabilities()
+
+        # Network-bound model preflight: offload so the event loop stays free.
+        if self._preflight:
+            await asyncio.to_thread(self._validate_models)
 
     def _validate_models(self) -> None:
         """Preflight: validate every step's model in parallel.
@@ -604,8 +672,8 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Behavior on outcome:
         - ``NOT_FOUND``: raise ``ProviderError(MODEL_ERROR)`` immediately.
-        - ``OK_PROVISIONAL``: log WARN once per (provider, slug) per process.
-        - ``UNKNOWN_PERMISSIVE``: log WARN once per (provider, slug) per process.
+        - ``OK_PROVISIONAL``: WARN once per (provider, slug) per Pipeline instance.
+        - ``UNKNOWN_PERMISSIVE``: WARN once per (provider, slug) per Pipeline instance.
         - ``OK_AUTHORITATIVE``: silent.
         """
         if not self._steps:
@@ -672,8 +740,7 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         key = (ps.provider.name, ps.model)
         if result.outcome is ValidationOutcome.OK_PROVISIONAL:
-            if key not in self._warned_preflight:
-                self._warned_preflight.add(key)
+            if self._warn_once(key):
                 logger.warning(
                     "preflight.provisional step=%d provider=%s model=%s "
                     "family=%s detail=%s — liveness unverifiable; "
@@ -685,8 +752,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     result.detail,
                 )
         elif result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE:
-            if key not in self._warned_preflight:
-                self._warned_preflight.add(key)
+            if self._warn_once(key):
                 logger.warning(
                     "preflight.unknown step=%d provider=%s model=%s — "
                     "no family matched; permissive fallback applies",
@@ -695,6 +761,22 @@ class Pipeline(Runnable[None, PipelineResult]):
                     ps.model,
                 )
         # OK_AUTHORITATIVE: silent.
+
+    def _warn_once(self, key: tuple[str, str]) -> bool:
+        """Atomically claim ``key`` for a one-time WARN; return True the first
+        time it is seen, False thereafter.
+
+        The check-then-add runs under a lock so concurrent _validate_models
+        runs (abatch_run clones share this set via shallow copy.copy, each
+        dispatched to its own asyncio.to_thread worker) can't both emit the
+        same WARN. Logging is left to the caller so the loop's I/O happens
+        outside the lock.
+        """
+        with self._warned_preflight_lock:
+            if key in self._warned_preflight:
+                return False
+            self._warned_preflight.add(key)
+            return True
 
     def _resolve_inputs(
         self,
@@ -1760,7 +1842,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         # do network work), so a bad ainvoke(config={"tenant_id": ...}) fails fast.
         self._reject_config_tenant(config)
 
-        self._validate_steps()
+        # Offload blocking preflight (ThreadPoolExecutor + provider discovery)
+        # to a thread so the event loop stays free during the preflight window.
+        await self._validate_steps_async()
 
         run_id = new_id()
         # input_from requires sequential execution (needs prior step results)

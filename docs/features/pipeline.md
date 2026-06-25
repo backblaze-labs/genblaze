@@ -73,6 +73,15 @@ from real provider calls.
 - If `sink` provided, writes run data
 - Returns `PipelineResult`
 
+## Model preflight and async safety
+When `preflight=True` (default), both `run()` and `arun()` validate each step's
+model slug against provider catalogs before execution. In `arun()`, the
+network-bound validation phase runs via `asyncio.to_thread` so the event loop
+stays free during provider discovery fetches. Cheap capability checks (modality,
+chain-input compatibility) run inline. `run()` behavior is unchanged (sync
+`ThreadPoolExecutor` path). Disable preflight with `Pipeline(preflight=False)` or
+`.preflight(False)` for hot paths where the overhead matters.
+
 ## Edge Cases
 - Provider failure mid-pipeline → step gets `error_code`; with `fail_fast=True` pipeline stops, with `fail_fast=False` it continues
 - Empty pipeline (no steps) → raises `GenblazeError`

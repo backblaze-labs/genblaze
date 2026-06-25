@@ -160,8 +160,10 @@ class TestPromptTemplatePipeline:
             .abatch_run([{"x": "cat"}, {"x": "dog"}])
         )
         assert len(results) == 2
-        assert provider.received_steps[0].prompt == "A cat"
-        assert provider.received_steps[1].prompt == "A dog"
+        # abatch_run executes items concurrently (asyncio.gather), so the order
+        # the shared provider observes submissions is non-deterministic. Assert
+        # set-equality: both dicts must render their template correctly.
+        assert {s.prompt for s in provider.received_steps} == {"A cat", "A dog"}
 
     def test_rendered_template_in_step(self):
         """User can render manually and pass string to step()."""
