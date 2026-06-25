@@ -11,6 +11,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-06-25
 
+Security hardening (SSRF, URL-only asset verification), two new providers
+(Hume Octave TTS, AssemblyAI STT), and a batch of connector patch-republishes
+to update the `genblaze-core>=0.3.4` floor.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.0 → **0.4.1** — patch republish to refresh extras
+  and connector floors. PyPI cannot overwrite an existing version; all changed
+  pins ship only when a new wheel is published.
+- `genblaze-core` 0.3.3 → **0.3.4** (URL-only asset verification hardening,
+  SSRF DNS pinning + redirect guard, fan-in failure propagation, sink lifecycle
+  fix, async preflight offload, error sanitiser, tenant-scoped step cache)
+- `genblaze-s3` 0.3.3 → **0.3.4** (bumps `genblaze-core` floor to 0.3.4;
+  region-probe close on `S3StorageBackend`, backend `close()` shuts boto3
+  client to release thread pool connections on `run()` teardown)
+- `genblaze-cli` 0.3.0 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4;
+  exposes `verify_hash()` and output-asset sha256 diagnostics)
+- `genblaze-replicate` 0.3.1 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-gmicloud` 0.3.1 → **0.3.2** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-hume` — **new at 0.3.1** (Hume Octave TTS provider)
+- `genblaze-assemblyai` — **new at 0.3.0** (AssemblyAI speech-to-text provider)
+- `genblaze-openai` 0.3.0 → **0.3.1** (DALL-E URL outputs materialised locally;
+  pinned-DNS download; bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-google` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-decart` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-elevenlabs` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-langsmith` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-lmnt` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-luma` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-nvidia` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-runway` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+- `genblaze-stability-audio` 0.3.0 → **0.3.1** (bumps `genblaze-core` floor to 0.3.4)
+
 ### Security
 
 - `genblaze-core` 0.3.2 → 0.3.4: `Manifest.verify()` now rejects output
@@ -65,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `strict_manifest_reads=True` or `GENBLAZE_STRICT_MANIFEST_READS=true` so
   operators can backfill historical URL-only manifests before enabling strict
   read failures on hot paths (#77).
+- `genblaze-core` `[audio]` extra: mutagen capped at `<1.49`. Mutagen 1.48
+  changed m4a timescale handling in a way that broke the AAC handler test
+  fixture; the cap prevents a future mutagen release from reintroducing
+  the same break before it can be vetted (#108).
 
 ### Fixed
 
