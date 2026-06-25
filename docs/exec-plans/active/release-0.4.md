@@ -48,7 +48,7 @@ Must pass all sub-gates before the tag is created:
 1. `make lint` — ruff check + format
 2. `make deptry` — undeclared / misclassified deps across all 17 packages
 3. `make typecheck` — mypy on `libs/core/genblaze_core/`
-4. `make metadata-check` — version coherence across all pyproject.toml files
+4. `make pypi-metadata-check` — version coherence across all pyproject.toml files
 5. `make pypi-pin-parity` — compares each package's source pins against the
    published PyPI wheel; 0 drift required (18 fresh packages expected this wave)
 6. `make test` — full suite across core + CLI + all connectors + tools/tests
