@@ -45,6 +45,9 @@ def main() -> None:
     # Bucket structure:
     #   genblaze-assets/assets/{sha[:2]}/{sha[2:4]}/{sha}.ext
     #   genblaze-assets/manifests/{run_id}.json
+    #
+    # The pipeline closes the sink (releases eager-upload pool + backend
+    # connection pool) automatically when run() returns. No manual cleanup needed.
     sink = ObjectStorageSink(
         backend,
         prefix="genblaze-assets",

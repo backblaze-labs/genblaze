@@ -15,42 +15,6 @@ from genblaze_core.providers.retry import retry_after_from_response
 
 from genblaze_google._errors import map_google_error
 
-# Per-1M-token rates (USD). Input, output. Tiered models (1.5-pro, 2.5-pro)
-# use the small-context rate by default; large-context surcharges aren't
-# applied without inspecting prompt length, which we leave to the caller.
-_RATES: dict[str, tuple[float, float]] = {
-    "gemini-2.5-pro": (1.25, 10.00),
-    "gemini-2.5-flash": (0.30, 2.50),
-    "gemini-2.5-flash-lite": (0.10, 0.40),
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.0-flash-lite": (0.075, 0.30),
-    "gemini-1.5-pro": (1.25, 5.00),
-    "gemini-1.5-flash": (0.075, 0.30),
-    "gemini-1.5-flash-8b": (0.0375, 0.15),
-}
-
-
-def _lookup_rate(model: str) -> tuple[float, float] | None:
-    """Resolve rate row, ignoring trailing version suffix like `-001` or `-latest`."""
-    if model in _RATES:
-        return _RATES[model]
-    # Strip a trailing `-NNN` or `-latest` so dated/versioned slugs reuse the family row.
-    parts = model.rsplit("-", 1)
-    if len(parts) == 2 and (parts[1].isdigit() or parts[1] in ("latest", "exp")):
-        return _RATES.get(parts[0])
-    return None
-
-
-def _calc_cost(model: str, tokens_in: int | None, tokens_out: int | None) -> float | None:
-    if tokens_in is None or tokens_out is None:
-        return None
-    rate = _lookup_rate(model)
-    if rate is None:
-        return None
-    in_rate, out_rate = rate
-    return (tokens_in / 1_000_000) * in_rate + (tokens_out / 1_000_000) * out_rate
-
-
 # Gemini uses "model" / "user" roles; "assistant" maps to "model".
 _ROLE_MAP = {"user": "user", "assistant": "model", "system": "user", "tool": "user"}
 
@@ -154,7 +118,7 @@ def _parse_response(model: str, raw: Any) -> ChatResponse:
         tokens_out=tokens_out,
         tokens_cached=cached,
         tool_calls=tool_calls,
-        cost_usd=_calc_cost(model, tokens_in, tokens_out),
+        cost_usd=None,  # chat() reports no cost; compute from tokens_in/out with your own rates.
         raw=raw_dict,
     )
 

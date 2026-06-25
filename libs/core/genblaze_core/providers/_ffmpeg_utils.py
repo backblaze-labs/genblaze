@@ -63,6 +63,11 @@ def resolve_input_path(url: str, *, extra_roots: list[Path] | None = None) -> st
         # hosts before we hand off the URL. Without this, a chain input pointing
         # at cloud IMDS (169.254.169.254, metadata.google.internal, etc.) would
         # execute through ffmpeg and exfiltrate credentials.
+        # Known gap: ffmpeg follows HTTP redirects internally with no way to
+        # intercept Location headers for re-validation. For full redirect safety,
+        # pre-download the URL via transfer._http_get_stream before passing to
+        # ffmpeg. Tracked as follow-up debt (lower severity: ffmpeg runs in a
+        # subprocess, not in-process HTTP client code).
         check_ssrf(url, exc_type=ProviderError)
         return url
     raise ProviderError(

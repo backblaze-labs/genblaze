@@ -33,17 +33,17 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import logging
 import os
 import re
 import tempfile
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, unquote, urlparse
 
-from genblaze_core._utils import check_ssrf
+from genblaze_core._utils import open_pinned_https_connection
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
@@ -57,7 +57,6 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
-    strip_asset_url_credentials,
     validate_asset_url,
     validate_chain_input_url,
 )
@@ -318,32 +317,57 @@ def _resolve_local_file(url: str, extra_root: Path | None) -> Path:
 
 
 def _download_https_to_temp(url: str, timeout: float) -> Path:
-    """Download an https:// URL to a temp file. SSRF-checked. Caller unlinks."""
-    check_ssrf(url, exc_type=ProviderError)
+    """Download an https:// URL to a temp file. SSRF-checked with DNS pinning.
+
+    Uses ``open_pinned_https_connection`` which connects to the validated pinned
+    IP rather than letting the HTTP client re-resolve the hostname. This closes
+    the DNS rebinding / TOCTOU window. TLS SNI and cert verification still use
+    the original hostname. http.client has no redirect handler, so a 3xx raises.
+
+    Note: outbound connections bypass HTTP(S)_PROXY / NO_PROXY env vars by
+    design — see ``open_pinned_https_connection`` for rationale.
+
+    Caller is responsible for unlinking the returned temp file.
+    """
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    host = parsed.hostname or ""
+
     fd, tmp = tempfile.mkstemp(suffix=".img")
     os.close(fd)
     tmp_path = Path(tmp)
+    conn = None
     try:
-        req = urllib.request.Request(  # noqa: S310 (SSRF-checked above)
-            url, headers={"User-Agent": "genblaze-openai"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (SSRF-checked above)
-            size = 0
-            with tmp_path.open("wb") as f:
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > _MAX_INPUT_BYTES:
-                        raise ProviderError(
-                            f"Edit input exceeds {_MAX_INPUT_BYTES} byte limit",
-                            error_code=ProviderErrorCode.INVALID_INPUT,
-                        )
-                    f.write(chunk)
+        conn = open_pinned_https_connection(url, timeout=timeout, exc_type=ProviderError)
+        conn.request("GET", path, headers={"User-Agent": "genblaze-openai", "Host": host})
+        resp = conn.getresponse()
+        if resp.status >= 300:
+            resp.read()
+            raise ProviderError(
+                f"HTTP {resp.status} downloading image from {url}",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        size = 0
+        with tmp_path.open("wb") as f:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_INPUT_BYTES:
+                    raise ProviderError(
+                        f"Image download exceeds {_MAX_INPUT_BYTES} byte limit",
+                        error_code=ProviderErrorCode.INVALID_INPUT,
+                    )
+                f.write(chunk)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+    finally:
+        if conn is not None:
+            conn.close()
     return tmp_path
 
 
@@ -362,10 +386,13 @@ class DalleProvider(SyncProvider):
     otherwise ``/images/generations``. The server is the authority for
     model/endpoint compatibility.
 
-    .. warning::
-        ``dall-e-2`` / ``dall-e-3`` return temporary CDN URLs that expire
-        after ~1 hour. Use ``ObjectStorageSink`` to upload assets immediately,
-        or use a ``gpt-image-*`` model (saved locally from base64).
+    .. note::
+        ``dall-e-2`` / ``dall-e-3`` return short-lived, credential-bearing CDN
+        URLs (Azure SAS, ~1 hour). The provider downloads them immediately to a
+        local ``file://`` asset with a populated ``sha256``, so outputs are
+        durable and verifiable; the signed URL is used only for that fetch and
+        is never persisted. Use ``ObjectStorageSink`` to upload to object
+        storage.
 
     Args:
         api_key: OpenAI API key. Falls back to ``OPENAI_API_KEY`` env var.
@@ -490,19 +517,42 @@ class DalleProvider(SyncProvider):
             params["response_format"] = "url"
         return params
 
-    def _save_b64_image(self, b64_data: str, step: Step, index: int, ext: str) -> str:
-        """Decode base64 image data and save to file. Returns file:// URI."""
-        img_bytes = base64.b64decode(b64_data)
+    def _persist_image_bytes(
+        self, img_bytes: bytes, step: Step, index: int, ext: str
+    ) -> tuple[str, str, int]:
+        """Write image bytes to a local file and hash them.
+
+        Returns ``(file_uri, sha256_hex, size_bytes)``. Output assets carry a
+        content hash so manifests verify without a storage sink, and
+        ``ObjectStorageSink`` can reuse the hash/size on transfer retry.
+        """
         if self._output_dir:
             self._output_dir.mkdir(parents=True, exist_ok=True)
             out_path = self._output_dir / f"{step.step_id}_{index}{ext}"
-            out_path.write_bytes(img_bytes)
         else:
             fd, tmp = tempfile.mkstemp(suffix=ext)
             os.close(fd)
             out_path = Path(tmp)
-            out_path.write_bytes(img_bytes)
-        return f"file://{quote(str(out_path.resolve()))}"
+        out_path.write_bytes(img_bytes)
+        return (
+            f"file://{quote(str(out_path.resolve()))}",
+            hashlib.sha256(img_bytes).hexdigest(),
+            len(img_bytes),
+        )
+
+    def _download_url_bytes(self, url: str) -> bytes:
+        """Fetch a provider-returned output URL via the SSRF-pinned downloader.
+
+        ``dall-e-2`` / ``dall-e-3`` return short-lived, credential-bearing CDN
+        URLs (Azure SAS). We fetch the bytes immediately so the asset is durable
+        and hashable; the signed URL is used only for this fetch and is never
+        persisted into the manifest, cache, or any sink.
+        """
+        tmp = _download_https_to_temp(url, self._http_timeout)
+        try:
+            return tmp.read_bytes()
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def _materialize_inputs(self, step: Step) -> tuple[list[Path], list[Path]]:
         """Prepare edit image inputs. Returns (local_paths, temps_to_clean)."""
@@ -587,22 +637,18 @@ class DalleProvider(SyncProvider):
                 b64 = getattr(img, "b64_json", None)
                 if not b64:
                     continue
-                step.assets.append(
-                    Asset(url=self._save_b64_image(b64, step, i, ext), media_type=media_type)
-                )
+                img_bytes = base64.b64decode(b64)
             else:
-                url = getattr(img, "url", None)
-                if url:
-                    validate_asset_url(url)
-                    step.assets.append(
-                        Asset(url=strip_asset_url_credentials(url), media_type=media_type)
-                    )
-
-        if not is_b64 and step.assets:
-            logger.warning(
-                "%s returns temporary URLs that expire (~1 hour). "
-                "Use ObjectStorageSink to persist assets, or switch to a gpt-image-* model.",
-                step.model,
+                remote_url = getattr(img, "url", None)
+                if not remote_url:
+                    continue
+                # Fetch the short-lived signed URL now; the credentialed URL is
+                # never persisted (see _download_url_bytes).
+                validate_asset_url(remote_url)
+                img_bytes = self._download_url_bytes(remote_url)
+            uri, sha256, size = self._persist_image_bytes(img_bytes, step, i, ext)
+            step.assets.append(
+                Asset(url=uri, media_type=media_type, sha256=sha256, size_bytes=size)
             )
 
         self._apply_registry_pricing(step)

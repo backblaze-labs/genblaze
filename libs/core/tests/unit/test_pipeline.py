@@ -1,12 +1,14 @@
 """Tests for Pipeline API."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
+from genblaze_core._utils import MAX_ERROR_LENGTH, TRUNCATION_MARKER
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import RunStatus, StepStatus
+from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepStatus
 from genblaze_core.models.step import Step
 from genblaze_core.pipeline import Pipeline, StepCache
 from genblaze_core.pipeline.result import PipelineResult
@@ -30,6 +32,18 @@ class MockProvider(BaseProvider):
             Asset(url="https://example.com/out.png", media_type="image/png", sha256="0" * 64)
         )
         return step
+
+
+class ConfigCaptureProvider(MockProvider):
+    """Provider that records the config passed into submit()."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submit_config: RunnableConfig | None = None
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.submit_config = config
+        return super().submit(step, config)
 
 
 def test_pipeline_single_step() -> None:
@@ -342,6 +356,47 @@ class FailingProvider(BaseProvider):
         return step
 
 
+class RawFailedStepProvider(BaseProvider):
+    """Provider that returns a failed Step with an unsanitized error."""
+
+    name = "raw-failed"
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-raw-failed"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+    def invoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        failed = step.model_copy()
+        failed.status = StepStatus.FAILED
+        failed.error = self.error
+        failed.error_code = ProviderErrorCode.SERVER_ERROR
+        return failed
+
+
+class EmptyAssetProvider(BaseProvider):
+    """Provider that succeeds without returning any assets."""
+
+    name = "empty"
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        return "pred-empty"
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        return True
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        return step
+
+
 def test_pipeline_fail_fast_stops_on_failure() -> None:
     """With fail_fast=True (default), pipeline stops after first failed step."""
     failing = FailingProvider()
@@ -456,6 +511,40 @@ class ChainableProvider(BaseProvider):
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
         step.assets.append(Asset(url=self.output_url, media_type="image/png", sha256="1" * 64))
         return step
+
+
+class HookTrackingProvider(BaseProvider):
+    """Provider whose hooks must not run when a consumer is prefailed."""
+
+    name = "hook-tracking"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hook_calls: list[str] = []
+
+    def normalize_params(self, params, modality=None):
+        self.hook_calls.append("normalize_params")
+        raise AssertionError("normalize_params should not run for prefailed consumers")
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.hook_calls.append("submit")
+        raise AssertionError("submit should not run for prefailed consumers")
+
+    def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
+        self.hook_calls.append("poll")
+        raise AssertionError("poll should not run for prefailed consumers")
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        self.hook_calls.append("fetch_output")
+        raise AssertionError("fetch_output should not run for prefailed consumers")
+
+    def invoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        self.hook_calls.append("invoke")
+        raise AssertionError("invoke should not run for prefailed consumers")
+
+    async def ainvoke(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        self.hook_calls.append("ainvoke")
+        raise AssertionError("ainvoke should not run for prefailed consumers")
 
 
 def test_chain_passes_outputs_as_inputs() -> None:
@@ -635,6 +724,15 @@ def test_pipeline_run_max_retries_kwarg() -> None:
     provider = MockProvider()
     result = Pipeline("retries").step(provider, model="m", prompt="p").run(max_retries=2)
     assert result.run.steps[0].status == StepStatus.SUCCEEDED
+
+
+def test_pipeline_run_injects_run_id_into_provider_config() -> None:
+    """Pipeline.run() passes the active run_id to provider spans and retry logs."""
+    provider = ConfigCaptureProvider()
+    result = Pipeline("run-id").step(provider, model="m", prompt="p").run()
+
+    assert provider.submit_config is not None
+    assert provider.submit_config["run_id"] == result.run.run_id
 
 
 # --- Runnable conformance tests ---
@@ -1239,18 +1337,64 @@ def test_input_from_overrides_chain_mode() -> None:
     assert p2.received_inputs[0][0].url == "https://example.com/step0.png"
 
 
-def test_input_from_invalid_index_raises() -> None:
-    """Referencing a step index beyond completed steps raises GenblazeError."""
+def test_input_from_invalid_index_prefails_consumer() -> None:
+    """Referencing a future/missing step fails only the dependent consumer."""
     p0 = ChainableProvider()
     p1 = ChainableProvider()
 
-    with pytest.raises(GenblazeError, match="input_from index 5 is out of range"):
-        (
-            Pipeline("fan-in-bad")
+    result = (
+        Pipeline("fan-in-bad")
+        .step(p0, model="m0", prompt="zero")
+        .step(p1, model="m1", prompt="one", input_from=[5])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert p1.received_inputs == []
+
+
+def test_input_from_invalid_index_default_run_returns_failed_result() -> None:
+    """Default run() treats invalid input_from as a failed step, not an exception."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    with pytest.warns(DeprecationWarning):
+        result = (
+            Pipeline("fan-in-bad-default")
             .step(p0, model="m0", prompt="zero")
             .step(p1, model="m1", prompt="one", input_from=[5])
             .run()
         )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert p1.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_invalid_index_default_arun_returns_failed_result() -> None:
+    """Default arun() treats invalid input_from as a failed step, not an exception."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    with pytest.warns(DeprecationWarning):
+        result = await (
+            Pipeline("fan-in-bad-default-async")
+            .step(p0, model="m0", prompt="zero")
+            .step(p1, model="m1", prompt="one", input_from=[5])
+            .arun()
+        )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert p1.received_inputs == []
 
 
 def test_input_from_none_preserves_existing_behavior() -> None:
@@ -1291,6 +1435,226 @@ async def test_input_from_arun() -> None:
     urls = {a.url for a in p2.received_inputs[0]}
     assert "https://example.com/async0.png" in urls
     assert "https://example.com/async1.png" in urls
+
+
+def test_input_from_failed_producer_fails_consumer() -> None:
+    """A fan-in consumer cannot succeed on assets from a failed producer."""
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-failed-source")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_failed_producer_fails_consumer_async() -> None:
+    """Async fan-in also fails before invoking a consumer with missing inputs."""
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = await (
+        Pipeline("fan-in-failed-source-async")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.FAILED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].metadata["failure_reason"] == "input_resolution"
+    assert result.run.steps[1].metadata["provider_invoked"] is False
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+def test_input_from_empty_producer_fails_consumer() -> None:
+    """A successful producer with no assets cannot feed a fan-in consumer."""
+    empty = EmptyAssetProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-empty-source")
+        .step(empty, model="m0", prompt="empty")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[0].assets == []
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_empty_producer_fails_consumer_async() -> None:
+    """Async fan-in fails before consuming an upstream step with no assets."""
+    empty = EmptyAssetProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = await (
+        Pipeline("fan-in-empty-source-async")
+        .step(empty, model="m0", prompt="empty")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert len(result.run.steps) == 2
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[0].assets == []
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[1].assets == []
+    assert result.run.steps[1].error
+    assert result.run.steps[1].started_at is not None
+    assert result.run.steps[1].completed_at is not None
+    assert consumer.received_inputs == []
+
+
+def test_input_from_prefail_does_not_call_consumer_provider_hooks() -> None:
+    """A prefailed consumer is built without downstream provider hooks."""
+    failing = FailingProvider()
+    consumer = HookTrackingProvider()
+
+    result = (
+        Pipeline("fan-in-no-consumer-hooks")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert consumer.hook_calls == []
+
+
+@pytest.mark.asyncio
+async def test_input_from_prefail_does_not_call_consumer_provider_hooks_async() -> None:
+    """Async prefailed consumers also avoid downstream provider hooks."""
+    failing = FailingProvider()
+    consumer = HookTrackingProvider()
+
+    result = await (
+        Pipeline("fan-in-no-consumer-hooks-async")
+        .step(failing, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .arun(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[1].error_code == ProviderErrorCode.INVALID_INPUT
+    assert consumer.hook_calls == []
+
+
+def test_input_from_mixed_producers_fails_consumer_before_invocation() -> None:
+    """A fan-in consumer fails if any declared producer failed."""
+    ok = ChainableProvider(output_url="https://example.com/ok.png")
+    failing = FailingProvider()
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+
+    result = (
+        Pipeline("fan-in-mixed-source")
+        .step(ok, model="m0", prompt="audio")
+        .step(failing, model="m1", prompt="video")
+        .step(consumer, model="m2", prompt="compose", input_from=[0, 1])
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].status == StepStatus.SUCCEEDED
+    assert result.run.steps[1].status == StepStatus.FAILED
+    assert result.run.steps[2].status == StepStatus.FAILED
+    assert result.run.steps[2].error_code == ProviderErrorCode.INVALID_INPUT
+    assert result.run.steps[2].assets == []
+    assert ok.received_inputs == [[]]
+    assert consumer.received_inputs == []
+
+
+def test_input_from_failure_sanitizes_upstream_error_surfaces(caplog) -> None:
+    """Unsafe upstream errors are not copied raw into fan-in telemetry."""
+    bearer = "tok_" + ("a" * 40)
+    aws_secret = "aBcD1234/+" * 4
+    b2_key = "K005" + ("B2keyValue/" * 3)
+    basic_auth_value = "pass" + "word-value-1234567890"
+    basic_url = f"https://user:{basic_auth_value}@example.com/object"
+    jwt = f"eyJ{'a' * 20}.{'b' * 20}.{'c' * 20}"
+    oversized_tail = "Z" * 1000
+    raw_error = (
+        f"Authorization: Bearer {bearer}; "
+        f"AWS_SECRET_ACCESS_KEY={aws_secret}; "
+        f"B2_APPLICATION_KEY={b2_key}; "
+        f"url={basic_url}; "
+        f"jwt={jwt}; "
+        f"{oversized_tail}"
+    )
+    upstream = RawFailedStepProvider(raw_error)
+    consumer = ChainableProvider(output_url="https://example.com/should-not-exist.png")
+    caplog.set_level(logging.WARNING, logger="genblaze.pipeline")
+
+    events = list(
+        Pipeline("fan-in-sanitized-source")
+        .step(upstream, model="m0", prompt="fails")
+        .step(consumer, model="m1", prompt="consume", input_from=[0])
+        .stream(heartbeats=False, fail_fast=False, raise_on_failure=False)
+    )
+
+    result = events[-1].result
+    assert result is not None
+    dependent = result.run.steps[1]
+    assert dependent.status == StepStatus.FAILED
+    assert dependent.error_code == ProviderErrorCode.INVALID_INPUT
+    assert dependent.metadata["failure_reason"] == "input_resolution"
+    assert dependent.metadata["provider_invoked"] is False
+    assert dependent.error is not None
+    assert len(dependent.error) <= MAX_ERROR_LENGTH + len(TRUNCATION_MARKER)
+
+    surfaces = [
+        dependent.error,
+        result.manifest.to_canonical_json(),
+        "\n".join(str(event.to_dict()) for event in events),
+        "\n".join(record.getMessage() for record in caplog.records),
+    ]
+    for surface in surfaces:
+        for secret in [
+            bearer,
+            aws_secret,
+            b2_key,
+            basic_auth_value,
+            jwt,
+            oversized_tail,
+        ]:
+            assert secret not in surface
+    assert consumer.received_inputs == []
 
 
 # --- Chain failure propagation tests (fail_fast=False) ---
@@ -1769,3 +2133,250 @@ def test_bytes_credential_in_params_rejected() -> None:
     token_bytes = b"r8_" + b"A" * 25  # matches the Replicate pattern
     with pytest.raises(GenblazeError, match="looks like an API credential"):
         Pipeline("bytes-creds").step(provider, model="m", prompt="p", api_token=token_bytes).run()
+
+
+# --- Sink lifecycle: pipeline must close the sink after run()/arun() ---
+# Issue #57: eager-upload ThreadPoolExecutor and backend connection pool
+# leaked because _finalize() called write_run but never sink.close().
+
+
+def test_run_calls_sink_close_after_success() -> None:
+    """Pipeline.run() must call sink.close() in its finally block so the
+    eager-transfer pool and backend connection pool are always released."""
+    p = MockProvider()
+    sink = _RecordingSink()
+    Pipeline("close-sync").step(p, model="m", prompt="p").run(sink=sink)
+    assert sink.closed, "sink.close() must be called after a successful run()"
+
+
+def test_run_calls_sink_close_after_step_failure() -> None:
+    """Pipeline.run() must call sink.close() even when a step fails and
+    the run raises (fail_fast=True path raises PipelineError)."""
+    from genblaze_core.exceptions import PipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _RecordingSink()
+    with pytest.raises(PipelineError):
+        Pipeline("close-on-error").step(FailingProvider(), model="m", prompt="p").run(
+            sink=sink, raise_on_failure=True
+        )
+    assert sink.closed, "sink.close() must be called even when the pipeline fails"
+
+
+@pytest.mark.asyncio
+async def test_arun_calls_sink_close_after_success() -> None:
+    """Pipeline.arun() must call sink.close() in its finally block."""
+    p = MockProvider()
+    sink = _RecordingSink()
+    await Pipeline("close-async").step(p, model="m", prompt="p").arun(sink=sink)
+    assert sink.closed, "sink.close() must be called after a successful arun()"
+
+
+@pytest.mark.asyncio
+async def test_arun_calls_sink_close_after_step_failure() -> None:
+    """Pipeline.arun() must call sink.close() when a step fails."""
+    from genblaze_core.exceptions import PipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _RecordingSink()
+    with pytest.raises(PipelineError):
+        await (
+            Pipeline("close-async-err")
+            .step(FailingProvider(), model="m", prompt="p")
+            .arun(sink=sink, raise_on_failure=True)
+        )
+    assert sink.closed, "sink.close() must be called even when arun() fails"
+
+
+def test_base_sink_context_manager() -> None:
+    """BaseSink.__enter__/__exit__ must call close() on exit."""
+    from genblaze_core.models.manifest import Manifest
+    from genblaze_core.models.run import Run
+    from genblaze_core.sinks.base import BaseSink
+
+    # Concrete BaseSink subclass to test the mixin protocol.
+    class _ConcreteSink(BaseSink):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def write_run(self, run: Run, manifest: Manifest) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    sink = _ConcreteSink()
+    with sink:
+        assert not sink.closed
+    assert sink.closed, "BaseSink context manager must call close() on __exit__"
+
+
+def test_base_sink_context_manager_calls_close_on_exception() -> None:
+    """BaseSink.__exit__ calls close() even when the body raises."""
+    from genblaze_core.models.manifest import Manifest
+    from genblaze_core.models.run import Run
+    from genblaze_core.sinks.base import BaseSink
+
+    class _ConcreteSink(BaseSink):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def write_run(self, run: Run, manifest: Manifest) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    sink = _ConcreteSink()
+    with pytest.raises(ValueError):
+        with sink:
+            raise ValueError("body error")
+    assert sink.closed, "BaseSink context manager must call close() even on exception"
+
+
+# --- Sink ownership across batch runs and preflight failures (issue #57) ---
+
+
+class _CountingSink:
+    """Sink that counts close()/write_run() and rejects writes after close —
+    so a premature close (e.g. per-item in a batch) surfaces as an error."""
+
+    _close_with_run = True
+
+    def __init__(self) -> None:
+        self.writes = 0
+        self.closes = 0
+        self.closed = False
+
+    def on_step_complete(self, step, *, run_id, tenant_id, date_str) -> None:
+        pass
+
+    def write_run(self, run, manifest) -> None:
+        if self.closed:
+            raise RuntimeError("write_run after close — sink was closed too early")
+        self.writes += 1
+
+    def close(self) -> None:
+        self.closes += 1
+        self.closed = True
+
+
+class _FireAndForgetSink(_CountingSink):
+    """A sink the pipeline must never close (lifecycle is caller/process-scoped)."""
+
+    _close_with_run = False
+
+
+def test_batch_run_closes_shared_sink_once_after_batch() -> None:
+    """The shared sink is closed once AFTER the whole batch — not after item 1,
+    which would make items 2+ write to a closed sink (issue #57)."""
+    sink = _CountingSink()
+    results = (
+        Pipeline("batch-close")
+        .step(MockProvider(), model="m")
+        .batch_run(["a", "b", "c"], sink=sink)
+    )
+    assert len(results) == 3
+    assert sink.writes == 3, "every item must write before the sink is closed"
+    assert sink.closes == 1, "shared sink must be closed exactly once after the batch"
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_closes_shared_sink_once_after_batch() -> None:
+    """Async batch closes the shared sink once after gather, not per item."""
+    sink = _CountingSink()
+    results = await (
+        Pipeline("abatch-close").step(MockProvider(), model="m").abatch_run(["a", "b"], sink=sink)
+    )
+    assert len(results) == 2
+    assert sink.writes == 2
+    assert sink.closes == 1
+
+
+def test_batch_run_closes_sink_even_when_batch_raises() -> None:
+    """A finally guards the batch close, so a BatchPipelineError still releases
+    the shared sink (close happens before the raise)."""
+    from genblaze_core.exceptions import BatchPipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _CountingSink()
+    with pytest.raises(BatchPipelineError):
+        Pipeline("batch-raise").step(FailingProvider(), model="m").batch_run(
+            ["a", "b"], sink=sink, raise_on_failure=True
+        )
+    assert sink.closes == 1, "shared sink must be closed even when the batch raises"
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_closes_sink_even_when_batch_raises() -> None:
+    """Async batch finally releases the shared sink before BatchPipelineError."""
+    from genblaze_core.exceptions import BatchPipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _CountingSink()
+    with pytest.raises(BatchPipelineError):
+        await (
+            Pipeline("abatch-raise")
+            .step(FailingProvider(), model="m")
+            .abatch_run(["a", "b"], sink=sink, raise_on_failure=True)
+        )
+    assert sink.closes == 1
+
+
+def test_batch_run_does_not_close_fire_and_forget_sink() -> None:
+    """A sink with _close_with_run=False is never closed by the batch."""
+    sink = _FireAndForgetSink()
+    Pipeline("batch-faf").step(MockProvider(), model="m").batch_run(["a", "b"], sink=sink)
+    assert sink.writes == 2
+    assert sink.closes == 0, "fire-and-forget sink must not be closed by the pipeline"
+
+
+def test_run_closes_owned_sink_on_preflight_failure(monkeypatch) -> None:
+    """If preflight (_validate_steps) raises before the run body, an owned sink
+    is still closed — the cleanup guard wraps preflight too (issue #57). At this
+    point no step has run, so close only releases construction-time resources
+    (e.g. the connection pool); the eager pool was never created."""
+    from genblaze_core.exceptions import GenblazeError
+
+    sink = _CountingSink()
+    pipe = Pipeline("preflight-fail").step(MockProvider(), model="m")
+
+    def _boom() -> None:
+        raise GenblazeError("preflight failed")
+
+    monkeypatch.setattr(pipe, "_validate_steps", _boom)
+    with pytest.raises(GenblazeError):
+        pipe.run(sink=sink)
+    assert sink.closes == 1, "owned sink must be closed when preflight fails"
+    assert sink.writes == 0, "no run happened, so nothing was written"
+
+
+@pytest.mark.asyncio
+async def test_arun_closes_owned_sink_on_preflight_failure(monkeypatch) -> None:
+    """Async preflight failure also closes an owned sink. arun() offloads
+    preflight via _validate_steps_async(), so patch that method."""
+    from genblaze_core.exceptions import GenblazeError
+
+    sink = _CountingSink()
+    pipe = Pipeline("apreflight-fail").step(MockProvider(), model="m")
+
+    async def _boom() -> None:
+        raise GenblazeError("preflight failed")
+
+    monkeypatch.setattr(pipe, "_validate_steps_async", _boom)
+    with pytest.raises(GenblazeError):
+        await pipe.arun(sink=sink)
+    assert sink.closes == 1
+    assert sink.writes == 0

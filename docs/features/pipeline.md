@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-16 -->
+<!-- last_verified: 2026-06-20 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -48,6 +48,14 @@ Fluent API for building and executing multi-step generative media workflows with
 
 Precedence inside `_resolve_inputs`: **external_inputs > input_from > chain mode > none**.
 
+For `input_from`, every referenced index must point to a prior step that succeeded and
+produced at least one asset. If a reference is out of range, a producer failed, or a
+producer returned no assets, the dependent step is marked `FAILED` with
+`error_code=INVALID_INPUT` before its provider is invoked. The pre-failed
+consumer records `metadata.failure_reason="input_resolution"` and
+`metadata.provider_invoked=false`, so telemetry can separate zero-duration pre-fail spans
+from real provider calls.
+
 `external_inputs` and `input_from` are mutually exclusive at construction (raises `GenblazeError`). Pass an Asset with `sha256` populated; without it, both the step cache key and the manifest canonical hash will drift across reruns when the URL rotates (e.g., presigned). The reserved kwargs `inputs=` and `input=` raise a friendly error pointing at `external_inputs=`.
 
 ## Outputs
@@ -64,6 +72,15 @@ Precedence inside `_resolve_inputs`: **external_inputs > input_from > chain mode
 - Builds `Run` and `Manifest` from completed steps
 - If `sink` provided, writes run data
 - Returns `PipelineResult`
+
+## Model preflight and async safety
+When `preflight=True` (default), both `run()` and `arun()` validate each step's
+model slug against provider catalogs before execution. In `arun()`, the
+network-bound validation phase runs via `asyncio.to_thread` so the event loop
+stays free during provider discovery fetches. Cheap capability checks (modality,
+chain-input compatibility) run inline. `run()` behavior is unchanged (sync
+`ThreadPoolExecutor` path). Disable preflight with `Pipeline(preflight=False)` or
+`.preflight(False)` for hot paths where the overhead matters.
 
 ## Edge Cases
 - Provider failure mid-pipeline → step gets `error_code`; with `fail_fast=True` pipeline stops, with `fail_fast=False` it continues

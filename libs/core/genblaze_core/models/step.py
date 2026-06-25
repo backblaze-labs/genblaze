@@ -23,6 +23,10 @@ from genblaze_core.models.enums import (
 # step types (everything else) MUST have a provider.
 _PROVIDERLESS_STEP_TYPES = frozenset({StepType.INGEST, StepType.IMPORT})
 
+# Metadata key used to surface provider prediction/job ids to progress and
+# streaming consumers. The value is observability data, not retry authority.
+UPSTREAM_ID_KEY = "upstream_id"
+
 
 class Step(BaseModel):
     """A single generation step within a run."""

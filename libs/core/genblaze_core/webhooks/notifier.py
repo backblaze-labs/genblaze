@@ -1,7 +1,7 @@
 """WebhookNotifier — fire-and-forget HTTP notifications for pipeline events.
 
 Uses a background daemon thread with a queue to avoid blocking the pipeline.
-Only stdlib dependencies (urllib.request, threading, queue).
+Only stdlib dependencies (http.client, threading, queue).
 """
 
 from __future__ import annotations
@@ -12,14 +12,12 @@ import logging
 import queue
 import threading
 import time
-import urllib.error
-import urllib.request
 import weakref
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from genblaze_core._utils import jittered_backoff, utc_now
+from genblaze_core._utils import jittered_backoff, open_pinned_https_connection, utc_now
 from genblaze_core.exceptions import WebhookError
 from genblaze_core.models.enums import RunStatus, StepStatus
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
@@ -132,6 +130,19 @@ class WebhookNotifier:
         event = payload.get("event", "")
         if not self._should_send(event):
             return
+        # The worker is one-shot: close() joins it and it never restarts. Warn
+        # once rather than silently queueing events that nothing will deliver if
+        # a caller enqueues after explicitly closing the notifier/sink.
+        if self._closed:
+            self._dropped_count += 1
+            if self._dropped_count == 1 or self._dropped_count % 100 == 0:
+                logger.warning(
+                    "Webhook event dropped: notifier is closed (dropped %d so far). "
+                    "Create a new WebhookSink/WebhookNotifier rather than reusing one "
+                    "after close().",
+                    self._dropped_count,
+                )
+            return
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
@@ -150,52 +161,75 @@ class WebhookNotifier:
         """Number of events dropped because the delivery queue was full."""
         return self._dropped_count
 
-    def _validate_ssrf(self) -> None:
-        """DNS-resolve the webhook host and block private IPs.
-
-        Validated on every delivery. Caching the check opens a DNS-rebind
-        window where an attacker-controlled domain alternates between public
-        (passes the check) and private (used by urllib) IPs. DNS responses
-        are already cached by the OS resolver at the hostname TTL, so the
-        per-delivery cost is negligible.
-        """
-        from genblaze_core._utils import check_ssrf
-
-        check_ssrf(self._config.url, exc_type=WebhookError)
-
     def _post(self, payload: dict[str, Any]) -> None:
-        """POST a JSON payload to the configured URL with retries."""
-        self._validate_ssrf()
-        data = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        """POST a JSON payload to the configured URL with retries and DNS pinning.
+
+        Uses ``open_pinned_https_connection`` which resolves DNS once, validates
+        the returned IP against the SSRF blocklist, and returns a live
+        ``HTTPSConnection`` opened directly to that IP. This eliminates the DNS
+        rebinding / TOCTOU window. http.client has no redirect handler, so a 3xx
+        response is treated as a delivery failure, not silently followed.
+
+        Note: outbound connections bypass HTTP(S)_PROXY / NO_PROXY env vars by
+        design — see ``open_pinned_https_connection`` for rationale.
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self._config.url)
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        host = parsed.hostname or ""
+
+        body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Host": host,  # original hostname, not the pinned IP
+            "Content-Length": str(len(body)),
+        }
         if self._config.headers:
             headers.update(self._config.headers)
 
         for attempt in range(self._config.max_retries + 1):
+            conn = None
             try:
-                req = urllib.request.Request(  # noqa: S310
+                conn = open_pinned_https_connection(
                     self._config.url,
-                    data=data,
-                    headers=headers,
-                    method="POST",
+                    timeout=self._config.timeout,
+                    exc_type=WebhookError,
                 )
-                with urllib.request.urlopen(req, timeout=self._config.timeout) as resp:  # noqa: S310
-                    resp.read()  # Drain response body
-                return
-            except urllib.error.HTTPError as exc:
-                if exc.code >= 500 and attempt < self._config.max_retries:
+                conn.request("POST", path, body=body, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+                resp.read()  # drain response body
+                if status >= 500 and attempt < self._config.max_retries:
                     backoff = jittered_backoff(attempt)
-                    logger.debug("Webhook 5xx (%d), retrying in %.1fs", exc.code, backoff)
+                    logger.debug("Webhook 5xx (%d), retrying in %.1fs", status, backoff)
                     time.sleep(backoff)
                     continue
-                logger.warning("Webhook delivery failed: HTTP %d", exc.code)
+                if 300 <= status < 400:
+                    # http.client does not follow redirects (SSRF-safe), so a 3xx
+                    # means the endpoint never accepted the payload. Treat it as a
+                    # non-retryable delivery failure rather than silently dropping it.
+                    logger.warning(
+                        "Webhook delivery failed: endpoint returned redirect HTTP %d; "
+                        "redirects are not followed, configure the final URL",
+                        status,
+                    )
+                elif status >= 400:
+                    logger.warning("Webhook delivery failed: HTTP %d", status)
                 return
+            except WebhookError:
+                raise
             except Exception as exc:
                 if attempt < self._config.max_retries:
                     time.sleep(jittered_backoff(attempt))
                     continue
                 logger.warning("Webhook delivery failed: %s", exc)
                 return
+            finally:
+                if conn is not None:
+                    conn.close()
 
     def _drain(self) -> None:
         """Worker thread: drain the queue and POST each payload."""

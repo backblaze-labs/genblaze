@@ -431,6 +431,9 @@ class ObjectStorageSink(BaseSink):
         self._eager_pool: ThreadPoolExecutor | None = None
         self._eager_pending: dict[str, Future] = {}
         self._eager_lock = threading.Lock()
+        # Guards the terminal backend/Parquet teardown so it fires once even
+        # under double-close. Does NOT gate the eager-pool drain — see close().
+        self._closed = False
 
     def write_run(self, run: Run, manifest: Manifest) -> None:
         try:
@@ -1009,6 +1012,15 @@ class ObjectStorageSink(BaseSink):
         that errored mid-execution and never called ``write_run`` rely on
         this to flush orphan futures.
 
+        Idempotent — safe to call more than once (e.g. when the pipeline's
+        implicit close and an explicit ``with sink:`` block both fire).
+
+        Always drains whatever eager pool currently exists, even across a
+        prior close: ``on_step_complete`` lazily recreates the pool, so a
+        sink reused for a second run holds a fresh pool that must also be
+        shut down (issue #57). The backend/Parquet teardown is terminal and
+        guarded so it fires exactly once.
+
         Args:
             timeout: If ``None`` (default), waits indefinitely for all
                 in-flight uploads. If set, waits at most ``timeout`` seconds
@@ -1017,6 +1029,9 @@ class ObjectStorageSink(BaseSink):
                 HTTP uploads cannot be preempted in Python; they complete
                 or exit with the process.
         """
+        # Drain the current eager pool on every call — never gate this on
+        # _closed, or a pool recreated after the first close leaks its
+        # non-daemon workers (the exact regression issue #57 fixes).
         with self._eager_lock:
             pool = self._eager_pool
             self._eager_pool = None
@@ -1031,6 +1046,11 @@ class ObjectStorageSink(BaseSink):
                 pool.shutdown(wait=False, cancel_futures=True)
                 if pending:
                     _futures_wait(pending, timeout=timeout)
+        # Backend/Parquet teardown is terminal — close exactly once so a
+        # double-close (pipeline finally + an explicit `with sink:`) is safe.
+        if self._closed:
+            return
+        self._closed = True
         self._backend.close()
         if self._parquet_sink is not None:
             self._parquet_sink.close()

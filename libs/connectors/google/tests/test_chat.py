@@ -9,7 +9,7 @@ import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage
 from genblaze_core.models.enums import ProviderErrorCode
-from genblaze_google.chat import _calc_cost, _lookup_rate, achat, chat
+from genblaze_google.chat import achat, chat
 
 
 def _mock_response(
@@ -190,21 +190,10 @@ def test_api_error_wrapped(mock_client):
     assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
 
 
-def test_cost_for_known_model(mock_client):
+def test_cost_usd_always_none(mock_client):
+    # cost_usd is always None — callers compute cost from tokens_in/out with their own rates.
     resp = chat("gemini-2.5-flash", prompt="hi", client=mock_client)
-    # 10 in * 0.30/1M + 5 out * 2.50/1M
-    expected = (10 / 1_000_000) * 0.30 + (5 / 1_000_000) * 2.50
-    assert resp.cost_usd is not None
-    assert abs(resp.cost_usd - expected) < 1e-9
-
-
-def test_lookup_rate_strips_version_suffix():
-    assert _lookup_rate("gemini-2.5-flash-001") == _lookup_rate("gemini-2.5-flash")
-    assert _lookup_rate("gemini-2.5-flash-latest") == _lookup_rate("gemini-2.5-flash")
-
-
-def test_calc_cost_returns_none_when_tokens_missing():
-    assert _calc_cost("gemini-2.5-flash", None, 5) is None
+    assert resp.cost_usd is None
 
 
 def test_achat_runs_in_thread(mock_client):

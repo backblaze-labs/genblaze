@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import base64
+import socket
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
@@ -18,10 +18,27 @@ from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
 
+_FAKE_PNG = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+_CONN_PATCH = "genblaze_openai.dalle.open_pinned_https_connection"
+
+
+def _fake_pinned_conn(*_args, **_kwargs):
+    """Minimal http.client-like connection that yields _FAKE_PNG once."""
+    conn = MagicMock()
+    resp = MagicMock()
+    resp.status = 200
+    resp.read.side_effect = [_FAKE_PNG, b""]
+    conn.getresponse.return_value = resp
+    return conn
+
 
 @pytest.fixture
 def mock_dalle():
-    """Patch openai with a mock client."""
+    """Patch openai with a mock client and stub the SSRF-pinned downloader.
+
+    dall-e-2/3 return signed CDN URLs; the provider now fetches the bytes into a
+    local hashed asset, so the pinned HTTPS connection is faked here.
+    """
     mock_client = MagicMock()
     mock_client.images.generate.return_value = SimpleNamespace(
         data=[SimpleNamespace(url="https://oaidalleapiprodscus.blob.core.windows.net/img.png")]
@@ -30,9 +47,10 @@ def mock_dalle():
     with patch.dict("sys.modules", {"openai": MagicMock()}):
         from genblaze_openai.dalle import DalleProvider
 
-        provider = DalleProvider(api_key="test-key")
-        provider._client = mock_client
-        yield provider, mock_client
+        with patch(_CONN_PATCH, side_effect=_fake_pinned_conn):
+            provider = DalleProvider(api_key="test-key")
+            provider._client = mock_client
+            yield provider, mock_client
 
 
 def test_generate_returns_image_asset(mock_dalle):
@@ -41,37 +59,38 @@ def test_generate_returns_image_asset(mock_dalle):
     result = provider.generate(step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "image/png"
-    _host = urlparse(result.assets[0].url).hostname or ""
-    assert _host == "blob.core.windows.net" or _host.endswith(".blob.core.windows.net")
+    # URL responses are materialized to a local hashed file:// asset.
+    assert result.assets[0].url.startswith("file://")
+    assert result.assets[0].sha256 is not None
+    assert result.assets[0].size_bytes == len(_FAKE_PNG)
 
 
-def test_generate_strips_azure_sas_credentials_from_asset_url(mock_dalle):
+def test_url_response_materialized_locally_without_credentials(mock_dalle):
     provider, client = mock_dalle
-    client.images.generate.return_value = SimpleNamespace(
-        data=[
-            SimpleNamespace(
-                url=(
-                    "https://oaidalleapiprodscus.blob.core.windows.net/private/img.png"
-                    "?st=2026-06-20T00%3A00%3A00Z&se=2026-06-20T01%3A00%3A00Z"
-                    "&sp=r&sv=2024-11-04&sig=secret&tenant_resource=keep"
-                )
-            )
-        ]
+    sas_url = (
+        "https://oaidalleapiprodscus.blob.core.windows.net/private/img.png"
+        "?st=2026-06-20T00%3A00%3A00Z&se=2026-06-20T01%3A00%3A00Z"
+        "&sp=r&sv=2024-11-04&sig=secret&tenant_resource=keep"
     )
+    client.images.generate.return_value = SimpleNamespace(data=[SimpleNamespace(url=sas_url)])
 
-    result = provider.generate(Step(provider="openai-dalle", model="dall-e-3", prompt="cat"))
+    with patch(_CONN_PATCH, side_effect=_fake_pinned_conn) as conn:
+        result = provider.generate(Step(provider="openai-dalle", model="dall-e-3", prompt="cat"))
 
-    url = result.assets[0].url
-    assert "sig=" not in url
-    assert "se=" not in url
-    assert "st=" not in url
-    assert "sp=" not in url
-    assert "sv=" not in url
-    assert "tenant_resource=keep" in url
+    # The signed URL is used to FETCH the bytes (credentials preserved for the
+    # download)...
+    assert conn.call_args.args[0] == sas_url
+    # ...but never persisted: the asset is a local hashed file with no SAS
+    # material, and the embedded manifest is credential-free.
+    asset = result.assets[0]
+    assert asset.url.startswith("file://")
+    assert asset.sha256 is not None
+    for cred in ("sig=", "se=", "st=", "sp=", "sv=", "secret"):
+        assert cred not in asset.url
     manifest = Manifest.from_run(Run(name="sas", steps=[result]))
     embedded = manifest.to_embed_json(EmbedPolicy(embed_mode="full"))
-    assert "sig=" not in embedded
-    assert "se=" not in embedded
+    for cred in ("sig=", "se=", "secret"):
+        assert cred not in embedded
 
 
 def test_invoke_full_lifecycle(mock_dalle):
@@ -82,16 +101,18 @@ def test_invoke_full_lifecycle(mock_dalle):
     assert len(result.assets) == 1
 
 
-def test_url_only_output_manifest_does_not_verify_without_sink(mock_dalle):
+def test_url_output_materialized_verifies_without_sink(mock_dalle):
     provider, _ = mock_dalle
     result = provider.invoke(Step(provider="openai-dalle", model="dall-e-3", prompt="a cat"))
 
     manifest = Manifest.from_run(Run(name="same", steps=[result]))
 
-    assert result.assets[0].sha256 is None
+    # URL responses are downloaded and hashed at the source, so the manifest
+    # verifies without a storage sink.
+    assert result.assets[0].sha256 is not None
     assert manifest.verify_hash()
-    assert manifest.output_asset_ids_missing_sha256() == [result.assets[0].asset_id]
-    assert not manifest.verify()
+    assert manifest.output_asset_ids_missing_sha256() == []
+    assert manifest.verify()
 
 
 def test_multiple_images(mock_dalle):
@@ -602,6 +623,86 @@ def test_gpt_image_2_pricing_none_by_default(mock_b64_dalle):
     assert result.cost_usd is None
 
 
+# --- _download_https_to_temp SSRF tests ---
+
+
+# Patch target: dalle imports open_pinned_https_connection directly.
+_DALLE_CONN_PATCH = "genblaze_openai.dalle.open_pinned_https_connection"
+_PRIVATE_DNS = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
+
+
+def _make_dalle_conn(status: int = 200, body: bytes = b"px") -> MagicMock:
+    resp = MagicMock()
+    resp.status = status
+    # Simulate reading body then EOF
+    resp.read.side_effect = [body, b""]
+    conn = MagicMock()
+    conn.getresponse.return_value = resp
+    return conn
+
+
+class TestDownloadHttpsToTemp:
+    """SSRF / DNS-pinning coverage for _download_https_to_temp."""
+
+    def test_private_ip_rejected(self):
+        """A URL whose hostname resolves to a private IP must raise ProviderError."""
+        with patch(
+            "genblaze_core._utils.socket.getaddrinfo",
+            return_value=_PRIVATE_DNS,
+        ):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            with pytest.raises(ProviderError, match="Private/loopback"):
+                _download_https_to_temp("https://internal.example.com/img.png", timeout=5.0)
+
+    def test_dns_rebinding_connect_target_is_pinned_ip(self):
+        """open_pinned_https_connection must be called — the conn target is
+        the pinned public IP returned by resolve_ssrf, not a re-resolution."""
+        conn = _make_dalle_conn(status=200, body=b"imagedata")
+
+        with patch(_DALLE_CONN_PATCH, return_value=conn) as mock_open:
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            result = _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+
+        # open_pinned_https_connection was called (SSRF guard ran)
+        mock_open.assert_called_once()
+        call_kw = mock_open.call_args
+        assert call_kw.args[0] == "https://oai.example.com/img.png"
+        # connection was closed after download
+        conn.close.assert_called()
+        # temp file was written and returned
+        assert result.exists()
+        result.unlink(missing_ok=True)
+
+    def test_3xx_raises_provider_error_not_followed(self):
+        """A 3xx response must raise ProviderError — not silently followed."""
+        conn = _make_dalle_conn(status=302, body=b"")
+        conn.getresponse.return_value.read.return_value = b""
+
+        with patch(_DALLE_CONN_PATCH, return_value=conn):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            with pytest.raises(ProviderError, match="HTTP 302"):
+                _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+
+        # conn.close() still called even on 3xx
+        conn.close.assert_called()
+
+    def test_connection_closed_on_error(self):
+        """If conn.request() raises, the connection is still closed (no FD leak)."""
+        conn = MagicMock()
+        conn.request.side_effect = OSError("network down")
+
+        with patch(_DALLE_CONN_PATCH, return_value=conn):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            with pytest.raises(OSError):
+                _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+
+        conn.close.assert_called()
+
+
 # --- Compliance harness ---
 
 
@@ -613,7 +714,10 @@ class TestDalleCompliance(ProviderComplianceTests):
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):
-        with patch.dict("sys.modules", {"openai": MagicMock()}):
+        with (
+            patch.dict("sys.modules", {"openai": MagicMock()}),
+            patch(_CONN_PATCH, side_effect=_fake_pinned_conn),
+        ):
             yield
 
     def make_provider(self):

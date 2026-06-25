@@ -277,6 +277,17 @@ class S3StorageBackend(StorageBackend):
         self._client = boto3.client("s3", **self._client_kwargs())
         self._transfer_config = self._build_transfer_config()
 
+    def close(self) -> None:
+        """Release the boto3 client's urllib3 connection pool.
+
+        ``ObjectStorageSink.close()`` (and therefore ``Pipeline.run()``)
+        calls this; without it the pooled HTTPS connections survive until
+        GC, leaking sockets in long-running services that build a backend
+        per run/tenant (issue #57). Idempotent — boto3 tolerates a repeat
+        ``close()``.
+        """
+        self._client.close()
+
     @staticmethod
     def _resolve_alias(
         primary_name: str,
@@ -1431,6 +1442,14 @@ class S3StorageBackend(StorageBackend):
 
         self._region = region
         self._endpoint_url = _b2_endpoint(region)
+        # Close the outgoing client's connection pool before replacing it.
+        # Otherwise the first client's urllib3 pool is orphaned and only
+        # reclaimed at GC — close() would later release only the new client,
+        # re-leaking the original on the region auto-correct path (issue #57).
+        try:
+            self._client.close()
+        except Exception:  # noqa: BLE001 — best-effort; must not block reconfigure
+            logger.debug("closing pre-reconfigure S3 client failed", exc_info=True)
         self._client = boto3.client("s3", **self._client_kwargs())
         self._transfer_config = self._build_transfer_config()
 

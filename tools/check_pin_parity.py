@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Pre-publish drift guard: for every Genblaze package, compare its source
-``[project.dependencies]`` to the wheel already published on PyPI at the
-same version. If they diverge, fail loudly.
+``[project.dependencies]`` and ``[project.optional-dependencies]`` to the
+wheel already published on PyPI at the same version. If they diverge,
+fail loudly.
 
 Why this exists
 ---------------
@@ -32,18 +33,27 @@ How comparison works
 --------------------
 For each package:
 
-1. Read source ``[project.dependencies]`` from its ``pyproject.toml``.
-2. Fetch ``https://pypi.org/pypi/<name>/<version>/json`` and extract
-   the wheel's base ``Requires-Dist`` (entries without ``; extra ==``).
+1. Read source ``[project.dependencies]`` and
+   ``[project.optional-dependencies]`` from its ``pyproject.toml``.
+2. Fetch ``https://pypi.org/pypi/<name>/<version>/json`` and split the
+   wheel's ``Requires-Dist`` into base deps (no ``; extra ==`` marker)
+   and per-extra groups (entries with ``; extra == "name"``).
 3. Parse both sides with ``packaging.requirements.Requirement``,
-   normalize specifier sets to sorted form, compare.
+   normalize specifier sets to sorted form, compare base deps and each
+   extra group independently.
+
+This is critical for the ``genblaze`` umbrella package: its base deps
+are only ``genblaze-core`` and ``genblaze-s3``, while every connector
+pin and the ``video``/``image``/``audio``/``all`` bundles live under
+``[project.optional-dependencies]``. The old check reported
+``16 parity, 0 drift`` even when those extras diverged.
 
 Skipped cases (not errors):
 
 * Package source version is not on PyPI yet — a fresh wheel will
   publish; nothing to compare.
 * Package's source ``[project.dependencies]`` is empty AND PyPI's
-  ``Requires-Dist`` for base deps is empty.
+  ``Requires-Dist`` for base deps is empty (and no extras on either side).
 
 Exit codes: 0 on parity, 1 on drift, 2 on unexpected error.
 """
@@ -51,6 +61,7 @@ Exit codes: 0 on parity, 1 on drift, 2 on unexpected error.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -103,6 +114,7 @@ PACKAGES: list[str] = [
     "libs/connectors/gmicloud",
     "libs/connectors/langsmith",
     "libs/connectors/nvidia",
+    "libs/connectors/assemblyai",
     "cli",
     "libs/meta",
 ]
@@ -126,17 +138,105 @@ def normalize(req_str: str) -> tuple:
     )
 
 
+# A single ``extra == "name"`` / ``extra == 'name'`` marker clause. Used to
+# pick the extra term out of a marker after splitting on ``and`` — bounded
+# (``[^"']+``) so it can't swallow trailing clauses the way an unbounded
+# string split would.
+_EXTRA_CLAUSE_RE = re.compile(r"""^extra\s*==\s*["']([^"']+)["']$""")
+
+
+def canon_extra(name: str) -> str:
+    """Canonicalize an extra name per PEP 503/685 (lowercase; ``_.-`` → ``-``).
+
+    Build backends normalize extra names when rendering ``Requires-Dist``
+    (PEP 685: ``Stability_Audio`` → ``stability-audio``), but the source
+    ``[project.optional-dependencies]`` table is keyed by whatever the
+    maintainer typed. Canonicalize both sides so the same logical extra
+    compares equal regardless of underscore/dash/case spelling.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def split_extra(dep: str) -> tuple[str | None, str]:
+    """Split a ``Requires-Dist`` entry into ``(extra_name, requirement)``.
+
+    PyPI flattens extras into ``Requires-Dist`` by appending an
+    ``; extra == "name"`` clause to each entry's marker. To compare against
+    the source ``[project.optional-dependencies]`` table — whose entries
+    carry no ``extra`` marker but may carry others (e.g.
+    ``python_version``) — we strip *only* the ``extra`` clause and keep any
+    residual marker intact, so equivalent entries normalize equal.
+
+    Returns ``(None, dep)`` for a base dependency (no ``extra`` clause).
+    Otherwise returns the canonicalized extra name and the requirement
+    string with the ``extra`` clause removed (residual marker preserved,
+    or omitted when ``extra`` was the only marker term).
+
+    Extras markers are always AND-conjunctions, so splitting the marker on
+    ``and`` and dropping the ``extra`` clause is well-defined no matter
+    where the build backend places it (first, middle, or last).
+    """
+    req = Requirement(dep)
+    if req.marker is None:
+        return (None, dep)
+
+    extra_name: str | None = None
+    residual: list[str] = []
+    for clause in re.split(r"\s+and\s+", str(req.marker)):
+        match = _EXTRA_CLAUSE_RE.match(clause.strip())
+        if match:
+            extra_name = match.group(1)
+        else:
+            residual.append(clause.strip())
+
+    if extra_name is None:
+        return (None, dep)
+
+    # Keep the requirement text (everything before the marker's ``;``)
+    # verbatim so the drift report shows pins as written, then re-attach
+    # any residual (non-extra) marker for like-for-like comparison.
+    req_part = dep.split(";", 1)[0].strip()
+    if residual:
+        return (canon_extra(extra_name), f"{req_part}; {' and '.join(residual)}")
+    return (canon_extra(extra_name), req_part)
+
+
 def base_deps_from_pypi(requires_dist: list[str] | None) -> list[str]:
     """Filter PyPI ``Requires-Dist`` to entries without an extra marker.
 
     PyPI returns every dependency — base AND extras — flattened into a
-    single list. Extras are marked with ``; extra == "name"``. We only
-    compare base deps because that's where the trap lives; extras are
-    handled by ``check_pypi_metadata.py``.
+    single list. Extras carry an ``; extra == "name"`` marker clause. This
+    returns only the base (unconditional) entries; use ``extras_from_pypi``
+    to retrieve the per-extra groups.
     """
     if not requires_dist:
         return []
-    return [d for d in requires_dist if "extra ==" not in d]
+    return [dep for dep in requires_dist if split_extra(dep)[0] is None]
+
+
+def extras_from_pypi(requires_dist: list[str] | None) -> dict[str, list[str]]:
+    """Group PyPI ``Requires-Dist`` entries that carry an ``extra ==`` marker.
+
+    Returns a dict mapping canonicalized extra name to a list of plain
+    requirement strings (the ``extra`` clause is stripped so each entry
+    parses directly with ``packaging.requirements.Requirement``).
+
+    For example::
+
+        'genblaze-openai>=0.3.0,<0.4; extra == "openai"'
+
+    becomes ``{"openai": ["genblaze-openai>=0.3.0,<0.4"]}``.
+    """
+    if not requires_dist:
+        return {}
+
+    result: dict[str, list[str]] = {}
+    for dep in requires_dist:
+        extra_name, requirement = split_extra(dep)
+        if extra_name is None:
+            continue
+        result.setdefault(extra_name, []).append(requirement)
+    return result
 
 
 def fetch_pypi_metadata(name: str, version: str) -> dict | None:
@@ -161,9 +261,15 @@ def check_package(pkg_path: Path, repo_root: Path) -> tuple[str, str, list[str] 
     """Check one package. Returns (status, name, details).
 
     Status is one of:
-      "match"      — source and PyPI agree
+      "match"      — source and PyPI agree (base deps and all extras)
       "unreleased" — source version not on PyPI yet (fresh publish)
       "drift"      — divergence detected; details is a list of lines for the error report
+
+    Compares both ``[project.dependencies]`` (base deps) and every key
+    in ``[project.optional-dependencies]`` against the corresponding
+    ``Requires-Dist`` entries on the published PyPI wheel. This closes
+    the gap for the ``genblaze`` umbrella, whose connector pins and
+    bundle extras all live under ``[project.optional-dependencies]``.
     """
     pyproject = repo_root / pkg_path / "pyproject.toml"
     with open(pyproject, "rb") as f:
@@ -171,36 +277,60 @@ def check_package(pkg_path: Path, repo_root: Path) -> tuple[str, str, list[str] 
     name = cfg["project"]["name"]
     version = cfg["project"]["version"]
     source_deps: list[str] = cfg["project"].get("dependencies", [])
+    # Key source extras by their canonical name so they line up with the
+    # backend-normalized names PyPI reports (see canon_extra).
+    source_extras: dict[str, list[str]] = {
+        canon_extra(name): deps
+        for name, deps in cfg["project"].get("optional-dependencies", {}).items()
+    }
 
     metadata = fetch_pypi_metadata(name, version)
     if metadata is None:
         return ("unreleased", f"{name}=={version}", None)
 
-    pypi_deps = base_deps_from_pypi(metadata.get("info", {}).get("requires_dist"))
+    requires_dist = metadata.get("info", {}).get("requires_dist")
+    pypi_base = base_deps_from_pypi(requires_dist)
+    pypi_extras = extras_from_pypi(requires_dist)
 
-    src_norm = sorted(normalize(d) for d in source_deps)
-    pypi_norm = sorted(normalize(d) for d in pypi_deps)
+    # Collect drift lines keyed by section label for the report.
+    lines: list[str] = []
 
-    if src_norm == pypi_norm:
+    def _diff_section(label: str, src: list[str], pypi: list[str]) -> None:
+        """Append drift lines for one dependency section (base or an extra)."""
+        src_norm = sorted(normalize(d) for d in src)
+        pypi_norm = sorted(normalize(d) for d in pypi)
+        if src_norm == pypi_norm:
+            return
+        src_set = {normalize(d): d for d in src}
+        pypi_set = {normalize(d): d for d in pypi}
+        only_src = sorted(src_set[k] for k in src_set if k not in pypi_set)
+        only_pypi = sorted(pypi_set[k] for k in pypi_set if k not in src_set)
+        lines.append(f"  {label}")
+        if only_src:
+            lines.append("    Only in source (would publish):")
+            for d in only_src:
+                lines.append(f"      + {d}")
+        if only_pypi:
+            lines.append(f"    Only on PyPI {version} wheel (would be silently kept):")
+            for d in only_pypi:
+                lines.append(f"      - {d}")
+
+    _diff_section("base deps", source_deps, pypi_base)
+
+    # Check every extra that appears in either source or PyPI.
+    all_extra_names = sorted(set(source_extras) | set(pypi_extras))
+    for extra_name in all_extra_names:
+        _diff_section(
+            f"[{extra_name}]",
+            source_extras.get(extra_name, []),
+            pypi_extras.get(extra_name, []),
+        )
+
+    if not lines:
         return ("match", f"{name}=={version}", None)
 
-    # Build a maintainer-friendly diff report.
-    src_set = {normalize(d): d for d in source_deps}
-    pypi_set = {normalize(d): d for d in pypi_deps}
-    only_in_source = sorted(src_set[k] for k in src_set if k not in pypi_set)
-    only_on_pypi = sorted(pypi_set[k] for k in pypi_set if k not in src_set)
-
-    lines: list[str] = []
-    lines.append(f"{name}=={version}")
-    if only_in_source:
-        lines.append("    Only in source (would publish):")
-        for d in only_in_source:
-            lines.append(f"      + {d}")
-    if only_on_pypi:
-        lines.append(f"    Only on PyPI {version} wheel (would be silently kept):")
-        for d in only_on_pypi:
-            lines.append(f"      - {d}")
-    return ("drift", f"{name}=={version}", lines)
+    report = [f"{name}=={version}"] + lines
+    return ("drift", f"{name}=={version}", report)
 
 
 def main() -> int:

@@ -14,6 +14,14 @@ from genblaze_core.models.step import Step
 class BaseSink(ABC):
     """Abstract base for event/manifest sinks."""
 
+    # Lifecycle ownership: when True (default), ``Pipeline.run()``/``arun()``
+    # close this sink in their ``finally`` block — appropriate for sinks whose
+    # resources are run-scoped (e.g. ObjectStorageSink's eager-upload pool and
+    # connection pool). Set False for sinks whose lifecycle is process-scoped
+    # and self-managed (e.g. WebhookSink: a fire-and-forget daemon worker that
+    # flushes via atexit); the pipeline must not close — and block joining — those.
+    _close_with_run: bool = True
+
     @abstractmethod
     def write_run(self, run: Run, manifest: Manifest) -> None:
         """Persist a completed run and its manifest."""
@@ -131,5 +139,27 @@ class BaseSink(ABC):
 
     @abstractmethod
     def close(self) -> None:
-        """Release any held resources."""
+        """Release any held resources.
+
+        Must be idempotent. ``__exit__`` may call it after an explicit
+        ``with sink:`` block, and — for sinks with ``_close_with_run = True``
+        (the default) — ``Pipeline.run()``/``arun()`` also call it in their
+        ``finally`` block. Such a sink is spent once passed to ``run()`` —
+        construct a fresh one per run rather than reusing it. Sinks that set
+        ``_close_with_run = False`` are never closed by the pipeline and remain
+        reusable across runs.
+        """
         ...
+
+    # Context-manager support — convenience for callers that own the sink
+    # lifecycle explicitly (e.g. standalone scripts, tests). For sinks the
+    # pipeline closes (``_close_with_run = True``), the with-pattern is optional
+    # but recommended when constructing the sink outside a run(); wrapping such
+    # a sink in `with sink:` AND passing it to run() calls close() twice — safe
+    # because close() is contractually idempotent (see above).
+
+    def __enter__(self) -> BaseSink:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()

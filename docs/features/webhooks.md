@@ -1,7 +1,7 @@
-<!-- last_verified: 2026-03-17 -->
+<!-- last_verified: 2026-06-23 -->
 # Webhooks
 
-`WebhookNotifier` delivers fire-and-forget HTTP notifications for pipeline events via a background thread. Uses only stdlib (`urllib.request`).
+`WebhookNotifier` delivers fire-and-forget HTTP notifications for pipeline events via a background thread. Uses only stdlib (`http.client`, `ssl`, `threading`).
 
 ## Usage
 
@@ -75,7 +75,13 @@ Pipeline("demo").step(...).run(sink=sink)
 - Only `https://` URLs are accepted
 - `localhost` is rejected
 
-On first dispatch, the hostname is DNS-resolved and checked against private/loopback IP ranges (RFC 1918, link-local, IMDS 169.254.x.x). Requests to private IPs raise `WebhookError`. This prevents SSRF when webhook URLs come from user input.
+On every dispatch, `resolve_ssrf` resolves the hostname once, validates all returned IPs against private/loopback ranges (RFC 1918, link-local, IMDS 169.254.x.x), and returns the pinned IP. The connection is opened directly to that IP — the HTTP client never performs a second DNS resolution. This closes the DNS rebinding / TOCTOU window. Requests to private IPs raise `WebhookError`.
+
+DNS pinning: the TLS connection uses the original hostname for SNI and certificate verification (`server_hostname`) while the TCP socket connects to the pinned IP, so both security properties are maintained.
+
+HTTP redirects cannot occur: `http.client.HTTPSConnection` has no redirect handler, so a 3xx response is treated as a delivery failure.
+
+**Egress proxy note:** DNS pinning requires a direct TCP connection to the validated IP. `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` env vars are ignored by design — routing through a proxy would re-introduce the DNS rebinding window. If your deployment mandates an egress proxy, configure the proxy's allowlist to pass through the webhook target instead.
 
 ## Canonical files
 

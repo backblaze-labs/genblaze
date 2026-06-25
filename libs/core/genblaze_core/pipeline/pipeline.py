@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Awaitable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,7 +13,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from genblaze_core._utils import _SECRET_PATTERNS, new_id, normalize_tenant_id, utc_now
+from genblaze_core._utils import (
+    _SECRET_PATTERNS,
+    new_id,
+    normalize_tenant_id,
+    sanitize_error,
+    utc_now,
+)
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
     BatchPipelineError,
@@ -50,6 +57,21 @@ from genblaze_core.runnable.base import Runnable
 from genblaze_core.runnable.config import RunnableConfig
 
 logger = logging.getLogger("genblaze.pipeline")
+
+
+class _InputResolutionError(GenblazeError):
+    """Raised when declared upstream step outputs cannot be used as inputs."""
+
+
+@dataclass(frozen=True)
+class _PreparedStep:
+    """A step plus the internal routing decision for runner dispatch."""
+
+    step: Step
+    prefailed: bool = False
+
+
+_INPUT_RESOLUTION_FAILURE_REASON = "input_resolution"
 
 
 # Sentinel for ``raise_on_failure``. ``None`` means "caller didn't pass it,
@@ -321,7 +343,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._max_concurrency = max_concurrency
         self._moderation = moderation
         # Model preflight (default ON, soft-launch posture):
-        # _validate_steps() calls validate_model() on each step's provider.
+        # preflight (_check_step_capabilities + _validate_models) calls
+        # validate_model() on each step's provider.
         # NOT_FOUND raises before any wire calls; OK_PROVISIONAL and
         # UNKNOWN_PERMISSIVE emit a single WARN per (provider, slug) per
         # Pipeline instance (the dedup set below resets on each Pipeline
@@ -331,7 +354,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         # Tracks (provider_name, slug) tuples already warned about so the
         # WARN log is one-per-pipeline-lifetime, mirroring the
         # _warned_deprecated dedup pattern in ModelRegistry.
+        # The lock makes the check-then-add atomic across threads: arun()
+        # offloads _validate_models via asyncio.to_thread, and abatch_run
+        # clones share this set (shallow copy.copy), so several clones can
+        # mutate it concurrently from different worker threads.
         self._warned_preflight: set[tuple[str, str]] = set()
+        self._warned_preflight_lock = threading.Lock()
         # Tracer resolution: explicit arg wins; legacy structured_log=True maps
         # to LoggingTracer so existing callers keep their JSON event stream.
         if tracer is not None:
@@ -341,6 +369,32 @@ class Pipeline(Runnable[None, PipelineResult]):
         else:
             self._tracer = NoOpTracer()
         self._event_emitter: QueueEmitter | None = None
+
+    # --- Copy / serialization protocols ---------------------------------
+    # The WARN-dedup ``threading.Lock`` added for #56 is neither copyable nor
+    # picklable, so each protocol is handled explicitly:
+    #   * copy.copy  -> __copy__: shallow, SHARES the lock + dedup set so a
+    #     batch_run/abatch_run batch dedups each preflight WARN once as a unit.
+    #   * copy.deepcopy / pickle -> __getstate__/__setstate__: a fully
+    #     independent clone with a freshly built lock.
+    # Defining __copy__ is required: without it, __getstate__/__setstate__
+    # would also drive copy.copy and silently break the shared-lock contract.
+
+    def __copy__(self) -> Pipeline:
+        """Shallow copy that shares the WARN-dedup lock and set across clones."""
+        clone = self.__class__.__new__(self.__class__)
+        clone.__dict__.update(self.__dict__)
+        return clone
+
+    def __getstate__(self) -> dict:
+        """Omit the unpicklable lock for pickle/deepcopy; rebuilt in setstate."""
+        state = self.__dict__.copy()
+        state.pop("_warned_preflight_lock", None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._warned_preflight_lock = threading.Lock()
 
     @staticmethod
     def _reject_config_tenant(cfg: RunnableConfig | None) -> None:
@@ -379,8 +433,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         When enabled (the default), ``run()`` calls ``validate_model()`` on
         each step's provider before issuing any generation calls. ``NOT_FOUND``
         raises ``ProviderError(MODEL_ERROR)``; ``OK_PROVISIONAL`` and
-        ``UNKNOWN_PERMISSIVE`` emit a one-per-process WARN; ``OK_AUTHORITATIVE``
-        is silent.
+        ``UNKNOWN_PERMISSIVE`` emit a WARN once per (provider, slug) per
+        Pipeline instance; ``OK_AUTHORITATIVE`` is silent.
 
         Disable for hot paths where preflight overhead matters and the
         caller has already validated models out-of-band, or when running
@@ -557,14 +611,19 @@ class Pipeline(Runnable[None, PipelineResult]):
         )
         return self
 
-    def _validate_steps(self) -> None:
-        """Validate step capabilities before execution. Fails loud on mismatches."""
+    def _check_step_capabilities(self) -> None:
+        """Validate modality support and chain-input compatibility for every step.
+
+        CPU-only checks (no network I/O). Separated from ``_validate_models`` so
+        the fast, cheap assertions can run inline on the event loop while the
+        slow model-preflight can be offloaded to a thread in async contexts.
+        """
         for i, ps in enumerate(self._steps):
             caps = ps.provider.get_capabilities()
             if caps is None:
                 continue
 
-            # Check modality support
+            # Modality support
             if caps.supported_modalities and ps.modality not in caps.supported_modalities:
                 supported = ", ".join(str(m) for m in caps.supported_modalities)
                 msg = (
@@ -588,11 +647,41 @@ class Pipeline(Runnable[None, PipelineResult]):
                 )
                 raise GenblazeError(msg)
 
+    def _validate_steps(self) -> None:
+        """Validate step capabilities and run model preflight. Fails loud on mismatches."""
+        self._check_step_capabilities()
+
         # Model preflight runs after capability validation so a misconfigured
         # step (wrong modality, missing chain support) surfaces a clear error
         # before the slug-validity question even comes up.
         if self._preflight:
             self._validate_models()
+
+    async def _validate_steps_async(self) -> None:
+        """Async variant of ``_validate_steps`` that keeps the event loop free.
+
+        Cheap capability checks run synchronously (CPU-only, negligible). The
+        network-bound ``_validate_models`` phase (ThreadPoolExecutor + provider
+        discovery fetches) is offloaded via ``asyncio.to_thread`` so concurrent
+        coroutines keep running during the preflight window.
+
+        The single-flight discovery/probe cache inside each provider makes
+        off-thread dispatch safe -- concurrent fetches deduplicate at the
+        provider level.
+
+        Cancellation note: cancelling the awaiting task raises CancelledError
+        here, but the offloaded worker runs to completion (Python can't
+        interrupt the blocking fetch). The only residue is benign -- cache
+        fill and a possible WARN may land after the caller has gone.
+        """
+        # Capabilities before model preflight (see _validate_steps): a
+        # misconfigured step must surface before the slug-validity question.
+        # Cheap modality/chain-input checks run inline, no I/O.
+        self._check_step_capabilities()
+
+        # Network-bound model preflight: offload so the event loop stays free.
+        if self._preflight:
+            await asyncio.to_thread(self._validate_models)
 
     def _validate_models(self) -> None:
         """Preflight: validate every step's model in parallel.
@@ -607,8 +696,8 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Behavior on outcome:
         - ``NOT_FOUND``: raise ``ProviderError(MODEL_ERROR)`` immediately.
-        - ``OK_PROVISIONAL``: log WARN once per (provider, slug) per process.
-        - ``UNKNOWN_PERMISSIVE``: log WARN once per (provider, slug) per process.
+        - ``OK_PROVISIONAL``: WARN once per (provider, slug) per Pipeline instance.
+        - ``UNKNOWN_PERMISSIVE``: WARN once per (provider, slug) per Pipeline instance.
         - ``OK_AUTHORITATIVE``: silent.
         """
         if not self._steps:
@@ -675,8 +764,7 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         key = (ps.provider.name, ps.model)
         if result.outcome is ValidationOutcome.OK_PROVISIONAL:
-            if key not in self._warned_preflight:
-                self._warned_preflight.add(key)
+            if self._warn_once(key):
                 logger.warning(
                     "preflight.provisional step=%d provider=%s model=%s "
                     "family=%s detail=%s — liveness unverifiable; "
@@ -688,8 +776,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     result.detail,
                 )
         elif result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE:
-            if key not in self._warned_preflight:
-                self._warned_preflight.add(key)
+            if self._warn_once(key):
                 logger.warning(
                     "preflight.unknown step=%d provider=%s model=%s — "
                     "no family matched; permissive fallback applies",
@@ -698,6 +785,22 @@ class Pipeline(Runnable[None, PipelineResult]):
                     ps.model,
                 )
         # OK_AUTHORITATIVE: silent.
+
+    def _warn_once(self, key: tuple[str, str]) -> bool:
+        """Atomically claim ``key`` for a one-time WARN; return True the first
+        time it is seen, False thereafter.
+
+        The check-then-add runs under a lock so concurrent _validate_models
+        runs (abatch_run clones share this set via shallow copy.copy, each
+        dispatched to its own asyncio.to_thread worker) can't both emit the
+        same WARN. Logging is left to the caller so the loop's I/O happens
+        outside the lock.
+        """
+        with self._warned_preflight_lock:
+            if key in self._warned_preflight:
+                return False
+            self._warned_preflight.add(key)
+            return True
 
     def _resolve_inputs(
         self,
@@ -723,14 +826,153 @@ class Pipeline(Runnable[None, PipelineResult]):
                         f"input_from index {idx} is out of range for step {step_index}"
                         f" (only {step_index} prior steps completed)"
                     )
-                    raise GenblazeError(msg)
+                    raise _InputResolutionError(msg)
             assets: list[Asset] = []
             for idx in ps.input_from:
-                assets.extend(completed_steps[idx].assets)
+                upstream = completed_steps[idx]
+                if upstream.status != StepStatus.SUCCEEDED:
+                    upstream_label = (
+                        "failed upstream step"
+                        if upstream.status == StepStatus.FAILED
+                        else "upstream step"
+                    )
+                    msg = (
+                        f"input_from index {idx} for step {step_index} points to "
+                        f"{upstream_label} {idx} ({upstream.step_id}) with status "
+                        f"{upstream.status.value}"
+                    )
+                    raise _InputResolutionError(msg)
+                if not upstream.assets:
+                    msg = (
+                        f"input_from index {idx} for step {step_index} resolved no assets "
+                        f"from upstream step {idx}"
+                    )
+                    raise _InputResolutionError(msg)
+                assets.extend(upstream.assets)
             return assets
         if self._chain:
             return prev_assets
         return None
+
+    def _build_or_prefail_step(
+        self,
+        ps: _PipelineStep,
+        step_index: int,
+        completed_steps: list[Step],
+        prev_assets: list[Asset],
+        *,
+        step_id: str | None = None,
+    ) -> _PreparedStep:
+        """Build a runnable step or a FAILED step for unavailable input_from assets."""
+        try:
+            inputs = self._resolve_inputs(ps, step_index, completed_steps, prev_assets)
+        except _InputResolutionError as exc:
+            step = self._build_input_resolution_failure_step(ps, exc, step_id=step_id)
+            return _PreparedStep(step=step, prefailed=True)
+        return _PreparedStep(step=self._build_step(ps, inputs, step_id=step_id))
+
+    def _build_input_resolution_failure_step(
+        self,
+        ps: _PipelineStep,
+        error: _InputResolutionError,
+        *,
+        step_id: str | None = None,
+    ) -> Step:
+        """Build a failed Step when declared input dependencies are unavailable."""
+        if isinstance(ps.prompt, PromptTemplate):
+            msg = (
+                "Step prompt is a PromptTemplate but was not rendered. "
+                "Use batch_run() with dicts or call template.render() "
+                "before passing to step()."
+            )
+            raise GenblazeError(msg)
+
+        # Input resolution failed before a provider input list exists, so this
+        # intentionally records no Step.inputs and never calls provider hooks
+        # such as normalize_params(). Exception failures use _make_failed_step(),
+        # which preserves caller-supplied external_inputs.
+        params = dict(ps.params)
+        _reject_credentials_in_params(params, ps.provider.name, ps.model)
+        seed = params.pop("seed", None)
+        negative_prompt = params.pop("negative_prompt", None)
+        metadata = self._build_step_metadata(ps)
+        metadata["failure_reason"] = _INPUT_RESOLUTION_FAILURE_REASON
+        metadata["provider_invoked"] = False
+        now = utc_now()
+        step_kwargs: dict[str, Any] = dict(
+            provider=ps.provider.name,
+            model=ps.model,
+            prompt=ps.prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            params=params,
+            modality=ps.modality,
+            step_type=ps.step_type,
+            status=StepStatus.FAILED,
+            inputs=[],
+            assets=[],
+            error=sanitize_error(str(error)),
+            error_code=ProviderErrorCode.INVALID_INPUT,
+            started_at=now,
+            completed_at=now,
+            metadata=metadata,
+        )
+        if step_id is not None:
+            step_kwargs["step_id"] = step_id
+        return Step(**step_kwargs)
+
+    def _emit_tracer_step_start(self, step: Step, ctx: _StepContext) -> None:
+        """Emit the tracer start hook with the shared step lifecycle shape."""
+        safe_call(
+            self._tracer,
+            "on_step_start",
+            ctx.run_id,
+            step,
+            step_index=ctx.step_index,
+            total_steps=ctx.total_steps,
+        )
+
+    def _emit_tracer_step_end(
+        self,
+        step: Step,
+        ctx: _StepContext,
+        *,
+        duration_ms: float,
+    ) -> None:
+        """Emit the tracer end hook with the shared step lifecycle shape."""
+        safe_call(
+            self._tracer,
+            "on_step_end",
+            ctx.run_id,
+            step,
+            duration_ms=duration_ms,
+            step_index=ctx.step_index,
+        )
+
+    def _record_prefailed_step(self, step: Step, ctx: _StepContext) -> Step:
+        """Emit tracer lifecycle hooks for a step that failed before provider invoke."""
+        logger.warning(
+            "step.prefailed run_id=%s step_index=%d reason=%s provider=%s model=%s "
+            "error_code=%s provider_invoked=false",
+            ctx.run_id,
+            ctx.step_index,
+            step.metadata.get("failure_reason"),
+            step.provider,
+            step.model,
+            step.error_code.value if step.error_code else None,
+        )
+        self._emit_tracer_step_start(step, ctx)
+        self._emit_tracer_step_end(step, ctx, duration_ms=0.0)
+        return step
+
+    def _build_step_metadata(self, ps: _PipelineStep) -> dict[str, Any]:
+        """Build persisted pipeline graph metadata for a deferred step."""
+        metadata: dict[str, Any] = {}
+        if ps.fallback_models:
+            metadata["_fallback_models"] = ps.fallback_models
+        if ps.input_from is not None:
+            metadata["_input_from"] = ps.input_from
+        return metadata
 
     def _build_step(
         self,
@@ -770,11 +1012,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         negative_prompt = normalized.pop("negative_prompt", None)
 
         # Persist pipeline graph info in metadata for faithful replay
-        metadata: dict[str, Any] = {}
-        if ps.fallback_models:
-            metadata["_fallback_models"] = ps.fallback_models
-        if ps.input_from is not None:
-            metadata["_input_from"] = ps.input_from
+        metadata = self._build_step_metadata(ps)
 
         step_kwargs: dict[str, Any] = dict(
             provider=ps.provider.name,
@@ -872,6 +1110,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
             self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
 
+        if result.status == StepStatus.FAILED and result.error:
+            # Providers usually sanitize their own failures. This pipeline
+            # boundary backstops adapters that return failed Steps directly so
+            # manifests, logs, and stream events share the same redaction cap.
+            result.error = sanitize_error(result.error)
+
         return result
 
     def _execute_step(
@@ -906,14 +1150,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
-        safe_call(
-            self._tracer,
-            "on_step_start",
-            ctx.run_id,
-            step,
-            step_index=ctx.step_index,
-            total_steps=ctx.total_steps,
-        )
+        self._emit_tracer_step_start(step, ctx)
         t0 = time.monotonic()
         final: Step = step  # fallback for on_step_end if provider.invoke raises
         try:
@@ -931,13 +1168,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             return final
         finally:
-            safe_call(
-                self._tracer,
-                "on_step_end",
-                ctx.run_id,
+            self._emit_tracer_step_end(
                 final,
+                ctx,
                 duration_ms=(time.monotonic() - t0) * 1000,
-                step_index=ctx.step_index,
             )
 
     async def _execute_step_async(
@@ -974,14 +1208,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             if cached is not None:
                 return cached
 
-        safe_call(
-            self._tracer,
-            "on_step_start",
-            ctx.run_id,
-            step,
-            step_index=ctx.step_index,
-            total_steps=ctx.total_steps,
-        )
+        self._emit_tracer_step_start(step, ctx)
         t0 = time.monotonic()
         final: Step = step  # fallback for on_step_end if ainvoke raises
         try:
@@ -1036,13 +1263,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             return final
         finally:
-            safe_call(
-                self._tracer,
-                "on_step_end",
-                ctx.run_id,
+            self._emit_tracer_step_end(
                 final,
+                ctx,
                 duration_ms=(time.monotonic() - t0) * 1000,
-                step_index=ctx.step_index,
             )
 
     def _finalize(
@@ -1139,8 +1363,10 @@ class Pipeline(Runnable[None, PipelineResult]):
             or has_tracer
             or self._event_emitter is not None
         )
+        merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
+        merged["run_id"] = run_id
         if not needs_install:
-            return config
+            return merged
 
         def _composite_progress(ev: Any) -> None:
             # User callback first so their side effects see the raw ProgressEvent
@@ -1153,7 +1379,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._call_user_callback(user_on_retry, ev, "on_retry")
             self._emit_event(ev)
 
-        merged: RunnableConfig = RunnableConfig(**config) if config else RunnableConfig()
         merged["on_progress"] = _composite_progress
         merged["on_retry"] = _composite_retry
         return merged
@@ -1216,7 +1441,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         )
 
     def _emit_step_complete_event(self, step_event: StepCompleteEvent, run_id: str) -> None:
-        # Tracer already gets on_step_end inside _execute_step; emitter-only here.
+        # Tracer on_step_end is paired in _execute_step, _execute_step_async,
+        # and _record_prefailed_step via _emit_tracer_step_end; emitter-only here.
         if self._event_emitter is not None:
             self._event_emitter.on_step_complete(step_event)
 
@@ -1390,6 +1616,27 @@ class Pipeline(Runnable[None, PipelineResult]):
         effective_config = config if config is not None else self._config
         return await self.arun(_config_override=effective_config)
 
+    @staticmethod
+    def _close_sink_quietly(sink: BaseSink | None) -> None:
+        """Release a sink's run-scoped resources, swallowing teardown errors.
+
+        No-op when ``sink`` is None or the sink opts out via
+        ``_close_with_run = False`` (process-scoped/fire-and-forget sinks such
+        as WebhookSink manage their own lifecycle and must not be closed — or
+        joined — by the pipeline). A failed close is logged, never raised, so it
+        cannot mask the run's real result. Shared by run()/arun()/batch teardown.
+        """
+        if sink is None or not getattr(sink, "_close_with_run", True):
+            return
+        try:
+            sink.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup; log and continue
+            logger.warning(
+                "%s.close() raised during pipeline teardown; resources may not have been released",
+                type(sink).__name__,
+                exc_info=True,
+            )
+
     def run(
         self,
         *,
@@ -1404,11 +1651,17 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_step_complete: Any = None,
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
+        _owns_sink: bool = True,
     ) -> PipelineResult:
         """Execute all steps synchronously and return a PipelineResult.
 
         Args:
-            sink: Optional sink to write run data to.
+            sink: Optional sink to write run data to. Sinks with run-scoped
+                resources (e.g. ObjectStorageSink) are closed automatically when
+                the run finishes (their ``close()`` fires in a ``finally`` block),
+                so such a sink is spent afterward — construct a fresh one per run.
+                Fire-and-forget sinks like WebhookSink opt out
+                (``_close_with_run = False``) and stay open/reusable.
             fail_fast: If True (default), stop on first failed step.
             raise_on_failure: If ``True``, raise :class:`PipelineError` when any
                 step ends in ``StepStatus.FAILED``. If ``False``, the failed
@@ -1449,11 +1702,19 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
-        # Reject an invalid config-level tenant before model preflight (which may
-        # do network work), so a bad invoke(config={"tenant_id": ...}) fails fast.
-        self._reject_config_tenant(config)
-
-        self._validate_steps()
+        # Preflight runs before the main try/finally. When run() owns the sink
+        # it must still close it on an early preflight/validation failure
+        # (issue #57) — share the same teardown helper, no duplicated close.
+        try:
+            # Reject an invalid config-level tenant before model preflight (which
+            # may do network work), so a bad invoke(config={"tenant_id": ...})
+            # fails fast.
+            self._reject_config_tenant(config)
+            self._validate_steps()
+        except BaseException:
+            if _owns_sink:
+                self._close_sink_quietly(sink)
+            raise
 
         run_id = new_id()
         spinner: Spinner | None = None
@@ -1502,8 +1763,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                         )
                         raise PipelineTimeoutError(msg)
 
-                inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                prepared = self._build_or_prefail_step(
+                    ps,
+                    i - 1,
+                    completed_steps,
+                    prev_assets,
+                    step_id=step_ids[i - 1],
+                )
+                step = prepared.step
                 logger.debug(
                     "Executing step %d/%d: %s/%s",
                     i,
@@ -1511,7 +1779,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                     ps.provider.name,
                     ps.model,
                 )
-                ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                 self._emit_step_start(ctx, step, ps)
                 if spinner is not None:
                     spinner.step_starting(
@@ -1521,7 +1788,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                         step_index=i - 1,
                         total=total_steps,
                     )
-                result = self._execute_step(ps, step, config, ctx)
+                # Input-resolution prefail handling is shared; the runner call
+                # site only differs in sync vs async provider invocation.
+                if prepared.prefailed:
+                    result = self._record_prefailed_step(step, ctx)
+                else:
+                    result = self._execute_step(ps, step, config, ctx)
                 if spinner is not None:
                     spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                 completed_steps.append(result)
@@ -1571,6 +1843,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             if spinner is not None:
                 spinner.stop()
+            # Release the sink's run-scoped resources (eager-upload pool, backend
+            # connection pool). The pipeline is the last user of the sink for
+            # this run, so this fires in the finally to cover both normal
+            # completion and any error path that bypasses write_run (issue #57).
+            # Skipped when a caller (e.g. batch_run) owns the sink across runs,
+            # or when the sink opts out via _close_with_run=False.
+            if _owns_sink:
+                self._close_sink_quietly(sink)
 
     async def arun(
         self,
@@ -1587,6 +1867,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_step_complete: Any = None,
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
+        _owns_sink: bool = True,
     ) -> PipelineResult:
         """Execute steps asynchronously and return a PipelineResult.
 
@@ -1594,7 +1875,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         When chain=True, steps run sequentially (each feeds the next).
 
         Args:
-            sink: Optional sink to write run data to.
+            sink: Optional sink to write run data to. Sinks with run-scoped
+                resources (e.g. ObjectStorageSink) are closed automatically when
+                the run finishes (their ``close()`` fires in a ``finally`` block),
+                so such a sink is spent afterward — construct a fresh one per run.
+                Fire-and-forget sinks like WebhookSink opt out
+                (``_close_with_run = False``) and stay open/reusable.
             fail_fast: If True (default), stop on first failed step.
             timeout: Per-step timeout in seconds (builds RunnableConfig internally).
             max_retries: Per-step max retries (builds RunnableConfig internally).
@@ -1637,11 +1923,22 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
         else:
             config = self._config
-        # Reject an invalid config-level tenant before model preflight (which may
-        # do network work), so a bad ainvoke(config={"tenant_id": ...}) fails fast.
-        self._reject_config_tenant(config)
-
-        self._validate_steps()
+        # Preflight runs before the main try/finally. When arun() owns the sink
+        # it must still close it on an early preflight/validation failure
+        # (issue #57); offload the blocking close to a thread to keep the loop
+        # responsive. Share the same teardown helper — no duplicated close.
+        try:
+            # Reject an invalid config-level tenant before model preflight (which
+            # may do network work), so a bad ainvoke(config={"tenant_id": ...})
+            # fails fast.
+            self._reject_config_tenant(config)
+            # Offload blocking preflight (ThreadPoolExecutor + provider discovery)
+            # to a thread so the event loop stays free during the preflight window.
+            await self._validate_steps_async()
+        except BaseException:
+            if _owns_sink:
+                await asyncio.to_thread(self._close_sink_quietly, sink)
+            raise
 
         run_id = new_id()
         # input_from requires sequential execution (needs prior step results)
@@ -1698,8 +1995,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                             )
                             raise PipelineTimeoutError(msg)
 
-                    inputs = self._resolve_inputs(ps, i - 1, completed_steps, prev_assets)
-                    step = self._build_step(ps, inputs, step_id=step_ids[i - 1])
+                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
+                    prepared = self._build_or_prefail_step(
+                        ps,
+                        i - 1,
+                        completed_steps,
+                        prev_assets,
+                        step_id=step_ids[i - 1],
+                    )
+                    step = prepared.step
                     logger.debug(
                         "Executing step %d/%d: %s/%s",
                         i,
@@ -1707,7 +2011,6 @@ class Pipeline(Runnable[None, PipelineResult]):
                         ps.provider.name,
                         ps.model,
                     )
-                    ctx = _StepContext(run_id=run_id, step_index=i - 1, total_steps=total_steps)
                     self._emit_step_start(ctx, step, ps)
                     if spinner is not None:
                         spinner.step_starting(
@@ -1717,7 +2020,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                             step_index=i - 1,
                             total=total_steps,
                         )
-                    result = await self._execute_step_async(ps, step, config, ctx)
+                    # Input-resolution prefail handling is shared; the runner call
+                    # site only differs in sync vs async provider invocation.
+                    if prepared.prefailed:
+                        result = self._record_prefailed_step(step, ctx)
+                    else:
+                        result = await self._execute_step_async(ps, step, config, ctx)
                     if spinner is not None:
                         spinner.step_done(ok=result.status == StepStatus.SUCCEEDED)
                     completed_steps.append(result)
@@ -1868,16 +2176,24 @@ class Pipeline(Runnable[None, PipelineResult]):
             )
             if spinner is not None:
                 spinner.stop()
+            # Release the sink's run-scoped resources (issue #57). close() is
+            # blocking (ThreadPoolExecutor.shutdown) — offload to a thread so the
+            # event loop stays responsive while it drains. If the surrounding
+            # task is cancelled mid-await the close keeps running in its thread
+            # but is no longer awaited here; acceptable for cleanup. Skipped when
+            # a caller owns the sink (batch) or it opts out (_close_with_run).
+            if _owns_sink:
+                await asyncio.to_thread(self._close_sink_quietly, sink)
 
     def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
         """Create a FAILED step from an unhandled exception."""
-        from genblaze_core.providers.base import _sanitize_error, classify_api_error
+        from genblaze_core.providers.base import classify_api_error
 
         # Preserve external_inputs on the failed-step record so the manifest
         # shows what the step was supposed to consume.
         step = self._build_step(ps, ps.external_inputs)
         step.status = StepStatus.FAILED
-        step.error = _sanitize_error(str(exc))
+        step.error = sanitize_error(str(exc))
         step.error_code = classify_api_error(exc)
         return step
 
@@ -2053,7 +2369,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                 ``aspect_ratio``, ``quality``, etc. Mutually exclusive with
                 ``prompts=``.
             max_concurrency: Max concurrent pipeline executions (``abatch_run``).
-            sink: Optional sink to write each run to.
+            sink: Optional sink to write each run to. Shared across all items
+                and closed once after the whole batch (not per item), unless the
+                sink opts out via ``_close_with_run = False``.
             fail_fast: If True (default), stop each pipeline on first failure.
             raise_on_failure: See :meth:`run`. Applied per pipeline.
             timeout: Per-step timeout in seconds.
@@ -2085,6 +2403,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         # if requested. Aborting mid-batch on the first failed item would
         # silently lose the remaining results, which is rarely what callers
         # actually want for asset packs / aspect-ratio sweeps / A/B fan-outs.
+        # The batch owns the shared sink across all items: per-item runs must
+        # NOT close it (_owns_sink=False), or item 2+ would write to a closed
+        # sink. The batch closes it once after the loop (issue #57).
         def _run_one(rebuild_steps: list[_PipelineStep]) -> PipelineResult:
             return _build_pipe(rebuild_steps).run(
                 sink=sink,
@@ -2095,23 +2416,28 @@ class Pipeline(Runnable[None, PipelineResult]):
                 on_progress=on_progress,
                 pipeline_timeout=pipeline_timeout,
                 on_step_complete=on_step_complete,
+                _owns_sink=False,
             )
 
         results: list[PipelineResult] = []
-        if items is not None:
-            for item in items:
-                results.append(_run_one(self._apply_item_to_steps(self._steps, item)))
-        else:
-            assert prompts is not None  # narrowed by _validate_batch_args
-            for prompt_or_vars in prompts:
-                results.append(
-                    _run_one(
-                        [
-                            replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars))
-                            for ps in self._steps
-                        ]
+        try:
+            if items is not None:
+                for item in items:
+                    results.append(_run_one(self._apply_item_to_steps(self._steps, item)))
+            else:
+                assert prompts is not None  # narrowed by _validate_batch_args
+                for prompt_or_vars in prompts:
+                    results.append(
+                        _run_one(
+                            [
+                                replace(ps, prompt=self._resolve_prompt(ps, prompt_or_vars))
+                                for ps in self._steps
+                            ]
+                        )
                     )
-                )
+        finally:
+            # finally so a pipeline-level error mid-batch still releases the sink.
+            self._close_sink_quietly(sink)
         _maybe_raise_batch_error(results, resolved_raise)
         return results
 
@@ -2153,6 +2479,8 @@ class Pipeline(Runnable[None, PipelineResult]):
             pipe._steps = rebuild_steps
             return pipe
 
+        # The batch owns the shared sink: per-item runs must NOT close it
+        # (_owns_sink=False). The batch closes it once after gather (issue #57).
         async def _run(rebuild_steps: list[_PipelineStep]) -> PipelineResult:
             async with sem:
                 return await _build_pipe(rebuild_steps).arun(
@@ -2164,6 +2492,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                     on_progress=on_progress,
                     pipeline_timeout=pipeline_timeout,
                     on_step_complete=on_step_complete,
+                    _owns_sink=False,
                 )
 
         if items is not None:
@@ -2174,23 +2503,29 @@ class Pipeline(Runnable[None, PipelineResult]):
                 _run([replace(ps, prompt=self._resolve_prompt(ps, p)) for ps in self._steps])
                 for p in prompts
             ]
-        # ``return_exceptions=True`` is load-bearing — without it, a single
-        # ``PipelineTimeoutError`` (or any other non-step exception) would
-        # propagate immediately and cancel every other in-flight task,
-        # silently breaking the "every batch item runs to completion"
-        # promise. Per-item ``PipelineError``s are already suppressed via
-        # ``raise_on_failure=False`` so they never reach this list; anything
-        # we DO see here is a genuine pipeline-level error worth surfacing.
-        results_or_excs = await asyncio.gather(*tasks, return_exceptions=True)
-        results: list[PipelineResult] = []
-        for r in results_or_excs:
-            if isinstance(r, BaseException):
-                # Re-raise the first non-result item so callers see the
-                # original error (timeout, validation, etc.) instead of a
-                # generic BatchPipelineError. Every task has already finished
-                # by the time we get here, so we're not aborting work in flight.
-                raise r
-            results.append(r)
+        try:
+            # ``return_exceptions=True`` is load-bearing — without it, a single
+            # ``PipelineTimeoutError`` (or any other non-step exception) would
+            # propagate immediately and cancel every other in-flight task,
+            # silently breaking the "every batch item runs to completion"
+            # promise. Per-item ``PipelineError``s are already suppressed via
+            # ``raise_on_failure=False`` so they never reach this list; anything
+            # we DO see here is a genuine pipeline-level error worth surfacing.
+            results_or_excs = await asyncio.gather(*tasks, return_exceptions=True)
+            results: list[PipelineResult] = []
+            for r in results_or_excs:
+                if isinstance(r, BaseException):
+                    # Re-raise the first non-result item so callers see the
+                    # original error (timeout, validation, etc.) instead of a
+                    # generic BatchPipelineError. Every task has already finished
+                    # by the time we get here, so we're not aborting work in flight.
+                    raise r
+                results.append(r)
+        finally:
+            # finally so the re-raise path above still releases the shared sink.
+            # Every task has completed before gather returns, so closing once
+            # here cannot race a concurrent on_step_complete/write_run.
+            await asyncio.to_thread(self._close_sink_quietly, sink)
         _maybe_raise_batch_error(results, resolved_raise)
         return results
 

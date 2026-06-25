@@ -170,6 +170,14 @@ class TestObjectStorageSink:
         sink.close()
         assert backend.closed
 
+    def test_close_is_idempotent(self):
+        """Double-close must not error — pipeline and context manager may both call it."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend)
+        sink.close()
+        sink.close()  # second close must be a no-op, not an error
+        assert backend.closed
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_thread_safety(self, mock_urlopen, _mock_dns):
@@ -576,6 +584,26 @@ class TestEagerTransfer:
         assert sink._eager_pool is not None
         sink.close()
         assert sink._eager_pool is None
+
+    def test_close_drains_pool_recreated_after_prior_close(self):
+        """close() must drain a pool that on_step_complete recreated after an
+        earlier close — otherwise a sink reused across runs re-leaks its
+        non-daemon eager workers (issue #57 regression guard)."""
+        sink = ObjectStorageSink(MemoryBackend(), eager_transfer=True)
+        step = self._succeeded_step(self._asset("file:///nonexistent"))
+        with patch.object(sink._transfer, "transfer", return_value="key"):
+            # First run cycle: create pool, then close it.
+            sink.on_step_complete(step, run_id="r1", tenant_id=None, date_str="2026-04-22")
+            assert sink._eager_pool is not None
+            sink.close()
+            assert sink._eager_pool is None
+            # Second run cycle on the same sink: pool is recreated lazily.
+            sink.on_step_complete(step, run_id="r2", tenant_id=None, date_str="2026-04-22")
+            assert sink._eager_pool is not None
+        # The second close must drain the recreated pool, not no-op on _closed.
+        sink.close()
+        assert sink._eager_pool is None
+        assert not any(t.name.startswith("genblaze-eager") for t in threading.enumerate())
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")

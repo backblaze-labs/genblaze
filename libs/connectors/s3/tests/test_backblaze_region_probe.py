@@ -433,3 +433,20 @@ class TestProbeHelperDirect:
         assert results["us-west-002"] == 200
         assert results["us-east-005"] == 404
         assert results["eu-central-003"] == 403
+
+
+def test_reconfigure_for_region_closes_old_client(mock_boto3):
+    """Region auto-correct must close the outgoing client's connection pool
+    before replacing it — otherwise the first client's urllib3 pool is orphaned
+    and close() later releases only the new client (issue #57)."""
+    backend, client0 = _make_unverified_backend(mock_boto3)
+    client1 = MagicMock()
+    mock_boto3.client.return_value = client1  # next boto3.client() yields client1
+
+    backend._reconfigure_for_region("us-east-005")
+
+    client0.close.assert_called_once()
+    assert backend._client is client1
+    # close() now releases the current (new) client; the old one was already shut.
+    backend.close()
+    client1.close.assert_called_once()

@@ -29,6 +29,13 @@ class TestS3StorageBackend:
         backend._region_verified = True
         return backend, mock_client
 
+    def test_close_releases_boto3_client(self, mock_boto3):
+        """close() must close the boto3 client so its urllib3 connection pool
+        is released — the half of issue #57 the base no-op never delivered."""
+        backend, mock_client = self._make_backend(mock_boto3)
+        backend.close()
+        mock_client.close.assert_called_once()
+
     def test_put_uses_upload_fileobj(self, mock_boto3):
         """put() routes through upload_fileobj so small+large payloads share the
         managed-transfer code path (auto-multipart when > threshold)."""
@@ -150,12 +157,6 @@ class TestS3StorageBackend:
             ExpiresIn=600,
         )
         assert url == "https://signed-url"
-
-    def test_close_noop(self, mock_boto3):
-        """close() is a no-op — boto3 clients don't have a close() method."""
-        backend, mock_client = self._make_backend(mock_boto3)
-        backend.close()  # Should not raise
-        mock_client.close.assert_not_called()
 
     def test_exists_true_on_head_success(self, mock_boto3):
         backend, mock_client = self._make_backend(mock_boto3)

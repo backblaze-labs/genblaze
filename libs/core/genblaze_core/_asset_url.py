@@ -7,6 +7,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 _CREDENTIAL_QUERY_EXCLUDE = frozenset(
     {
         "access_token",
+        "authorization",  # B2 download-auth / CDN edge-auth bearer tokens
         "awsaccesskeyid",
         "expires",
         "expires_in",
@@ -20,6 +21,10 @@ _CREDENTIAL_QUERY_EXCLUDE = frozenset(
         "x-id",
     }
 )
+# AWS SigV2 presigned URLs carry AWSAccessKeyId + Expires + Signature. The first
+# two are already in the unconditional set; `signature` is gated here so a bare
+# resource param literally named "signature" is not stripped (see GCS/CloudFront).
+_AWS_SIGV2_SIGNED_QUERY_PARAMS = frozenset({"signature"})
 _AZURE_SAS_QUERY_PARAMS = frozenset(
     {
         "se",
@@ -85,6 +90,7 @@ def _is_credential_query_param(
     is_azure_sas: bool,
     is_cloudfront_signed: bool,
     is_gcs_v2_signed: bool,
+    is_aws_sigv2: bool,
 ) -> bool:
     key = name.lower()
     return (
@@ -93,6 +99,7 @@ def _is_credential_query_param(
         or (is_azure_sas and key in _AZURE_SAS_QUERY_PARAMS)
         or (is_cloudfront_signed and key in _CLOUDFRONT_SIGNED_QUERY_PARAMS)
         or (is_gcs_v2_signed and key in _GCS_V2_SIGNED_QUERY_PARAMS)
+        or (is_aws_sigv2 and key in _AWS_SIGV2_SIGNED_QUERY_PARAMS)
     )
 
 
@@ -105,6 +112,7 @@ def strip_asset_url_credentials(url: str) -> str:
     is_azure_sas = bool(query_keys & {"sv", "se", "sp", "sr", "ss", "srt"})
     is_cloudfront_signed = "key-pair-id" in query_keys
     is_gcs_v2_signed = "googleaccessid" in query_keys
+    is_aws_sigv2 = "awsaccesskeyid" in query_keys
     query_items = [
         (name, value)
         for name, value in query_pairs
@@ -113,6 +121,7 @@ def strip_asset_url_credentials(url: str) -> str:
             is_azure_sas=is_azure_sas,
             is_cloudfront_signed=is_cloudfront_signed,
             is_gcs_v2_signed=is_gcs_v2_signed,
+            is_aws_sigv2=is_aws_sigv2,
         )
     ]
     query = _encode_query_pairs(

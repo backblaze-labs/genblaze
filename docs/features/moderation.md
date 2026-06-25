@@ -1,7 +1,8 @@
 <!-- last_verified: 2026-06-17 -->
 # Moderation Hooks
 
-`ModerationHook` provides pre/post-step content screening for prompt text, text carried by input assets, and generated outputs.
+`ModerationHook` provides pre/post-step content screening for prompt text,
+manifest-visible input text, and generated outputs.
 
 ## Usage
 
@@ -29,7 +30,7 @@ result = (
 
 ## Execution order
 
-1. **Pre-step moderation** — `check_prompt()` before generation. Rejected prompts or textual inputs skip the provider entirely.
+1. **Pre-step moderation** — `check_prompt()` before generation. Rejected prompts or recognized textual inputs skip the provider entirely.
 2. **Cache lookup** — only reached if moderation passes.
 3. **Provider invoke** — with fallback model support.
 4. **Post-step moderation** — `check_output()` after generation. Rejected outputs are not cached.
@@ -40,12 +41,18 @@ result = (
 Pre-step moderation runs after pipeline inputs are resolved and before cache lookup or provider invocation. The payload passed to `check_prompt(prompt, params)` includes:
 
 - `Step.prompt` and `Step.negative_prompt` when they are not `None`
-- text carried by `Step.inputs`, including inputs from `external_inputs=`, `input_from=`, and `chain=True`
-- text found in `Asset.metadata["text"]`; strings are used as-is, bytes are decoded as UTF-8 with replacement, and structured values are JSON-stringified
+- text found in `Asset.metadata["text"]` on `Step.inputs`, including inputs from `external_inputs=`, `input_from=`, and `chain=True`; strings are used as-is, bytes are decoded as UTF-8 with replacement, and structured values are JSON-stringified
 
 When prompts and textual inputs are present, they are joined with blank lines and checked once. Promptless steps with textual inputs are moderated. Promptless steps with no textual inputs, such as compositors or transforms that only consume media URLs, still skip pre-step moderation.
 
-The pipeline does not fetch or read `Asset.url` during moderation. For `text/plain` inputs, carry the text in `Asset.metadata["text"]` until a first-class text asset field exists.
+### Security scope
+
+Pre-step moderation does **not** fetch or read `Asset.url`, even for
+`text/plain` assets, and it does not scan arbitrary metadata keys such as
+`caption`, `alt`, or provider-specific payload fields. Those channels remain the
+responsibility of the caller or provider adapter until Genblaze has a first-class
+text asset body field. For text input you want the pipeline to screen, mirror the
+exact text into `Asset.metadata["text"]`.
 
 ## Failure behavior
 

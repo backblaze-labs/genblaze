@@ -23,11 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must independently hash fetched bytes before trusting those bytes (#77).
 - `genblaze-core`: schema 1.6 URL-only hash markers are Python read-supported.
   The canonical marker URL strips known credential, expiry, and response
-  override query parameters for AWS/GCS/B2, CloudFront, Azure SAS, and GCS V2
-  signed URLs while retaining resource-identifying query parameters. Default
-  manifest emission, storage writes, media embedding, and the published JSON
-  Schema/TypeScript spec stay on schema 1.5 for an expand-contract rollout
-  (#77).
+  override query parameters for AWS SigV4/SigV2, GCS, B2, CloudFront, Azure SAS,
+  and GCS V2 signed URLs (including bare `authorization` tokens) while retaining
+  resource-identifying query parameters. Default manifest emission, storage
+  writes, media embedding, and the published JSON Schema/TypeScript spec stay on
+  schema 1.5 for an expand-contract rollout (#77).
+- `genblaze-openai`: `dall-e-2` / `dall-e-3` URL responses are now downloaded
+  immediately to a local `file://` asset with a populated `sha256` and
+  `size_bytes`, instead of being stored as the raw (credential-bearing,
+  ~1-hour) Azure SAS URL. The signed URL is used only for that fetch and never
+  reaches the manifest, step cache, or any sink. This fixes the `.run(sink=...)`
+  transfer path (which previously received a credential-stripped, unfetchable
+  URL) and lets DALL-E outputs verify without a storage sink (#77).
 - `genblaze-cli` 0.3.0 → 0.3.2: raises its `genblaze-core` floor to the first
   core version that exposes `verify_hash()` and output-asset sha256 diagnostics
   (#77).
@@ -55,6 +62,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operators can backfill historical URL-only manifests before enabling strict
   read failures on hot paths (#77).
 
+### Fixed
+
+- `tools/check_pin_parity.py`: extend the pre-publish drift guard to
+  compare `[project.optional-dependencies]` as well as base
+  `[project.dependencies]`. Previously the gate reported
+  `0 drift` for the `genblaze` umbrella even when connector pins in
+  the `all`, `video`, `image`, or `audio` extras diverged from the
+  published wheel, because `Requires-Dist` extras entries were
+  silently filtered out. The gate now groups PyPI extras by name and
+  diffs each extra independently, naming the extra in the drift
+  report (e.g. `[all]`). Adds `tools/tests/test_check_pin_parity.py`
+  and wires `pytest tools/tests/` into `make test`. Updates
+  RELEASING.md to accurately describe the gate's scope (#23).
+
 ### Added
 
 - `genblaze-hume`: new provider adapter for Hume AI **Octave TTS** (audio /
@@ -65,9 +86,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pricing (register per-character rates via the recipe in
   `docs/reference/pricing-recipes.md`). Available as `pip install genblaze-hume`
   or the `genblaze[hume]` / `genblaze[audio]` extras.
+- `genblaze-assemblyai`: new provider adapter for **AssemblyAI** speech-to-text
+  / transcription — the first connector that *consumes* audio and *produces*
+  text. Async `BaseProvider` (submit / poll / fetch_output) that resolves an
+  audio URL (`step.inputs[0]` → `params["audio_url"]` → `prompt`, SSRF-validated
+  via `validate_chain_input_url`) and emits a hash-verified **TEXT asset**
+  (`text:{sha256}`, `media_type="text/plain"`, transcript in `metadata["text"]`)
+  with word-level timings on `AudioMetadata.word_timings` (converted ms → s).
+  `step.model` is sent on the SDK's plural `speech_models` field (the live API
+  has deprecated the singular `speech_model` field and the legacy best/nano
+  aliases). Ships a pattern-keyed `assemblyai-speech` family (`universal-3-pro`
+  / `universal-2`) with a permissive TEXT fallback,
+  `DiscoverySupport.NONE`, and no hardcoded pricing (register
+  per-minute-of-input-audio rates via the recipe in
+  `docs/reference/pricing-recipes.md`). Available as
+  `pip install genblaze-assemblyai` or the `genblaze[assemblyai]` extra.
+
+### Security
+
+- `genblaze-core`: DNS pinning closes the rebinding / TOCTOU window on all
+  outbound HTTP paths. `resolve_ssrf` resolves the hostname once, validates
+  every returned IP, and returns the pinned address. Callers connect to that
+  IP directly — the HTTP client never performs a second independent resolution.
+  TLS SNI and cert verification continue to use the original hostname. Affects
+  `storage/transfer.py` (urllib3 `HTTPSConnectionPool` per hop), and
+  `webhooks/notifier.py` and `genblaze_openai/dalle.py` (direct
+  `http.client.HTTPSConnection` with pre-connected pinned socket) (#9).
+- `genblaze-core`: SSRF guard now validates every HTTP redirect hop in the
+  asset transfer path (`storage/transfer.py`). Previously, `check_ssrf` ran
+  only on the initial URL; a CDN redirect to a private/loopback/IMDS address
+  bypassed the guard entirely. Redirects are now followed manually with a
+  bounded loop (max 5 hops); each `Location` is re-resolved and re-pinned
+  before following, and downgrade to non-HTTPS is rejected (#9).
+- `genblaze-core`: Webhook delivery (`webhooks/notifier.py`) switched from
+  `urllib.request` to `http.client.HTTPSConnection` directly. `http.client`
+  has no redirect handler, so a 3xx response is treated as a delivery failure
+  rather than following the `Location` header, preventing a server-side
+  redirect to an internal host from bypassing the SSRF guard (#9).
+- `genblaze-openai`: `_download_https_to_temp` now uses `http.client`
+  directly with a pinned DNS connection, closing both the redirect-bypass and
+  DNS rebinding vectors for edit-input downloads (#9).
+- `genblaze-core`: IPv4-mapped IPv6 addresses (`::ffff:169.254.x.x`,
+  `::ffff:10.x.x.x`, etc.) are now normalized to their IPv4 form before the
+  SSRF blocklist check. Previously, a DNS response returning an IPv4-mapped
+  address bypassed all IPv4 `BLOCKED_NETWORKS` entries (#9).
+- `genblaze-core`: HTTP `Location` headers in redirect chains are now resolved
+  with `urljoin` before re-validation, so RFC-legal relative redirects work
+  and relative redirects to private targets are still rejected (#9).
+- **Egress proxy note:** DNS pinning requires a direct TCP connection to the
+  validated IP; `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` env vars are ignored
+  by design on all pinned outbound paths (transfer, webhook, dalle). Deployments
+  that require an egress proxy should allowlist the target hosts at the proxy
+  instead of relying on env-var forwarding.
 
 ### Fixed
 
+- `genblaze-core`: `Pipeline.arun()` no longer blocks the event loop during
+  model preflight. The network-bound phase (`_validate_models`, which uses a
+  `ThreadPoolExecutor` for provider discovery fetches) is now offloaded via
+  `asyncio.to_thread`, allowing concurrent coroutines to keep running during
+  the preflight window. Cheap capability checks (modality, chain-input) still
+  run synchronously. `Pipeline.run()` behavior is unchanged (#56).
+- `genblaze-core`: `Pipeline.run()`/`arun()` now release a sink's run-scoped
+  resources in their `finally` block (and on early preflight/validation
+  failure), shutting down the `ObjectStorageSink` eager-upload
+  `ThreadPoolExecutor` and releasing the backend connection pool —
+  `S3StorageBackend.close()` now closes the boto3 client. Previously non-daemon
+  worker threads stayed alive after `run()` returned and in-flight eager-upload
+  futures leaked on error paths that bypassed `write_run`. Sinks declare
+  lifecycle ownership via `BaseSink._close_with_run` (default `True`):
+  run-scoped sinks (`ObjectStorageSink`) are closed by the pipeline and are
+  single-use, while fire-and-forget `WebhookSink` opts out (`False`) so it is
+  never closed — keeping webhook delivery non-blocking and the sink reusable
+  across runs. `batch_run()`/`abatch_run()` close their shared sink once after
+  the whole batch rather than after the first item. `BaseSink` gains
+  `__enter__`/`__exit__` for callers that manage the lifecycle outside a
+  `run()`. **Behavior change:** a run-scoped sink passed to `run()`/`arun()` is
+  closed afterward — construct a fresh one per run rather than reusing it (#57).
+- **`genblaze-openai`**, **`genblaze-google`**: remove hardcoded USD per-token
+  rate tables (`_RATES`) from the standalone `chat()` helpers and return
+  `cost_usd=None` unconditionally, consistent with the 0.3.0 contract that
+  connector modules ship zero static rate tables (Pipeline-Step providers
+  register rates via `PricingContext`/`ModelSpec`). The standalone `chat()`
+  helpers have no model registry, so callers that relied on
+  `ChatResponse.cost_usd` being non-`None` for known models must now compute
+  cost from `tokens_in`/`tokens_out` with their own rates (see
+  `docs/reference/pricing-recipes.md`). Adds
+  `test_pricing_phaseout.py` to `genblaze-core` — a lint-style CI guard that
+  fails if any future connector reintroduces a `_RATES`/`_PRICING` constant (#13).
+- `genblaze-core`: post-submit step-level retries now resume the existing
+  upstream prediction instead of submitting a new one, including transient
+  checkpoint failures after `submit()` returns by replaying idempotent
+  `on_submit(step_id, prediction_id)` callbacks before retry resume (#70).
+- `genblaze-core`: fan-in consumers using `input_from` now fail before provider
+  invocation when a referenced producer step failed, produced no assets, or
+  points at an out-of-range prior step, preventing a downstream step from 
+  reporting success with empty declared inputs (#69). Affected pipelines that
+  previously appeared green can now report `FAILED`/`INVALID_INPUT`, which may
+  increase status-based alerts and change manifest hashes once during rollout.
+  Route or re-baseline those alerts using
+  `metadata.failure_reason="input_resolution"`; these pre-failed steps also
+  carry `metadata.provider_invoked=false` for telemetry filtering.
+- `genblaze-core`: failed `Step.error` values now use the shared sanitizer for
+  OpenAI/Anthropic/Google/Replicate keys, AWS access key IDs and secret access
+  keys, Backblaze B2 application keys, JWTs, bearer/token headers, API-key
+  assignments, and basic-auth URL credentials, then truncate to 500 characters
+  before manifest, log, or stream-event emission. This redaction hardening ships
+  with #69 because fan-in pre-fail telemetry can otherwise re-surface untrusted
+  upstream provider errors on dependent steps.
 - `genblaze-core`: `StepCache` now partitions the step cache key by `tenant_id`
   when a tenant is set (via `Pipeline(tenant_id=...)`, or passed to
   `StepCache.get`/`put`), so a cache shared across tenants no longer serves one

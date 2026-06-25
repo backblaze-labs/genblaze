@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-20 -->
+<!-- last_verified: 2026-06-24 -->
 # Object Storage
 
 Upload run assets and manifests to any S3-compatible bucket. **Backblaze B2 is
@@ -34,6 +34,27 @@ storage = ObjectStorageSink(
 )
 
 result = Pipeline("my-pipeline").step(...).run(sink=storage)
+```
+
+After `run()` returns, the pipeline releases the sink automatically
+(`sink.close()` fires in the pipeline's `finally` block). The eager-upload
+pool and the backend connection pool (the `S3StorageBackend` boto3 client) are
+shut down at that point — no manual cleanup needed when you pass the sink to
+`run()`. Because the sink is closed afterward, treat it as single-use:
+construct a fresh `ObjectStorageSink` per run rather than reusing one across
+calls.
+
+For one-off scripts or tests that construct the sink outside a `run()` call,
+use the context-manager form to guarantee cleanup:
+
+```python
+with ObjectStorageSink(
+    S3StorageBackend.for_backblaze("my-bucket"),
+    key_strategy=KeyStrategy.CONTENT_ADDRESSABLE,
+) as sink:
+    # put_asset() / put_assets() calls here
+    sink.put_asset(asset)
+# sink.close() called automatically on exit
 ```
 
 ### What `for_backblaze()` does for you

@@ -458,7 +458,10 @@ are live before registering rates against them.
 per-model `pricing={(quality, size): rate}` tables in
 `genblaze_openai/dalle.py` prior to `genblaze-core 0.3.0`. Sora pricing
 was always `None` (correct formula requires per-second `(model, size,
-seconds)` billing; a flat dict misreports 10x+).
+seconds)` billing; a flat dict misreports 10x+). The standalone
+`genblaze_openai.chat()` helper returns `cost_usd=None` unconditionally
+— compute cost yourself, e.g.
+`cost = tokens_in/1e6 * in_rate + tokens_out/1e6 * out_rate`.
 **Snapshot date:** 2026-05-05.
 **Verify at:** [openai.com/pricing](https://openai.com/pricing).
 
@@ -550,9 +553,9 @@ tables and register the new slugs as they appear in the catalog.
 
 **Source:** `_VEO_PER_SECOND_RATES` in `genblaze_google/provider.py` and
 `_IMAGEN_PER_IMAGE_RATES` in `genblaze_google/imagen.py` prior to
-`genblaze-core 0.3.0`. Standalone `genblaze_google.chat()` retains its
-own per-token table — chat is out of scope for the catalog-decoupling
-effort because it isn't a Pipeline-Step provider.
+`genblaze-core 0.3.0`. Starting with this release the standalone
+`genblaze_google.chat()` helper returns `cost_usd=None` unconditionally —
+compute cost from `tokens_in`/`tokens_out` and your own rates if needed.
 **Snapshot date:** 2026-05-05.
 **Verify at:** [ai.google.dev/pricing](https://ai.google.dev/pricing)
 and [cloud.google.com/vertex-ai/generative-ai/pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing).
@@ -721,6 +724,64 @@ for slug, rate in STABILITY_AUDIO_RATES_PER_SEC.items():
 
 Future `stable-audio-N` slugs match the family pattern automatically;
 extend the rate dictionary and re-register as new models ship.
+
+---
+
+## AssemblyAI
+
+**Source:** user-registered (the SDK ships no prices for AssemblyAI).
+**Snapshot date:** TODO — fill in when you read the rate.
+**Verify at:** [assemblyai.com/pricing](https://www.assemblyai.com/pricing).
+
+AssemblyAI bills per minute of **input** audio, with the rate depending on
+the speech model (e.g. `universal-3-pro` vs `universal-2`). This is a new
+recipe shape — there is no packaged helper. `AssemblyAIProvider` captures the
+transcribed file's duration in seconds in
+`step.provider_payload["audio_duration"]` during `fetch_output()`, so a
+`per_response_metric` strategy can read it directly. Replace each `RATE` below
+with the current per-minute USD rate for that model from AssemblyAI's pricing
+page (left undefined on purpose, so the example fails fast instead of shipping a
+fabricated cost).
+
+```python
+from genblaze_core.providers import per_response_metric
+from genblaze_assemblyai import AssemblyAIProvider
+
+# USD per minute of input audio, per speech model. Verify with AssemblyAI.
+ASSEMBLYAI_RATE_PER_MINUTE: dict[str, float] = {
+    "universal-3-pro": RATE,   # TODO: confirm at assemblyai.com/pricing
+    "universal-2": RATE,       # TODO: confirm
+}
+
+
+def per_minute_of_input_audio(rate: float):
+    """Per-minute pricing on the *input* audio duration (seconds → minutes)."""
+
+    def _strategy(ctx):
+        payload = ctx.provider_payload or {}
+        seconds = payload.get("audio_duration")
+        if seconds is None:
+            return None
+        try:
+            return (float(seconds) / 60.0) * rate
+        except (TypeError, ValueError):
+            return None
+
+    return _strategy
+
+
+provider = AssemblyAIProvider(api_key="...")
+
+# Speech-model slugs match the connector's family, so register against the
+# concrete slug(s) you use — register_pricing layers pricing onto the
+# family-resolved spec.
+for slug, rate in ASSEMBLYAI_RATE_PER_MINUTE.items():
+    provider.models.register_pricing(slug, per_response_metric(per_minute_of_input_audio(rate)))
+```
+
+Future `universal-*` slugs match the connector's `assemblyai-speech` family
+automatically but won't have rates here — extend `ASSEMBLYAI_RATE_PER_MINUTE`
+and re-register as you adopt them.
 
 ---
 

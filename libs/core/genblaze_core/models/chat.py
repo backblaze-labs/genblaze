@@ -226,7 +226,11 @@ class ChatResponse(BaseModel):
     )
     cost_usd: float | None = Field(
         default=None,
-        description="Estimated USD cost from the connector's static rate table; None if unknown.",
+        description=(
+            "Estimated USD cost. Standalone chat() helpers always return None here — "
+            "callers compute cost from tokens_in/tokens_out using their own rates "
+            "(see docs/reference/pricing-recipes.md)."
+        ),
     )
     raw: dict[str, Any] = Field(
         default_factory=dict, description="Provider's raw response dict — escape hatch."

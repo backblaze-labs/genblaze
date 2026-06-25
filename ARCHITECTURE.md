@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-06-20 -->
 # Architecture
 
 ## Components
@@ -17,6 +17,7 @@
   - `genblaze-hume` — Hume AI (Octave TTS)
   - `genblaze-gmicloud` — GMICloud (video, image, audio via request queue)
   - `genblaze-nvidia` — NVIDIA NIM / build.nvidia.com (video, image, audio, chat)
+  - `genblaze-assemblyai` — AssemblyAI (speech-to-text / transcription → TEXT output)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
@@ -68,6 +69,7 @@
 - **LMNT API** — Fast TTS (`genblaze-lmnt`)
 - **Hume AI API** — Octave TTS (`genblaze-hume`)
 - **GMICloud API** — Video, image, audio via request queue (`genblaze-gmicloud`)
+- **AssemblyAI API** — Speech-to-text / transcription → TEXT transcript (`genblaze-assemblyai`)
 - All accessed via lazy SDK imports — no runtime dependency unless the connector is used
 
 ## Trust Boundaries
@@ -92,6 +94,7 @@
 - Pipeline: `batch_run`/`abatch_run` for multi-prompt execution with semaphore-based concurrency control
 - Pipeline concurrency: `arun()` with `chain=False` runs steps concurrently; `max_concurrency` limits parallelism
 - Pipeline fan-in: `input_from` on `.step()` routes outputs from specific prior steps (by index) into a later step, enabling AV mux patterns
+- Pipeline fan-in safety: `input_from` dependencies must point at succeeded steps with assets; missing producer outputs fail the consumer with `INVALID_INPUT` before provider invocation
 - Pipeline-level timeout: `pipeline_timeout` raises `PipelineTimeoutError` when wall-clock time exceeds limit
 - `on_submit` callback: fires after `submit()` with `(step_id, prediction_id)` for crash-recovery checkpointing
 - Parameter normalization: `provider.normalize_params()` maps standard names (duration, resolution) to native ones

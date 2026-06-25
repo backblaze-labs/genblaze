@@ -15,45 +15,6 @@ from genblaze_core.providers.retry import retry_after_from_response
 
 from genblaze_openai._errors import map_openai_error
 
-# Per-1M-token rates (USD). Input, output. Cached prompt rate is 50% of input
-# for OpenAI's prompt-caching tier on supported models.
-# Snapshot dates trim to the family slug so dated variants reuse the same row.
-_RATES: dict[str, tuple[float, float]] = {
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4.1": (2.00, 8.00),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1-nano": (0.10, 0.40),
-    "gpt-4-turbo": (10.00, 30.00),
-    "gpt-4": (30.00, 60.00),
-    "gpt-3.5-turbo": (0.50, 1.50),
-    "o1": (15.00, 60.00),
-    "o1-mini": (3.00, 12.00),
-    "o3-mini": (1.10, 4.40),
-}
-
-
-def _lookup_rate(model: str) -> tuple[float, float] | None:
-    """Resolve a rate row for `model`, stripping dated `-YYYY-MM-DD` suffixes."""
-    if model in _RATES:
-        return _RATES[model]
-    # Strip a `-YYYY-MM-DD` snapshot suffix (e.g. gpt-4o-2024-11-20 → gpt-4o).
-    parts = model.rsplit("-", 3)
-    if len(parts) >= 4 and all(p.isdigit() for p in parts[1:4]):
-        return _RATES.get(parts[0])
-    return None
-
-
-def _calc_cost(model: str, tokens_in: int | None, tokens_out: int | None) -> float | None:
-    """Compute USD cost from token counts; None when model isn't in the table."""
-    if tokens_in is None or tokens_out is None:
-        return None
-    rate = _lookup_rate(model)
-    if rate is None:
-        return None
-    in_rate, out_rate = rate
-    return (tokens_in / 1_000_000) * in_rate + (tokens_out / 1_000_000) * out_rate
-
 
 def _normalize_messages(
     messages: list[ChatMessage] | list[dict] | None,
@@ -138,7 +99,7 @@ def _parse_response(model: str, raw: Any) -> ChatResponse:
         tokens_out=tokens_out,
         tokens_cached=cached,
         tool_calls=tool_calls,
-        cost_usd=_calc_cost(model, tokens_in, tokens_out),
+        cost_usd=None,  # chat() reports no cost; compute from tokens_in/out with your own rates.
         raw=raw_dict,
     )
 

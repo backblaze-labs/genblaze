@@ -12,6 +12,7 @@ import asyncio
 import queue
 from typing import TYPE_CHECKING
 
+from genblaze_core.models.step import UPSTREAM_ID_KEY
 from genblaze_core.observability.events import (
     StepCompletedEvent,
     StepFailedEvent,
@@ -58,7 +59,7 @@ def step_complete_to_stream_event(ev: StepCompleteEvent, run_id: str | None = No
     step_status = str(ev.step.status)
     # Mirror the upstream prediction id onto the wire-format event so
     # consumers reading the JSON surface (no in-process Step) still see it.
-    request_id = ev.step.metadata.get("upstream_id")
+    request_id = ev.step.metadata.get(UPSTREAM_ID_KEY)
     if failed:
         return StepFailedEvent(
             run_id=run_id,

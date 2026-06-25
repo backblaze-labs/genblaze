@@ -67,6 +67,7 @@ pip install genblaze-elevenlabs      # ElevenLabs TTS + sound effects
 pip install genblaze-stability-audio # Stability AI Stable Audio (music)
 pip install genblaze-lmnt            # LMNT fast TTS
 pip install genblaze-hume            # Hume AI Octave TTS
+pip install genblaze-assemblyai      # AssemblyAI speech-to-text / transcription
 ```
 
 Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`.
@@ -160,6 +161,8 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 | **LMNT** | — | — | TTS | — |
 | **Hume** | — | — | Octave TTS | — |
 
+> **Speech-to-Text / Transcription:** [`genblaze-assemblyai`](libs/connectors/assemblyai/README.md) is the inverse of the matrix above — it *consumes* an audio URL and *produces* a hash-verified **TEXT transcript** asset (with word-level timings), composable into pipelines like any other step.
+
 ## Configure API keys
 
 Every provider reads its credentials from an environment variable. You don't need all of them — just the ones whose providers you use.
@@ -179,6 +182,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | Stability AI (music) | `STABILITY_API_KEY` | [platform.stability.ai](https://platform.stability.ai/account/keys) |
 | LMNT (fast TTS) | `LMNT_API_KEY` | [app.lmnt.com](https://app.lmnt.com/account) |
 | Hume (Octave TTS) | `HUME_API_KEY` | [platform.hume.ai](https://platform.hume.ai/) |
+| AssemblyAI (speech-to-text) | `ASSEMBLYAI_API_KEY` | [assemblyai.com/app/api-keys](https://www.assemblyai.com/app/api-keys) |
 
 **Example — one provider + B2 storage:**
 
