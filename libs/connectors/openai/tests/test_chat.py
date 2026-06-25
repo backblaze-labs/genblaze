@@ -255,7 +255,7 @@ def test_api_error_wrapped(mock_client):
 
 
 def test_cost_usd_always_none(mock_client):
-    # cost_usd is always None — callers register rates via PricingContext.
+    # cost_usd is always None — callers compute cost from tokens_in/out with their own rates.
     resp = chat("gpt-4o", prompt="hi", client=mock_client)
     assert resp.cost_usd is None
 

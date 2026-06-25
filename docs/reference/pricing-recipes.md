@@ -553,9 +553,9 @@ tables and register the new slugs as they appear in the catalog.
 
 **Source:** `_VEO_PER_SECOND_RATES` in `genblaze_google/provider.py` and
 `_IMAGEN_PER_IMAGE_RATES` in `genblaze_google/imagen.py` prior to
-`genblaze-core 0.3.0`. As of 0.3.0 the standalone `genblaze_google.chat()`
-helper returns `cost_usd=None` unconditionally — compute cost from
-`tokens_in`/`tokens_out` and your own rates if needed.
+`genblaze-core 0.3.0`. Starting with this release the standalone
+`genblaze_google.chat()` helper returns `cost_usd=None` unconditionally —
+compute cost from `tokens_in`/`tokens_out` and your own rates if needed.
 **Snapshot date:** 2026-05-05.
 **Verify at:** [ai.google.dev/pricing](https://ai.google.dev/pricing)
 and [cloud.google.com/vertex-ai/generative-ai/pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing).
