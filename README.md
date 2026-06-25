@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-06-17 -->
 <h1 align="center" style="border-bottom: none">
     Genblaze
 </h1>
@@ -18,13 +18,13 @@
 
 **Genblaze** is an AI pipeline SDK by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for building and orchestrating generative media workflows across video, image, and audio.
 
-A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, ElevenLabs, and Stability Audio, plus models served through platforms such as GMI Cloud and NVIDIA NIM (`build.nvidia.com`) — so you swap providers without rewriting orchestration. Every run produces a SHA-256–verified provenance manifest you can embed directly into media files (`.mp4`, `.png`, `.mp3`, …) and persist to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) or any S3-compatible store.
+A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, ElevenLabs, and Stability Audio, plus models served through platforms such as GMI Cloud and NVIDIA NIM (`build.nvidia.com`) — so you swap providers without rewriting orchestration. Every run produces a canonical provenance manifest you can embed directly into media files (`.mp4`, `.png`, `.mp3`, …) and persist to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) or any S3-compatible store. `Manifest.verify()` checks the manifest hash and requires every output asset to declare a valid `sha256`; callers that fetch `asset.url` should re-hash those bytes separately.
 
 ## Why Genblaze
 
 Genblaze sits between "call a single video API" and "run a media pipeline in production." The differentiators:
 
-- **Provenance by default.** Every run yields a canonical, SHA-256-bound manifest — deterministic, embeddable into `.mp4 / .png / .jpg / .webp / .mp3 / .wav`, or persisted alongside the asset. Tamper-evident in trusted storage; pair with your own signer or C2PA when adversarial verification matters. See [trust modes](docs/features/trust-modes.md).
+- **Provenance by default.** Every run yields a canonical manifest — deterministic, embeddable into `.mp4 / .png / .jpg / .webp / .mp3 / .wav`, or persisted alongside the asset. Outputs become SHA-256-covered when providers return bytes or `ObjectStorageSink` transfers them into durable storage; URL-only outputs do not pass `Manifest.verify()`. Tamper-evident in trusted storage; pair with your own signer or C2PA when adversarial verification matters. See [trust modes](docs/features/trust-modes.md).
 - **One pipeline, many providers.** Eleven adapters across video, image, audio, and chat behind a single `Pipeline` / `Step` API. Swap Sora → Runway → Veo by changing one line; chain text → image → video without re-plumbing.
 - **Storage is first-class.** `S3StorageBackend.for_backblaze("bucket")` ships durable, credential-free asset URLs and content-addressable layouts. Designed for Backblaze B2; works against any S3-compatible store (AWS S3, Cloudflare R2, MinIO).
 - **Fallback chains and conformance.** `fallback_models=[...]` retries on `MODEL_ERROR`; CI-grade `probe_models` and provider-contract tests catch upstream drift before users do.

@@ -4,6 +4,7 @@ SubmitResult, and ProviderCapabilities."""
 from __future__ import annotations
 
 import pytest
+from genblaze_core._asset_url import strip_asset_url_credentials
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, StepStatus
@@ -25,7 +26,9 @@ class StubSyncProvider(SyncProvider):
     name = "stub-sync"
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
-        step.assets.append(Asset(url="https://example.com/out.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://example.com/out.png", media_type="image/png", sha256="0" * 64)
+        )
         return step
 
 
@@ -107,7 +110,13 @@ def test_sync_provider_retry_clears_stale_result():
             call_count += 1
             if call_count == 1:
                 raise ProviderError("server error 500")
-            step.assets.append(Asset(url="https://example.com/retry.png", media_type="image/png"))
+            step.assets.append(
+                Asset(
+                    url="https://example.com/retry.png",
+                    media_type="image/png",
+                    sha256="1" * 64,
+                )
+            )
             return step
 
     provider = RetryableSyncProvider()
@@ -141,6 +150,36 @@ def test_validate_asset_url_rejects_file():
 def test_validate_asset_url_rejects_empty():
     with pytest.raises(ProviderError, match="Unsafe asset URL"):
         validate_asset_url("")
+
+
+def test_strip_asset_url_credentials_preserves_plus_as_resource_data():
+    plus = strip_asset_url_credentials(
+        "https://example.com/output.png?id=a+b&sv=2024&sr=b&sig=secret"
+    )
+    encoded_plus = strip_asset_url_credentials(
+        "https://example.com/output.png?id=a%2Bb&sv=2024&sr=b&sig=secret"
+    )
+    space = strip_asset_url_credentials(
+        "https://example.com/output.png?id=a%20b&sv=2024&sr=b&sig=secret"
+    )
+
+    assert plus == "https://example.com/output.png?id=a%2Bb"
+    assert encoded_plus == plus
+    assert space == "https://example.com/output.png?id=a%20b"
+    assert plus != space
+
+
+def test_strip_asset_url_credentials_preserves_bare_query_params():
+    bare = strip_asset_url_credentials(
+        "https://example.com/output.png?flag&sv=2024&sr=b&sig=secret"
+    )
+    empty = strip_asset_url_credentials(
+        "https://example.com/output.png?flag=&sv=2024&sr=b&sig=secret"
+    )
+
+    assert bare == "https://example.com/output.png?flag"
+    assert empty == "https://example.com/output.png?flag="
+    assert bare != empty
 
 
 # --- Compliance test harness ---
@@ -194,7 +233,9 @@ def test_submit_result_backward_compat():
             return True
 
         def fetch_output(self, prediction_id, step) -> Step:
-            step.assets.append(Asset(url="https://example.com/o.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://example.com/o.png", media_type="image/png", sha256="2" * 64)
+            )
             return step
 
     provider = PlainProvider()
@@ -266,7 +307,9 @@ def test_submit_result_with_estimated_seconds():
             return True
 
         def fetch_output(self, prediction_id, step) -> Step:
-            step.assets.append(Asset(url="https://example.com/o.mp4", media_type="video/mp4"))
+            step.assets.append(
+                Asset(url="https://example.com/o.mp4", media_type="video/mp4", sha256="3" * 64)
+            )
             return step
 
     provider = HintProvider()

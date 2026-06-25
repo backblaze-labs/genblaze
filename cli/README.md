@@ -3,11 +3,11 @@
 
 **Command-line toolkit for inspecting, verifying, and indexing genblaze AI-generated-media provenance manifests.**
 
-`genblaze-cli` is the companion CLI for [genblaze](https://github.com/backblaze-labs/genblaze) — the Python SDK for generative AI pipelines across video, image, and audio. It lets anyone (not just Python developers) audit AI-generated media: extract the embedded provenance manifest from an MP4 / PNG / MP3, verify its SHA-256 hash, replay a run, or index manifests into Parquet for downstream analytics.
+`genblaze-cli` is the companion CLI for [genblaze](https://github.com/backblaze-labs/genblaze) — the Python SDK for generative AI pipelines across video, image, and audio. It lets anyone (not just Python developers) audit AI-generated media: extract the embedded provenance manifest from an MP4 / PNG / MP3, verify its manifest hash and output sha256 coverage, replay a run, or index manifests into Parquet for downstream analytics.
 
 ## Why genblaze-cli
 
-- **Audit AI-generated media in one command** — `genblaze verify video.mp4` confirms a file's manifest hash hasn't been tampered with.
+- **Audit AI-generated media in one command** — `genblaze verify video.mp4` confirms a file's manifest hash hasn't been tampered with and all output assets declare sha256.
 - **Works on any genblaze output** — PNG, JPEG, WebP, MP4, MP3, WAV with embedded manifests.
 - **Analytics-ready** — `genblaze index` emits partitioned Parquet tables (runs, steps, assets) for BI tools and data warehouses.
 - **Zero provider dependencies** — reads manifests; doesn't call any AI API.
@@ -29,7 +29,7 @@ genblaze --help
 genblaze extract video.mp4                # Extract embedded manifest → stdout (JSON)
 genblaze extract video.mp4 -o m.json      # …or to a file
 
-genblaze verify video.mp4                 # Verify the embedded manifest's SHA-256
+genblaze verify video.mp4                 # Verify manifest hash + output sha256 declarations
 genblaze verify manifest.json             # Or verify a standalone manifest file
 
 genblaze replay manifest.json             # Show what a replay would do (dry run)
@@ -37,7 +37,7 @@ genblaze replay manifest.json             # Show what a replay would do (dry run
 genblaze index manifest.json -o data/     # Index into partitioned Parquet tables
 ```
 
-Exit codes are non-zero on verification failure — safe to drop into CI pipelines, release checks, or content-moderation workflows.
+Exit codes are non-zero on verification failure — safe to drop into CI pipelines, release checks, or content-moderation workflows. The command does not fetch remote asset URLs; consumers that dereference `asset.url` must hash those bytes separately and compare them with the manifest's `asset.sha256`.
 
 ## Typical flow
 

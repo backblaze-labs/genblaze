@@ -7,7 +7,10 @@ import pytest
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.sidecar import PointerSidecarError, SidecarHandler
 from genblaze_core.models import Manifest
+from genblaze_core.models.enums import PromptVisibility, StepStatus
 from genblaze_core.models.policy import EmbedPolicy
+from genblaze_core.models.run import Run
+from genblaze_core.models.step import Step
 
 
 def test_embed_creates_sidecar(tmp_path: Path, sample_manifest: Manifest) -> None:
@@ -28,6 +31,24 @@ def test_extract_from_sidecar(tmp_path: Path, sample_manifest: Manifest) -> None
     handler.embed(src, sample_manifest)
     extracted = handler.extract(src)
     assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
+def test_extract_from_sidecar_uses_parse_manifest_invariants(tmp_path: Path) -> None:
+    src = tmp_path / "image.png"
+    src.write_bytes(b"fake png")
+    step = Step(
+        provider="test",
+        model="test-model",
+        prompt="secret",
+        prompt_visibility=PromptVisibility.ENCRYPTED,
+        status=StepStatus.SUCCEEDED,
+    )
+    manifest = Manifest.from_run(Run(name="encrypted", steps=[step]))
+    sidecar = src.with_suffix(src.suffix + ".genblaze.json")
+    sidecar.write_text(manifest.to_canonical_json(), encoding="utf-8")
+
+    with pytest.raises(EmbeddingError, match="encrypted"):
+        SidecarHandler().extract(src)
 
 
 def test_verify_sidecar(tmp_path: Path, sample_manifest: Manifest) -> None:

@@ -1,5 +1,6 @@
 """Provider interfaces and model-spec registry."""
 
+from genblaze_core._asset_url import strip_asset_url_credentials
 from genblaze_core.providers.base import (
     BaseProvider,
     ProviderCapabilities,
@@ -155,6 +156,7 @@ __all__ = [
     "route_keyframes",
     "route_video",
     "tiered",
+    "strip_asset_url_credentials",
     "validate_asset_url",
     "validate_chain_input_url",
 ]

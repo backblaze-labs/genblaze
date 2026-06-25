@@ -42,8 +42,14 @@ def _stub_sink_that_records_calls() -> MagicMock:
     """A sink mock with the put_asset / write_run / manifest_url_for
     surface the ingest factory expects. Each method records its call
     args for assertion."""
+
+    def _put_asset(asset: Asset, **kwargs) -> Asset:
+        asset.sha256 = "0" * 64
+        asset.size_bytes = 1
+        return asset
+
     sink = MagicMock()
-    sink.put_asset = MagicMock(side_effect=lambda asset, **kwargs: asset)
+    sink.put_asset = MagicMock(side_effect=_put_asset)
     sink.write_run = MagicMock()
     sink.manifest_url_for = MagicMock(return_value="https://mem/run/manifest.json")
     return sink
@@ -192,6 +198,48 @@ class TestIngestAssets:
         assert len(result.run.steps) == 10
         # put_asset was called once per asset.
         assert sink.put_asset.call_count == 10
+        assert all("manifest_uri" not in call.kwargs for call in sink.put_asset.call_args_list)
+
+    def test_tenant_ingest_requests_tenant_scoped_reverse_index(self):
+        sink = _stub_sink_that_records_calls()
+        Pipeline.ingest(
+            assets=[_ingestable_asset(media_type="image/png")],
+            source="ugc-upload",
+            sink=sink,
+            tenant_id="tenant-a",
+        )
+
+        assert sink.put_asset.call_args.kwargs == {
+            "manifest_uri": "https://mem/run/manifest.json",
+            "tenant_id": "tenant-a",
+        }
+
+    def test_tenant_ingest_normalizes_tenant_id_before_indexing(self):
+        sink = _stub_sink_that_records_calls()
+        result = Pipeline.ingest(
+            assets=[_ingestable_asset(media_type="image/png")],
+            source="ugc-upload",
+            sink=sink,
+            tenant_id="  tenant-a  ",
+        )
+
+        assert result.run.tenant_id == "tenant-a"
+        assert sink.put_asset.call_args.kwargs == {
+            "manifest_uri": "https://mem/run/manifest.json",
+            "tenant_id": "tenant-a",
+        }
+
+    def test_tenant_ingest_treats_whitespace_tenant_id_as_unset(self):
+        sink = _stub_sink_that_records_calls()
+        result = Pipeline.ingest(
+            assets=[_ingestable_asset(media_type="image/png")],
+            source="ugc-upload",
+            sink=sink,
+            tenant_id="   ",
+        )
+
+        assert result.run.tenant_id is None
+        assert sink.put_asset.call_args.kwargs == {}
 
     def test_source_metadata_cannot_clobber_canonical_source(self):
         """If caller's source_metadata has a 'source' key, the
@@ -291,7 +339,7 @@ class TestErrorHandling:
         and proceeds with manifest-only."""
 
         class _NoPutAssetSink:
-            def put_asset(self, asset, *, manifest_uri=None):
+            def put_asset(self, asset, **kwargs):
                 raise NotImplementedError("test fixture")
 
             def write_run(self, run, manifest):

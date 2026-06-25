@@ -76,6 +76,7 @@ def main() -> None:
             url=f"file://{upload_path}",
             media_type="image/png",
         )
+        tenant_id = "ugc-demo"
 
         # --- Ingest with full uploader attribution ---
         # source_metadata captures everything a UGC pipeline needs
@@ -93,6 +94,7 @@ def main() -> None:
             },
             sink=sink,
             name="ugc-upload-event",
+            tenant_id=tenant_id,
         )
 
     # --- Inspect ---
@@ -108,8 +110,9 @@ def main() -> None:
 
     # --- Reverse lookup demo ---
     # Later, if we have just the asset_id (e.g. from a moderation queue
-    # row), we can recover the full provenance manifest:
-    recovered = sink.read_manifest_for_asset(asset.asset_id)
+    # row), we can recover the full provenance manifest within the same
+    # tenant authorization context:
+    recovered = sink.read_manifest_for_asset(asset.asset_id, tenant_id=tenant_id)
     if recovered is not None:
         print(f"\nReverse lookup recovered manifest hash: {recovered.canonical_hash}")
         # Same uploader metadata is preserved in the recovered manifest.

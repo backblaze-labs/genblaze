@@ -28,7 +28,9 @@ class _FakeProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-        step.assets.append(Asset(url="https://example.com/result.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://example.com/result.png", media_type="image/png", sha256="0" * 64)
+        )
         return step
 
 

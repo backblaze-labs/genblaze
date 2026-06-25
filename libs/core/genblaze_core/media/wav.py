@@ -14,7 +14,7 @@ from genblaze_core.media.base import (
     atomic_write,
     read_media_bytes,
 )
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 # Custom INFO tag for genblaze manifest
 INFO_TAG = b"IMFL"  # "Info GenBLaze" (tag kept for backward compat)
@@ -69,7 +69,7 @@ class WavHandler(BaseMediaHandler):
             manifest_json = _find_info_tag(data, INFO_TAG)
             if manifest_json is None:
                 raise EmbeddingError(f"No genblaze manifest found in {source}")
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

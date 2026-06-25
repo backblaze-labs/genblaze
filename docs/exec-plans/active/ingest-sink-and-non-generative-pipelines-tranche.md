@@ -7,7 +7,7 @@
 
 Generalize the `BaseSink` and `Pipeline` surface so non-generative workflows — live ingest, UGC, archival, DAM, podcast hosting — are first-class instead of forcing fake `SyncProvider` shims. Ship two primitives: `BaseSink.put_asset(asset)` for standalone asset writes (no `Run` wrapper) and `Pipeline.ingest(assets=..., source=...)` for ingest-shaped runs (no `Provider` required). Manifest captures source attribution rather than generation parameters.
 
-**Done when:** a podcast-hosting app can `pipeline.ingest(assets=[Asset(url='https://feed/ep1.mp3')], source='rss')` and get a manifest with full provenance for the import (source URL, ingest timestamp, hash) without writing any `Provider`; a DAM tool can iterate `sink.list()`, hash, write per-asset manifests via `sink.put_asset()`, and reverse-look up via `sink.read_manifest_for_asset(asset_id)`.
+**Done when:** a podcast-hosting app can `pipeline.ingest(assets=[Asset(url='https://feed/ep1.mp3')], source='rss')` and get a manifest with full provenance for the import (source URL, ingest timestamp, hash) without writing any `Provider`; a DAM tool can iterate `sink.list()`, hash, write per-asset manifests via `sink.put_asset(..., tenant_id=...)`, and reverse-look up via `sink.read_manifest_for_asset(asset_id, tenant_id=...)`.
 
 ## Subagent brief
 
@@ -40,8 +40,8 @@ You are an expert open-source SDK engineer with experience in DAM, archival, and
 
 | File | Change |
 |------|--------|
-| `libs/core/genblaze_core/storage/sink.py` | `BaseSink.put_asset(asset: Asset, *, manifest_uri: str \| None = None) -> Asset`. Writes asset bytes via backend; returns asset with `url` populated and `sha256`/`media_type` confirmed. `put_assets(list[Asset])` parallel variant. Uses `KeyBuilder` (Plan 1). |
-| `libs/core/genblaze_core/storage/sink.py` | `BaseSink.read_manifest_for_asset(asset_id) -> Manifest \| None` for reverse lookup in CONTENT_ADDRESSABLE layouts. |
+| `libs/core/genblaze_core/storage/sink.py` | `BaseSink.put_asset(asset: Asset, *, manifest_uri: str \| None = None, tenant_id: str \| None = None) -> Asset`. Writes asset bytes via backend; returns asset with `url` populated and `sha256`/`media_type` confirmed. `put_assets(list[Asset])` parallel variant. Uses `KeyBuilder` (Plan 1). |
+| `libs/core/genblaze_core/storage/sink.py` | `BaseSink.read_manifest_for_asset(asset_id, *, tenant_id) -> Manifest \| None` for tenant-scoped reverse lookup in CONTENT_ADDRESSABLE layouts. |
 | `libs/core/tests/unit/test_put_asset.py` | **NEW.** Round-trips `sha256`, `media_type`; cache-stable across calls; CONTENT_ADDRESSABLE dedup; reverse lookup. |
 
 ## Phase 2 — `Pipeline.ingest` factory (Wk 8-9, after Wave 4 lands StepType.INGEST)

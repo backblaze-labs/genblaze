@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError, ManifestError
 from genblaze_core.media.base import BaseMediaHandler, atomic_write
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 if TYPE_CHECKING:
     from genblaze_core.models.policy import EmbedPolicy
@@ -94,7 +94,7 @@ class SidecarHandler(BaseMediaHandler):
                     manifest_uri=data["manifest_uri"],
                     canonical_hash=data.get("canonical_hash", ""),
                 )
-            return Manifest.model_validate(data)
+            return parse_manifest(data)
         except EmbeddingError:
             raise
         except Exception as exc:

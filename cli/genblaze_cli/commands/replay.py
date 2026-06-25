@@ -99,7 +99,6 @@ def replay(
 ) -> None:
     """Re-execute a pipeline from a manifest JSON file."""
     from genblaze_core.models.manifest import parse_manifest
-    from genblaze_core.pipeline import Pipeline
 
     try:
         data = json.loads(manifest_file.read_text(encoding="utf-8"))
@@ -107,14 +106,25 @@ def replay(
     except Exception as exc:
         raise click.ClickException(f"Failed to load manifest: {exc}") from exc
 
-    # Verify manifest hash integrity
-    if not force and not manifest.verify():
+    # Verify manifest hash integrity before replay. Output sha256 coverage is
+    # reported separately because URL-only outputs can be metadata-valid but
+    # not sha256-covered.
+    report = manifest.verification_report()
+    if not force and not report.hash_ok:
         click.echo(
             "WARNING: Manifest hash does not match content. The file may have been modified.",
             err=True,
         )
         if not click.confirm("Continue anyway?"):
             raise click.Abort()
+    elif not force:
+        if report.unverified_sha256_ids:
+            click.echo(
+                "WARNING: Manifest hash matches, but output asset bytes are not "
+                f"bound for {len(report.unverified_sha256_ids)} asset(s) "
+                "missing or malformed sha256.",
+                err=True,
+            )
 
     run = manifest.run
     _print_summary(run, show_prompts=show_prompts)
@@ -153,6 +163,8 @@ def replay(
         click.echo("  Detected chain mode from manifest step inputs.", err=True)
 
     # Cache providers by name to avoid re-instantiating
+    from genblaze_core.pipeline import Pipeline
+
     providers: dict[str, object] = {}
     pipe = Pipeline(
         run.name,

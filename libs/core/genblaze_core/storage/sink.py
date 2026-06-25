@@ -4,17 +4,28 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import uuid
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as _futures_wait
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
-from genblaze_core._utils import MAX_MANIFEST_BYTES
-from genblaze_core.exceptions import ManifestError, SinkError, StorageError
-from genblaze_core.models.asset import Asset
+from pydantic import ValidationError
+
+from genblaze_core._utils import MAX_MANIFEST_BYTES, normalize_tenant_id
+from genblaze_core.exceptions import (
+    ManifestError,
+    SinkError,
+    StorageError,
+    UnsupportedSchemaVersionError,
+    UnverifiedAssetError,
+)
+from genblaze_core.models.asset import Asset, is_valid_sha256
 from genblaze_core.models.enums import StepStatus
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 from genblaze_core.sinks.base import BaseSink
 from genblaze_core.storage.base import KeyStrategy
 from genblaze_core.storage.key_builder import KeyBuilder
@@ -31,6 +42,9 @@ logger = logging.getLogger("genblaze.storage.sink")
 
 # Max parallel asset uploads within a single write_run call
 _DEFAULT_UPLOAD_WORKERS = 4
+_LOG_ID_SAMPLE_SIZE = 20
+_ALLOW_UNVERIFIED_MANIFEST_READS_ENV = "GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS"
+_STRICT_MANIFEST_READS_ENV = "GENBLAZE_STRICT_MANIFEST_READS"
 
 # Module-level guard for the "no public_url_base on the backend" warning.
 # Keyed by (bucket, policy) so:
@@ -48,6 +62,141 @@ _warned_durable_url_lock = threading.Lock()
 # None/empty" (S3-like backend with no CDN → WARN). Using a private
 # sentinel object instead of ``None`` keeps the three cases unambiguous.
 _PUBLIC_URL_BASE_MISSING = object()
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validation_error_summary(exc: ValidationError) -> str:
+    try:
+        raw_details = exc.errors(include_input=False, include_url=False)
+    except TypeError:
+        raw_details = exc.errors()
+
+    details = [
+        {key: value for key, value in detail.items() if key not in {"input", "url"}}
+        for detail in raw_details
+    ]
+    items: list[str] = []
+    for detail in details[:5]:
+        loc_value = detail.get("loc", ())
+        if isinstance(loc_value, (str, bytes)) or not isinstance(loc_value, Sequence):
+            loc_parts: Sequence[object] = (loc_value,)
+        else:
+            loc_parts = loc_value
+        loc = ".".join(str(part) for part in loc_parts) or "<manifest>"
+        items.append(f"{loc}: {detail.get('type', 'validation_error')}")
+    suffix = "" if len(details) <= 5 else f"; ... {len(details) - 5} more"
+    error_count = getattr(exc, "error_count", None)
+    count = error_count() if callable(error_count) else len(details)
+    return f"{count} validation error(s): {'; '.join(items)}{suffix}"
+
+
+def _parse_stored_manifest(key: str, data: bytes) -> Manifest:
+    try:
+        raw = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"Stored manifest at {key} is not valid JSON: {exc}") from exc
+
+    try:
+        return parse_manifest(raw)
+    except ManifestError as exc:
+        message = f"Stored manifest at {key} is invalid: {exc}"
+        if isinstance(exc, UnsupportedSchemaVersionError):
+            raise UnsupportedSchemaVersionError(message) from exc
+        if isinstance(exc, UnverifiedAssetError):
+            raise UnverifiedAssetError(message, asset_ids=exc.asset_ids) from exc
+        raise ManifestError(message) from exc
+    except ValidationError as exc:
+        raise ManifestError(
+            f"Stored manifest at {key} is invalid: {_validation_error_summary(exc)}"
+        ) from exc
+    except (AttributeError, TypeError) as exc:
+        raise ManifestError(f"Stored manifest at {key} is invalid: {type(exc).__name__}") from exc
+
+
+def _id_log_extra(ids: Sequence[str]) -> dict[str, object]:
+    return {
+        "count": len(ids),
+        "sample": list(ids[:_LOG_ID_SAMPLE_SIZE]),
+        "sample_truncated": len(ids) > _LOG_ID_SAMPLE_SIZE,
+    }
+
+
+def _verify_stored_manifest(
+    key: str,
+    manifest: Manifest,
+    *,
+    verify: bool,
+    allow_unverified_assets: bool,
+    strict_unverified_assets: bool,
+) -> None:
+    if not verify:
+        return
+    if not manifest.verify_hash():
+        raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
+
+    if manifest.transfer_failures:
+        logger.warning(
+            "Stored manifest has transfer failures",
+            extra={
+                "manifest_key": key,
+                "run_id": manifest.run.run_id,
+                "transfer_failures": _id_log_extra(manifest.transfer_failures),
+            },
+        )
+
+    missing_sha_ids = manifest.output_asset_ids_missing_sha256()
+    if missing_sha_ids:
+        logger.warning(
+            "Stored manifest has output assets missing or malformed sha256",
+            extra={
+                "manifest_key": key,
+                "run_id": manifest.run.run_id,
+                "asset_ids": _id_log_extra(missing_sha_ids),
+            },
+        )
+        if strict_unverified_assets and not allow_unverified_assets:
+            raise UnverifiedAssetError(
+                f"Stored manifest at {key} has {len(missing_sha_ids)} "
+                "output asset(s) missing or malformed sha256",
+                asset_ids=missing_sha_ids,
+            )
+
+
+def _require_asset_id(asset_id: str) -> str:
+    try:
+        parsed = uuid.UUID(asset_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SinkError(f"asset_id must be a UUID, got {asset_id!r}") from exc
+    return str(parsed)
+
+
+def _normalize_tenant_id_or_sink_error(tenant_id: object, *, message: str) -> str | None:
+    if tenant_id is not None and not isinstance(tenant_id, str):
+        raise SinkError(message)
+    return normalize_tenant_id(tenant_id)
+
+
+def _require_tenant_id(tenant_id: object) -> str:
+    tenant = _normalize_tenant_id_or_sink_error(tenant_id, message="tenant_id must be a string")
+    if tenant is None:
+        raise SinkError("tenant_id is required for asset manifest reverse lookup")
+    return tenant
+
+
+def _tenant_index_segment(tenant_id: str) -> str:
+    return quote(tenant_id, safe="")
+
+
+def _manifest_references_asset(manifest: Manifest, asset_id: str) -> bool:
+    for step in manifest.run.steps:
+        if any(asset.asset_id == asset_id for asset in step.assets):
+            return True
+        if any(asset.asset_id == asset_id for asset in step.inputs):
+            return True
+    return False
 
 
 def _warn_durable_url_on_private_bucket(bucket: str, policy: URLPolicy) -> None:
@@ -172,6 +321,9 @@ class ObjectStorageSink(BaseSink):
         pipelined_transfer: bool = False,
         eager_transfer: bool = False,
         asset_url_policy: URLPolicy = URLPolicy.AUTO,
+        allow_unverified_manifest_reads: bool | None = None,
+        strict_manifest_reads: bool | None = None,
+        legacy_index_tenant_id: str | None = None,
     ):
         """Construct an ObjectStorageSink.
 
@@ -206,6 +358,21 @@ class ObjectStorageSink(BaseSink):
                 the manifest does, breaking provenance). For read-time
                 presigned URLs use ``backend.presigned_get_url(key)``
                 directly. Introduced in ``genblaze-core`` 0.3.1.
+            allow_unverified_manifest_reads: Fleet-wide migration switch for
+                legacy URL-only output manifests. ``None`` (default) reads
+                ``GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS``; ``True`` makes
+                read paths behave as though ``allow_unverified_assets=True``
+                was passed. Keep this temporary and scoped to migration
+                windows because it restores hash-only reads.
+            strict_manifest_reads: Opt-in enforcement switch for output
+                ``sha256`` coverage on stored manifest reads. ``None``
+                (default) reads ``GENBLAZE_STRICT_MANIFEST_READS``. While this
+                is false, stored reads warn and return hash-valid URL-only
+                manifests so rolling deploys can backfill before hard-failing
+                historical data.
+            legacy_index_tenant_id: Explicit tenant bucket used only when
+                migrating legacy flat reverse-index entries whose manifest has
+                no ``run.tenant_id``. Use ``"legacy"`` to opt in.
 
         Raises:
             URLPolicyError: ``asset_url_policy=URLPolicy.PRESIGNED`` (rejected;
@@ -215,6 +382,20 @@ class ObjectStorageSink(BaseSink):
         """
         self._validate_asset_url_policy(backend, asset_url_policy)
         self._asset_url_policy = asset_url_policy
+        self._allow_unverified_manifest_reads = (
+            _env_flag_enabled(_ALLOW_UNVERIFIED_MANIFEST_READS_ENV)
+            if allow_unverified_manifest_reads is None
+            else allow_unverified_manifest_reads
+        )
+        self._strict_manifest_reads = (
+            _env_flag_enabled(_STRICT_MANIFEST_READS_ENV)
+            if strict_manifest_reads is None
+            else strict_manifest_reads
+        )
+        self._legacy_index_tenant_id = _normalize_tenant_id_or_sink_error(
+            legacy_index_tenant_id,
+            message="legacy_index_tenant_id must be a string",
+        )
         self._backend = backend
         self._prefix = prefix
         self._key_strategy = key_strategy
@@ -293,6 +474,8 @@ class ObjectStorageSink(BaseSink):
             for asset in step.assets:
                 if asset.asset_id in self._eager_pending:
                     continue  # already submitted — shouldn't happen, be idempotent
+                if self._asset_already_transferred(asset):
+                    continue
                 fut = pool.submit(
                     self._transfer.transfer,
                     asset,
@@ -332,21 +515,71 @@ class ObjectStorageSink(BaseSink):
         """
         return self._backend.get_durable_url(self.manifest_key_for(run))
 
-    def read_manifest(self, run: Run, *, verify: bool = True) -> Manifest:
+    def _asset_already_transferred(self, asset: Asset) -> bool:
+        """Return True when ``asset`` already points at bytes in this backend."""
+        if not is_valid_sha256(asset.sha256):
+            return False
+        if asset.size_bytes is None:
+            return False
+        try:
+            key = self._backend.key_from_url(asset.url)
+        except NotImplementedError:
+            return False
+        if key is None:
+            return False
+        return self._backend.exists(key)
+
+    def _effective_allow_unverified_assets(self, allow_unverified_assets: bool) -> bool:
+        if (
+            allow_unverified_assets
+            and self._strict_manifest_reads
+            and not self._allow_unverified_manifest_reads
+        ):
+            raise SinkError(
+                "Per-call allow_unverified_assets=True is disabled in strict read mode; "
+                "configure allow_unverified_manifest_reads on the sink or environment"
+            )
+        return allow_unverified_assets or self._allow_unverified_manifest_reads
+
+    def read_manifest(
+        self,
+        run: Run,
+        *,
+        verify: bool = True,
+        allow_unverified_assets: bool = False,
+    ) -> Manifest:
         """Fetch and parse the stored manifest for this run.
 
         Args:
             run: The run whose manifest to load. Only ``run_id`` /
                 ``tenant_id`` / ``created_at`` are used (to derive the key).
-            verify: When True (default), checks ``manifest.verify()`` and
-                raises :class:`ManifestError` on hash mismatch. Pass
-                ``verify=False`` to skip the rehash on a manifest you
-                trust (e.g. one you just wrote).
+            verify: When True (default), checks hash integrity and output
+                asset ``sha256`` declarations. Output-sha256 gaps warn and
+                return by default during the staged rollout; opt into hard
+                failures with ``strict_manifest_reads=True`` or
+                ``GENBLAZE_STRICT_MANIFEST_READS=true``. Pass
+                ``verify=False`` to skip only hash and output-sha256 checks on
+                a manifest you trust (e.g. one you just wrote). Stored bytes are always JSON
+                decoded and parsed through ``parse_manifest()``, so schema
+                validation and manifest invariants still apply.
+            allow_unverified_assets: When True, ``verify=True`` still checks
+                ``manifest.verify_hash()`` but allows output assets whose
+                ``sha256`` is missing or malformed. This is the explicit
+                hash-only read path for callers that need to inspect partially
+                transferred or historical manifests. Treat this as
+                security-sensitive; do not bind it directly to request or
+                tenant-controlled input.
+                The sink-level ``allow_unverified_manifest_reads`` constructor
+                flag and ``GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS`` env var
+                also enable this behavior for fleet-wide migrations.
 
         Raises:
             SinkError: when the stored object exceeds ``MAX_MANIFEST_BYTES``.
                 Bounds OOM blast from a malicious or corrupt object.
-            ManifestError: when ``verify=True`` and the hash doesn't match.
+            ManifestError: when ``verify=True`` and hash integrity fails.
+            UnverifiedAssetError: when strict manifest reads are enabled and
+                output assets have missing or malformed ``sha256`` without a
+                sink-level migration override.
         """
         key = self.manifest_key_for(run)
         data = self._backend.get(key)
@@ -355,9 +588,17 @@ class ObjectStorageSink(BaseSink):
                 f"Stored manifest at {key} is {len(data)} bytes, exceeds "
                 f"MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
-        manifest = Manifest.model_validate_json(data)
-        if verify and not manifest.verify():
-            raise ManifestError(f"Stored manifest at {key} fails canonical_hash verification")
+        manifest = _parse_stored_manifest(key, data)
+        effective_allow_unverified = self._effective_allow_unverified_assets(
+            allow_unverified_assets
+        )
+        _verify_stored_manifest(
+            key,
+            manifest,
+            verify=verify,
+            allow_unverified_assets=effective_allow_unverified,
+            strict_unverified_assets=self._strict_manifest_reads,
+        )
         return manifest
 
     def _manifest_cache_control(self) -> str:
@@ -372,6 +613,7 @@ class ObjectStorageSink(BaseSink):
         return "private, max-age=3600"
 
     def _write_run_impl(self, run: Run, manifest: Manifest) -> None:
+        manifest.assert_writable_schema()
         date_str = run.created_at.strftime("%Y-%m-%d")
 
         # 1. Resolve transfers. Assets may have been submitted eagerly via
@@ -396,7 +638,11 @@ class ObjectStorageSink(BaseSink):
 
         # Transfer any remaining assets that weren't eager-submitted. Same
         # semantics as the legacy non-eager path.
-        remaining = [(s, a) for s, a in all_assets if a.asset_id not in eager_pending]
+        remaining = [
+            (s, a)
+            for s, a in all_assets
+            if a.asset_id not in eager_pending and not self._asset_already_transferred(a)
+        ]
         if remaining:
             workers = min(self._max_upload_workers, len(remaining))
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -420,25 +666,24 @@ class ObjectStorageSink(BaseSink):
 
         if failed_asset_ids:
             logger.warning(
-                "Run %s: %d/%d asset transfers failed: %s",
+                "Run %s: %d/%d asset transfers failed",
                 run.run_id,
                 len(failed_asset_ids),
                 len(all_assets),
-                ", ".join(failed_asset_ids),
+                extra={"asset_ids": _id_log_extra(failed_asset_ids)},
             )
-
-        # 2. Record partial failures on the manifest as transport-layer
-        # diagnostics — NOT on run.metadata, which is part of the hashed
-        # payload (see manifest._RUN_HASH_EXCLUDE). transfer_failures is a
-        # non-hashed Manifest field, so writing it here doesn't affect hash
-        # integrity and verify() still succeeds after partial failures.
-        if failed_asset_ids:
             manifest.transfer_failures = list(failed_asset_ids)
+            manifest.compute_hash()
+            raise SinkError(
+                f"Run {run.run_id}: {len(failed_asset_ids)}/{len(all_assets)} "
+                "asset transfer(s) failed; manifest was not uploaded"
+            )
+        manifest.transfer_failures = []
 
-        # 3. Recompute manifest hash after asset transfers mutated URLs/hashes
+        # 2. Recompute manifest hash after asset transfers mutated URLs/hashes
         manifest.compute_hash()
 
-        # 4. Upload manifest JSON. We keep the existence check + lock because
+        # 3. Upload manifest JSON. We keep the existence check + lock because
         # B2 buckets are always-versioned: re-putting the same manifest
         # silently accrues versions (the per-run noncurrent-expire lifecycle
         # rule ultimately cleans them up, but we'd rather not create churn in
@@ -467,7 +712,7 @@ class ObjectStorageSink(BaseSink):
         # own region-verification lock, so calling it here is safe.
         manifest.manifest_uri = self._backend.get_durable_url(manifest_key)
 
-        # 5. Optionally write to ParquetSink
+        # 4. Optionally write to ParquetSink
         if self._parquet_sink is not None:
             self._parquet_sink.write_run(run, manifest)
 
@@ -480,6 +725,7 @@ class ObjectStorageSink(BaseSink):
         asset: Asset,
         *,
         manifest_uri: str | None = None,
+        tenant_id: str | None = None,
     ) -> Asset:
         """Write a single asset to the backend (no Run wrapper required).
 
@@ -490,20 +736,26 @@ class ObjectStorageSink(BaseSink):
         backend's durable URL and ``sha256`` / ``size_bytes`` /
         ``media_type`` are populated when missing.
 
-        When ``manifest_uri`` is supplied, a sidecar index entry is
-        written at ``{prefix}/_index/{asset_id}.json`` so
-        :meth:`read_manifest_for_asset` can discover the manifest
-        later. Pass ``manifest_uri`` for assets that ARE referenced by
-        a manifest; omit for one-off uploads (DAM ingest with no
-        manifest).
+        When both ``manifest_uri`` and ``tenant_id`` are supplied, a
+        tenant-scoped sidecar index entry is written so
+        :meth:`read_manifest_for_asset` can discover the manifest later.
+        Pass both for assets that ARE referenced by a manifest; omit
+        ``manifest_uri`` for one-off uploads (DAM ingest with no
+        manifest). Supplying ``manifest_uri`` without ``tenant_id`` is
+        rejected because a global asset-id index is an authorization
+        boundary in multi-tenant deployments.
         """
-        # Drive the existing transfer pipeline. No tenant/date/run_id —
-        # under HIERARCHICAL the strategy degrades to {prefix}/runs/assets/...
-        # which is fine for standalone writes; under CAS the layout is
-        # hash-keyed and tenant/date/run_id were always ignored anyway.
-        self._transfer.transfer(asset)
+        # Drive the existing transfer pipeline. When a tenant is supplied,
+        # pass it through so HIERARCHICAL standalone asset keys remain scoped
+        # consistently with write_run(); CAS ignores tenant/date/run_id.
+        tenant = _normalize_tenant_id_or_sink_error(
+            tenant_id, message="tenant_id must be a string"
+        )
+        if manifest_uri is not None and tenant is None:
+            raise SinkError("tenant_id is required for asset manifest reverse lookup")
+        self._transfer.transfer(asset, tenant=tenant)
         if manifest_uri is not None:
-            self._write_asset_index(asset.asset_id, manifest_uri)
+            self._write_asset_index(asset.asset_id, manifest_uri, tenant_id=tenant)
         return asset
 
     def put_assets(
@@ -511,6 +763,7 @@ class ObjectStorageSink(BaseSink):
         assets: Sequence[Asset],
         *,
         manifest_uri: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[Asset]:
         """Bulk variant of :meth:`put_asset`.
 
@@ -529,27 +782,65 @@ class ObjectStorageSink(BaseSink):
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Preserve input order: index → future.
             futures = [
-                pool.submit(self.put_asset, asset, manifest_uri=manifest_uri)
+                pool.submit(
+                    self.put_asset,
+                    asset,
+                    manifest_uri=manifest_uri,
+                    tenant_id=tenant_id,
+                )
                 for asset in assets_list
             ]
             return [fut.result() for fut in futures]
 
-    def read_manifest_for_asset(self, asset_id: str) -> Manifest | None:
+    def read_manifest_for_asset(
+        self,
+        asset_id: str,
+        *,
+        tenant_id: str,
+        verify: bool = True,
+        allow_unverified_assets: bool = False,
+    ) -> Manifest | None:
         """Reverse lookup: ``asset_id`` → :class:`Manifest`.
 
-        Reads the sidecar index at ``{prefix}/_index/{asset_id}.json``
-        written by :meth:`put_asset` (when ``manifest_uri=`` was
-        supplied), then fetches and parses the manifest from the
-        recorded URI. Returns ``None`` when no index entry exists.
+        Reads the tenant-scoped sidecar index at
+        ``{prefix}/_index/{tenant_id}/{asset_id}.json``
+        written by :meth:`put_asset` (when ``manifest_uri=`` was supplied),
+        then fetches and parses the manifest from the recorded URI. During the
+        migration from the legacy flat index, a missing tenant-scoped entry
+        falls back to ``{prefix}/_index/{asset_id}.json`` and backfills the
+        scoped entry after manifest verification, tenant, and asset reference
+        checks pass.
+        Returns ``None`` when no index entry exists, the referenced manifest
+        belongs to a different tenant, or the manifest does not reference the
+        requested asset ID.
 
         Manifests for assets put without ``manifest_uri=`` are not
         discoverable via this method — by design. Callers needing
-        guaranteed discoverability MUST pass ``manifest_uri=`` to
-        :meth:`put_asset`.
+        guaranteed discoverability MUST pass both ``manifest_uri=`` and
+        ``tenant_id=`` to :meth:`put_asset`.
         """
-        index_key = self._asset_index_key(asset_id)
+        asset_id = _require_asset_id(asset_id)
+        tenant = _require_tenant_id(tenant_id)
+        index_key = self._asset_index_key(asset_id, tenant_id=tenant)
+        used_legacy_index = False
         if not self._backend.exists(index_key):
-            return None
+            legacy_index_key = self._legacy_asset_index_key(asset_id)
+            if not self._backend.exists(legacy_index_key):
+                logger.info(
+                    "Asset manifest reverse lookup missed scoped index",
+                    extra={"index_key": index_key, "tenant_id": tenant},
+                )
+                return None
+            logger.warning(
+                "Asset manifest reverse lookup using legacy flat index",
+                extra={
+                    "index_key": index_key,
+                    "legacy_index_key": legacy_index_key,
+                    "tenant_id": tenant,
+                },
+            )
+            index_key = legacy_index_key
+            used_legacy_index = True
         try:
             raw = self._backend.get(index_key)
         except StorageError:
@@ -558,6 +849,24 @@ class ObjectStorageSink(BaseSink):
             entry = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SinkError(f"Asset index at {index_key!r} is not valid JSON: {exc}") from exc
+        if not isinstance(entry, dict):
+            raise SinkError(f"Asset index at {index_key!r} must be a JSON object")
+        index_tenant = _normalize_tenant_id_or_sink_error(
+            entry.get("tenant_id"),
+            message=f"Asset index at {index_key!r} has non-string tenant_id",
+        )
+        if index_tenant is None and not used_legacy_index:
+            raise SinkError(f"Asset index at {index_key!r} is missing tenant_id")
+        if index_tenant is not None and index_tenant != tenant:
+            logger.warning(
+                "Asset manifest reverse lookup denied for index tenant mismatch",
+                extra={
+                    "index_key": index_key,
+                    "requested_tenant_id": tenant,
+                    "index_tenant_id": index_tenant,
+                },
+            )
+            return None
         manifest_uri = entry.get("manifest_uri")
         if not manifest_uri:
             return None
@@ -575,19 +884,123 @@ class ObjectStorageSink(BaseSink):
                 f"Stored manifest at {manifest_key} is {len(data)} bytes, "
                 f"exceeds MAX_MANIFEST_BYTES={MAX_MANIFEST_BYTES}"
             )
-        return Manifest.model_validate_json(data)
+        manifest = _parse_stored_manifest(manifest_key, data)
+        manifest_tenant = normalize_tenant_id(manifest.run.tenant_id)
+        legacy_tenant_match = (
+            used_legacy_index
+            and manifest_tenant is None
+            and index_tenant is None
+            and self._legacy_index_tenant_id == tenant
+        )
+        if manifest_tenant != tenant and not legacy_tenant_match:
+            logger.warning(
+                "Asset manifest reverse lookup denied for tenant mismatch",
+                extra={
+                    "index_key": index_key,
+                    "manifest_key": manifest_key,
+                    "requested_tenant_id": tenant,
+                    "manifest_tenant_id": manifest.run.tenant_id,
+                },
+            )
+            return None
+        if not _manifest_references_asset(manifest, asset_id):
+            logger.warning(
+                "Asset manifest reverse lookup denied for manifest asset mismatch",
+                extra={
+                    "index_key": index_key,
+                    "manifest_key": manifest_key,
+                    "requested_tenant_id": tenant,
+                    "asset_id": asset_id,
+                },
+            )
+            return None
+        effective_allow_unverified = self._effective_allow_unverified_assets(
+            allow_unverified_assets
+        )
+        _verify_stored_manifest(
+            manifest_key,
+            manifest,
+            verify=verify,
+            allow_unverified_assets=effective_allow_unverified,
+            strict_unverified_assets=self._strict_manifest_reads,
+        )
+        if used_legacy_index and verify:
+            self._write_asset_index(
+                asset_id,
+                manifest_uri,
+                tenant_id=tenant,
+            )
+        return manifest
 
-    def _asset_index_key(self, asset_id: str) -> str:
+    def _asset_index_key(self, asset_id: str, *, tenant_id: str) -> str:
         """Storage key for the asset_id → manifest_uri sidecar."""
+        asset_id = _require_asset_id(asset_id)
+        tenant = _require_tenant_id(tenant_id)
+        return self._kb.build("_index", _tenant_index_segment(tenant), f"{asset_id}.json")
+
+    def _legacy_asset_index_key(self, asset_id: str) -> str:
+        """Legacy flat asset_id → manifest_uri sidecar key."""
+        asset_id = _require_asset_id(asset_id)
         return self._kb.build("_index", f"{asset_id}.json")
 
-    def _write_asset_index(self, asset_id: str, manifest_uri: str) -> None:
+    def _write_asset_index(
+        self,
+        asset_id: str,
+        manifest_uri: str,
+        *,
+        tenant_id: str | None,
+    ) -> None:
         """Write the sidecar index entry. Idempotent — re-writes
         the same key on repeat calls (for the same asset, the
         manifest_uri is expected to be stable)."""
-        payload = json.dumps({"manifest_uri": manifest_uri}).encode("utf-8")
+        tenant = _require_tenant_id(tenant_id)
+        asset_id = _require_asset_id(asset_id)
+        index_key = self._asset_index_key(asset_id, tenant_id=tenant)
+        if self._backend.exists(index_key):
+            try:
+                existing = json.loads(self._backend.get(index_key).decode("utf-8"))
+            except (StorageError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SinkError(f"Asset index at {index_key!r} is not readable: {exc}") from exc
+            if not isinstance(existing, dict):
+                raise SinkError(f"Asset index at {index_key!r} must be a JSON object")
+            existing_tenant = _normalize_tenant_id_or_sink_error(
+                existing.get("tenant_id"),
+                message=f"Asset index at {index_key!r} has non-string tenant_id",
+            )
+            if existing_tenant == tenant and existing.get("manifest_uri") == manifest_uri:
+                return
+            raise SinkError(
+                f"Asset index for {asset_id} in tenant {tenant!r} already points "
+                "to a different manifest"
+            )
+        payload = json.dumps({"manifest_uri": manifest_uri, "tenant_id": tenant}).encode("utf-8")
         self._backend.put(
-            self._asset_index_key(asset_id),
+            index_key,
+            payload,
+            content_type="application/json",
+        )
+        legacy_index_key = self._legacy_asset_index_key(asset_id)
+        if self._backend.exists(legacy_index_key):
+            try:
+                existing = json.loads(self._backend.get(legacy_index_key).decode("utf-8"))
+            except (StorageError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SinkError(
+                    f"Asset index at {legacy_index_key!r} is not readable: {exc}"
+                ) from exc
+            if not isinstance(existing, dict):
+                raise SinkError(f"Asset index at {legacy_index_key!r} must be a JSON object")
+            existing_tenant = _normalize_tenant_id_or_sink_error(
+                existing.get("tenant_id"),
+                message=f"Asset index at {legacy_index_key!r} has non-string tenant_id",
+            )
+            if existing_tenant in {None, tenant} and existing.get("manifest_uri") == manifest_uri:
+                return
+            self._backend.delete(index_key)
+            raise SinkError(
+                f"Legacy asset index for {asset_id} already points to a different manifest"
+            )
+        self._backend.put(
+            legacy_index_key,
             payload,
             content_type="application/json",
         )

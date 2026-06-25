@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -81,6 +80,8 @@ _INPUT_RESOLUTION_FAILURE_REASON = "input_resolution"
 # removed.
 _RAISE_ON_FAILURE_DEFAULT_FLIP_VERSION = "0.4.0"
 _TEXT_METADATA_KEY = "text"
+_MODERATION_SEGMENT_MAX_BYTES = 8 * 1024
+_MODERATION_TOTAL_MAX_BYTES = 32 * 1024
 
 
 def _coerce_str(value: str | bytes | bytearray) -> str:
@@ -193,18 +194,26 @@ def _reject_credentials_in_params(params: dict[str, Any], provider_name: str, mo
         _scan(v, str(k))
 
 
-def _text_value(value: Any) -> str | None:
+def _bounded_moderation_segment(text: str, *, label: str) -> str | None:
+    if not text:
+        return None
+    size = len(text.encode("utf-8"))
+    if size > _MODERATION_SEGMENT_MAX_BYTES:
+        raise ValueError(
+            f"{label} exceeds moderation segment limit ({_MODERATION_SEGMENT_MAX_BYTES} bytes)"
+        )
+    return text
+
+
+def _text_value(value: Any, *, label: str) -> str | None:
     """Convert a recognized text-bearing input field into moderation text."""
     if value is None:
         return None
     if isinstance(value, (str, bytes, bytearray)):
         text = _coerce_str(value)
     else:
-        try:
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError, OverflowError):
-            text = str(value)
-    return text or None  # Empty text leaves no payload to moderate.
+        raise ValueError(f"{label} must be a string or bytes, not structured metadata")
+    return _bounded_moderation_segment(text, label=label)
 
 
 def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
@@ -215,7 +224,10 @@ def _input_text_payloads(inputs: Sequence[Asset]) -> list[str]:
     """
     payloads: list[str] = []
     for asset in inputs:
-        metadata_text = _text_value(asset.metadata.get(_TEXT_METADATA_KEY))
+        metadata_text = _text_value(
+            asset.metadata.get(_TEXT_METADATA_KEY),
+            label=f"input asset {asset.asset_id} metadata['text']",
+        )
         if metadata_text is not None:
             payloads.append(metadata_text)
     return payloads
@@ -225,12 +237,24 @@ def _pre_moderation_payload(step: Step) -> str | None:
     """Build the pre-step moderation text from prompts plus textual inputs."""
     parts: list[str] = []
     if step.prompt is not None:
-        parts.append(step.prompt)
+        prompt = _bounded_moderation_segment(step.prompt, label="prompt")
+        if prompt is not None:
+            parts.append(prompt)
     if step.negative_prompt is not None:
-        parts.append(step.negative_prompt)
+        negative_prompt = _bounded_moderation_segment(
+            step.negative_prompt,
+            label="negative_prompt",
+        )
+        if negative_prompt is not None:
+            parts.append(negative_prompt)
     parts.extend(_input_text_payloads(step.inputs))
     if not parts:
         return None
+    total_size = sum(len(part.encode("utf-8")) for part in parts) + max(0, len(parts) - 1) * 2
+    if total_size > _MODERATION_TOTAL_MAX_BYTES:
+        raise ValueError(
+            f"moderation payload exceeds total limit ({_MODERATION_TOTAL_MAX_BYTES} bytes)"
+        )
     return "\n\n".join(parts)
 
 
@@ -1102,19 +1126,24 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx: _StepContext,
     ) -> Step:
         """Execute a single step with moderation, caching, and fallback models."""
-        if (
-            self._moderation is not None
-            and (moderation_payload := _pre_moderation_payload(step)) is not None
-        ):
+        if self._moderation is not None:
             try:
-                mod_result = self._moderation.check_prompt(moderation_payload, step.params)
-            except Exception as exc:
+                moderation_payload = _pre_moderation_payload(step)
+            except ValueError as exc:
                 step.status = StepStatus.FAILED
-                step.error = f"Moderation hook error: {exc}"
-                step.error_code = ProviderErrorCode.UNKNOWN
+                step.error = f"Moderation input error: {exc}"
+                step.error_code = ProviderErrorCode.INVALID_INPUT
                 return step
-            if not mod_result.allowed:
-                return self._apply_moderation_failure(step, mod_result, "pre")
+            if moderation_payload is not None:
+                try:
+                    mod_result = self._moderation.check_prompt(moderation_payload, step.params)
+                except Exception as exc:
+                    step.status = StepStatus.FAILED
+                    step.error = f"Moderation hook error: {exc}"
+                    step.error_code = ProviderErrorCode.UNKNOWN
+                    return step
+                if not mod_result.allowed:
+                    return self._apply_moderation_failure(step, mod_result, "pre")
 
         if self._cache is not None:
             cached = self._cache.get(step, tenant_id=self._tenant_id)
@@ -1153,19 +1182,26 @@ class Pipeline(Runnable[None, PipelineResult]):
         ctx: _StepContext,
     ) -> Step:
         """Execute a single step asynchronously with moderation, caching, and fallback."""
-        if (
-            self._moderation is not None
-            and (moderation_payload := _pre_moderation_payload(step)) is not None
-        ):
+        if self._moderation is not None:
             try:
-                mod_result = await self._moderation.acheck_prompt(moderation_payload, step.params)
-            except Exception as exc:
+                moderation_payload = _pre_moderation_payload(step)
+            except ValueError as exc:
                 step.status = StepStatus.FAILED
-                step.error = f"Moderation hook error: {exc}"
-                step.error_code = ProviderErrorCode.UNKNOWN
+                step.error = f"Moderation input error: {exc}"
+                step.error_code = ProviderErrorCode.INVALID_INPUT
                 return step
-            if not mod_result.allowed:
-                return self._apply_moderation_failure(step, mod_result, "pre")
+            if moderation_payload is not None:
+                try:
+                    mod_result = await self._moderation.acheck_prompt(
+                        moderation_payload, step.params
+                    )
+                except Exception as exc:
+                    step.status = StepStatus.FAILED
+                    step.error = f"Moderation hook error: {exc}"
+                    step.error_code = ProviderErrorCode.UNKNOWN
+                    return step
+                if not mod_result.allowed:
+                    return self._apply_moderation_failure(step, mod_result, "pre")
 
         if self._cache is not None:
             cached = self._cache.get(step, tenant_id=self._tenant_id)

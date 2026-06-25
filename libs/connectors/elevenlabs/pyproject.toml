@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-elevenlabs"
-version = "0.3.0"
+version = "0.3.1"
 description = "ElevenLabs TTS and sound effects provider adapter for genblaze"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "elevenlabs", "tts", "audio"]
 
 dependencies = [
-    "genblaze-core>=0.3.0,<0.4",
+    "genblaze-core>=0.3.4,<0.4",
     "elevenlabs>=2.0",
 ]
 

@@ -62,6 +62,18 @@ class ManifestError(GenblazeError):
     """Raised when manifest creation/validation fails."""
 
 
+class UnsupportedSchemaVersionError(ManifestError):
+    """Raised when a manifest declares a schema version this reader cannot parse."""
+
+
+class UnverifiedAssetError(ManifestError):
+    """Raised when a hash-valid manifest has missing or malformed output sha256."""
+
+    def __init__(self, message: str, *, asset_ids: list[str] | tuple[str, ...]):
+        super().__init__(message)
+        self.asset_ids = tuple(asset_ids)
+
+
 class EmbeddingError(GenblazeError):
     """Raised when media embedding or extraction fails."""
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 # Freeform atom key for genblaze manifest
 FREEFORM_KEY = "----:genblaze:manifest"
@@ -67,7 +67,7 @@ class AacHandler(BaseMediaHandler):
                     f"({len(payload)} > {MAX_MANIFEST_BYTES} bytes)"
                 )
             manifest_json = payload.decode("utf-8")
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

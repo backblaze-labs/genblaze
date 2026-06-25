@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `genblaze-core` 0.3.2 → 0.3.4: `Manifest.verify()` now rejects output
+  assets that lack `sha256` for every supported schema version, preventing a
+  schema downgrade from bypassing declared output sha256 coverage. This is an
+  intentional security exception to the normal patch-release compatibility
+  policy; use `verify_hash()` for legacy hash-only checks against historical
+  URL-only media (#77).
+- `genblaze-core`: `Asset.sha256` values remain loadable even when malformed,
+  so historical and cross-producer manifests can still be inspected with
+  `verify=False` or `allow_unverified_assets=True`. `Manifest.verify()` and
+  `genblaze verify` treat missing, uppercase, or otherwise malformed `sha256`
+  as unverified output coverage. They do not fetch remote asset URLs; consumers
+  must independently hash fetched bytes before trusting those bytes (#77).
+- `genblaze-core`: schema 1.6 URL-only hash markers are Python read-supported.
+  The canonical marker URL strips known credential, expiry, and response
+  override query parameters for AWS SigV4/SigV2, GCS, B2, CloudFront, Azure SAS,
+  and GCS V2 signed URLs (including bare `authorization` tokens) while retaining
+  resource-identifying query parameters. Default manifest emission, storage
+  writes, media embedding, and the published JSON Schema/TypeScript spec stay on
+  schema 1.5 for an expand-contract rollout (#77).
+- `genblaze-openai`: `dall-e-2` / `dall-e-3` URL responses are now downloaded
+  immediately to a local `file://` asset with a populated `sha256` and
+  `size_bytes`, instead of being stored as the raw (credential-bearing,
+  ~1-hour) Azure SAS URL. The signed URL is used only for that fetch and never
+  reaches the manifest, step cache, or any sink. This fixes the `.run(sink=...)`
+  transfer path (which previously received a credential-stripped, unfetchable
+  URL) and lets DALL-E outputs verify without a storage sink (#77).
+- `genblaze-cli` 0.3.0 → 0.3.2: raises its `genblaze-core` floor to the first
+  core version that exposes `verify_hash()` and output-asset sha256 diagnostics
+  (#77).
+- `genblaze` umbrella package: raises its `genblaze-core` floor to 0.3.4 so
+  umbrella installs receive the verification hardening (#77).
+- Provider and storage connector packages now require `genblaze-core>=0.3.4,<0.4`
+  and carry patch version bumps so adapter-only installs receive republished
+  wheels with the URL-only asset verification fix (#77).
+- `ObjectStorageSink.read_manifest_for_asset()` now requires `tenant_id`, stores
+  tenant-scoped asset index entries, validates `asset_id` as a UUID, falls back
+  to legacy flat index entries during migration, rejects manifest pointer
+  substitution unless the recovered manifest references the requested asset,
+  and applies the same staged verification behavior as `read_manifest()` (#77).
+- `ObjectStorageSink.write_run()` now fails the write when an asset transfer
+  fails, instead of uploading a success-path manifest that later fails strict
+  verification. Successful transfers from a partial failure are reused on
+  retry and the in-memory manifest hash is recomputed before raising (#77).
+
+### Changed
+
+- `ObjectStorageSink.read_manifest(verify=True)` verifies canonical hashes by
+  default and logs output assets whose `sha256` is missing or malformed.
+  Hard-failing those unverified outputs is staged behind
+  `strict_manifest_reads=True` or `GENBLAZE_STRICT_MANIFEST_READS=true` so
+  operators can backfill historical URL-only manifests before enabling strict
+  read failures on hot paths (#77).
+
 ### Fixed
 
 - `tools/check_pin_parity.py`: extend the pre-publish drift guard to
@@ -845,10 +900,11 @@ for the design trail.
     the resulting manifest's canonical hash is **invariant under
     permuted input order** — a podcast app calling ``ingest`` with
     feed entries in any order produces a byte-identical manifest.
-  - When a sink is supplied, ``put_asset`` is called for each asset
-    with a derived ``manifest_uri`` so
+  - When a sink and ``tenant_id`` are supplied, ``put_asset`` is called for
+    each asset with a derived ``manifest_uri`` and tenant context so
     :meth:`BaseSink.read_manifest_for_asset` can later discover the
-    manifest from any asset_id. Sinks that don't implement
+    manifest from that tenant's asset_id. Without ``tenant_id``, assets are
+    uploaded without a reverse-lookup index. Sinks that don't implement
     ``put_asset`` (e.g. ``ParquetSink``) emit a warning and skip
     the upload — manifest still produced for in-memory consumers.
   - New module ``genblaze_core.pipeline.ingest`` houses the
@@ -902,7 +958,7 @@ for the design trail.
   gap where DAM, archival, podcast-hosting, and UGC apps had to
   fabricate `SyncProvider` shims to seed assets through the
   generation-shaped pipeline.
-  - ``BaseSink.put_asset(asset, *, manifest_uri=None) -> Asset`` —
+  - ``BaseSink.put_asset(asset, *, manifest_uri=None, tenant_id=None) -> Asset`` —
     write a single asset's bytes via the sink's storage backend
     (no Run wrapper required). Mutates the asset in place: rewrites
     ``url`` to the durable backend URL, populates ``sha256`` and
@@ -910,16 +966,17 @@ for the design trail.
     URL (``file://`` allowlisted dirs, or SSRF-protected ``https://``).
     Default impl on the ABC raises ``NotImplementedError`` so
     non-storage-backed sinks (``ParquetSink`` etc.) keep working.
-  - ``BaseSink.put_assets(assets, *, manifest_uri=None) ->
+  - ``BaseSink.put_assets(assets, *, manifest_uri=None, tenant_id=None) ->
     list[Asset]`` — bulk variant, parallelizes via
     ``ThreadPoolExecutor`` sized at ``min(max_upload_workers,
     len(assets))``. Returned list preserves input order.
-  - ``BaseSink.read_manifest_for_asset(asset_id) -> Manifest |
+  - ``BaseSink.read_manifest_for_asset(asset_id, *, tenant_id) -> Manifest |
     None`` — reverse-lookup. When ``put_asset`` is called with
-    ``manifest_uri=``, the sink writes a sidecar index entry at
-    ``{prefix}/_index/{asset_id}.json`` so future callers can
-    discover the manifest from just the asset_id. Manifests for
-    assets put without ``manifest_uri=`` are not discoverable
+    ``manifest_uri=`` and ``tenant_id=``, the sink writes a tenant-scoped
+    sidecar index entry at ``{prefix}/_index/{tenant_id}/{asset_id}.json`` so
+    future callers can discover the manifest from the asset_id inside their
+    authorization context. Manifests for assets put without ``manifest_uri=``
+    and ``tenant_id=`` are not discoverable
     via this method (by design — opt-in). Returns ``None`` for
     unknown asset_ids and for foreign-backend manifest URIs that
     don't round-trip through ``key_from_url``.

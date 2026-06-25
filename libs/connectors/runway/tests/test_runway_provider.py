@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import StepStatus
+from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
 
@@ -77,6 +79,18 @@ def test_invoke_full_lifecycle(mock_runway):
     result = provider.invoke(step)
     assert result.status == StepStatus.SUCCEEDED
     assert len(result.assets) == 1
+
+
+def test_url_only_output_manifest_does_not_verify_without_sink(mock_runway):
+    provider, _ = mock_runway
+    result = provider.invoke(Step(provider="runway", model="gen4_turbo", prompt="a sunset"))
+
+    manifest = Manifest.from_run(Run(name="same", steps=[result]))
+
+    assert result.assets[0].sha256 is None
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [result.assets[0].asset_id]
+    assert not manifest.verify()
 
 
 def test_invalid_duration_raises(mock_runway):

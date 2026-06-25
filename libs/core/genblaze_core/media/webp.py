@@ -11,7 +11,7 @@ from PIL import Image
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
 from genblaze_core.media.jpeg import MAX_XMP_BYTES, _build_xmp, _scan_xmp_for_manifest
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 # Cap on the bytes scanned to detect the WebP codec chunk. WebP files using
 # VP8X may contain leading ICCP/ALPH/EXIF/XMP chunks before the codec chunk;
@@ -89,7 +89,7 @@ class WebpHandler(BaseMediaHandler):
             with open(source, "rb") as f:
                 data = f.read()
             manifest_json = _scan_xmp_for_manifest(data, source)
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

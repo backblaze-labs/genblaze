@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+import pytest
+from genblaze_core.exceptions import ManifestError, UnsupportedSchemaVersionError
 from genblaze_core.models import (
     Asset,
     Manifest,
@@ -13,6 +15,8 @@ from genblaze_core.models import (
     WordTiming,
 )
 from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepType
+from genblaze_core.models.manifest import parse_manifest
+from pydantic import ValidationError
 
 
 def test_asset_defaults():
@@ -20,6 +24,37 @@ def test_asset_defaults():
     assert a.asset_id
     assert a.sha256 is None
     assert a.metadata == {}
+
+
+@pytest.mark.parametrize("sha256", ["not-a-sha", "z" * 64, "abc123", "g" * 64])
+def test_asset_tolerates_malformed_sha256_on_load(sha256):
+    asset = Asset(url="https://example.com/img.png", media_type="image/png", sha256=sha256)
+
+    assert asset.sha256 == sha256
+
+
+def test_manifest_verify_rejects_uppercase_output_sha256():
+    asset = Asset(url="https://example.com/img.png", media_type="image/png", sha256="A" * 64)
+    step = Step(
+        provider="mock",
+        model="m",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest(run=Run(name="uppercase-sha", steps=[step]))
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [asset.asset_id]
+    assert not manifest.verify()
+
+
+def test_asset_tolerates_malformed_sha256_assignment():
+    asset = Asset(url="https://example.com/img.png", media_type="image/png")
+
+    asset.sha256 = "not-a-sha"
+
+    assert asset.sha256 == "not-a-sha"
 
 
 def test_step_defaults():
@@ -65,6 +100,448 @@ def test_manifest_verify_detects_tampering():
     m.compute_hash()
     m.run.steps[0].prompt = "tampered"
     assert not m.verify()
+
+
+def test_manifest_url_only_output_assets_do_not_verify():
+    """URL-only outputs are hashable metadata, not asset-byte integrity."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[Asset(url="https://cdn.example.com/output-a.png", media_type="image/png")],
+    )
+    step_b = Step(
+        **base,
+        assets=[Asset(url="https://cdn.example.com/output-b.png", media_type="image/png")],
+    )
+
+    manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
+    manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
+
+    assert manifest_a.verify_hash()
+    assert manifest_b.verify_hash()
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert not manifest_a.verify()
+    assert not manifest_b.verify()
+
+
+def test_manifest_v1_5_url_only_inputs_keep_legacy_hash_rules():
+    """Schema 1.5 preserves old URL-stripping rules for existing manifests."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    output = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="b" * 64,
+    )
+    step_a = Step(
+        **base,
+        assets=[output],
+        inputs=[Asset(url="https://cdn.example.com/input-a.png", media_type="image/png")],
+    )
+    step_b = Step(
+        **base,
+        assets=[output.model_copy(deep=True)],
+        inputs=[Asset(url="https://cdn.example.com/input-b.png", media_type="image/png")],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.5")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.5")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_a.verify()
+    assert manifest_a.output_asset_ids_missing_sha256() == []
+
+
+def test_manifest_v1_6_url_only_inputs_are_metadata_bound():
+    """Schema 1.6 includes URL-only inputs in the metadata hash payload."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    output = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="c" * 64,
+    )
+    step_a = Step(
+        **base,
+        assets=[output],
+        inputs=[Asset(url="https://cdn.example.com/input-a.png", media_type="image/png")],
+    )
+    step_b = Step(
+        **base,
+        assets=[output.model_copy(deep=True)],
+        inputs=[Asset(url="https://cdn.example.com/input-b.png", media_type="image/png")],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_a.verify()
+
+
+def test_manifest_v1_6_verify_hash_readable_but_not_serializable():
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png",
+                media_type="image/png",
+                sha256="c" * 64,
+            )
+        ],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.6")
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert manifest.verify()
+    with pytest.raises(ManifestError, match="read-supported only"):
+        manifest.to_canonical_json()
+
+
+def test_manifest_v1_5_reports_missing_output_sha_and_fails_verify():
+    """Security-facing verification rejects URL-only outputs in legacy schemas."""
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url="https://cdn.example.com/output.png", media_type="image/png")],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.5")
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert not manifest.verify()
+    assert manifest.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
+    report = manifest.verification_report()
+    assert report.hash_ok
+    assert report.unverified_sha256_ids == (step.assets[0].asset_id,)
+    assert not report.ok
+
+
+def test_manifest_verify_rejects_malformed_output_sha256_if_bypassed():
+    asset = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="not-a-sha",
+    )
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest.from_run(Run(name="same", steps=[step]))
+
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == [asset.asset_id]
+    assert not manifest.verify()
+
+
+def test_parse_manifest_tolerates_malformed_sha256_but_verify_rejects():
+    asset = Asset(
+        url="https://cdn.example.com/output.png",
+        media_type="image/png",
+        sha256="SHA256:" + "a" * 64,
+    )
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]))
+    manifest.compute_hash()
+
+    parsed = parse_manifest(manifest.model_dump(mode="python"))
+
+    assert parsed.verify_hash()
+    assert parsed.output_asset_ids_missing_sha256() == [asset.asset_id]
+    assert not parsed.verify()
+
+
+@pytest.mark.parametrize("schema_version", ["0", "1.7", "2.0", "1.x"])
+def test_manifest_unsupported_schema_version_is_rejected(schema_version):
+    step = Step(provider="mock", model="m", prompt="same prompt")
+
+    with pytest.raises(ValidationError, match="Unsupported schema_version"):
+        Manifest(run=Run(name="same", steps=[step]), schema_version=schema_version)
+
+
+def test_parse_manifest_unsupported_schema_version_has_clear_error():
+    step = Step(provider="mock", model="m", prompt="same prompt")
+    manifest = Manifest.from_run(Run(name="same", steps=[step]))
+    data = manifest.model_dump(mode="python")
+    data["schema_version"] = "1.7"
+
+    with pytest.raises(UnsupportedSchemaVersionError, match="Upgrade genblaze-core"):
+        parse_manifest(data)
+
+
+@pytest.mark.parametrize("schema_version", ["1.0", "1.4", "1.5"])
+def test_schema_downgrade_cannot_bypass_url_only_output_verification(schema_version):
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url="https://cdn.example.com/output.png", media_type="image/png")],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version=schema_version)
+    manifest.compute_hash()
+
+    assert manifest.verify_hash()
+    assert not manifest.verify()
+
+
+def test_manifest_v1_6_url_only_hash_strips_presign_query_params():
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png?X-Amz-Signature=a",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://CDN.EXAMPLE.COM/output.png?X-Amz-Signature=b",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert not manifest_a.verify()
+
+
+def test_manifest_v1_6_url_only_hash_strips_url_userinfo():
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://alice:secret@cdn.example.com/output.png",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/output.png",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+
+
+def test_manifest_v1_6_url_only_hash_keeps_resource_query_params():
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/download?id=benign&X-Amz-Signature=a",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn.example.com/download?id=evil&X-Amz-Signature=a",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
+    assert manifest_a.verify_hash()
+    assert manifest_b.verify_hash()
+
+
+def test_manifest_v1_6_url_only_hash_preserves_plus_resource_query_params():
+    plus = _v1_6_hash_for_output_url("https://cdn.example.com/download?id=a+b&X-Amz-Signature=a")
+    encoded_plus = _v1_6_hash_for_output_url(
+        "https://cdn.example.com/download?id=a%2Bb&X-Amz-Signature=a"
+    )
+    space = _v1_6_hash_for_output_url(
+        "https://cdn.example.com/download?id=a%20b&X-Amz-Signature=a"
+    )
+
+    assert plus == encoded_plus
+    assert plus != space
+
+
+def test_manifest_v1_6_url_only_hash_preserves_bare_query_params():
+    bare = _v1_6_hash_for_output_url("https://cdn.example.com/download?flag&X-Amz-Signature=a")
+    empty = _v1_6_hash_for_output_url("https://cdn.example.com/download?flag=&X-Amz-Signature=a")
+
+    assert bare != empty
+
+
+@pytest.mark.parametrize("param", ["token", "sig", "signature", "credential", "policy"])
+def test_manifest_v1_6_url_only_hash_keeps_generic_resource_query_params(param):
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url=f"https://cdn.example.com/download?{param}=doc-a",
+                media_type="image/png",
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url=f"https://cdn.example.com/download?{param}=doc-b",
+                media_type="image/png",
+            )
+        ],
+    )
+
+    manifest_a = Manifest(run=Run(name="same", steps=[step_a]), schema_version="1.6")
+    manifest_b = Manifest(run=Run(name="same", steps=[step_b]), schema_version="1.6")
+    manifest_a.compute_hash()
+    manifest_b.compute_hash()
+
+    assert manifest_a.canonical_hash != manifest_b.canonical_hash
+
+
+def _v1_6_hash_for_output_url(url: str) -> str:
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url=url, media_type="image/png")],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]), schema_version="1.6")
+    manifest.compute_hash()
+    return manifest.canonical_hash
+
+
+def test_manifest_v1_6_url_only_hash_strips_cloudfront_signed_query_params():
+    a = _v1_6_hash_for_output_url(
+        "https://d111.cloudfront.net/output.png?Policy=policy-a&Signature=sig-a&Key-Pair-Id=K123"
+    )
+    b = _v1_6_hash_for_output_url(
+        "https://d111.cloudfront.net/output.png?Policy=policy-b&Signature=sig-b&Key-Pair-Id=K123"
+    )
+    other_resource = _v1_6_hash_for_output_url(
+        "https://d111.cloudfront.net/other.png?Policy=policy-b&Signature=sig-b&Key-Pair-Id=K123"
+    )
+
+    assert a == b
+    assert a != other_resource
+
+
+def test_manifest_v1_6_url_only_hash_strips_azure_sas_query_params():
+    a = _v1_6_hash_for_output_url(
+        "https://acct.blob.core.windows.net/container/output.png?"
+        "sv=2024-11-04&se=2026-01-01T00:00:00Z&sp=r&sr=b&sig=sig-a"
+    )
+    b = _v1_6_hash_for_output_url(
+        "https://acct.blob.core.windows.net/container/output.png?"
+        "sv=2025-05-05&se=2026-02-01T00:00:00Z&sp=r&sr=b&sig=sig-b"
+    )
+    other_resource = _v1_6_hash_for_output_url(
+        "https://acct.blob.core.windows.net/container/other.png?"
+        "sv=2025-05-05&se=2026-02-01T00:00:00Z&sp=r&sr=b&sig=sig-b"
+    )
+
+    assert a == b
+    assert a != other_resource
+
+
+def test_manifest_v1_6_url_only_hash_strips_gcs_v2_signed_query_params():
+    a = _v1_6_hash_for_output_url(
+        "https://storage.googleapis.com/bucket/output.png?"
+        "GoogleAccessId=signer-a&Expires=1800000000&Signature=sig-a"
+    )
+    b = _v1_6_hash_for_output_url(
+        "https://storage.googleapis.com/bucket/output.png?"
+        "GoogleAccessId=signer-b&Expires=1900000000&Signature=sig-b"
+    )
+    other_resource = _v1_6_hash_for_output_url(
+        "https://storage.googleapis.com/bucket/other.png?"
+        "GoogleAccessId=signer-b&Expires=1900000000&Signature=sig-b"
+    )
+
+    assert a == b
+    assert a != other_resource
+
+
+def test_manifest_hashed_output_assets_verify_with_url_rewrites():
+    """sha256, not URL, is the provenance identity once bytes are declared."""
+    base = dict(provider="mock", model="m", prompt="same prompt", status=StepStatus.SUCCEEDED)
+    step_a = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn-a.example.com/output.png",
+                media_type="image/png",
+                sha256="a" * 64,
+                size_bytes=3,
+            )
+        ],
+    )
+    step_b = Step(
+        **base,
+        assets=[
+            Asset(
+                url="https://cdn-b.example.com/output.png",
+                media_type="image/png",
+                sha256="a" * 64,
+                size_bytes=3,
+            )
+        ],
+    )
+
+    manifest_a = Manifest.from_run(Run(name="same", steps=[step_a]))
+    manifest_b = Manifest.from_run(Run(name="same", steps=[step_b]))
+
+    assert manifest_a.canonical_hash == manifest_b.canonical_hash
+    assert manifest_a.verify()
+    assert manifest_b.verify()
+    assert manifest_a.verification_report().ok
 
 
 def test_hash_excludes_operational_fields():
@@ -187,6 +664,23 @@ def test_parse_manifest_v1_0_verify_roundtrip():
     parsed = parse_manifest(data)
     assert parsed.verify(), "verify() must pass after v1.0 → v1.1 migration"
     assert parsed.schema_version == "1.0"
+
+
+def test_parse_manifest_missing_schema_version_preserves_v1_0_policy():
+    """Schema-less historical manifests parse with the v1.0 hash policy."""
+    step = Step(provider="replicate", model="flux", prompt="cat")
+    run = Run(steps=[step])
+    manifest = Manifest(run=run, schema_version="1.0")
+    manifest.compute_hash()
+    data = manifest.model_dump(mode="python")
+    data.pop("schema_version")
+    for step_data in data["run"]["steps"]:
+        step_data.pop("cost_usd", None)
+
+    parsed = parse_manifest(data)
+
+    assert parsed.schema_version == "1.0"
+    assert parsed.verify_hash()
 
 
 # --- EDIT StepType ---

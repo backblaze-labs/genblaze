@@ -21,7 +21,7 @@ def test_png_roundtrip(tmp_path: Path):
         .prompt("a golden retriever in a field of sunflowers")
         .modality(Modality.IMAGE)
         .params(width=1024, height=1024, num_inference_steps=4)
-        .asset("https://replicate.delivery/output.png", "image/png")
+        .asset("https://replicate.delivery/output.png", "image/png", sha256="0" * 64)
         .build()
     )
     run = RunBuilder("golden-test").tenant("test-org").add_step(step).build()

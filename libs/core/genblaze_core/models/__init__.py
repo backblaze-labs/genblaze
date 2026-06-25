@@ -23,7 +23,7 @@ from genblaze_core.models.enums import (
     StepStatus,
     StepType,
 )
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, ManifestVerification, parse_manifest
 from genblaze_core.models.policy import EmbedPolicy
 from genblaze_core.models.prompt_template import PromptTemplate
 from genblaze_core.models.run import Run
@@ -49,6 +49,8 @@ __all__ = [
     "VideoURLRef",
     "EmbedPolicy",
     "Manifest",
+    "ManifestVerification",
+    "parse_manifest",
     "PromptTemplate",
     "Modality",
     "PromptVisibility",

@@ -30,6 +30,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from genblaze_core._utils import normalize_tenant_id
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, RunStatus, StepStatus, StepType
@@ -88,12 +89,15 @@ def ingest_assets(
             Merged into every produced Step's ``metadata`` alongside
             ``"source"``.
         sink: Storage sink to write asset bytes to. When supplied, each
-            asset is written via ``sink.put_asset`` with a derived
-            ``manifest_uri`` so :meth:`BaseSink.read_manifest_for_asset`
-            can later discover the manifest from any asset id. May be
+            asset is written via ``sink.put_asset``. If ``tenant_id`` is
+            also supplied, a derived ``manifest_uri`` is recorded so
+            :meth:`BaseSink.read_manifest_for_asset` can later discover
+            the manifest from any asset id within that tenant. May be
             ``None`` for offline builds (manifest only, no upload).
         name: Optional human-readable run name.
         tenant_id: Optional tenant id for multi-tenant deployments.
+            Surrounding whitespace is stripped; empty values are treated
+            as unset.
         step_type: Either :class:`StepType.INGEST` (default — external
             source) or :class:`StepType.IMPORT` (cross-system transfer).
             Both are non-generative; the field is exposed so callers
@@ -149,9 +153,11 @@ def ingest_assets(
         )
         steps.append(step)
 
+    normalized_tenant_id = normalize_tenant_id(tenant_id)
+
     run = Run(
         name=name,
-        tenant_id=tenant_id,
+        tenant_id=normalized_tenant_id,
         status=RunStatus.COMPLETED,
         steps=steps,
     )
@@ -166,9 +172,17 @@ def ingest_assets(
     # in place: ``url`` → durable backend URL, ``sha256`` /
     # ``size_bytes`` populated.
     if sink is not None:
+        indexed_manifest_uri = manifest_uri if run.tenant_id is not None else None
         for asset in sorted_assets:
             try:
-                sink.put_asset(asset, manifest_uri=manifest_uri)
+                if indexed_manifest_uri is None:
+                    sink.put_asset(asset)
+                else:
+                    sink.put_asset(
+                        asset,
+                        manifest_uri=indexed_manifest_uri,
+                        tenant_id=run.tenant_id,
+                    )
             except NotImplementedError:
                 # Sink doesn't support standalone asset writes (e.g.
                 # ParquetSink). Skip the asset upload but still emit

@@ -18,7 +18,7 @@ from pathlib import Path
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, atomic_write, read_media_bytes
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 ITXT_KEY = "genblaze:manifest"
 
@@ -165,7 +165,7 @@ class PngHandler(BaseMediaHandler):
         try:
             data = read_media_bytes(source)
             text = _extract_text(data)
-            return Manifest.model_validate(json.loads(text))
+            return parse_manifest(json.loads(text))
         except EmbeddingError:
             raise
         except Exception as exc:

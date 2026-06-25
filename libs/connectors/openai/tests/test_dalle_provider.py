@@ -8,18 +8,37 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import StepStatus
+from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.policy import EmbedPolicy
+from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
+
+_FAKE_PNG = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+_CONN_PATCH = "genblaze_openai.dalle.open_pinned_https_connection"
+
+
+def _fake_pinned_conn(*_args, **_kwargs):
+    """Minimal http.client-like connection that yields _FAKE_PNG once."""
+    conn = MagicMock()
+    resp = MagicMock()
+    resp.status = 200
+    resp.read.side_effect = [_FAKE_PNG, b""]
+    conn.getresponse.return_value = resp
+    return conn
 
 
 @pytest.fixture
 def mock_dalle():
-    """Patch openai with a mock client."""
+    """Patch openai with a mock client and stub the SSRF-pinned downloader.
+
+    dall-e-2/3 return signed CDN URLs; the provider now fetches the bytes into a
+    local hashed asset, so the pinned HTTPS connection is faked here.
+    """
     mock_client = MagicMock()
     mock_client.images.generate.return_value = SimpleNamespace(
         data=[SimpleNamespace(url="https://oaidalleapiprodscus.blob.core.windows.net/img.png")]
@@ -28,9 +47,10 @@ def mock_dalle():
     with patch.dict("sys.modules", {"openai": MagicMock()}):
         from genblaze_openai.dalle import DalleProvider
 
-        provider = DalleProvider(api_key="test-key")
-        provider._client = mock_client
-        yield provider, mock_client
+        with patch(_CONN_PATCH, side_effect=_fake_pinned_conn):
+            provider = DalleProvider(api_key="test-key")
+            provider._client = mock_client
+            yield provider, mock_client
 
 
 def test_generate_returns_image_asset(mock_dalle):
@@ -39,8 +59,38 @@ def test_generate_returns_image_asset(mock_dalle):
     result = provider.generate(step)
     assert len(result.assets) == 1
     assert result.assets[0].media_type == "image/png"
-    _host = urlparse(result.assets[0].url).hostname or ""
-    assert _host == "blob.core.windows.net" or _host.endswith(".blob.core.windows.net")
+    # URL responses are materialized to a local hashed file:// asset.
+    assert result.assets[0].url.startswith("file://")
+    assert result.assets[0].sha256 is not None
+    assert result.assets[0].size_bytes == len(_FAKE_PNG)
+
+
+def test_url_response_materialized_locally_without_credentials(mock_dalle):
+    provider, client = mock_dalle
+    sas_url = (
+        "https://oaidalleapiprodscus.blob.core.windows.net/private/img.png"
+        "?st=2026-06-20T00%3A00%3A00Z&se=2026-06-20T01%3A00%3A00Z"
+        "&sp=r&sv=2024-11-04&sig=secret&tenant_resource=keep"
+    )
+    client.images.generate.return_value = SimpleNamespace(data=[SimpleNamespace(url=sas_url)])
+
+    with patch(_CONN_PATCH, side_effect=_fake_pinned_conn) as conn:
+        result = provider.generate(Step(provider="openai-dalle", model="dall-e-3", prompt="cat"))
+
+    # The signed URL is used to FETCH the bytes (credentials preserved for the
+    # download)...
+    assert conn.call_args.args[0] == sas_url
+    # ...but never persisted: the asset is a local hashed file with no SAS
+    # material, and the embedded manifest is credential-free.
+    asset = result.assets[0]
+    assert asset.url.startswith("file://")
+    assert asset.sha256 is not None
+    for cred in ("sig=", "se=", "st=", "sp=", "sv=", "secret"):
+        assert cred not in asset.url
+    manifest = Manifest.from_run(Run(name="sas", steps=[result]))
+    embedded = manifest.to_embed_json(EmbedPolicy(embed_mode="full"))
+    for cred in ("sig=", "se=", "secret"):
+        assert cred not in embedded
 
 
 def test_invoke_full_lifecycle(mock_dalle):
@@ -49,6 +99,20 @@ def test_invoke_full_lifecycle(mock_dalle):
     result = provider.invoke(step)
     assert result.status == StepStatus.SUCCEEDED
     assert len(result.assets) == 1
+
+
+def test_url_output_materialized_verifies_without_sink(mock_dalle):
+    provider, _ = mock_dalle
+    result = provider.invoke(Step(provider="openai-dalle", model="dall-e-3", prompt="a cat"))
+
+    manifest = Manifest.from_run(Run(name="same", steps=[result]))
+
+    # URL responses are downloaded and hashed at the source, so the manifest
+    # verifies without a storage sink.
+    assert result.assets[0].sha256 is not None
+    assert manifest.verify_hash()
+    assert manifest.output_asset_ids_missing_sha256() == []
+    assert manifest.verify()
 
 
 def test_multiple_images(mock_dalle):
@@ -650,7 +714,10 @@ class TestDalleCompliance(ProviderComplianceTests):
 
     @pytest.fixture(autouse=True)
     def _patch_sdk(self):
-        with patch.dict("sys.modules", {"openai": MagicMock()}):
+        with (
+            patch.dict("sys.modules", {"openai": MagicMock()}),
+            patch(_CONN_PATCH, side_effect=_fake_pinned_conn),
+        ):
             yield
 
     def make_provider(self):

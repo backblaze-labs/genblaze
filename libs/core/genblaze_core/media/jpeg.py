@@ -10,7 +10,7 @@ from PIL import Image
 
 from genblaze_core.exceptions import EmbeddingError
 from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, parse_manifest
 
 XMP_NS = "genblaze"
 MAX_XMP_BYTES = 60 * 1024  # 60KB size guard
@@ -126,7 +126,7 @@ class JpegHandler(BaseMediaHandler):
             with open(source, "rb") as f:
                 data = f.read()
             manifest_json = _scan_xmp_for_manifest(data, source)
-            return Manifest.model_validate(json.loads(manifest_json))
+            return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise
         except Exception as exc:

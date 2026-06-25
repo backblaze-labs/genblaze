@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
 from genblaze_core.models.step import Step
@@ -354,25 +355,25 @@ class TestPreStepModeration:
 
         assert _pre_moderation_payload(step) == "   "
 
-    def test_multiple_text_inputs_and_dict_payload_serialized_deterministically(self):
+    def test_multiple_text_inputs_combined_deterministically(self):
         first_asset = Asset(
             url="https://input.test/first.txt",
             media_type="text/plain",
             metadata={"text": "first"},
         )
-        dict_asset = Asset(
-            url="https://input.test/structured.json",
-            media_type="application/json",
-            metadata={"text": {"b": 2, "a": 1}},
+        second_asset = Asset(
+            url="https://input.test/second.txt",
+            media_type="text/plain",
+            metadata={"text": "second"},
         )
         step = Step(
             provider="mock",
             model="m",
             prompt="p",
-            inputs=[first_asset, dict_asset],
+            inputs=[first_asset, second_asset],
         )
 
-        assert _pre_moderation_payload(step) == 'p\n\nfirst\n\n{"a": 1, "b": 2}'
+        assert _pre_moderation_payload(step) == "p\n\nfirst\n\nsecond"
 
     def test_image_input_with_prompt_moderates_prompt_only(self):
         hook = TrackingHook()
@@ -429,26 +430,7 @@ class TestPreStepModeration:
         assert result.run.steps[0].status == StepStatus.FAILED
         assert list(cache_dir.glob("*.json")) == []
 
-    def test_circular_input_text_metadata_payload_falls_back_to_str(self):
-        circular: dict[str, object] = {}
-        circular["self"] = circular
-        text_asset = Asset(
-            url="https://input.test/user.txt",
-            media_type="text/plain",
-            metadata={"text": circular},
-        )
-
-        step = Step(provider="mock", model="m", prompt=None, inputs=[text_asset])
-
-        payload = _pre_moderation_payload(step)
-        assert isinstance(payload, str)
-        assert "self" in payload
-
-    def test_overflowing_input_text_metadata_payload_falls_back_to_str(self, monkeypatch):
-        def raise_overflow(*args, **kwargs):
-            raise OverflowError("too large")
-
-        monkeypatch.setattr("genblaze_core.pipeline.pipeline.json.dumps", raise_overflow)
+    def test_structured_input_text_metadata_rejected_before_serialization(self):
         text_asset = Asset(
             url="https://input.test/user.txt",
             media_type="text/plain",
@@ -456,9 +438,93 @@ class TestPreStepModeration:
         )
         step = Step(provider="mock", model="m", prompt=None, inputs=[text_asset])
 
-        payload = _pre_moderation_payload(step)
-        assert isinstance(payload, str)
-        assert "blocked user text" in payload
+        with pytest.raises(ValueError, match="structured metadata"):
+            _pre_moderation_payload(step)
+
+    def test_oversized_input_text_metadata_rejected_before_hook(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": "A" * (8 * 1024 + 1)},
+        )
+
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .run()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert hook.prompt_calls == []
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
+        assert step.error.startswith("Moderation input error:")
+
+    def test_total_text_input_payload_rejected_before_hook(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        assets = [
+            Asset(
+                url=f"https://input.test/user-{i}.txt",
+                media_type="text/plain",
+                metadata={"text": "A" * 1024},
+            )
+            for i in range(33)
+        ]
+
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=assets,
+            )
+            .run()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert hook.prompt_calls == []
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
+
+    def test_structured_input_text_metadata_fails_closed_before_provider(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": {"message": "blocked user text"}},
+        )
+
+        result = (
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .run()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert hook.prompt_calls == []
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
 
     def test_promptless_input_from_text_rejected_before_generation(self):
         hook = RejectContainingHook("blocked user text")
@@ -619,6 +685,32 @@ class TestAsyncModeration:
         assert step.error_code == ProviderErrorCode.INVALID_INPUT
         assert len(hook.prompt_calls) == 1
         assert hook.prompt_calls[0][0] == "blocked user text"
+
+    def test_async_oversized_external_text_input_rejected_before_hook(self):
+        hook = TrackingHook()
+        provider = MockProvider()
+        text_asset = Asset(
+            url="https://input.test/user.txt",
+            media_type="text/plain",
+            metadata={"text": "A" * (8 * 1024 + 1)},
+        )
+        result = asyncio.run(
+            Pipeline("test", moderation=hook)
+            .step(
+                provider,
+                model="m",
+                prompt=None,
+                modality=Modality.IMAGE,
+                external_inputs=[text_asset],
+            )
+            .arun()
+        )
+
+        step = result.run.steps[0]
+        assert provider.call_count == 0
+        assert hook.prompt_calls == []
+        assert step.status == StepStatus.FAILED
+        assert step.error_code == ProviderErrorCode.INVALID_INPUT
 
     def test_async_prompt_and_input_text_combined_into_single_payload(self):
         hook = TrackingHook()

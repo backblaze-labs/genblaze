@@ -91,7 +91,13 @@ class MockProvider(SyncProvider):
 
     def _default_assets(self) -> list[Asset]:
         """Return default assets when none are configured."""
-        return [Asset(url="https://mock.test/output.bin", media_type="application/octet-stream")]
+        return [
+            Asset(
+                url="https://mock.test/output.bin",
+                media_type="application/octet-stream",
+                sha256="0" * 64,
+            )
+        ]
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
         """Return canned assets or raise on demand."""
@@ -131,7 +137,7 @@ class MockVideoProvider(MockProvider):
         super().__init__(**kwargs)
 
     def _default_assets(self) -> list[Asset]:
-        asset = Asset(url="https://mock.test/video.mp4", media_type="video/mp4")
+        asset = Asset(url="https://mock.test/video.mp4", media_type="video/mp4", sha256="1" * 64)
         asset.video = VideoMetadata(codec="h264", has_audio=False)
         return [asset]
 
@@ -147,7 +153,7 @@ class MockAudioProvider(MockProvider):
         super().__init__(**kwargs)
 
     def _default_assets(self) -> list[Asset]:
-        asset = Asset(url="https://mock.test/audio.mp3", media_type="audio/mpeg")
+        asset = Asset(url="https://mock.test/audio.mp3", media_type="audio/mpeg", sha256="2" * 64)
         asset.audio = AudioMetadata(codec="mp3", channels=1, sample_rate=44100)
         return [asset]
 

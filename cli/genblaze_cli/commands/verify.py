@@ -1,38 +1,41 @@
-"""Verify command — check manifest hash integrity."""
+"""Verify command — check manifest hash and output sha256 coverage."""
 
 from pathlib import Path
 
 import click
-from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media import get_handler, guess_mime
-from genblaze_core.media.sidecar import SidecarHandler
 
-
-def _verify_manifest(file: Path) -> bool:
-    """Extract and verify manifest, trying format-specific handler then sidecar."""
-    mime = guess_mime(file)
-    handler = get_handler(mime)
-    if handler is not None:
-        try:
-            return handler.verify(file)
-        except EmbeddingError:
-            pass  # Expected: no manifest in this format, try sidecar
-    # Try sidecar fallback
-    sidecar = SidecarHandler()
-    return sidecar.verify(file)
+from genblaze_cli.manifest_io import extract_manifest
 
 
 @click.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
-def verify(file: Path) -> None:
-    """Verify the integrity of a genblaze manifest in a media file."""
+@click.option(
+    "--hash-only",
+    is_flag=True,
+    help="Only verify canonical_hash; do not require output sha256 declarations.",
+)
+def verify(file: Path, hash_only: bool) -> None:
+    """Verify an embedded, sidecar, or standalone genblaze manifest."""
     try:
-        valid = _verify_manifest(file)
-        if valid:
-            click.echo("OK — manifest hash verified.")
-        else:
-            click.echo("FAIL — manifest hash mismatch.", err=True)
+        manifest = extract_manifest(file)
+        report = manifest.verification_report()
+        if not report.hash_ok:
+            click.echo("FAIL: manifest hash mismatch.", err=True)
             raise click.exceptions.Exit(1)
+        if hash_only:
+            click.echo("OK: manifest hash verified. Asset bytes were not fetched or compared.")
+            return
+        if report.unverified_sha256_ids:
+            click.echo(
+                f"FAIL: {len(report.unverified_sha256_ids)} output asset(s) "
+                "missing or malformed sha256.",
+                err=True,
+            )
+            raise click.exceptions.Exit(1)
+        click.echo(
+            "OK: manifest hash verified; all output assets declare sha256. "
+            "Asset bytes were not fetched or compared."
+        )
     except click.exceptions.Exit:
         raise
     except Exception as exc:

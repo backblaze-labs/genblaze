@@ -28,7 +28,9 @@ class MockProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-        step.assets.append(Asset(url="https://example.com/out.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://example.com/out.png", media_type="image/png", sha256="0" * 64)
+        )
         return step
 
 
@@ -507,7 +509,7 @@ class ChainableProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-        step.assets.append(Asset(url=self.output_url, media_type="image/png"))
+        step.assets.append(Asset(url=self.output_url, media_type="image/png", sha256="1" * 64))
         return step
 
 
@@ -688,7 +690,9 @@ async def test_arun_fail_fast_cancelled_steps_preserved() -> None:
             return True
 
         def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-            step.assets.append(Asset(url="https://example.com/slow.png", media_type="image/png"))
+            step.assets.append(
+                Asset(url="https://example.com/slow.png", media_type="image/png", sha256="2" * 64)
+            )
             return step
 
     result = await (
@@ -1015,7 +1019,9 @@ class ModelErrorProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-        step.assets.append(Asset(url="https://example.com/out.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://example.com/out.png", media_type="image/png", sha256="3" * 64)
+        )
         return step
 
 
@@ -1120,7 +1126,9 @@ class SlowProvider(BaseProvider):
         return True
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-        step.assets.append(Asset(url="https://example.com/slow.png", media_type="image/png"))
+        step.assets.append(
+            Asset(url="https://example.com/slow.png", media_type="image/png", sha256="4" * 64)
+        )
         return step
 
 

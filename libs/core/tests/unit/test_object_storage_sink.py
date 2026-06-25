@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 from datetime import UTC, datetime, timedelta
@@ -9,17 +10,36 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from genblaze_core._utils import MAX_MANIFEST_BYTES
-from genblaze_core.exceptions import ManifestError, SinkError
+from genblaze_core.exceptions import (
+    ManifestError,
+    SinkError,
+    UnsupportedSchemaVersionError,
+    UnverifiedAssetError,
+)
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import RunStatus, StepStatus
+from genblaze_core.models.enums import PromptVisibility, RunStatus, StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.storage.base import KeyStrategy, ObjectLockConfig, StorageBackend
-from genblaze_core.storage.sink import ObjectStorageSink
+from genblaze_core.storage.sink import ObjectStorageSink, _validation_error_summary
 
 # Fake DNS response — resolves to a public IP (bypasses SSRF check)
 _FAKE_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+class _OldPydanticValidationError:
+    def errors(self, *args, **kwargs):
+        if kwargs:
+            raise TypeError("errors() got an unexpected keyword argument")
+        return [
+            {
+                "loc": ("run", "steps", 0),
+                "type": "missing",
+                "input": {"prompt": "redacted"},
+                "url": "https://errors.pydantic.dev/2/missing",
+            }
+        ]
 
 
 class MemoryBackend(StorageBackend):
@@ -73,9 +93,18 @@ def _make_run_and_manifest():
     return run, manifest
 
 
+def test_validation_error_summary_supports_older_pydantic_errors_api():
+    summary = _validation_error_summary(_OldPydanticValidationError())  # type: ignore[arg-type]
+
+    assert summary == "1 validation error(s): run.steps.0: missing"
+    assert "redacted" not in summary
+    assert "errors.pydantic.dev" not in summary
+
+
 class TestObjectStorageSink:
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
-    def test_write_run_uploads_manifest(self, mock_urlopen):
+    def test_write_run_uploads_manifest(self, mock_urlopen, _mock_dns):
         """write_run should upload manifest JSON to storage."""
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [b"img data", b""]
@@ -95,8 +124,9 @@ class TestObjectStorageSink:
         assert manifest_key in backend.store
         assert manifest.manifest_uri is not None
 
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
-    def test_write_run_sets_manifest_uri(self, mock_urlopen):
+    def test_write_run_sets_manifest_uri(self, mock_urlopen, _mock_dns):
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [b"data", b""]
         mock_resp.headers = {"Content-Type": "image/png"}
@@ -112,8 +142,9 @@ class TestObjectStorageSink:
 
         assert manifest.manifest_uri == f"https://mem/pfx/manifests/{run.run_id}.json"
 
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
-    def test_idempotent_manifest_upload(self, mock_urlopen):
+    def test_idempotent_manifest_upload(self, mock_urlopen, _mock_dns):
         """Second write_run should skip manifest upload if already exists."""
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [b"data", b"", b"data", b""]
@@ -147,19 +178,11 @@ class TestObjectStorageSink:
         sink.close()  # second close must be a no-op, not an error
         assert backend.closed
 
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
-    def test_thread_safety(self, mock_urlopen):
+    def test_thread_safety(self, mock_urlopen, _mock_dns):
         """Multiple threads calling write_run should not crash."""
-        mock_resp = MagicMock()
-        mock_resp.headers = {"Content-Type": "image/png"}
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        def read_side_effect():
-            yield b"data"
-            yield b""
-
-        mock_resp.read.side_effect = lambda: b""
+        mock_urlopen.side_effect = lambda *a, **kw: _mock_urlopen()
 
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="mt")
@@ -168,10 +191,6 @@ class TestObjectStorageSink:
 
         def worker(i):
             try:
-                # Each call uses fresh mocks for read
-                mock_resp.read.side_effect = [b"data", b""]
-                mock_urlopen.return_value = mock_resp
-
                 run, manifest = _make_run_and_manifest()
                 sink.write_run(run, manifest)
             except Exception as exc:
@@ -226,7 +245,7 @@ class TestObjectStorageSink:
                 Asset(
                     url="https://cdn-a.example.com/img.png",
                     media_type="image/png",
-                    sha256="abc123",
+                    sha256="a" * 64,
                     size_bytes=1024,
                 ),
             ],
@@ -239,7 +258,7 @@ class TestObjectStorageSink:
                 Asset(
                     url="https://cdn-b.example.com/img.png?X-Amz-Signature=fake",
                     media_type="image/png",
-                    sha256="abc123",
+                    sha256="a" * 64,
                     size_bytes=1024,
                 ),
             ],
@@ -313,13 +332,8 @@ class TestObjectStorageSink:
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
-    def test_manifest_verifies_after_partial_transfer_failure(self, mock_urlopen, _mock_dns):
-        """Partial transfer failures must not poison canonical_hash integrity.
-
-        Regression: previously, sink wrote failure IDs into run.metadata
-        (which is part of the hashed payload) AFTER compute_hash(), so
-        manifest.verify() returned False on any run with failed transfers.
-        """
+    def test_write_run_fails_on_asset_transfer_failure(self, mock_urlopen, _mock_dns):
+        """Transfer failures fail the write before publishing a bad manifest."""
         # urlopen raises on every asset download — forces a failure path
         mock_urlopen.side_effect = RuntimeError("network down")
 
@@ -327,12 +341,103 @@ class TestObjectStorageSink:
         sink = ObjectStorageSink(backend, prefix="test")
 
         run, manifest = _make_run_and_manifest()
-        sink.write_run(run, manifest)
+        with pytest.raises(SinkError, match="manifest was not uploaded"):
+            sink.write_run(run, manifest)
 
-        # Sink recorded the failure on the manifest (non-hashed field)
         assert manifest.transfer_failures == [run.steps[0].assets[0].asset_id]
-        # Hash must still verify despite the partial failure
+        assert not any(
+            "manifests" in key or key.endswith("manifest.json") for key in backend.store
+        )
+
+    def test_write_run_rehashes_after_partial_transfer_failure(self):
+        """A failed write still leaves the in-memory manifest hash-consistent."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        run, manifest = _make_run_and_manifest()
+        transferred_asset = run.steps[0].assets[0]
+        failed_asset = Asset(
+            url="https://cdn.example.com/missing.png",
+            media_type="image/png",
+        )
+        run.steps[0].assets.append(failed_asset)
+        manifest.compute_hash()
+
+        def transfer(asset: Asset, **_kwargs) -> str:
+            if asset is failed_asset:
+                raise RuntimeError("network down")
+            asset.url = f"https://mem/test/assets/{asset.asset_id}.png"
+            asset.sha256 = "a" * 64
+            asset.size_bytes = 10
+            return f"test/assets/{asset.asset_id}.png"
+
+        with patch.object(sink._transfer, "transfer", side_effect=transfer):
+            with pytest.raises(SinkError, match="manifest was not uploaded"):
+                sink.write_run(run, manifest)
+
+        assert transferred_asset.sha256 == "a" * 64
+        assert manifest.transfer_failures == [failed_asset.asset_id]
+        assert manifest.verify_hash()
+        assert not any(
+            "manifests" in key or key.endswith("manifest.json") for key in backend.store
+        )
+
+    def test_write_run_retry_reuses_successful_partial_transfers(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        run, manifest = _make_run_and_manifest()
+        transferred_asset = run.steps[0].assets[0]
+        failed_asset = Asset(
+            url="https://cdn.example.com/retry.png",
+            media_type="image/png",
+        )
+        run.steps[0].assets.append(failed_asset)
+        manifest.compute_hash()
+        failed_once = False
+        calls: list[str] = []
+
+        def transfer(asset: Asset, **_kwargs) -> str:
+            nonlocal failed_once
+            calls.append(asset.asset_id)
+            if asset is failed_asset and not failed_once:
+                failed_once = True
+                raise RuntimeError("network down")
+            digest = "a" * 64 if asset is transferred_asset else "b" * 64
+            key = f"test/assets/{asset.asset_id}.png"
+            backend.store[key] = b"png-bytes"
+            asset.url = backend.get_durable_url(key)
+            asset.sha256 = digest
+            asset.size_bytes = len(backend.store[key])
+            return key
+
+        with patch.object(sink._transfer, "transfer", side_effect=transfer):
+            with pytest.raises(SinkError, match="manifest was not uploaded"):
+                sink.write_run(run, manifest)
+            calls_after_failure = list(calls)
+            sink.write_run(run, manifest)
+
+        assert transferred_asset.asset_id in calls_after_failure
+        assert failed_asset.asset_id in calls_after_failure
+        assert calls.count(transferred_asset.asset_id) == 1
+        assert calls.count(failed_asset.asset_id) == 2
+        assert manifest.transfer_failures == []
         assert manifest.verify()
+        assert any("manifests" in key for key in backend.store)
+
+    def test_asset_already_transferred_requires_size_bytes(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        key = "test/assets/existing.png"
+        backend.store[key] = b"existing"
+        asset = Asset(
+            url=backend.get_durable_url(key),
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+
+        assert not sink._asset_already_transferred(asset)
+
+        asset.size_bytes = len(backend.store[key])
+        assert sink._asset_already_transferred(asset)
 
 
 def _mock_urlopen():
@@ -445,9 +550,8 @@ class TestEagerTransfer:
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
-    def test_eager_transfer_failure_recorded_on_manifest(self, mock_get_stream, _mock_dns):
-        """A failure in the eager pool still propagates into
-        manifest.transfer_failures — provenance remains intact."""
+    def test_eager_transfer_failure_fails_write(self, mock_get_stream, _mock_dns):
+        """A failure in the eager pool fails the write before manifest upload."""
         mock_get_stream.side_effect = RuntimeError("CDN down")
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="eager", eager_transfer=True)
@@ -459,11 +563,11 @@ class TestEagerTransfer:
             tenant_id=run.tenant_id,
             date_str=run.created_at.strftime("%Y-%m-%d"),
         )
-        sink.write_run(run, manifest)
+        with pytest.raises(SinkError, match="manifest was not uploaded"):
+            sink.write_run(run, manifest)
 
         assert manifest.transfer_failures == [run.steps[0].assets[0].asset_id]
-        # Manifest still uploaded — verify integrity preserved.
-        assert manifest.verify()
+        assert not any("manifests" in key for key in backend.store)
         sink.close()
 
     def test_close_shuts_down_eager_pool(self):
@@ -623,7 +727,7 @@ class TestObjectStorageSinkHierarchical:
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_manifest_grouped_with_run(self, mock_urlopen, _mock_dns):
-        mock_urlopen.return_value = _mock_urlopen()
+        mock_urlopen.side_effect = lambda *a, **kw: _mock_urlopen()
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="test", key_strategy=KeyStrategy.HIERARCHICAL)
         run, manifest = _make_run_and_manifest()
@@ -636,7 +740,7 @@ class TestObjectStorageSinkHierarchical:
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_hierarchical_assets_grouped_with_run(self, mock_urlopen, _mock_dns):
-        mock_urlopen.return_value = _mock_urlopen()
+        mock_urlopen.side_effect = lambda *a, **kw: _mock_urlopen()
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="test", key_strategy=KeyStrategy.HIERARCHICAL)
         run, manifest = _make_run_and_manifest()
@@ -1015,6 +1119,48 @@ class TestManifestHelpers:
         with pytest.raises(SinkError, match="exceeds MAX_MANIFEST_BYTES"):
             sink.read_manifest(run)
 
+    def test_read_manifest_wraps_corrupt_json(self):
+        """Corrupt stored manifests raise ManifestError with key context."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="corrupt", status=RunStatus.COMPLETED)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b"{not json"
+
+        with pytest.raises(ManifestError, match="not valid JSON") as excinfo:
+            sink.read_manifest(run)
+
+        assert key in str(excinfo.value)
+
+    def test_read_manifest_wraps_validation_errors(self):
+        """Schema-invalid stored manifests raise ManifestError with key context."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="invalid", status=RunStatus.COMPLETED)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b'{"schema_version": "1.5", "canonical_hash": "abc"}'
+
+        with pytest.raises(ManifestError, match="is invalid") as excinfo:
+            sink.read_manifest(run)
+
+        assert key in str(excinfo.value)
+        assert "input_value" not in str(excinfo.value)
+
+    def test_read_manifest_preserves_unsupported_schema_error(self):
+        """Storage key context must not erase the upgrade-required error type."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="future-schema", status=RunStatus.COMPLETED)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = b'{"schema_version": "9.9"}'
+
+        with pytest.raises(
+            UnsupportedSchemaVersionError, match="Unsupported schema_version"
+        ) as excinfo:
+            sink.read_manifest(run)
+
+        assert key in str(excinfo.value)
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_read_manifest_verify_default_catches_tamper(self, mock_urlopen, _mock_dns):
@@ -1039,13 +1185,184 @@ class TestManifestHelpers:
         loaded = sink.read_manifest(run, verify=False)
         assert loaded.run.name == "tampered"
 
+    def test_read_manifest_warns_on_unverified_assets_during_staged_rollout(self, caplog):
+        """verify=True warns but returns URL-only manifests until strict mode is enabled."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        assert manifest.verify_hash()
+        assert not manifest.verify()
+
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        loaded = sink.read_manifest(run)
+        assert loaded.verify_hash()
+        assert not loaded.verify()
+        assert "output assets missing or malformed sha256" in caplog.text
+
+    def test_read_manifest_strict_mode_rejects_unverified_assets(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", strict_manifest_reads=True)
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256") as excinfo:
+            sink.read_manifest(run)
+
+        assert excinfo.value.asset_ids == (step.assets[0].asset_id,)
+
+    def test_read_manifest_strict_mode_blocks_per_call_unverified_bypass(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p", strict_manifest_reads=True)
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(SinkError, match="Per-call allow_unverified_assets"):
+            sink.read_manifest(run, allow_unverified_assets=True)
+
+    def test_read_manifest_constructor_flag_allows_unverified_assets(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(
+            backend,
+            prefix="p",
+            allow_unverified_manifest_reads=True,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        loaded = sink.read_manifest(run)
+
+        assert loaded.verify_hash()
+        assert not loaded.verify()
+
+    def test_read_manifest_env_flag_allows_unverified_assets(self, monkeypatch):
+        monkeypatch.setenv("GENBLAZE_ALLOW_UNVERIFIED_MANIFEST_READS", "true")
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        loaded = sink.read_manifest(run)
+
+        assert loaded.verify_hash()
+        assert not loaded.verify()
+
+    def test_read_manifest_env_flag_enables_strict_unverified_asset_rejection(self, monkeypatch):
+        monkeypatch.setenv("GENBLAZE_STRICT_MANIFEST_READS", "true")
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url="https://cdn.example.com/img.png", media_type="image/png")],
+        )
+        run = Run(name="url-only", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
+            sink.read_manifest(run)
+
+    def test_read_manifest_allows_malformed_sha256_escape_hatch(self):
+        """Malformed-present sha256 parses but strict verification rejects it."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[
+                Asset(
+                    url="https://cdn.example.com/img.png",
+                    media_type="image/png",
+                    sha256="sha256:" + "a" * 64,
+                )
+            ],
+        )
+        run = Run(name="bad-sha", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        backend.store[sink.manifest_key_for(run)] = manifest.to_canonical_json().encode("utf-8")
+
+        loaded = sink.read_manifest(run)
+        assert loaded.verify_hash()
+        assert loaded.output_asset_ids_missing_sha256() == [step.assets[0].asset_id]
+
+    def test_write_run_rejects_read_only_schema_version(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        run = Run(name="schema-16", status=RunStatus.COMPLETED, steps=[])
+        manifest = Manifest(run=run, schema_version="1.6")
+        manifest.compute_hash()
+
+        with pytest.raises(SinkError, match="read-supported only"):
+            sink.write_run(run, manifest)
+
+        assert backend.store == {}
+
+    def test_read_manifest_uses_parse_manifest_invariants(self):
+        """Stored manifests go through the same parser as other load paths."""
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="p")
+        step = Step(
+            provider="test",
+            model="test-model",
+            prompt="secret",
+            prompt_visibility=PromptVisibility.ENCRYPTED,
+            status=StepStatus.SUCCEEDED,
+        )
+        run = Run(name="encrypted", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        key = sink.manifest_key_for(run)
+        backend.store[key] = manifest.to_canonical_json().encode("utf-8")
+
+        with pytest.raises(ManifestError, match="requires encryption_scheme") as excinfo:
+            sink.read_manifest(run, verify=False)
+
+        assert key in str(excinfo.value)
+
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_manifest_uri_set_when_object_already_exists(self, mock_urlopen, _mock_dns):
         """Regression for S-01: second write with the same run must populate
         manifest_uri on the in-memory Manifest, not leave it None just because
         the object existed in the backend already."""
-        mock_urlopen.return_value = _mock_urlopen()
+        mock_urlopen.side_effect = lambda *a, **kw: _mock_urlopen()
         backend = MemoryBackend()
         sink = ObjectStorageSink(backend, prefix="p")
         run, manifest = _make_run_and_manifest()
@@ -1119,6 +1436,35 @@ class TestPutAsset:
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_put_asset_manifest_uri_scopes_hierarchical_key_by_tenant(
+        self, mock_urlopen, _mock_dns
+    ):
+        """Standalone hierarchical uploads use tenant context when indexing."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"png-bytes", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="dam", key_strategy=KeyStrategy.HIERARCHICAL)
+        asset = Asset(url="https://cdn.example.com/cat.png", media_type="image/png")
+
+        sink.put_asset(
+            asset,
+            manifest_uri="https://storage.example.com/manifests/run.json",
+            tenant_id=" tenant-a ",
+        )
+
+        expected_key = f"dam/runs/tenant-a/assets/{asset.asset_id}.png"
+        unscoped_key = f"dam/runs/assets/{asset.asset_id}.png"
+        assert expected_key in backend.store
+        assert unscoped_key not in backend.store
+        assert asset.url == f"https://mem/{expected_key}"
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_put_asset_cas_dedupes_identical_payloads(self, mock_urlopen, _mock_dns):
         """Two assets with identical content land at the same CAS key —
         the second put is skipped."""
@@ -1184,8 +1530,7 @@ class TestReadManifestForAsset:
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
     def test_read_manifest_for_asset_round_trip(self, mock_urlopen, _mock_dns):
-        """put_asset(asset, manifest_uri=...) writes a sidecar; reverse-lookup
-        recovers the manifest from that pointer."""
+        """put_asset(..., manifest_uri=..., tenant_id=...) writes a scoped sidecar."""
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [b"png-bytes", b""]
         mock_resp.headers = {"Content-Type": "image/png"}
@@ -1198,28 +1543,383 @@ class TestReadManifestForAsset:
             backend, prefix="dam", key_strategy=KeyStrategy.CONTENT_ADDRESSABLE
         )
 
-        # Pre-populate a manifest in the backend so the reverse lookup
-        # has somewhere to land. Build it minimally.
-        run = Run(name="r", status=RunStatus.COMPLETED, steps=[])
-        manifest = Manifest(run=run)
-        manifest.compute_hash()
+        asset = Asset(
+            url="https://cdn.example.com/a.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset.model_copy(deep=True)],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
         manifest_key = sink.manifest_key_for(run)
         backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
         manifest_uri = backend.get_durable_url(manifest_key)
 
-        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
-        sink.put_asset(asset, manifest_uri=manifest_uri)
+        sink.put_asset(asset, manifest_uri=manifest_uri, tenant_id="tenant-a")
 
         # Reverse lookup recovers the same manifest hash.
-        recovered = sink.read_manifest_for_asset(asset.asset_id)
+        recovered = sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
         assert recovered is not None
         assert recovered.canonical_hash == manifest.canonical_hash
+
+    def test_read_manifest_for_asset_cross_tenant_miss(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        sink._write_asset_index(
+            asset.asset_id,
+            backend.get_durable_url(manifest_key),
+            tenant_id="tenant-a",
+        )
+
+        assert sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-b") is None
+
+    @pytest.mark.parametrize("payload", [[], "string", 123])
+    def test_read_manifest_for_asset_rejects_non_object_index(self, payload):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        index_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        backend.store[index_key] = json.dumps(payload).encode("utf-8")
+
+        with pytest.raises(SinkError, match="must be a JSON object"):
+            sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
+
+    @pytest.mark.parametrize("tenant_value", [[], 123])
+    def test_read_manifest_for_asset_rejects_non_string_index_tenant(self, tenant_value):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        index_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        backend.store[index_key] = json.dumps(
+            {
+                "manifest_uri": "https://storage.example.com/manifest.json",
+                "tenant_id": tenant_value,
+            }
+        ).encode("utf-8")
+
+        with pytest.raises(SinkError, match="has non-string tenant_id"):
+            sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
+
+    def test_read_manifest_for_asset_denies_manifest_tenant_mismatch(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        index_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-b")
+        backend.store[index_key] = json.dumps(
+            {"manifest_uri": backend.get_durable_url(manifest_key), "tenant_id": "tenant-b"}
+        ).encode("utf-8")
+
+        assert sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-b") is None
+
+    def test_read_manifest_for_asset_strict_verification_catches_tamper(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(
+            url="https://cdn.example.com/a.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        body = json.loads(manifest.to_canonical_json())
+        body["run"]["name"] = "tampered"
+        backend.store[manifest_key] = json.dumps(body).encode("utf-8")
+        sink._write_asset_index(
+            asset.asset_id,
+            backend.get_durable_url(manifest_key),
+            tenant_id="tenant-a",
+        )
+
+        with pytest.raises(ManifestError, match="canonical_hash verification"):
+            sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
+
+    def test_read_manifest_for_asset_rejects_unverified_output_assets(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam", strict_manifest_reads=True)
+        output = Asset(url="https://cdn.example.com/out.png", media_type="image/png")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[output],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        sink._write_asset_index(
+            output.asset_id,
+            backend.get_durable_url(manifest_key),
+            tenant_id="tenant-a",
+        )
+
+        with pytest.raises(UnverifiedAssetError, match="missing or malformed sha256"):
+            sink.read_manifest_for_asset(output.asset_id, tenant_id="tenant-a")
+
+        allow_sink = ObjectStorageSink(
+            backend,
+            prefix="dam",
+            strict_manifest_reads=True,
+            allow_unverified_manifest_reads=True,
+        )
+        recovered = allow_sink.read_manifest_for_asset(
+            output.asset_id,
+            tenant_id="tenant-a",
+        )
+        assert recovered is not None
+        assert recovered.verify_hash()
+        assert not recovered.verify()
+
+    def test_read_manifest_for_asset_denies_manifest_pointer_substitution(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        requested = Asset(
+            url="https://cdn.example.com/requested.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        unrelated = Asset(
+            url="https://cdn.example.com/unrelated.png",
+            media_type="image/png",
+            sha256="b" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[unrelated],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        sink._write_asset_index(
+            requested.asset_id,
+            backend.get_durable_url(manifest_key),
+            tenant_id="tenant-a",
+        )
+
+        assert sink.read_manifest_for_asset(requested.asset_id, tenant_id="tenant-a") is None
+
+    def test_read_manifest_for_asset_reads_and_backfills_legacy_index(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(
+            url="https://cdn.example.com/out.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        manifest_uri = backend.get_durable_url(manifest_key)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        backend.store[sink._legacy_asset_index_key(asset.asset_id)] = json.dumps(
+            {"manifest_uri": manifest_uri}
+        ).encode("utf-8")
+
+        recovered = sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a")
+
+        assert recovered is not None
+        assert recovered.canonical_hash == manifest.canonical_hash
+        scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        assert scoped_key in backend.store
+
+    def test_read_manifest_for_asset_does_not_backfill_legacy_index_without_verify(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(
+            url="https://cdn.example.com/out.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        payload = json.loads(manifest.to_canonical_json())
+        payload["canonical_hash"] = "0" * 64
+        manifest_key = sink.manifest_key_for(run)
+        manifest_uri = backend.get_durable_url(manifest_key)
+        backend.store[manifest_key] = json.dumps(payload).encode("utf-8")
+        backend.store[sink._legacy_asset_index_key(asset.asset_id)] = json.dumps(
+            {"manifest_uri": manifest_uri}
+        ).encode("utf-8")
+
+        recovered = sink.read_manifest_for_asset(
+            asset.asset_id,
+            tenant_id="tenant-a",
+            verify=False,
+        )
+
+        assert recovered is not None
+        scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="tenant-a")
+        assert scoped_key not in backend.store
+
+    def test_read_manifest_for_asset_reads_legacy_tenantless_index_with_default_tenant(
+        self,
+    ):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(
+            backend,
+            prefix="dam",
+            legacy_index_tenant_id="legacy",
+        )
+        asset = Asset(
+            url="https://cdn.example.com/out.png",
+            media_type="image/png",
+            sha256="a" * 64,
+        )
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="r", tenant_id=None, status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        manifest_uri = backend.get_durable_url(manifest_key)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        backend.store[sink._legacy_asset_index_key(asset.asset_id)] = json.dumps(
+            {"manifest_uri": manifest_uri}
+        ).encode("utf-8")
+
+        recovered = sink.read_manifest_for_asset(asset.asset_id, tenant_id="legacy")
+
+        assert recovered is not None
+        assert recovered.canonical_hash == manifest.canonical_hash
+        scoped_key = sink._asset_index_key(asset.asset_id, tenant_id="legacy")
+        assert scoped_key in backend.store
+
+    def test_write_asset_index_dual_writes_legacy_index_for_rolling_readers(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/out.png", media_type="image/png")
+        manifest_uri = "https://mem/dam/manifests/run.json"
+
+        sink._write_asset_index(asset.asset_id, manifest_uri, tenant_id="tenant-a")
+
+        legacy_key = sink._legacy_asset_index_key(asset.asset_id)
+        assert legacy_key in backend.store
+        legacy = json.loads(backend.store[legacy_key])
+        assert legacy == {"manifest_uri": manifest_uri, "tenant_id": "tenant-a"}
+
+    def test_write_asset_index_rejects_manifest_remap(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/out.png", media_type="image/png")
+
+        sink._write_asset_index(
+            asset.asset_id,
+            "https://mem/dam/manifests/first.json",
+            tenant_id="tenant-a",
+        )
+
+        with pytest.raises(SinkError, match="already points"):
+            sink._write_asset_index(
+                asset.asset_id,
+                "https://mem/dam/manifests/second.json",
+                tenant_id="tenant-a",
+            )
+
+    def test_read_manifest_for_asset_constructor_flag_allows_unverified_assets(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(
+            backend,
+            prefix="dam",
+            allow_unverified_manifest_reads=True,
+        )
+        output = Asset(url="https://cdn.example.com/out.png", media_type="image/png")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[output],
+        )
+        run = Run(name="r", tenant_id="tenant-a", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest.from_run(run)
+        manifest_key = sink.manifest_key_for(run)
+        backend.store[manifest_key] = manifest.to_canonical_json().encode("utf-8")
+        sink._write_asset_index(
+            output.asset_id,
+            backend.get_durable_url(manifest_key),
+            tenant_id="tenant-a",
+        )
+
+        recovered = sink.read_manifest_for_asset(output.asset_id, tenant_id="tenant-a")
+
+        assert recovered is not None
+        assert recovered.verify_hash()
+        assert not recovered.verify()
 
     def test_read_manifest_for_asset_missing_returns_none(self):
         backend = _AssetIndexBackend()
         sink = ObjectStorageSink(backend, prefix="dam")
         # No put_asset call — index entry doesn't exist.
-        assert sink.read_manifest_for_asset("never-put") is None
+        missing_id = "11111111-1111-4111-8111-111111111111"
+        assert sink.read_manifest_for_asset(missing_id, tenant_id="tenant-a") is None
+
+    def test_read_manifest_for_asset_canonicalizes_uuid_case(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        mixed_case_id = "11111111-1111-4111-8111-AAAAAAAAAAAA"
+
+        assert sink.read_manifest_for_asset(mixed_case_id, tenant_id="tenant-a") is None
+
+    def test_read_manifest_for_asset_rejects_invalid_asset_id(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+
+        with pytest.raises(SinkError, match="asset_id must be a UUID"):
+            sink.read_manifest_for_asset("never-put", tenant_id="tenant-a")
+
+    def test_read_manifest_for_asset_rejects_non_string_tenant_id(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset_id = "11111111-1111-4111-8111-111111111111"
+
+        with pytest.raises(SinkError, match="tenant_id must be a string"):
+            sink.read_manifest_for_asset(asset_id, tenant_id=123)
+
+    def test_put_asset_with_manifest_uri_requires_tenant_id(self):
+        backend = _AssetIndexBackend()
+        sink = ObjectStorageSink(backend, prefix="dam")
+        asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
+
+        with pytest.raises(SinkError, match="tenant_id is required"):
+            sink.put_asset(asset, manifest_uri="https://storage.example.com/manifest.json")
 
     @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
     @patch("genblaze_core.storage.transfer._http_get_stream")
@@ -1240,7 +1940,7 @@ class TestReadManifestForAsset:
         asset = Asset(url="https://cdn.example.com/a.png", media_type="image/png")
         sink.put_asset(asset)  # no manifest_uri
 
-        assert sink.read_manifest_for_asset(asset.asset_id) is None
+        assert sink.read_manifest_for_asset(asset.asset_id, tenant_id="tenant-a") is None
         # And no _index/* keys were written.
         assert all(not k.startswith("dam/_index/") for k in backend.store)
 
@@ -1260,4 +1960,4 @@ class TestBaseSinkPutAssetDefaults:
         with pytest.raises(NotImplementedError, match="put_assets"):
             sink.put_assets([asset])
         with pytest.raises(NotImplementedError, match="read_manifest_for_asset"):
-            sink.read_manifest_for_asset("x")
+            sink.read_manifest_for_asset("11111111-1111-4111-8111-111111111111", tenant_id="t")

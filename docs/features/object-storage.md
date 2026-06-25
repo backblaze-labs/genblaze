@@ -10,8 +10,8 @@ generic constructor.
 Pass `sink=storage` to `pipeline.run()`. The `ObjectStorageSink`:
 
 1. **Transfers assets** — downloads from provider CDN, computes SHA-256, uploads to storage
-2. **Records partial-transfer failures** on `manifest.transfer_failures` (a non-hashed Manifest field). Transport diagnostics are kept out of the provenance hash, so `manifest.verify()` remains True even on partial failures
-3. **Recomputes manifest hash** — the canonical hash reflects post-transfer asset URLs/SHA-256
+2. **Fails on transfer errors** — records failed asset IDs on the in-memory `manifest.transfer_failures` diagnostic field, then raises before uploading a manifest that would fail strict verification
+3. **Recomputes manifest hash** — the canonical hash reflects post-transfer SHA-256, size, and media metadata. Asset URLs remain transport hints once bytes are hash-bound
 4. **Uploads manifest** — writes the canonical JSON manifest alongside the assets
 5. **Rewrites URLs** — asset URLs in the run now point to your bucket
 
@@ -184,12 +184,21 @@ re-implement the layout rules or parse `manifest.manifest_uri`:
 ```python
 key = sink.manifest_key_for(run)            # storage key (pure function)
 url = sink.manifest_url_for(run)            # durable, credential-free URL
-manifest = sink.read_manifest(run)          # fetch + parse + verify()
+manifest = sink.read_manifest(run)          # fetch + parse + hash verify()
+assert manifest.verify_hash()               # payload integrity
+assert manifest.verify()                    # payload + declared output sha256
 ```
 
-`read_manifest` defaults to `verify=True` (raises `ManifestError` on hash
-mismatch) — pass `verify=False` to skip the rehash on a manifest you just
-wrote yourself. Downloads are capped at 16 MiB to bound OOM blast.
+`read_manifest` defaults to `verify=True` and enforces both hash integrity and
+logs output sha256 coverage gaps. It raises `ManifestError` on hash mismatch.
+Hard-failing `UnverifiedAssetError` for missing or malformed output `sha256` is
+staged behind `ObjectStorageSink(..., strict_manifest_reads=True)` or
+`GENBLAZE_STRICT_MANIFEST_READS=true` so rolling deployments can backfill
+historical URL-only manifests before enabling strict read failures on hot
+paths. Treat `allow_unverified_assets`, `verify=False`, and the migration env
+switches as security-sensitive and never bind them directly to request-
+controlled input. Use `verify=False` only to skip verification on a manifest you
+just wrote yourself. Downloads are capped at 16 MiB to bound OOM blast.
 
 After `write_run` returns, `manifest.manifest_uri` is also populated on
 the in-memory object — including on retries that hit an already-existing

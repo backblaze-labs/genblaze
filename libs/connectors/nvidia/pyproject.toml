@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-nvidia"
-version = "0.3.0"
+version = "0.3.1"
 description = "NVIDIA NIM / build.nvidia.com media provider adapters for genblaze (video, image, audio, chat)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "nvidia", "nim", "nemotron"]
 
 dependencies = [
-    "genblaze-core>=0.3.0,<0.4",
+    "genblaze-core>=0.3.4,<0.4",
     "httpx>=0.24",
 ]
 

@@ -53,6 +53,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ThresholdEvaluator": ("genblaze_core.agents.evaluator", "ThresholdEvaluator"),
     # models
     "Manifest": ("genblaze_core.models.manifest", "Manifest"),
+    "ManifestVerification": ("genblaze_core.models.manifest", "ManifestVerification"),
+    "parse_manifest": ("genblaze_core.models.manifest", "parse_manifest"),
     "Run": ("genblaze_core.models.run", "Run"),
     "Step": ("genblaze_core.models.step", "Step"),
     "Asset": ("genblaze_core.models.asset", "Asset"),
@@ -118,6 +120,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "StorageError": ("genblaze_core.exceptions", "StorageError"),
     "ProviderError": ("genblaze_core.exceptions", "ProviderError"),
     "ManifestError": ("genblaze_core.exceptions", "ManifestError"),
+    "UnverifiedAssetError": ("genblaze_core.exceptions", "UnverifiedAssetError"),
     "SinkError": ("genblaze_core.exceptions", "SinkError"),
     "WebhookError": ("genblaze_core.exceptions", "WebhookError"),
     # webhooks
