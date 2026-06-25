@@ -106,10 +106,11 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "DeleteError": ("genblaze_core.storage.types", "DeleteError"),
     "DeleteResult": ("genblaze_core.storage.types", "DeleteResult"),
     "TransferProgress": ("genblaze_core.storage.types", "TransferProgress"),
-    # testing
-    "MockProvider": ("genblaze_core.testing", "MockProvider"),
-    "MockVideoProvider": ("genblaze_core.testing", "MockVideoProvider"),
-    "MockAudioProvider": ("genblaze_core.testing", "MockAudioProvider"),
+    # testing — mocks are pytest-free (genblaze_core.mocks);
+    # ProviderComplianceTests requires pytest (genblaze_core.testing).
+    "MockProvider": ("genblaze_core.mocks", "MockProvider"),
+    "MockVideoProvider": ("genblaze_core.mocks", "MockVideoProvider"),
+    "MockAudioProvider": ("genblaze_core.mocks", "MockAudioProvider"),
     "ProviderComplianceTests": ("genblaze_core.testing", "ProviderComplianceTests"),
     # exceptions
     "GenblazeError": ("genblaze_core.exceptions", "GenblazeError"),

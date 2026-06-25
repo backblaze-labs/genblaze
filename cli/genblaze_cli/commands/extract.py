@@ -22,12 +22,23 @@ def _manifest_json_for_display(manifest: Manifest) -> str:
 @click.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--format", "fmt", type=click.Choice(["json", "summary"]), default="json")
-def extract(file: Path, fmt: str) -> None:
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write extracted manifest JSON to this file instead of stdout.",
+)
+def extract(file: Path, fmt: str, output: Path | None) -> None:
     """Extract and display the genblaze manifest from a media file."""
     try:
         manifest = extract_manifest(file)
         if fmt == "json":
-            click.echo(_manifest_json_for_display(manifest))
+            json_str = _manifest_json_for_display(manifest)
+            if output is not None:
+                output.write_text(json_str, encoding="utf-8")
+            else:
+                click.echo(json_str)
         else:
             report = manifest.verification_report()
             click.echo(f"Run ID:    {manifest.run.run_id}")

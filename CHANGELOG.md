@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- Add new entries here. -->
+### Fixed
+
+- `genblaze-core` 0.3.4 → 0.3.5: `MockProvider`, `MockVideoProvider`, and
+  `MockAudioProvider` no longer require `pytest` at import. They moved to a new
+  pytest-free `genblaze_core.mocks` module (still re-exported from
+  `genblaze_core.testing` for backward compatibility), so
+  `from genblaze_core import MockVideoProvider` works in a runtime-only install.
+- `genblaze-cli` 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
+  to write the manifest JSON to a file, matching the documented usage.
+
+### Changed
+
+- `genblaze-cli`: `--version` now reports `genblaze-cli` rather than `genblaze`,
+  so the CLI's version is no longer mistaken for the umbrella package version.
+- `genblaze` (umbrella) 0.4.1 → 0.4.2: raises its `genblaze-core` floor to 0.3.5
+  so `pip install genblaze` resolves the mock-import fix above.
 
 ## [0.4.0] - 2026-06-25
 

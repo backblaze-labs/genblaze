@@ -9,7 +9,7 @@ from genblaze_cli.commands.verify import verify
 
 
 @click.group()
-@click.version_option(package_name="genblaze-cli")
+@click.version_option(package_name="genblaze-cli", prog_name="genblaze-cli")
 def cli() -> None:
     """genblaze — media generation manifest toolkit."""
 
