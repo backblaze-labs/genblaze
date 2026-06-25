@@ -2125,3 +2125,250 @@ def test_bytes_credential_in_params_rejected() -> None:
     token_bytes = b"r8_" + b"A" * 25  # matches the Replicate pattern
     with pytest.raises(GenblazeError, match="looks like an API credential"):
         Pipeline("bytes-creds").step(provider, model="m", prompt="p", api_token=token_bytes).run()
+
+
+# --- Sink lifecycle: pipeline must close the sink after run()/arun() ---
+# Issue #57: eager-upload ThreadPoolExecutor and backend connection pool
+# leaked because _finalize() called write_run but never sink.close().
+
+
+def test_run_calls_sink_close_after_success() -> None:
+    """Pipeline.run() must call sink.close() in its finally block so the
+    eager-transfer pool and backend connection pool are always released."""
+    p = MockProvider()
+    sink = _RecordingSink()
+    Pipeline("close-sync").step(p, model="m", prompt="p").run(sink=sink)
+    assert sink.closed, "sink.close() must be called after a successful run()"
+
+
+def test_run_calls_sink_close_after_step_failure() -> None:
+    """Pipeline.run() must call sink.close() even when a step fails and
+    the run raises (fail_fast=True path raises PipelineError)."""
+    from genblaze_core.exceptions import PipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _RecordingSink()
+    with pytest.raises(PipelineError):
+        Pipeline("close-on-error").step(FailingProvider(), model="m", prompt="p").run(
+            sink=sink, raise_on_failure=True
+        )
+    assert sink.closed, "sink.close() must be called even when the pipeline fails"
+
+
+@pytest.mark.asyncio
+async def test_arun_calls_sink_close_after_success() -> None:
+    """Pipeline.arun() must call sink.close() in its finally block."""
+    p = MockProvider()
+    sink = _RecordingSink()
+    await Pipeline("close-async").step(p, model="m", prompt="p").arun(sink=sink)
+    assert sink.closed, "sink.close() must be called after a successful arun()"
+
+
+@pytest.mark.asyncio
+async def test_arun_calls_sink_close_after_step_failure() -> None:
+    """Pipeline.arun() must call sink.close() when a step fails."""
+    from genblaze_core.exceptions import PipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _RecordingSink()
+    with pytest.raises(PipelineError):
+        await (
+            Pipeline("close-async-err")
+            .step(FailingProvider(), model="m", prompt="p")
+            .arun(sink=sink, raise_on_failure=True)
+        )
+    assert sink.closed, "sink.close() must be called even when arun() fails"
+
+
+def test_base_sink_context_manager() -> None:
+    """BaseSink.__enter__/__exit__ must call close() on exit."""
+    from genblaze_core.models.manifest import Manifest
+    from genblaze_core.models.run import Run
+    from genblaze_core.sinks.base import BaseSink
+
+    # Concrete BaseSink subclass to test the mixin protocol.
+    class _ConcreteSink(BaseSink):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def write_run(self, run: Run, manifest: Manifest) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    sink = _ConcreteSink()
+    with sink:
+        assert not sink.closed
+    assert sink.closed, "BaseSink context manager must call close() on __exit__"
+
+
+def test_base_sink_context_manager_calls_close_on_exception() -> None:
+    """BaseSink.__exit__ calls close() even when the body raises."""
+    from genblaze_core.models.manifest import Manifest
+    from genblaze_core.models.run import Run
+    from genblaze_core.sinks.base import BaseSink
+
+    class _ConcreteSink(BaseSink):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def write_run(self, run: Run, manifest: Manifest) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    sink = _ConcreteSink()
+    with pytest.raises(ValueError):
+        with sink:
+            raise ValueError("body error")
+    assert sink.closed, "BaseSink context manager must call close() even on exception"
+
+
+# --- Sink ownership across batch runs and preflight failures (issue #57) ---
+
+
+class _CountingSink:
+    """Sink that counts close()/write_run() and rejects writes after close —
+    so a premature close (e.g. per-item in a batch) surfaces as an error."""
+
+    _close_with_run = True
+
+    def __init__(self) -> None:
+        self.writes = 0
+        self.closes = 0
+        self.closed = False
+
+    def on_step_complete(self, step, *, run_id, tenant_id, date_str) -> None:
+        pass
+
+    def write_run(self, run, manifest) -> None:
+        if self.closed:
+            raise RuntimeError("write_run after close — sink was closed too early")
+        self.writes += 1
+
+    def close(self) -> None:
+        self.closes += 1
+        self.closed = True
+
+
+class _FireAndForgetSink(_CountingSink):
+    """A sink the pipeline must never close (lifecycle is caller/process-scoped)."""
+
+    _close_with_run = False
+
+
+def test_batch_run_closes_shared_sink_once_after_batch() -> None:
+    """The shared sink is closed once AFTER the whole batch — not after item 1,
+    which would make items 2+ write to a closed sink (issue #57)."""
+    sink = _CountingSink()
+    results = (
+        Pipeline("batch-close")
+        .step(MockProvider(), model="m")
+        .batch_run(["a", "b", "c"], sink=sink)
+    )
+    assert len(results) == 3
+    assert sink.writes == 3, "every item must write before the sink is closed"
+    assert sink.closes == 1, "shared sink must be closed exactly once after the batch"
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_closes_shared_sink_once_after_batch() -> None:
+    """Async batch closes the shared sink once after gather, not per item."""
+    sink = _CountingSink()
+    results = await (
+        Pipeline("abatch-close").step(MockProvider(), model="m").abatch_run(["a", "b"], sink=sink)
+    )
+    assert len(results) == 2
+    assert sink.writes == 2
+    assert sink.closes == 1
+
+
+def test_batch_run_closes_sink_even_when_batch_raises() -> None:
+    """A finally guards the batch close, so a BatchPipelineError still releases
+    the shared sink (close happens before the raise)."""
+    from genblaze_core.exceptions import BatchPipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _CountingSink()
+    with pytest.raises(BatchPipelineError):
+        Pipeline("batch-raise").step(FailingProvider(), model="m").batch_run(
+            ["a", "b"], sink=sink, raise_on_failure=True
+        )
+    assert sink.closes == 1, "shared sink must be closed even when the batch raises"
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_closes_sink_even_when_batch_raises() -> None:
+    """Async batch finally releases the shared sink before BatchPipelineError."""
+    from genblaze_core.exceptions import BatchPipelineError
+
+    class FailingProvider(MockProvider):
+        def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+            raise RuntimeError("provider down")
+
+    sink = _CountingSink()
+    with pytest.raises(BatchPipelineError):
+        await (
+            Pipeline("abatch-raise")
+            .step(FailingProvider(), model="m")
+            .abatch_run(["a", "b"], sink=sink, raise_on_failure=True)
+        )
+    assert sink.closes == 1
+
+
+def test_batch_run_does_not_close_fire_and_forget_sink() -> None:
+    """A sink with _close_with_run=False is never closed by the batch."""
+    sink = _FireAndForgetSink()
+    Pipeline("batch-faf").step(MockProvider(), model="m").batch_run(["a", "b"], sink=sink)
+    assert sink.writes == 2
+    assert sink.closes == 0, "fire-and-forget sink must not be closed by the pipeline"
+
+
+def test_run_closes_owned_sink_on_preflight_failure(monkeypatch) -> None:
+    """If preflight (_validate_steps) raises before the run body, an owned sink
+    is still closed — the cleanup guard wraps preflight too (issue #57). At this
+    point no step has run, so close only releases construction-time resources
+    (e.g. the connection pool); the eager pool was never created."""
+    from genblaze_core.exceptions import GenblazeError
+
+    sink = _CountingSink()
+    pipe = Pipeline("preflight-fail").step(MockProvider(), model="m")
+
+    def _boom() -> None:
+        raise GenblazeError("preflight failed")
+
+    monkeypatch.setattr(pipe, "_validate_steps", _boom)
+    with pytest.raises(GenblazeError):
+        pipe.run(sink=sink)
+    assert sink.closes == 1, "owned sink must be closed when preflight fails"
+    assert sink.writes == 0, "no run happened, so nothing was written"
+
+
+@pytest.mark.asyncio
+async def test_arun_closes_owned_sink_on_preflight_failure(monkeypatch) -> None:
+    """Async preflight failure also closes an owned sink. arun() offloads
+    preflight via _validate_steps_async(), so patch that method."""
+    from genblaze_core.exceptions import GenblazeError
+
+    sink = _CountingSink()
+    pipe = Pipeline("apreflight-fail").step(MockProvider(), model="m")
+
+    async def _boom() -> None:
+        raise GenblazeError("preflight failed")
+
+    monkeypatch.setattr(pipe, "_validate_steps_async", _boom)
+    with pytest.raises(GenblazeError):
+        await pipe.arun(sink=sink)
+    assert sink.closes == 1
+    assert sink.writes == 0
