@@ -148,12 +148,13 @@ Notes on the graph:
 * **`publish-npm`** — independent of the PyPI graph. Publishes
   `@genblaze/spec` with sigstore provenance.
 * **`install-verify`** — installs `genblaze[all]==$version` from public
-  PyPI in a fresh venv and imports the core packages. The `[all]` form
-  exercises every connector's pin against the live registry, which is
-  what catches drift like the 0.3.2 langsmith/cli wheels (a bare
-  `genblaze==$version` resolve only pulls the umbrella defaults and
-  misses connector-specific pin breakage). Skipped on dry-runs
-  (TestPyPI indexing lag makes this flaky).
+  PyPI in a fresh venv and runs `tools/release_import_smoke.py`, which
+  imports the umbrella, core, s3, and every connector in `genblaze[all]`.
+  The `[all]` form exercises every connector's pin and import surface
+  against the live registry, which is what catches drift like the 0.3.2
+  langsmith/cli wheels (a bare `genblaze==$version` resolve only pulls
+  the umbrella defaults and misses connector-specific pin breakage).
+  Skipped on dry-runs (TestPyPI indexing lag makes this flaky).
 
 ### 2. Dry run (`workflow_dispatch`)
 
