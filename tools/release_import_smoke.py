@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
-import importlib
+import json
 import os
 import re
+import subprocess
 import sys
-from collections.abc import Iterable, Mapping
+import tempfile
+from collections.abc import Iterable, Mapping, Sequence
 
-# The umbrella installs core + s3 by default; keep the storage submodule here
-# because it has a hard import-time urllib3 dependency hidden by core's lazy
-# top-level exports.
+DEFAULT_PACKAGE_IMPORTS = (
+    ("genblaze-core", "genblaze_core"),
+    ("genblaze-s3", "genblaze_s3"),
+)
+
+# The umbrella module and storage submodule are explicit probes in addition
+# to the imports that map directly to the umbrella package dependencies.
 CORE_IMPORTS = (
     "genblaze",
-    "genblaze_core",
+    *(module for _package, module in DEFAULT_PACKAGE_IMPORTS),
     "genblaze_core.storage",
-    "genblaze_s3",
 )
 
 # Keep this list aligned with libs/meta/pyproject.toml's genblaze[all] extra.
@@ -46,7 +51,6 @@ ENV_ALLOWLIST = frozenset(
     {
         "COMSPEC",
         "CURL_CA_BUNDLE",
-        "HOME",
         "LANG",
         "LC_ALL",
         "LC_CTYPE",
@@ -58,13 +62,10 @@ ENV_ALLOWLIST = frozenset(
         "REQUESTS_CA_BUNDLE",
         "SSL_CERT_FILE",
         "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "USERPROFILE",
         "WINDIR",
     }
 )
+SANDBOX_PATH_ENV = ("HOME", "USERPROFILE", "TMPDIR", "TMP", "TEMP")
 SENSITIVE_ENV_NAME_RE = re.compile(
     r"(?:"
     r"API|AUTH|AZURE|B2_|BACKBLAZE|CREDENTIAL|GCP|GITHUB|GOOGLE|KEY|NPM|OPENAI|"
@@ -73,6 +74,23 @@ SENSITIVE_ENV_NAME_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+CHILD_IMPORT = """
+import importlib
+import json
+import sys
+import traceback
+
+module_name = sys.argv[1]
+extra_paths = json.loads(sys.argv[2])
+for path in reversed(extra_paths):
+    sys.path.insert(0, path)
+
+try:
+    importlib.import_module(module_name)
+except Exception as exc:
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
+    raise SystemExit(1)
+"""
 
 
 def _sensitive_env_values(env: Mapping[str, str]) -> tuple[str, ...]:
@@ -91,30 +109,94 @@ def _redact(message: str, sensitive_values: Iterable[str]) -> str:
     return redacted
 
 
-def _sanitize_environment(original_env: Mapping[str, str]) -> None:
+def _sandbox_environment(original_env: Mapping[str, str], sandbox_home: str) -> dict[str, str]:
     safe_env = {
-        name: value for name, value in original_env.items() if name.upper() in ENV_ALLOWLIST
+        name: value
+        for name, value in original_env.items()
+        if name.upper() in ENV_ALLOWLIST and not SENSITIVE_ENV_NAME_RE.search(name)
     }
-    os.environ.clear()
-    os.environ.update(safe_env)
+    safe_env.update({name: sandbox_home for name in SANDBOX_PATH_ENV})
+    safe_env["PYTHONNOUSERSITE"] = "1"
+    return safe_env
 
 
-def smoke_import(modules: Iterable[str] = SMOKE_IMPORTS) -> list[tuple[str, str]]:
-    """Import release modules after removing ambient secrets from this process."""
+def _print_stream(label: str, content: str) -> None:
+    if not content:
+        return
+    print(f"  {label}:")
+    for line in content.splitlines():
+        print(f"    {line}")
+
+
+def _import_in_sandbox(
+    module_name: str,
+    *,
+    env: Mapping[str, str],
+    sandbox_home: str,
+    extra_paths: Sequence[str],
+    sensitive_values: Iterable[str],
+) -> str | None:
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                CHILD_IMPORT,
+                module_name,
+                json.dumps(list(extra_paths)),
+            ],
+            cwd=sandbox_home,
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _redact(exc.stdout or "", sensitive_values)
+        stderr = _redact(exc.stderr or "", sensitive_values)
+        print(f"  FAIL: {module_name}: import subprocess timed out")
+        _print_stream("stdout", stdout)
+        _print_stream("stderr", stderr)
+        return "import subprocess timed out"
+
+    stdout = _redact(result.stdout, sensitive_values)
+    stderr = _redact(result.stderr, sensitive_values)
+    if result.returncode == 0:
+        print(f"  ok: {module_name}")
+        return None
+
+    message = f"import subprocess exited with {result.returncode}"
+    print(f"  FAIL: {module_name}: {message}")
+    _print_stream("stdout", stdout)
+    _print_stream("stderr", stderr)
+    return message
+
+
+def smoke_import(
+    modules: Iterable[str] = SMOKE_IMPORTS,
+    *,
+    extra_paths: Iterable[str] = (),
+) -> list[tuple[str, str]]:
+    """Import release modules in isolated subprocesses with a scrubbed env."""
     original_env = dict(os.environ)
     sensitive_values = _sensitive_env_values(original_env)
     failures: list[tuple[str, str]] = []
 
-    _sanitize_environment(original_env)
-    for module_name in modules:
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:
-            message = _redact(f"{type(exc).__name__}: {exc}", sensitive_values)
-            failures.append((module_name, message))
-            print(f"  FAIL: {module_name}: {message}")
-        else:
-            print(f"  ok: {module_name}")
+    extra_path_list = tuple(os.fspath(path) for path in extra_paths)
+    with tempfile.TemporaryDirectory(prefix="genblaze-import-smoke-") as sandbox_home:
+        safe_env = _sandbox_environment(original_env, sandbox_home)
+        for module_name in modules:
+            message = _import_in_sandbox(
+                module_name,
+                env=safe_env,
+                sandbox_home=sandbox_home,
+                extra_paths=extra_path_list,
+                sensitive_values=sensitive_values,
+            )
+            if message is not None:
+                failures.append((module_name, message))
 
     return failures
 

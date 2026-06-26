@@ -168,9 +168,10 @@ jobs:
 
   release-smoke:
     # Build every wheel, install `genblaze[all]` from the local wheelhouse
-    # with `--no-index`, and import every connector. Catches incompatible
-    # pyproject pins BEFORE PyPI sees them — editable installs in ci.yml
-    # don't exercise version constraints. See tools/release_smoke.sh.
+    # with `--find-links` while keeping PyPI enabled for transitive deps,
+    # and import every connector. Catches incompatible pyproject pins
+    # BEFORE PyPI sees them — editable installs in ci.yml don't exercise
+    # version constraints. See tools/release_smoke.sh.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [validate-version]

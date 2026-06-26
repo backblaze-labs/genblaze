@@ -17,6 +17,7 @@ spec.loader.exec_module(release_import_smoke)
 
 ALL_EXTRA_PACKAGE_IMPORTS = release_import_smoke.ALL_EXTRA_PACKAGE_IMPORTS
 CORE_IMPORTS = release_import_smoke.CORE_IMPORTS
+DEFAULT_PACKAGE_IMPORTS = release_import_smoke.DEFAULT_PACKAGE_IMPORTS
 REDACTION = release_import_smoke.REDACTION
 SMOKE_IMPORTS = release_import_smoke.SMOKE_IMPORTS
 
@@ -37,16 +38,28 @@ def test_all_extra_import_mapping_matches_umbrella_all_extra() -> None:
     assert [package for package, _module in ALL_EXTRA_PACKAGE_IMPORTS] == all_extra_packages
 
 
+def test_default_import_mapping_matches_umbrella_dependencies() -> None:
+    meta = tomllib.loads((REPO_ROOT / "libs/meta/pyproject.toml").read_text())
+    default_packages = [
+        _dependency_name(requirement) for requirement in meta["project"]["dependencies"]
+    ]
+
+    assert [package for package, _module in DEFAULT_PACKAGE_IMPORTS] == default_packages
+
+
 def test_smoke_imports_unique_core_and_all_extra_modules() -> None:
-    expected_modules = set(CORE_IMPORTS) | {
-        module for _package, module in ALL_EXTRA_PACKAGE_IMPORTS
-    }
+    expected_modules = (
+        {"genblaze", "genblaze_core.storage"}
+        | {module for _package, module in DEFAULT_PACKAGE_IMPORTS}
+        | {module for _package, module in ALL_EXTRA_PACKAGE_IMPORTS}
+    )
 
     assert len(SMOKE_IMPORTS) == len(set(SMOKE_IMPORTS))
+    assert set(CORE_IMPORTS).issubset(SMOKE_IMPORTS)
     assert set(SMOKE_IMPORTS) == expected_modules
 
 
-def test_smoke_import_sanitizes_env_and_redacts_import_failures(
+def test_smoke_import_sandboxes_env_and_redacts_import_failures(
     tmp_path, monkeypatch, capsys
 ) -> None:
     seeded_value = "review-secret-token-123"
@@ -55,24 +68,29 @@ def test_smoke_import_sanitizes_env_and_redacts_import_failures(
         "import os\n"
         f"literal = {seeded_value!r}\n"
         "env_secret = os.environ.get('OPENAI_API_KEY')\n"
-        "raise RuntimeError(f'env={env_secret} literal={literal}')\n"
+        "home_value = os.environ.get('HOME')\n"
+        "print(f'stdout env={env_secret} literal={literal} home={home_value}')\n"
+        "raise RuntimeError("
+        "f'stderr env={env_secret} literal={literal} home={home_value}'"
+        ")\n"
     )
 
-    monkeypatch.syspath_prepend(str(tmp_path))
+    seeded_home = "/sensitive/home/with-creds"
+    monkeypatch.setenv("HOME", seeded_home)
     monkeypatch.setenv("OPENAI_API_KEY", seeded_value)
+    monkeypatch.setenv("GITHUB_TOKEN", seeded_value)
 
     original_env = dict(os.environ)
-    try:
-        failures = release_import_smoke.smoke_import([module_name])
-        assert os.environ.get("OPENAI_API_KEY") is None
-        captured = capsys.readouterr()
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+    failures = release_import_smoke.smoke_import([module_name], extra_paths=[tmp_path])
+    captured = capsys.readouterr()
 
     output = captured.out + captured.err
 
+    assert dict(os.environ) == original_env
     assert failures
+    assert failures[0][0] == module_name
     assert seeded_value not in output
     assert "env=None" in output
+    assert "Traceback (most recent call last)" in output
     assert REDACTION in output
+    assert seeded_home not in output

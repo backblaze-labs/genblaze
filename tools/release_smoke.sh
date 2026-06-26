@@ -3,8 +3,9 @@
 # Pre-release wheel install smoke test.
 #
 # Builds every published package to a local wheelhouse, then installs
-# ``genblaze[all]`` into a fresh venv from that wheelhouse only
-# (``--no-index --find-links``). Asserts every connector imports.
+# ``genblaze[all]`` into a fresh venv with ``--find-links`` pointing at
+# that wheelhouse while leaving PyPI enabled for transitive dependencies.
+# Asserts every connector imports.
 #
 # Why this exists:
 #   ``make install-dev`` and the CI matrix both use ``pip install -e``

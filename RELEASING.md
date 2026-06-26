@@ -117,8 +117,9 @@ Notes on the graph:
   per-package versions + `dry_run` flag to every downstream job.
 * **`changelog-gate`** — fails if `[Unreleased]` still has entries.
 * **`release-smoke`** — runs `make release-smoke`: builds every wheel,
-  installs `genblaze[all]` from a local wheelhouse with `--no-index`,
-  imports every connector. Catches version-pin mismatches before PyPI
+  installs `genblaze[all]` with `--find-links` pointing at the local
+  wheelhouse while leaving public PyPI enabled for transitive dependencies,
+  then imports every connector. Catches version-pin mismatches before PyPI
   sees them.
 * **`pin-parity`** — for every package, compares source
   `[project.dependencies]` **and** `[project.optional-dependencies]`
