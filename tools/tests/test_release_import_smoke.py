@@ -20,6 +20,7 @@ CORE_IMPORTS = release_import_smoke.CORE_IMPORTS
 DEFAULT_PACKAGE_IMPORTS = release_import_smoke.DEFAULT_PACKAGE_IMPORTS
 REDACTION = release_import_smoke.REDACTION
 SMOKE_IMPORTS = release_import_smoke.SMOKE_IMPORTS
+TIMEOUT_ENV = release_import_smoke.TIMEOUT_ENV
 
 
 def _dependency_name(requirement: str) -> str:
@@ -94,3 +95,16 @@ def test_smoke_import_sandboxes_env_and_redacts_import_failures(
     assert "Traceback (most recent call last)" in output
     assert REDACTION in output
     assert seeded_home not in output
+
+
+def test_smoke_import_timeout_is_configurable(tmp_path, monkeypatch, capsys) -> None:
+    module_name = "fake_slow_import"
+    (tmp_path / f"{module_name}.py").write_text("import time\ntime.sleep(5)\n")
+
+    monkeypatch.setenv(TIMEOUT_ENV, "0.01")
+
+    failures = release_import_smoke.smoke_import([module_name], extra_paths=[tmp_path])
+    output = capsys.readouterr().out
+
+    assert failures == [(module_name, "import subprocess timed out after 0.01s")]
+    assert "timed out after 0.01s" in output
