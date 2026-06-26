@@ -127,11 +127,10 @@ pypi-pin-parity:
 	@python tools/check_pin_parity.py
 
 # Pre-release wheel install smoke test. Builds every package to a
-# local wheelhouse, then installs ``genblaze[all]`` into a fresh
-# venv with ``--find-links`` pointing at that wheelhouse while PyPI
-# remains enabled for transitive dependencies. Catches version-constraint
-# breakage that the editable installs in ``install-dev`` bypass. Run this
-# before tagging a release.
+# local wheelhouse, then installs the local genblaze wheels into a
+# fresh venv while PyPI remains enabled for transitive dependencies.
+# Catches version-constraint breakage that the editable installs in
+# ``install-dev`` bypass. Run this before tagging a release.
 release-smoke:
 	@tools/release_smoke.sh
 
