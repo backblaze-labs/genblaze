@@ -86,48 +86,7 @@ echo "==> Installing 'genblaze[all]' from wheelhouse + PyPI for transitive deps"
 # pyproject pins, not vendoring the entire dep tree.
 pip install --quiet --find-links "${WHEELHOUSE}" "genblaze[all]"
 
-echo "==> Asserting every connector imports cleanly"
-python - <<'PY'
-import importlib
-import sys
-
-connectors = [
-    "genblaze_core",
-    # Submodule with a hard import-at-load dependency (urllib3, via the
-    # AssetTransfer PoolManager). `import genblaze_core` uses lazy __getattr__
-    # dispatch and never executes this, so it must be imported explicitly to
-    # prove the clean-install contract — the regression class behind #37/#106.
-    # (genblaze_core.testing is NOT checked here: it needs pytest, which
-    # genblaze[all] does not install — that extra is gated in the follow-up.)
-    "genblaze_core.storage",
-    "genblaze_s3",
-    "genblaze_openai",
-    "genblaze_google",
-    "genblaze_runway",
-    "genblaze_luma",
-    "genblaze_decart",
-    "genblaze_replicate",
-    "genblaze_elevenlabs",
-    "genblaze_stability_audio",
-    "genblaze_lmnt",
-    "genblaze_hume",
-    "genblaze_gmicloud",
-    "genblaze_langsmith",
-    "genblaze_nvidia",
-    "genblaze_assemblyai",
-    "genblaze",
-]
-failures = []
-for mod in connectors:
-    try:
-        importlib.import_module(mod)
-        print(f"  ok: {mod}")
-    except Exception as exc:  # noqa: BLE001 — surface all import errors
-        failures.append((mod, exc))
-        print(f"  FAIL: {mod}: {exc}")
-
-if failures:
-    sys.exit(f"{len(failures)} import failure(s)")
-PY
+echo "==> Asserting every genblaze[all] module imports cleanly"
+python "${REPO_ROOT}/tools/release_import_smoke.py"
 
 echo "==> Release smoke test passed."

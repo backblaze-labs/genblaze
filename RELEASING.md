@@ -267,9 +267,10 @@ make post-release VERSION=0.4.0
 `VERSION` is the **umbrella** version from `libs/meta/pyproject.toml`,
 not the wave name (e.g. wave 0.3.0 shipped umbrella 0.4.0). The target
 creates a throwaway venv in `/tmp`, installs `genblaze[all]==$VERSION`
-from public PyPI, imports `genblaze_core` and `genblaze_s3`, and prints
-the installed versions of each. On failure the venv is left in place
-so you can re-run the failing command interactively.
+from public PyPI, imports the umbrella, core, s3, and every connector in
+`genblaze[all]`, then prints the installed versions of the umbrella/core/s3
+packages. On failure the venv is left in place so you can re-run the failing
+command interactively.
 
 This is the same check that caught the 0.3.0 `genblaze-s3` dependency-
 pin drift after `install-verify` lagged — it's a backstop, not

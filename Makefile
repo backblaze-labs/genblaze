@@ -147,10 +147,10 @@ pre-release: lint typecheck ts-types-check pypi-metadata-check pypi-pin-parity t
 	@echo "See RELEASING.md for the full flow."
 
 # Post-publish verification. Installs the umbrella from public PyPI
-# into a throwaway venv and imports the core surface, mirroring what
-# real users see — this is what catches the same-version-different-
-# content trap that bit the 0.3.0 wave. Pass the umbrella version via
-# VERSION=<X.Y.Z>:
+# into a throwaway venv and imports the umbrella, core, s3, and every
+# genblaze[all] connector, mirroring what real users see — this is what
+# catches the same-version-different-content trap that bit the 0.3.0
+# wave. Pass the umbrella version via VERSION=<X.Y.Z>:
 #
 #   make post-release VERSION=0.4.0
 #
@@ -170,8 +170,8 @@ post-release:
 		echo "Installing genblaze[all]==$(VERSION) from public PyPI..."; \
 		$$VENV/bin/pip install "genblaze[all]==$(VERSION)"; \
 		echo ""; \
-		echo "Smoke-importing core surface..."; \
-		$$VENV/bin/python -c "import genblaze_core, genblaze_s3; print('import ok')"; \
+		echo "Smoke-importing genblaze[all] modules..."; \
+		$$VENV/bin/python tools/release_import_smoke.py; \
 		echo ""; \
 		echo "Installed versions:"; \
 		$$VENV/bin/pip show genblaze genblaze-core genblaze-s3 | grep -E '^(Name|Version)'; \
