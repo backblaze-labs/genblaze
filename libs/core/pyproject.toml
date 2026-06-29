@@ -62,6 +62,7 @@ otel = ["opentelemetry-api>=1.20"]
 # langsmith README). It imports pytest at module load, so it's only usable with
 # this extra installed: `pip install "genblaze-core[testing]"`.
 testing = ["pytest>=7.0"]
+signing = ["cryptography>=42.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
