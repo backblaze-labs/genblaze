@@ -23,7 +23,7 @@ def _write_package(
     if readme_text is not None:
         readme_path = package_dir / readme_file
         readme_path.parent.mkdir(parents=True, exist_ok=True)
-        readme_path.write_text(readme_text)
+        readme_path.write_text(readme_text, encoding="utf-8")
     pyproject = package_dir / "pyproject.toml"
     pyproject.write_text(
         f"""[project]
@@ -47,7 +47,8 @@ Homepage = "https://github.com/backblaze-labs/genblaze"
 Documentation = "https://github.com/backblaze-labs/genblaze#readme"
 Repository = "https://github.com/backblaze-labs/genblaze"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
-"""
+""",
+        encoding="utf-8",
     )
     return pyproject
 
@@ -135,10 +136,11 @@ def test_check_package_does_not_scan_non_markdown_readme_links(tmp_path: Path):
 def test_check_package_rejects_readme_table_without_file(tmp_path: Path):
     pyproject = _write_package(tmp_path, None)
     pyproject.write_text(
-        pyproject.read_text().replace(
+        pyproject.read_text(encoding="utf-8").replace(
             'readme = "README.md"',
             'readme = {text = "embedded", content-type = "text/markdown"}',
-        )
+        ),
+        encoding="utf-8",
     )
 
     assert cpm._check_package(pyproject) == ["genblaze-example: readme must reference a file path"]
@@ -146,7 +148,10 @@ def test_check_package_rejects_readme_table_without_file(tmp_path: Path):
 
 def test_check_package_rejects_non_string_readme_value(tmp_path: Path):
     pyproject = _write_package(tmp_path, None)
-    pyproject.write_text(pyproject.read_text().replace('readme = "README.md"', "readme = 42"))
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace('readme = "README.md"', "readme = 42"),
+        encoding="utf-8",
+    )
 
     assert cpm._check_package(pyproject) == ["genblaze-example: readme must reference a file path"]
 
@@ -165,7 +170,8 @@ def test_check_package_rejects_absolute_readme_path(tmp_path: Path):
 
 def test_check_package_rejects_out_of_package_readme_path(tmp_path: Path):
     (tmp_path / "outside.md").write_text(
-        "See [pricing](../../../docs/reference/pricing-recipes.md).\n"
+        "See [pricing](../../../docs/reference/pricing-recipes.md).\n",
+        encoding="utf-8",
     )
     pyproject = _write_package(
         tmp_path,
@@ -180,7 +186,10 @@ def test_check_package_rejects_out_of_package_readme_path(tmp_path: Path):
 
 def test_check_package_rejects_symlinked_readme_without_reading_target(tmp_path: Path):
     target = tmp_path / "target.md"
-    target.write_text("See [pricing](../../../docs/reference/pricing-recipes.md).\n")
+    target.write_text(
+        "See [pricing](../../../docs/reference/pricing-recipes.md).\n",
+        encoding="utf-8",
+    )
     pyproject = _write_package(tmp_path, None)
     (pyproject.parent / "README.md").symlink_to(target)
 
