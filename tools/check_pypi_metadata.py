@@ -174,9 +174,6 @@ def _validated_readme_path(path: Path, readme_file: str) -> tuple[Path | None, l
     if any(part == ".." for part in declared.parts):
         return None, [f"readme path must stay within package: {readme_file}"]
 
-    if declared.suffix.lower() != ".md":
-        return None, []
-
     current = path.parent
     for part in declared.parts:
         current = current / part
@@ -215,6 +212,8 @@ def _check_readme_links(path: Path, readme: object) -> list[str]:
     readme_path, issues = _validated_readme_path(path, readme_file)
     if issues or readme_path is None:
         return issues
+    if readme_path.suffix.lower() != ".md":
+        return []
 
     try:
         targets = _iter_markdown_link_targets(readme_path)

@@ -116,6 +116,22 @@ def test_check_package_rejects_unsupported_readme_link_schemes(tmp_path: Path):
     ]
 
 
+def test_check_package_validates_non_markdown_readme_path(tmp_path: Path):
+    pyproject = _write_package(tmp_path, None, readme_file="README.rst")
+
+    assert cpm._check_package(pyproject) == ["genblaze-example: readme file not found: README.rst"]
+
+
+def test_check_package_does_not_scan_non_markdown_readme_links(tmp_path: Path):
+    pyproject = _write_package(
+        tmp_path,
+        "See `docs/reference/pricing-recipes.md <../../../docs/reference/pricing-recipes.md>`_.\n",
+        readme_file="README.rst",
+    )
+
+    assert cpm._check_package(pyproject) == []
+
+
 def test_check_package_rejects_absolute_readme_path(tmp_path: Path):
     pyproject = _write_package(
         tmp_path,
