@@ -95,6 +95,27 @@ def test_check_package_allows_absolute_readme_links_and_anchors(tmp_path: Path):
     assert cpm._check_package(pyproject) == []
 
 
+def test_check_package_rejects_unsupported_readme_link_schemes(tmp_path: Path):
+    pyproject = _write_package(
+        tmp_path,
+        "\n".join(
+            [
+                "Avoid [script](javascript:alert(1)).",
+                "Avoid [local](file:///tmp/secret.md).",
+                r"Avoid [drive](C:\docs\readme.md).",
+            ]
+        ),
+    )
+
+    assert cpm._check_package(pyproject) == [
+        "genblaze-example: unsupported markdown link scheme in README.md:1 -> javascript:alert(1)",
+        "genblaze-example: unsupported markdown link scheme in README.md:2 -> "
+        "file:///tmp/secret.md",
+        "genblaze-example: unsupported markdown link scheme in README.md:3 -> "
+        r"C:\docs\readme.md",
+    ]
+
+
 def test_check_package_rejects_absolute_readme_path(tmp_path: Path):
     pyproject = _write_package(
         tmp_path,

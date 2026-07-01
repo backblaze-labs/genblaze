@@ -53,16 +53,21 @@ _README_MAX_BYTES = 1_000_000
 
 _FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
 _REFERENCE_LINK_RE = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*([^\s]+)")
+_ALLOWED_MARKDOWN_URL_SCHEMES = {"http", "https", "mailto"}
 
 
-def _is_relative_markdown_target(target: str) -> bool:
-    """Return True when ``target`` would resolve relative to PyPI."""
+def _markdown_target_issue_kind(target: str) -> str | None:
+    """Return the PyPI-rendering issue kind for ``target`` if it is invalid."""
     clean_target = target.strip().strip("<>")
     if not clean_target or clean_target.startswith("#"):
-        return False
-    if clean_target.startswith("//"):
-        return False
-    return not urlparse(clean_target).scheme
+        return None
+
+    scheme = urlparse(clean_target).scheme
+    if scheme in _ALLOWED_MARKDOWN_URL_SCHEMES:
+        return None
+    if scheme:
+        return "unsupported markdown link scheme"
+    return "relative markdown link"
 
 
 def _iter_inline_markdown_targets(line: str) -> list[str]:
@@ -216,11 +221,12 @@ def _check_readme_links(path: Path, readme: object) -> list[str]:
     except (OSError, UnicodeError) as exc:
         return [f"readme file cannot be read: {readme_file}: {exc}"]
 
-    return [
-        f"relative markdown link in {readme_file}:{line_number} -> {target}"
-        for line_number, target in targets
-        if _is_relative_markdown_target(target)
-    ]
+    link_issues: list[str] = []
+    for line_number, target in targets:
+        issue_kind = _markdown_target_issue_kind(target)
+        if issue_kind:
+            link_issues.append(f"{issue_kind} in {readme_file}:{line_number} -> {target}")
+    return link_issues
 
 
 def _check_package(path: Path) -> list[str]:
