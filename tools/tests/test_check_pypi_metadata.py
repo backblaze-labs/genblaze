@@ -149,3 +149,13 @@ def test_check_package_rejects_oversized_readme_before_reading(tmp_path: Path):
         "genblaze-example: readme file too large: README.md "
         f"({cpm._README_MAX_BYTES + 1} bytes > {cpm._README_MAX_BYTES})"
     ]
+
+
+def test_check_package_reports_unreadable_readme(tmp_path: Path):
+    pyproject = _write_package(tmp_path, None)
+    (pyproject.parent / "README.md").write_bytes(b"\xff")
+
+    issues = cpm._check_package(pyproject)
+
+    assert len(issues) == 1
+    assert issues[0].startswith("genblaze-example: readme file cannot be read: README.md: ")

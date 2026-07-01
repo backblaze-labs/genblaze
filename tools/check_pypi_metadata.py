@@ -211,9 +211,14 @@ def _check_readme_links(path: Path, readme: object) -> list[str]:
     if issues or readme_path is None:
         return issues
 
+    try:
+        targets = _iter_markdown_link_targets(readme_path)
+    except (OSError, UnicodeError) as exc:
+        return [f"readme file cannot be read: {readme_file}: {exc}"]
+
     return [
         f"relative markdown link in {readme_file}:{line_number} -> {target}"
-        for line_number, target in _iter_markdown_link_targets(readme_path)
+        for line_number, target in targets
         if _is_relative_markdown_target(target)
     ]
 
