@@ -5,15 +5,14 @@ Walks ``libs/**/pyproject.toml`` plus ``cli/pyproject.toml`` and asserts
 every published Python package has the metadata fields users expect to
 see on PyPI:
 
-* ``description`` — single sentence, ≤ 120 chars
+* ``description`` — single sentence, ≤ 200 chars
 * ``readme`` — set (per-package README.md, not just root link)
 * ``authors`` — populated
 * ``license`` — set
 * ``requires-python`` — ``>=3.11`` (matches AGENTS.md invariant)
 * ``classifiers`` — License (MIT), Python versions (3.11/3.12/3.13),
   Topic, Development Status
-* ``project_urls`` — Homepage, Documentation, Repository, Issues,
-  Changelog
+* ``project_urls`` — Homepage, Documentation, Repository, Issues
 * ``keywords`` — non-empty
 * ``readme`` Markdown links — absolute URLs only for files rendered on PyPI
 
@@ -222,7 +221,7 @@ def _check_readme_links(path: Path, readme: object) -> list[str]:
 def _check_package(path: Path) -> list[str]:
     """Return a list of human-readable issues found in ``path`` (empty
     list = clean)."""
-    raw = tomllib.loads(path.read_text())
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
     project = raw.get("project")
     if not project:
         return []  # not a published package (e.g. workspace-root pyproject)
