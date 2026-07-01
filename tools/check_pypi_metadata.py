@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -49,9 +50,9 @@ _REQUIRED_PROJECT_URLS = ("Homepage", "Documentation", "Repository", "Issues")
 
 # Description must fit comfortably in PyPI's search-result preview.
 _DESCRIPTION_MAX_CHARS = 200  # Plan suggested 120 but real packages run a bit longer
+_README_MAX_BYTES = 1_000_000
 
 _FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
-_INLINE_LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(\s*([^\s)]+)")
 _REFERENCE_LINK_RE = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*([^\s]+)")
 
 
@@ -65,24 +66,135 @@ def _is_relative_markdown_target(target: str) -> bool:
     return not urlparse(clean_target).scheme
 
 
+def _iter_inline_markdown_targets(line: str) -> list[str]:
+    """Return inline Markdown link targets from ``line``.
+
+    This intentionally implements only the syntax shape this gate needs:
+    balanced link labels followed by ``(...)`` destinations. It is stricter
+    than a full Markdown parser, but catches nested-bracket labels that simple
+    regular expressions miss.
+    """
+    targets: list[str] = []
+    index = 0
+    while index < len(line):
+        label_start = line.find("[", index)
+        if label_start == -1:
+            break
+
+        cursor = label_start + 1
+        label_depth = 1
+        while cursor < len(line) and label_depth:
+            char = line[cursor]
+            if char == "\\":
+                cursor += 2
+                continue
+            if char == "[":
+                label_depth += 1
+            elif char == "]":
+                label_depth -= 1
+            cursor += 1
+
+        if label_depth:
+            index = label_start + 1
+            continue
+
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        if cursor >= len(line) or line[cursor] != "(":
+            index = cursor
+            continue
+
+        cursor += 1
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+
+        if cursor < len(line) and line[cursor] == "<":
+            target_end = line.find(">", cursor + 1)
+            if target_end != -1:
+                targets.append(line[cursor : target_end + 1])
+                index = target_end + 1
+                continue
+            index = cursor + 1
+            continue
+
+        target_start = cursor
+        paren_depth = 0
+        while cursor < len(line):
+            char = line[cursor]
+            if char == "\\":
+                cursor += 2
+                continue
+            if char == "(":
+                paren_depth += 1
+            elif char == ")":
+                if paren_depth == 0:
+                    break
+                paren_depth -= 1
+            elif char in " \t":
+                break
+            cursor += 1
+
+        if cursor > target_start:
+            targets.append(line[target_start:cursor])
+        index = cursor + 1
+
+    return targets
+
+
 def _iter_markdown_link_targets(readme_path: Path) -> list[tuple[int, str]]:
     """Return ``(line_number, target)`` pairs for Markdown links in a file."""
     targets: list[tuple[int, str]] = []
     in_fence = False
 
-    for line_number, line in enumerate(readme_path.read_text().splitlines(), start=1):
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
+    with readme_path.open(encoding="utf-8") as readme_handle:
+        for line_number, line in enumerate(readme_handle, start=1):
+            if _FENCE_RE.match(line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
 
-        for match in _REFERENCE_LINK_RE.finditer(line):
-            targets.append((line_number, match.group(1)))
-        for match in _INLINE_LINK_RE.finditer(line):
-            targets.append((line_number, match.group(1)))
+            for match in _REFERENCE_LINK_RE.finditer(line):
+                targets.append((line_number, match.group(1)))
+            for target in _iter_inline_markdown_targets(line):
+                targets.append((line_number, target))
 
     return targets
+
+
+def _validated_readme_path(path: Path, readme_file: str) -> tuple[Path | None, list[str]]:
+    """Validate a package README path before opening it."""
+    declared = Path(readme_file)
+    if declared.is_absolute():
+        return None, [f"readme path must be relative: {readme_file}"]
+    if any(part == ".." for part in declared.parts):
+        return None, [f"readme path must stay within package: {readme_file}"]
+
+    if declared.suffix.lower() != ".md":
+        return None, []
+
+    current = path.parent
+    for part in declared.parts:
+        current = current / part
+        try:
+            stat_result = current.lstat()
+        except FileNotFoundError:
+            return None, [f"readme file not found: {readme_file}"]
+        except OSError as exc:
+            return None, [f"readme file cannot be inspected: {readme_file}: {exc}"]
+
+        if stat.S_ISLNK(stat_result.st_mode):
+            return None, [f"readme path must not contain symlinks: {readme_file}"]
+
+    if not stat.S_ISREG(stat_result.st_mode):
+        return None, [f"readme path is not a regular file: {readme_file}"]
+    if stat_result.st_size > _README_MAX_BYTES:
+        return None, [
+            f"readme file too large: {readme_file} "
+            f"({stat_result.st_size} bytes > {_README_MAX_BYTES})"
+        ]
+
+    return current, []
 
 
 def _check_readme_links(path: Path, readme: object) -> list[str]:
@@ -93,12 +205,12 @@ def _check_readme_links(path: Path, readme: object) -> list[str]:
     elif isinstance(readme, dict) and isinstance(readme.get("file"), str):
         readme_file = readme["file"]
 
-    if not readme_file or Path(readme_file).suffix.lower() != ".md":
+    if not readme_file:
         return []
 
-    readme_path = path.parent / readme_file
-    if not readme_path.exists():
-        return [f"readme file not found: {readme_file}"]
+    readme_path, issues = _validated_readme_path(path, readme_file)
+    if issues or readme_path is None:
+        return issues
 
     return [
         f"relative markdown link in {readme_file}:{line_number} -> {target}"

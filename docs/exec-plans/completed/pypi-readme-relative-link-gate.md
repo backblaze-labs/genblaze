@@ -15,8 +15,8 @@ READMEs fail before release.
 |------|--------|
 | `libs/connectors/gmicloud/README.md` | Replaced relative docs links with absolute GitHub blob URLs. |
 | `libs/connectors/nvidia/README.md` | Replaced the relative pricing docs link with an absolute GitHub blob URL. |
-| `tools/check_pypi_metadata.py` | Reads package `readme` files from published pyprojects and rejects relative Markdown link targets. |
-| `tools/tests/test_check_pypi_metadata.py` | Covers rejection of relative README links and allowance of absolute URLs, anchors, and mailto links. |
+| `tools/check_pypi_metadata.py` | Reads package `readme` files from published pyprojects, rejects unsafe README paths, and rejects relative Markdown link targets. |
+| `tools/tests/test_check_pypi_metadata.py` | Covers rejection of relative README links, nested-bracket labels, unsafe README paths, and allowance of absolute URLs, anchors, and mailto links. |
 
 ## Verification
 
