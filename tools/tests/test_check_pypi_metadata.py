@@ -81,6 +81,20 @@ def test_check_package_reports_relative_link_with_nested_bracket_label(tmp_path:
     ]
 
 
+def test_check_package_reports_relative_link_wrapped_around_badge(tmp_path: Path):
+    pyproject = _write_package(
+        tmp_path,
+        "[![Docs](https://example.com/badge.svg)](../../../docs/reference/pricing-recipes.md)\n",
+    )
+
+    issues = cpm._check_package(pyproject)
+
+    assert issues == [
+        "genblaze-example: relative markdown link in README.md:1 -> "
+        "../../../docs/reference/pricing-recipes.md"
+    ]
+
+
 def test_check_package_allows_absolute_readme_links_and_anchors(tmp_path: Path):
     pyproject = _write_package(
         tmp_path,
