@@ -95,6 +95,38 @@ def test_check_package_reports_relative_link_wrapped_around_badge(tmp_path: Path
     ]
 
 
+def test_check_package_ignores_mismatched_fence_marker_inside_code_block(
+    tmp_path: Path,
+):
+    pyproject = _write_package(
+        tmp_path,
+        "\n".join(
+            [
+                "```text",
+                "~~~",
+                "See [pricing](../../../docs/reference/pricing-recipes.md).",
+                "```",
+            ]
+        ),
+    )
+
+    assert cpm._check_package(pyproject) == []
+
+
+def test_check_package_does_not_rescan_markdown_link_title(tmp_path: Path):
+    pyproject = _write_package(
+        tmp_path,
+        "See [docs](https://example.com/docs "
+        '"[ignored](../../../docs/reference/pricing-recipes.md)") and '
+        '[pricing](../../../docs/reference/pricing-recipes.md "Pricing docs").\n',
+    )
+
+    assert cpm._check_package(pyproject) == [
+        "genblaze-example: relative markdown link in README.md:1 -> "
+        "../../../docs/reference/pricing-recipes.md"
+    ]
+
+
 def test_check_package_allows_absolute_readme_links_and_anchors(tmp_path: Path):
     pyproject = _write_package(
         tmp_path,
@@ -238,3 +270,30 @@ def test_check_package_reports_unreadable_readme(tmp_path: Path):
 
     assert len(issues) == 1
     assert issues[0].startswith("genblaze-example: readme file cannot be read: README.md: ")
+
+
+def test_check_package_rejects_readme_swapped_after_validation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    pyproject = _write_package(tmp_path, "See [docs](https://example.com/docs).\n")
+    original_validate = cpm._validated_readme_path
+
+    def replacing_validate(path: Path, readme_file: str):
+        readme_path, stat_result, issues = original_validate(path, readme_file)
+        if readme_path is not None and stat_result is not None:
+            readme_path.write_text(
+                "See [pricing](../../../docs/reference/pricing-recipes.md).\n",
+                encoding="utf-8",
+            )
+        return readme_path, stat_result, issues
+
+    monkeypatch.setattr(cpm, "_validated_readme_path", replacing_validate)
+
+    issues = cpm._check_package(pyproject)
+
+    assert len(issues) == 1
+    assert issues[0] == (
+        "genblaze-example: readme file cannot be read: README.md: "
+        "readme file changed after validation"
+    )
