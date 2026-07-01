@@ -10,7 +10,7 @@
 - **One API, dozens of models** — text-to-video (Seedance, Kling, Veo, Sora, Wan), text-to-image (Seedream, FLUX, Gemini, Reve), audio (ElevenLabs, MiniMax TTS/Music).
 - **LLM access too** — standalone `chat()` wrapper for Llama, DeepSeek, Qwen over GMICloud's OpenAI-compatible inference endpoint (see below).
 - **Provenance by default** — SHA-256-verified manifest with provider, model, prompt, params, cost.
-- **Cost tracking** — register a pricing strategy from [`docs/reference/pricing-recipes.md`](../../../docs/reference/pricing-recipes.md) and `step.cost_usd` is populated automatically.
+- **Cost tracking** — register a pricing strategy from [`docs/reference/pricing-recipes.md`](https://github.com/backblaze-labs/genblaze/blob/main/docs/reference/pricing-recipes.md) and `step.cost_usd` is populated automatically.
 - **Production-ready** — retries, timeouts, progress streaming, step caching.
 - **Durable storage** — plug `genblaze-s3` in for Backblaze B2 / AWS S3 / R2 / MinIO persistence.
 
@@ -111,7 +111,7 @@ print(resp.text, resp.tokens_out)
 
 Any GMICloud-hosted chat model is accepted — model ids pass through to the inference endpoint verbatim, so you can use models the connector hasn't been updated for. `cost_usd` is always `None` for this connector; compute cost from `tokens_in` / `tokens_out` yourself if needed.
 
-Full signature and `ChatResponse` shape: [`docs/features/llm-calls.md`](../../../docs/features/llm-calls.md).
+Full signature and `ChatResponse` shape: [`docs/features/llm-calls.md`](https://github.com/backblaze-labs/genblaze/blob/main/docs/features/llm-calls.md).
 
 ## Credentials
 

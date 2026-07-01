@@ -15,6 +15,7 @@ see on PyPI:
 * ``project_urls`` — Homepage, Documentation, Repository, Issues,
   Changelog
 * ``keywords`` — non-empty
+* ``readme`` Markdown links — absolute URLs only for files rendered on PyPI
 
 Run from the repo root:
 
@@ -28,9 +29,11 @@ package whose PyPI page renders empty.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Required classifier prefixes — at least one classifier in each group
 # must be present.
@@ -46,6 +49,62 @@ _REQUIRED_PROJECT_URLS = ("Homepage", "Documentation", "Repository", "Issues")
 
 # Description must fit comfortably in PyPI's search-result preview.
 _DESCRIPTION_MAX_CHARS = 200  # Plan suggested 120 but real packages run a bit longer
+
+_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+_INLINE_LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(\s*([^\s)]+)")
+_REFERENCE_LINK_RE = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*([^\s]+)")
+
+
+def _is_relative_markdown_target(target: str) -> bool:
+    """Return True when ``target`` would resolve relative to PyPI."""
+    clean_target = target.strip().strip("<>")
+    if not clean_target or clean_target.startswith("#"):
+        return False
+    if clean_target.startswith("//"):
+        return False
+    return not urlparse(clean_target).scheme
+
+
+def _iter_markdown_link_targets(readme_path: Path) -> list[tuple[int, str]]:
+    """Return ``(line_number, target)`` pairs for Markdown links in a file."""
+    targets: list[tuple[int, str]] = []
+    in_fence = False
+
+    for line_number, line in enumerate(readme_path.read_text().splitlines(), start=1):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        for match in _REFERENCE_LINK_RE.finditer(line):
+            targets.append((line_number, match.group(1)))
+        for match in _INLINE_LINK_RE.finditer(line):
+            targets.append((line_number, match.group(1)))
+
+    return targets
+
+
+def _check_readme_links(path: Path, readme: object) -> list[str]:
+    """Return PyPI-rendering issues for the package README."""
+    readme_file: str | None = None
+    if isinstance(readme, str):
+        readme_file = readme
+    elif isinstance(readme, dict) and isinstance(readme.get("file"), str):
+        readme_file = readme["file"]
+
+    if not readme_file or Path(readme_file).suffix.lower() != ".md":
+        return []
+
+    readme_path = path.parent / readme_file
+    if not readme_path.exists():
+        return [f"readme file not found: {readme_file}"]
+
+    return [
+        f"relative markdown link in {readme_file}:{line_number} -> {target}"
+        for line_number, target in _iter_markdown_link_targets(readme_path)
+        if _is_relative_markdown_target(target)
+    ]
 
 
 def _check_package(path: Path) -> list[str]:
@@ -70,6 +129,8 @@ def _check_package(path: Path) -> list[str]:
     readme = project.get("readme")
     if not readme:
         issues.append("missing `readme`")
+    else:
+        issues.extend(_check_readme_links(path, readme))
 
     # authors
     authors = project.get("authors")
