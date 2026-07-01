@@ -203,11 +203,17 @@ def _check_readme_links(path: Path, readme: object) -> list[str]:
     readme_file: str | None = None
     if isinstance(readme, str):
         readme_file = readme
-    elif isinstance(readme, dict) and isinstance(readme.get("file"), str):
-        readme_file = readme["file"]
+    elif isinstance(readme, dict):
+        file_value = readme.get("file")
+        if isinstance(file_value, str):
+            readme_file = file_value
+        else:
+            return ["readme must reference a file path"]
+    else:
+        return ["readme must reference a file path"]
 
     if not readme_file:
-        return []
+        return ["readme must reference a file path"]
 
     readme_path, issues = _validated_readme_path(path, readme_file)
     if issues or readme_path is None:

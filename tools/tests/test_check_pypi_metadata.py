@@ -132,6 +132,25 @@ def test_check_package_does_not_scan_non_markdown_readme_links(tmp_path: Path):
     assert cpm._check_package(pyproject) == []
 
 
+def test_check_package_rejects_readme_table_without_file(tmp_path: Path):
+    pyproject = _write_package(tmp_path, None)
+    pyproject.write_text(
+        pyproject.read_text().replace(
+            'readme = "README.md"',
+            'readme = {text = "embedded", content-type = "text/markdown"}',
+        )
+    )
+
+    assert cpm._check_package(pyproject) == ["genblaze-example: readme must reference a file path"]
+
+
+def test_check_package_rejects_non_string_readme_value(tmp_path: Path):
+    pyproject = _write_package(tmp_path, None)
+    pyproject.write_text(pyproject.read_text().replace('readme = "README.md"', "readme = 42"))
+
+    assert cpm._check_package(pyproject) == ["genblaze-example: readme must reference a file path"]
+
+
 def test_check_package_rejects_absolute_readme_path(tmp_path: Path):
     pyproject = _write_package(
         tmp_path,
