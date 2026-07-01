@@ -110,9 +110,9 @@ def test_check_package_rejects_unsupported_readme_link_schemes(tmp_path: Path):
     assert cpm._check_package(pyproject) == [
         "genblaze-example: unsupported markdown link scheme in README.md:1 -> javascript:alert(1)",
         "genblaze-example: unsupported markdown link scheme in README.md:2 -> "
-        "file:///tmp/secret.md",
+        + "file:///tmp/secret.md",
         "genblaze-example: unsupported markdown link scheme in README.md:3 -> "
-        r"C:\docs\readme.md",
+        + r"C:\docs\readme.md",
     ]
 
 
