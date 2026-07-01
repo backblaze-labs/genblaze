@@ -6,7 +6,7 @@ every published Python package has the metadata fields users expect to
 see on PyPI:
 
 * ``description`` — single sentence, ≤ 200 chars
-* ``readme`` — set (per-package README.md, not just root link)
+* ``readme`` — set (safe per-package README file path, not just root link)
 * ``authors`` — populated
 * ``license`` — set
 * ``requires-python`` — ``>=3.11`` (matches AGENTS.md invariant)
