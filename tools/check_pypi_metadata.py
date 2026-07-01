@@ -12,7 +12,7 @@ see on PyPI:
 * ``requires-python`` — ``>=3.11`` (matches AGENTS.md invariant)
 * ``classifiers`` — License (MIT), Python versions (3.11/3.12/3.13),
   Topic, Development Status
-* ``project_urls`` — Homepage, Documentation, Repository, Issues
+* ``project.urls`` — Homepage, Documentation, Repository, Issues
 * ``keywords`` — non-empty
 * ``readme`` Markdown links — absolute URLs only for files rendered on PyPI
 
