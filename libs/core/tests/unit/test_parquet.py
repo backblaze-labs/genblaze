@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pyarrow.parquet as pq
-from genblaze_core.models import Manifest, Run, Step
+from genblaze_core.models import EmbedPolicy, Manifest, PromptVisibility, Run, Step
 from genblaze_core.models.asset import Asset
 from genblaze_core.sinks.parquet import ParquetSink
 
@@ -99,3 +99,32 @@ def test_idempotent_write(tmp_path: Path):
 
     parquet_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
     assert len(parquet_files) == 1
+
+
+def test_write_run_applies_embed_policy_redaction(tmp_path: Path):
+    """ParquetSink redacts prompt, params, and seed when policy requires it."""
+    step = Step(
+        provider="test",
+        model="m",
+        prompt="SECRET PROMPT",
+        seed=12345,
+        params={"public": "ok", "secret": "do-not-store"},
+    )
+    run = Run(steps=[step])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+    policy = EmbedPolicy(
+        prompt_visibility=PromptVisibility.PRIVATE,
+        include_params=False,
+        include_seed=False,
+    )
+
+    sink = ParquetSink(tmp_path / "out", policy=policy)
+    sink.write_run(run, manifest)
+
+    step_files = list((tmp_path / "out" / "steps").rglob("*.parquet"))
+    assert len(step_files) == 1
+    step_table = pq.ParquetFile(step_files[0]).read()
+    assert step_table.column("prompt")[0].as_py() == ""
+    assert step_table.column("seed")[0].as_py() is None
+    assert step_table.column("params_json")[0].as_py() == "{}"
