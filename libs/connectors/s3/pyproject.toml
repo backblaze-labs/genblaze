@@ -45,7 +45,7 @@ async = [
     # aiobotocore-backed aioboto3. Keep the upper bound conservative so
     # an aioboto3 major bump doesn't silently land breaking changes for
     # users with floating extras pins.
-    "aioboto3>=12,<13",
+    "aioboto3>=12,<16",
     # async_backend.py imports aiobotocore.config.AioConfig directly. aioboto3
     # always pulls it, but the direct import is declared so deptry can verify
     # it; aioboto3 pins the exact aiobotocore (==2.7.0 at our 12.0 floor), so no
