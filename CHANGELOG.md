@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `genblaze-gmicloud`: video `duration` now requires whole-second integer
-  values; fractional numeric and string inputs fail invalid-input validation
-  instead of being silently truncated (#90).
+  values from 1 to 60 seconds; fractional, zero/negative, and oversized
+  inputs fail invalid-input validation instead of being silently truncated
+  or forwarded (#90).
 
 ## [0.4.0] - 2026-06-25
 

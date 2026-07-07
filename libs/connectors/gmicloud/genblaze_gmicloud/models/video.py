@@ -47,7 +47,11 @@ from genblaze_core.providers import (
 
 from .._probe import empty_payload_request_probe
 
-_DURATION_SECONDS_SCHEMA = IntSchema(min=1)
+# GMICloud does not expose a stable public per-family duration matrix. Keep a
+# finite connector-wide cap so untrusted callers cannot enqueue unbounded,
+# per-second video work through the permissive fallback.
+_MAX_VIDEO_DURATION_SECONDS = 60
+_DURATION_SECONDS_SCHEMA = IntSchema(min=1, max=_MAX_VIDEO_DURATION_SECONDS)
 
 
 class _DurationParamContract(TypedDict):

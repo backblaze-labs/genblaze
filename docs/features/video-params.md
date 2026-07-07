@@ -22,7 +22,7 @@ Standard `step.params` keys that video/audio providers should map from.
 | Standard Key | Runway | Luma | Google Veo | GMICloud video |
 |-------------|--------|------|------------|----------------|
 | `aspect_ratio` | `ratio` | `aspect_ratio` (native) | `aspect_ratio` (native) | `aspect_ratio` (native) |
-| `duration` | `duration` (native, int) | `duration` | `duration_seconds` | `duration` (native, whole-second int) |
+| `duration` | `duration` (native, int) | `duration` | `duration_seconds` | `duration` (native, whole-second int, 1–60s) |
 | `resolution` | — | `resolution` (native) | `resolution` (native) | `resolution` (native) |
 
 ## Audio Asset Metadata

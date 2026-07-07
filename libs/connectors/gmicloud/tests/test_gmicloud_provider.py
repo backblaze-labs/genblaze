@@ -409,9 +409,7 @@ def test_duration_coerced_to_int(provider):
     assert provider.prepare_payload(step)["duration"] == 10
 
 
-@pytest.mark.parametrize("duration", [5.5, 8.9])
-@pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
-def test_fractional_duration_rejected_without_truncation(provider, duration, model):
+def _assert_invalid_duration(provider, model: str, duration):
     step = Step(
         provider="gmicloud",
         model=model,
@@ -426,25 +424,41 @@ def test_fractional_duration_rejected_without_truncation(provider, duration, mod
     assert exc_info.value.error_code == ProviderErrorCode.INVALID_INPUT
     assert "duration" in msg
     assert "Failed to coerce" not in msg
+    assert "invalid literal for int()" not in msg
+
+
+@pytest.mark.parametrize("duration", [5.5, 8.9])
+@pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
+def test_fractional_duration_rejected_without_truncation(provider, duration, model):
+    _assert_invalid_duration(provider, model, duration)
 
 
 @pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
 def test_fractional_duration_string_rejected_with_typed_error(provider, model):
+    _assert_invalid_duration(provider, model, "7.5")
+
+
+@pytest.mark.parametrize("duration", [0, -1, 61, 10**9])
+@pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
+def test_out_of_range_duration_rejected(provider, duration, model):
+    _assert_invalid_duration(provider, model, duration)
+
+
+@pytest.mark.parametrize("duration", [0, -1, 61, 10**9])
+@pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
+def test_invalid_duration_does_not_submit_http_request(provider, duration, model):
     step = Step(
         provider="gmicloud",
         model=model,
         prompt="t",
-        params={"duration": "7.5"},
+        params={"duration": duration},
     )
 
     with pytest.raises(ProviderError) as exc_info:
-        provider.prepare_payload(step)
+        provider.submit(step)
 
-    msg = str(exc_info.value)
     assert exc_info.value.error_code == ProviderErrorCode.INVALID_INPUT
-    assert "duration" in msg
-    assert "Failed to coerce" not in msg
-    assert "invalid literal for int()" not in msg
+    provider._http_client.post.assert_not_called()
 
 
 def test_guidance_scale_aliased_to_cfg_scale(provider):

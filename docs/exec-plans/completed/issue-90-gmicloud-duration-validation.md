@@ -14,8 +14,9 @@ the raw `int()` error instead of a typed invalid-input message.
 2. Replace the lossy `int` coercer with a whole-second coercer that preserves
    invalid values for typed schema validation.
 3. Add a real `IntSchema` for GMICloud video `duration` on family specs and the
-   fallback spec.
-4. Update video parameter docs to note GMICloud's whole-second requirement.
+   fallback spec, including a finite 1-60 second bound.
+4. Update video parameter docs and the changelog to note GMICloud's whole-second
+   duration requirement and upper bound.
 5. Run the focused GMICloud tests, `make test`, and `make lint`.
 
 ## Verification
