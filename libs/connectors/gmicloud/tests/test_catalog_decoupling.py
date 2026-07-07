@@ -174,6 +174,7 @@ class TestVideoFamilyResolution:
             spec = provider._models.get(slug)
             assert "cfg_scale" in spec.param_aliases.values()
             assert "duration" in spec.param_coercers
+            assert "duration" in spec.param_schemas
 
     def test_kling_v21_routes_to_dedicated_family(self) -> None:
         """Kling V2.1 (text2video + image2video) gets its own family

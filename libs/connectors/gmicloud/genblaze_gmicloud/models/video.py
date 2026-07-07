@@ -31,9 +31,11 @@ runtime; preflight surfaces ``OK_PROVISIONAL`` with
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from genblaze_core.models.enums import Modality
 from genblaze_core.providers import (
+    IntSchema,
     ModelFamily,
     ModelRegistry,
     ModelSpec,
@@ -43,13 +45,45 @@ from genblaze_core.providers import (
 
 from .._probe import empty_payload_request_probe
 
+_DURATION_SECONDS_SCHEMA = IntSchema(min=1)
+
+
+def _coerce_whole_seconds(value: Any) -> Any:
+    """Coerce only whole-second duration values.
+
+    Invalid values intentionally pass through so ``IntSchema`` emits the
+    standard typed validation error instead of leaking a raw ``int()`` failure
+    or silently truncating fractional seconds.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"[+-]?\d+", stripped):
+            return int(stripped)
+    return value
+
+
+def _video_surface_fields(surface: ParamSurface) -> dict[str, Any]:
+    fields = surface.build()
+    fields["param_schemas"] = {
+        **fields.get("param_schemas", {}),
+        "duration": _DURATION_SECONDS_SCHEMA,
+    }
+    return fields
+
+
 # Default video surface — universally meaningful video params + GMI's
 # canonical-to-native ``guidance_scale``→``cfg_scale`` rename and
-# duration coercion.
+# whole-second duration validation.
 _VIDEO_BASE = (
     ParamSurface.for_modality(Modality.VIDEO)
     .with_aliases(guidance_scale="cfg_scale")
-    .with_coercers(duration=int)
+    .with_coercers(duration=_coerce_whole_seconds)
     .extend("cfg_scale")
 )
 
@@ -72,7 +106,7 @@ _GMI_VIDEO_PIXVERSE_FAMILY = ModelFamily(
         modality=Modality.VIDEO,
         input_mapping=_COMMON_INPUT,
         extras=_ENVELOPE,
-        **_PIXVERSE.build(),
+        **_video_surface_fields(_PIXVERSE),
     ),
     description="Pixverse v5.6 family — t2v, i2v, transition.",
     example_slugs=(
@@ -94,7 +128,7 @@ _GMI_VIDEO_WAN_R2V_FAMILY = ModelFamily(
         modality=Modality.VIDEO,
         input_mapping=_COMMON_INPUT,
         extras=_ENVELOPE,
-        **_WAN_REF.build(),
+        **_video_surface_fields(_WAN_REF),
     ),
     description="Wan reference-to-video — keyframe-conditioned generation.",
     example_slugs=("wan2.6-r2v",),
@@ -136,7 +170,7 @@ _GMI_VIDEO_VEO_FAMILY = ModelFamily(
         # "this model produces audio" signal alongside the family
         # definition where future maintainers will look for it.
         extras={**_ENVELOPE, "has_audio": True},
-        **_VIDEO_BASE.build(),
+        **_video_surface_fields(_VIDEO_BASE),
     ),
     description="Google Veo family on GMI — produces video + audio tracks.",
     example_slugs=("Veo3", "Veo3-Fast"),
@@ -179,7 +213,7 @@ _GMI_VIDEO_KLING_V21_FAMILY = ModelFamily(
         modality=Modality.VIDEO,
         input_mapping=_COMMON_INPUT,
         extras=_ENVELOPE,
-        **_VIDEO_BASE.build(),
+        **_video_surface_fields(_VIDEO_BASE),
     ),
     description="Kling V2.1 (Master) — Text2Video / Image2Video on GMI.",
     example_slugs=("Kling-Text2Video-V2.1-Master", "Kling-Image2Video-V2.1-Master"),
@@ -192,7 +226,8 @@ _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
     param_aliases={"guidance_scale": "cfg_scale"},
-    param_coercers={"duration": int},
+    param_coercers={"duration": _coerce_whole_seconds},
+    param_schemas={"duration": _DURATION_SECONDS_SCHEMA},
     input_mapping=_COMMON_INPUT,
     extras=_ENVELOPE,
 )

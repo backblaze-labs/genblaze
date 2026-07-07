@@ -409,6 +409,42 @@ def test_duration_coerced_to_int(provider):
     assert provider.prepare_payload(step)["duration"] == 10
 
 
+@pytest.mark.parametrize("duration", [5.5, 8.9])
+@pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
+def test_fractional_duration_rejected_without_truncation(provider, duration, model):
+    step = Step(
+        provider="gmicloud",
+        model=model,
+        prompt="t",
+        params={"duration": duration},
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.prepare_payload(step)
+
+    assert exc_info.value.error_code == ProviderErrorCode.INVALID_INPUT
+    assert "Invalid parameter 'duration'" in str(exc_info.value)
+    assert "expected int, got float" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
+def test_fractional_duration_string_rejected_with_typed_error(provider, model):
+    step = Step(
+        provider="gmicloud",
+        model=model,
+        prompt="t",
+        params={"duration": "7.5"},
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.prepare_payload(step)
+
+    assert exc_info.value.error_code == ProviderErrorCode.INVALID_INPUT
+    assert "Invalid parameter 'duration'" in str(exc_info.value)
+    assert "expected int, got str" in str(exc_info.value)
+    assert "invalid literal for int()" not in str(exc_info.value)
+
+
 def test_guidance_scale_aliased_to_cfg_scale(provider):
     step = Step(
         provider="gmicloud",
