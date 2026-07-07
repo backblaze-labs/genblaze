@@ -31,7 +31,8 @@ runtime; preflight surfaces ``OK_PROVISIONAL`` with
 from __future__ import annotations
 
 import re
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import Any, TypedDict
 
 from genblaze_core.models.enums import Modality
 from genblaze_core.providers import (
@@ -39,6 +40,7 @@ from genblaze_core.providers import (
     ModelFamily,
     ModelRegistry,
     ModelSpec,
+    ParamSchema,
     ParamSurface,
     route_images,
 )
@@ -46,6 +48,11 @@ from genblaze_core.providers import (
 from .._probe import empty_payload_request_probe
 
 _DURATION_SECONDS_SCHEMA = IntSchema(min=1)
+
+
+class _DurationParamContract(TypedDict):
+    param_coercers: Mapping[str, Callable[[Any], Any]]
+    param_schemas: Mapping[str, ParamSchema]
 
 
 def _coerce_whole_seconds(value: Any) -> Any:
@@ -68,7 +75,7 @@ def _coerce_whole_seconds(value: Any) -> Any:
     return value
 
 
-_DURATION_PARAM_CONTRACT = {
+_DURATION_PARAM_CONTRACT: _DurationParamContract = {
     "param_coercers": {"duration": _coerce_whole_seconds},
     "param_schemas": {"duration": _DURATION_SECONDS_SCHEMA},
 }
@@ -76,8 +83,14 @@ _DURATION_PARAM_CONTRACT = {
 
 def _video_surface_fields(surface: ParamSurface) -> dict[str, Any]:
     fields = surface.build()
-    for key, values in _DURATION_PARAM_CONTRACT.items():
-        fields[key] = {**fields.get(key, {}), **values}
+    fields["param_coercers"] = {
+        **fields.get("param_coercers", {}),
+        **_DURATION_PARAM_CONTRACT["param_coercers"],
+    }
+    fields["param_schemas"] = {
+        **fields.get("param_schemas", {}),
+        **_DURATION_PARAM_CONTRACT["param_schemas"],
+    }
     return fields
 
 
@@ -229,7 +242,8 @@ _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
     param_aliases={"guidance_scale": "cfg_scale"},
-    **_DURATION_PARAM_CONTRACT,
+    param_coercers=_DURATION_PARAM_CONTRACT["param_coercers"],
+    param_schemas=_DURATION_PARAM_CONTRACT["param_schemas"],
     input_mapping=_COMMON_INPUT,
     extras=_ENVELOPE,
 )
