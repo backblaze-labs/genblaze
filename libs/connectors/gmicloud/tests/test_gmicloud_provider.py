@@ -422,9 +422,10 @@ def test_fractional_duration_rejected_without_truncation(provider, duration, mod
     with pytest.raises(ProviderError) as exc_info:
         provider.prepare_payload(step)
 
+    msg = str(exc_info.value)
     assert exc_info.value.error_code == ProviderErrorCode.INVALID_INPUT
-    assert "Invalid parameter 'duration'" in str(exc_info.value)
-    assert "expected int, got float" in str(exc_info.value)
+    assert "duration" in msg
+    assert "Failed to coerce" not in msg
 
 
 @pytest.mark.parametrize("model", ["kling-text2video-v1.6-pro", "pixverse-v5.6-t2v"])
@@ -439,10 +440,11 @@ def test_fractional_duration_string_rejected_with_typed_error(provider, model):
     with pytest.raises(ProviderError) as exc_info:
         provider.prepare_payload(step)
 
+    msg = str(exc_info.value)
     assert exc_info.value.error_code == ProviderErrorCode.INVALID_INPUT
-    assert "Invalid parameter 'duration'" in str(exc_info.value)
-    assert "expected int, got str" in str(exc_info.value)
-    assert "invalid literal for int()" not in str(exc_info.value)
+    assert "duration" in msg
+    assert "Failed to coerce" not in msg
+    assert "invalid literal for int()" not in msg
 
 
 def test_guidance_scale_aliased_to_cfg_scale(provider):

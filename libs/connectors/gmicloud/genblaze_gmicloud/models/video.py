@@ -68,22 +68,25 @@ def _coerce_whole_seconds(value: Any) -> Any:
     return value
 
 
+_DURATION_PARAM_CONTRACT = {
+    "param_coercers": {"duration": _coerce_whole_seconds},
+    "param_schemas": {"duration": _DURATION_SECONDS_SCHEMA},
+}
+
+
 def _video_surface_fields(surface: ParamSurface) -> dict[str, Any]:
     fields = surface.build()
-    fields["param_schemas"] = {
-        **fields.get("param_schemas", {}),
-        "duration": _DURATION_SECONDS_SCHEMA,
-    }
+    for key, values in _DURATION_PARAM_CONTRACT.items():
+        fields[key] = {**fields.get(key, {}), **values}
     return fields
 
 
 # Default video surface — universally meaningful video params + GMI's
 # canonical-to-native ``guidance_scale``→``cfg_scale`` rename and
-# whole-second duration validation.
+# shared whole-second duration contract.
 _VIDEO_BASE = (
     ParamSurface.for_modality(Modality.VIDEO)
     .with_aliases(guidance_scale="cfg_scale")
-    .with_coercers(duration=_coerce_whole_seconds)
     .extend("cfg_scale")
 )
 
@@ -226,8 +229,7 @@ _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
     param_aliases={"guidance_scale": "cfg_scale"},
-    param_coercers={"duration": _coerce_whole_seconds},
-    param_schemas={"duration": _DURATION_SECONDS_SCHEMA},
+    **_DURATION_PARAM_CONTRACT,
     input_mapping=_COMMON_INPUT,
     extras=_ENVELOPE,
 )

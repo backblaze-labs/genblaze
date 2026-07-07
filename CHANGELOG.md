@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here. -->
 
+### Changed
+
+- `genblaze-gmicloud`: video `duration` now requires whole-second integer
+  values; fractional numeric and string inputs fail invalid-input validation
+  instead of being silently truncated (#90).
+
 ## [0.4.0] - 2026-06-25
 
 Security hardening (SSRF, URL-only asset verification), two new providers
