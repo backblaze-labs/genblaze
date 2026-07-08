@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-20 -->
+<!-- last_verified: 2026-07-08 -->
 # Architecture
 
 ## Components
@@ -111,7 +111,7 @@
 - Large MP4 support: MP4 handler uses seek-based I/O for files 500 MB–2 GB (in-memory for smaller files)
 - FFmpeg compositing: `FFmpegCompositor` SyncProvider muxes video + audio into MP4 via ffmpeg subprocess
 - FFmpeg transforms: `FFmpegTransform` SyncProvider for resize, crop, overlay_text, audio_normalize, and format conversion
-- Prompt templates: `PromptTemplate` with `{variable}` placeholders for batch workflows; `batch_run` accepts `list[dict]`
+- Prompt templates: `PromptTemplate` with `{variable}` placeholders for batch workflows, while non-placeholder braces remain literal prompt text; `batch_run` accepts `list[dict]`
 - Pipeline templates: `PipelineTemplate` serializable pipeline definitions (JSON); `Pipeline.to_template()` for export
 - Moderation hooks: `ModerationHook` ABC with `check_prompt`/`check_output` pre/post-step content screening
 - Webhook notifications: `WebhookNotifier` fire-and-forget HTTP status events via background thread; HTTPS-only URLs validated at construction, DNS-resolved against private IP ranges on first dispatch

@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
-import string
+import re
 from typing import Any
 
 from pydantic import BaseModel
+
+_VARIABLE_PATTERN = re.compile(r"(?<!\{)\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}(?!\})")
+
+
+def _unescape_literal_braces(text: str) -> str:
+    """Collapse doubled braces in literal template segments."""
+    return text.replace("{{", "{").replace("}}", "}")
 
 
 class PromptTemplate(BaseModel):
     """A prompt template with {variable} placeholders for batch workflows.
 
-    Uses Python str.format_map() syntax — no external dependencies.
+    Substitutes only ``{identifier}`` placeholders. Other braces are treated as
+    literal prompt text so JSON, code snippets, and dict/set examples render as
+    written.
 
     Example::
 
@@ -25,8 +34,7 @@ class PromptTemplate(BaseModel):
     @property
     def variables(self) -> set[str]:
         """Return placeholder variable names found in the template."""
-        formatter = string.Formatter()
-        return {name for _, name, _, _ in formatter.parse(self.template) if name is not None}
+        return {match.group("name") for match in _VARIABLE_PATTERN.finditer(self.template)}
 
     def render(self, **kwargs: Any) -> str:
         """Render the template with the given variables.
@@ -39,4 +47,12 @@ class PromptTemplate(BaseModel):
         missing = required - set(kwargs.keys())
         if missing:
             raise ValueError(f"Missing template variables: {', '.join(sorted(missing))}")
-        return self.template.format_map(kwargs)
+
+        parts: list[str] = []
+        cursor = 0
+        for match in _VARIABLE_PATTERN.finditer(self.template):
+            parts.append(_unescape_literal_braces(self.template[cursor : match.start()]))
+            parts.append(str(kwargs[match.group("name")]))
+            cursor = match.end()
+        parts.append(_unescape_literal_braces(self.template[cursor:]))
+        return "".join(parts)

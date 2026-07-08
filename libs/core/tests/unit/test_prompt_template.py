@@ -52,10 +52,25 @@ class TestPromptTemplate:
         assert tpl.render(x="hi") == "hi and hi"
         assert tpl.variables == {"x"}
 
-    def test_render_literal_braces(self):
-        """Literal braces use {{ }} per Python format_map convention."""
+    def test_render_escaped_literal_braces(self):
+        """Doubled braces preserve a literal placeholder-like string."""
         tpl = PromptTemplate(template="{{literal}} {var}")
         assert tpl.render(var="test") == "{literal} test"
+
+    def test_render_single_literal_braces(self):
+        tpl = PromptTemplate(template="cost is 5} dollars for {item}")
+        assert tpl.variables == {"item"}
+        assert tpl.render(item="x") == "cost is 5} dollars for x"
+
+    def test_render_json_template_with_variable(self):
+        tpl = PromptTemplate(template='Return JSON like {"name": "{subject}"}')
+        assert tpl.variables == {"subject"}
+        assert tpl.render(subject="cat") == 'Return JSON like {"name": "cat"}'
+
+    def test_render_missing_var_ignores_json_keys(self):
+        tpl = PromptTemplate(template='Return JSON like {"name": "{subject}"}')
+        with pytest.raises(ValueError, match="Missing template variables: subject"):
+            tpl.render()
 
     def test_serialization_roundtrip(self):
         tpl = PromptTemplate(template="A {animal} in {style} style")

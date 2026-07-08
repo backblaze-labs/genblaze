@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-17 -->
+<!-- last_verified: 2026-07-08 -->
 # Prompt Templates
 
 `PromptTemplate` provides `{variable}` placeholders for reusable, parameterized prompts in batch workflows.
@@ -36,7 +36,8 @@ Dict items render `PromptTemplate` steps; plain string steps keep their original
 
 - Missing variables raise `ValueError`
 - Extra variables are silently ignored (useful when one dict serves multiple steps with different templates)
-- Literal braces use `{{` / `}}` per Python `str.format_map()` convention
+- Only `{identifier}` placeholders are substituted; JSON, code blocks, dicts, sets, and other literal braces render as written
+- Use doubled braces (`{{identifier}}`) when you need literal text that looks exactly like a placeholder
 - Unrendered templates in `run()` raise `GenblazeError` — use `batch_run(dicts)` or call `.render()` manually
 
 ## Serialization
