@@ -123,8 +123,9 @@ class PromptTemplate(BaseModel):
 
     Supports named Python format fields such as ``{name}``, ``{price:.2f}``,
     ``{user.name}``, and ``{items[0]}``. Braces that do not start a named field
-    are treated as literal prompt text so JSON, code snippets, and dict/set
-    examples render as written.
+    are literal prompt text, which keeps JSON/code with quoted keys, whitespace,
+    or punctuation after ``{`` intact. Literal text that starts like a field,
+    such as ``{name: "cat"}``, must use doubled braces.
 
     Example::
 

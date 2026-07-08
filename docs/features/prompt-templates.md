@@ -37,8 +37,8 @@ Dict items render `PromptTemplate` steps; plain string steps keep their original
 - Missing variables raise `ValueError`
 - Extra variables are silently ignored (useful when one dict serves multiple steps with different templates)
 - Named Python format fields are supported, including format specs (`{price:.2f}`), conversions (`{name!r}`), attributes (`{user.name}`), and item lookups (`{items[0]}`)
-- Single braces that do not start a named format field render as written, so JSON, code blocks, dicts, sets, and other literal braces are safe in prompts
-- Doubled braces in literal text collapse to single braces, matching Python format escaping; write `{{identifier}}` for literal `{identifier}`, or `{{{{ value }}}}` for literal `{{ value }}`
+- Single braces that cannot start a named format field render as written, including quoted-key JSON like `{"name": "{subject}"}` and code with whitespace or punctuation after `{`
+- Field-looking literal text must be escaped: write `{{identifier}}` for literal `{identifier}`, `{{name: "cat"}}` for literal `{name: "cat"}`, or `{{{{ value }}}}` for literal `{{ value }}`
 - Unrendered templates in `run()` raise `GenblazeError` — use `batch_run(dicts)` or call `.render()` manually
 
 ## Serialization
