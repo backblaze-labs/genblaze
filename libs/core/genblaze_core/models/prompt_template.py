@@ -40,7 +40,7 @@ def _parse_single_field(field: str) -> tuple[str, str, str | None]:
             f"Unsupported template field: {text}. Use a named variable such as {{name}}."
         )
 
-    return root, format_spec, conversion
+    return root, format_spec or "", conversion
 
 
 def _root_variable_name(field_name: str) -> str | None:
