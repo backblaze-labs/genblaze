@@ -78,25 +78,35 @@ class TestPromptTemplate:
         assert tpl.variables == {"price"}
         assert tpl.render(price=1.2) == "Price: 1.20"
 
+    def test_render_alignment_format_spec(self):
+        tpl = PromptTemplate(template="Name: {name:>10}")
+        assert tpl.variables == {"name"}
+        assert tpl.render(name="Ada") == "Name:        Ada"
+
     def test_render_conversion(self):
         tpl = PromptTemplate(template="Name: {name!r}")
         assert tpl.variables == {"name"}
         assert tpl.render(name="Ada") == "Name: 'Ada'"
 
-    def test_render_attribute_lookup(self):
-        tpl = PromptTemplate(template="User: {user.name}")
-        assert tpl.variables == {"user"}
-        assert tpl.render(user=SimpleNamespace(name="Ada")) == "User: Ada"
-
-    def test_render_index_lookup(self):
-        tpl = PromptTemplate(template="First: {items[0]}")
-        assert tpl.variables == {"items"}
-        assert tpl.render(items=["cat", "dog"]) == "First: cat"
-
-    def test_render_mapping_lookup(self):
-        tpl = PromptTemplate(template="User: {user[name]}")
-        assert tpl.variables == {"user"}
-        assert tpl.render(user={"name": "Ada"}) == "User: Ada"
+    @pytest.mark.parametrize(
+        ("template", "kwargs"),
+        [
+            ("User: {user.api_key}", {"user": SimpleNamespace(api_key="secret")}),
+            ("User: {user._token}", {"user": SimpleNamespace(_token="secret")}),
+            (
+                "User: {user.__dict__[api_key]}",
+                {"user": SimpleNamespace(api_key="secret")},
+            ),
+            ("Voice: {settings[voice]}", {"settings": {"voice": "secret"}}),
+            ("First: {items[0]}", {"items": ["cat", "dog"]}),
+        ],
+    )
+    def test_render_rejects_attribute_and_item_lookup(self, template, kwargs):
+        tpl = PromptTemplate(template=template)
+        with pytest.raises(ValueError, match="Unsupported template field"):
+            _ = tpl.variables
+        with pytest.raises(ValueError, match="Unsupported template field"):
+            tpl.render(**kwargs)
 
     def test_render_placeholder_before_literal_closing_brace(self):
         tpl = PromptTemplate(template='Return JSON {"count": {count}}')
@@ -105,13 +115,27 @@ class TestPromptTemplate:
 
     def test_render_invalid_field_conversion_raises_value_error(self):
         tpl = PromptTemplate(template="Name: {name!z}")
-        with pytest.raises(ValueError, match="Could not render template field"):
+        with pytest.raises(ValueError, match="Unsupported template conversion"):
             tpl.render(name="Ada")
 
     def test_render_unclosed_field_raises_value_error(self):
         tpl = PromptTemplate(template="Name: {name")
         with pytest.raises(ValueError, match="Invalid template field"):
             tpl.render(name="Ada")
+
+    def test_render_nested_format_spec_raises_value_error(self):
+        tpl = PromptTemplate(template="Value: {value:{width}}")
+        with pytest.raises(ValueError, match="Nested template fields"):
+            _ = tpl.variables
+        with pytest.raises(ValueError, match="Nested template fields"):
+            tpl.render(value=7, width=3)
+
+    def test_render_large_malformed_field_raises_value_error(self):
+        tpl = PromptTemplate(template="Value: {value:" + ("{" * 300) + "}")
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            _ = tpl.variables
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            tpl.render(value=7)
 
     def test_serialization_roundtrip(self):
         tpl = PromptTemplate(template="A {animal} in {style} style")

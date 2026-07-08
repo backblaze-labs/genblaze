@@ -9,6 +9,8 @@ from typing import Any
 from pydantic import BaseModel
 
 _FORMATTER = string.Formatter()
+_MAX_TEMPLATE_FIELD_LENGTH = 256
+_SUPPORTED_CONVERSIONS = {None, "a", "r", "s"}
 
 
 def _unescape_literal_braces(text: str) -> str:
@@ -21,6 +23,12 @@ def _looks_like_field_start(char: str) -> bool:
 
 
 def _parse_single_field(field: str) -> tuple[str, str, str | None]:
+    if len(field) > _MAX_TEMPLATE_FIELD_LENGTH:
+        raise ValueError(
+            "Template field exceeds maximum length "
+            f"({_MAX_TEMPLATE_FIELD_LENGTH} characters): {{{field[:32]}...}}"
+        )
+
     text = "{" + field + "}"
     try:
         parsed = list(_FORMATTER.parse(text))
@@ -34,47 +42,53 @@ def _parse_single_field(field: str) -> tuple[str, str, str | None]:
     if literal or field_name is None:
         raise ValueError(f"Invalid template field: {text}")
 
-    root = _root_variable_name(field_name)
-    if root is None:
+    if not field_name.isidentifier():
         raise ValueError(
-            f"Unsupported template field: {text}. Use a named variable such as {{name}}."
+            f"Unsupported template field: {text}. PromptTemplate supports only "
+            "top-level variables such as {name}; pass flattened values instead "
+            "of using attribute or item lookups."
         )
 
-    return root, format_spec or "", conversion
+    if conversion not in _SUPPORTED_CONVERSIONS:
+        raise ValueError(
+            f"Unsupported template conversion in {text}. Supported conversions are !s, !r, and !a."
+        )
+
+    if format_spec and ("{" in format_spec or "}" in format_spec):
+        raise ValueError(f"Nested template fields in format specs are not supported: {text}")
+
+    return field_name, format_spec or "", conversion
 
 
-def _root_variable_name(field_name: str) -> str | None:
-    stop = len(field_name)
-    for delimiter in (".", "["):
-        index = field_name.find(delimiter)
-        if index != -1:
-            stop = min(stop, index)
-
-    root = field_name[:stop]
-    if root.isidentifier():
-        return root
-    return None
-
-
-def _is_valid_single_field(text: str) -> bool:
-    try:
-        _parse_single_field(text[1:-1])
-    except ValueError:
-        return False
-    return True
+def _field_preview(template: str, start: int) -> str:
+    return template[start : start + _MAX_TEMPLATE_FIELD_LENGTH + 1]
 
 
 def _find_field_end(template: str, start: int) -> int:
     search_from = start + 1
+    search_until = min(len(template), start + _MAX_TEMPLATE_FIELD_LENGTH + 2)
+    last_error: ValueError | None = None
+
     while True:
-        end = template.find("}", search_from)
+        end = template.find("}", search_from, search_until)
         if end == -1:
+            if len(template) - (start + 1) > _MAX_TEMPLATE_FIELD_LENGTH:
+                raise ValueError(
+                    "Template field exceeds maximum length "
+                    f"({_MAX_TEMPLATE_FIELD_LENGTH} characters) starting at: "
+                    f"{_field_preview(template, start)}..."
+                )
+            if last_error is not None:
+                raise last_error
             raise ValueError(f"Invalid template field starting at: {template[start:]}")
 
-        if _is_valid_single_field(template[start : end + 1]):
+        try:
+            _parse_single_field(template[start + 1 : end])
+        except ValueError as exc:
+            last_error = exc
+            search_from = end + 1
+        else:
             return end
-
-        search_from = end + 1
 
 
 def _iter_template_parts(template: str) -> Iterator[tuple[str, str]]:
@@ -102,30 +116,40 @@ def _iter_template_parts(template: str) -> Iterator[tuple[str, str]]:
 
 
 def _field_variables(field: str) -> set[str]:
-    root, format_spec, _ = _parse_single_field(field)
-    variables = {root}
-    for kind, value in _iter_template_parts(format_spec):
-        if kind == "field":
-            variables.update(_field_variables(value))
-    return variables
+    name, _, _ = _parse_single_field(field)
+    return {name}
+
+
+def _apply_conversion(value: Any, conversion: str | None) -> Any:
+    if conversion == "a":
+        return ascii(value)
+    if conversion == "r":
+        return repr(value)
+    if conversion == "s":
+        return str(value)
+    return value
 
 
 def _render_field(field: str, kwargs: dict[str, Any]) -> str:
+    name, format_spec, conversion = _parse_single_field(field)
     text = "{" + field + "}"
     try:
-        return _FORMATTER.vformat(text, (), kwargs)
-    except (KeyError, IndexError, AttributeError, TypeError, ValueError) as exc:
+        value = _apply_conversion(kwargs[name], conversion)
+        return format(value, format_spec)
+    except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"Could not render template field {text}: {exc}") from exc
 
 
 class PromptTemplate(BaseModel):
     """A prompt template with {variable} placeholders for batch workflows.
 
-    Supports named Python format fields such as ``{name}``, ``{price:.2f}``,
-    ``{user.name}``, and ``{items[0]}``. Braces that do not start a named field
-    are literal prompt text, which keeps JSON/code with quoted keys, whitespace,
-    or punctuation after ``{`` intact. Literal text that starts like a field,
-    such as ``{name: "cat"}``, must use doubled braces.
+    Supports top-level named fields such as ``{name}``, plus safe Python
+    format specs and conversions such as ``{price:.2f}`` and ``{name!r}``.
+    Attribute and item traversal are rejected; pass flattened values instead.
+    Braces that do not start a named field are literal prompt text, which keeps
+    JSON/code with quoted keys, whitespace, or punctuation after ``{`` intact.
+    Literal text that starts like a field, such as ``{name: "cat"}``, must use
+    doubled braces.
 
     Example::
 
