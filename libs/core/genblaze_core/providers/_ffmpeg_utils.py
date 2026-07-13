@@ -9,7 +9,8 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from genblaze_core._utils import ALLOWED_FILE_ROOTS as _ALLOWED_FILE_ROOTS
 from genblaze_core.exceptions import ProviderError
@@ -42,7 +43,8 @@ def resolve_input_path(url: str, *, extra_roots: list[Path] | None = None) -> st
     """
     parsed = urlparse(url)
     if parsed.scheme == "file":
-        raw_path = unquote(parsed.path)
+        # url2pathname handles Windows drive letters: /C:/... → C:\... (no-op on Unix)
+        raw_path = url2pathname(parsed.path)
         resolved = Path(raw_path).resolve()
         allowed = list(_ALLOWED_FILE_ROOTS)
         if extra_roots:

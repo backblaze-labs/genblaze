@@ -382,6 +382,34 @@ class TestReadLocalFile:
         with pytest.raises(StorageError, match="Failed to read"):
             _read_local_file(f"file://{missing}")
 
+    def test_windows_drive_letter_file_url(self, tmp_path, monkeypatch):
+        """Regression for #132: file:///C:/path yields /C:/path from urlparse.path.
+        The old unquote() kept the leading slash, causing Path.resolve() to produce
+        a drive-relative path on Windows that failed the allowlist check.
+        url2pathname() strips the leading slash before the drive letter.
+
+        Simulates Windows url2pathname behavior so the regression is catchable on
+        any platform — without the patch, the fake Windows URL's path would resolve
+        outside tmp_path and be rejected.
+        """
+        test_file = tmp_path / "asset.mp4"
+        test_file.write_bytes(b"video data")
+        real_path = str(test_file.resolve())
+
+        # Simulate what Windows url2pathname does: /C:/tmp/asset.mp4 → C:\tmp\asset.mp4
+        # On the fix branch url2pathname is a module-level name we can monkeypatch.
+        monkeypatch.setattr(
+            "genblaze_core.storage.transfer.url2pathname",
+            lambda _: real_path,
+        )
+        monkeypatch.setattr(
+            "genblaze_core.storage.transfer.ALLOWED_FILE_ROOTS",
+            (tmp_path.resolve(),),
+        )
+
+        data, _ = _read_local_file("file:///C:/tmp/asset.mp4")
+        assert data == b"video data"
+
 
 class TestConnectionLifecycle:
     """release_conn() must fire on every transfer — success, failure, and

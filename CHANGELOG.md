@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- Add new entries here. -->
+### genblaze-core
+
+- **Fixed** Windows `file://` URL handling across all call sites (#132).
+  On Windows, `urlparse("file:///C:/...").path` returns `/C:/...`, and
+  `Path("/C:/...").resolve()` produces a drive-relative path that always
+  fails the `is_relative_to(temp_root)` allowlist check. All affected sites
+  now use `urllib.request.url2pathname`, which strips the leading `/` before
+  a drive letter so `Path.resolve()` gets a properly anchored path.
+  On Unix `url2pathname` is an alias for `unquote` — no behaviour change.
+  Fixed in: `storage/transfer.py` (`ObjectStorageSink`), `providers/_ffmpeg_utils.py`
+  (compositor/transform), `providers/base.py` (`validate_chain_input_url`,
+  which also replaces `startswith("/")` with cross-platform `Path.is_absolute()`).
+
+### genblaze-openai
+
+- **Fixed** same Windows `file://` drive-letter bug in `dalle.py`
+  (`_resolve_local_file` — DALL-E image-edit local inputs) (#132).
 
 ## [0.4.0] - 2026-06-25
 
