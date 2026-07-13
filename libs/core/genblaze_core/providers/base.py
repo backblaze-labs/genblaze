@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from genblaze_core._utils import new_id, sanitize_error, utc_now
 from genblaze_core.exceptions import ProviderError
@@ -283,9 +284,11 @@ def validate_chain_input_url(
 
     # Decode percent-encoded sequences BEFORE canonicalization so that
     # ``file:///valid/path/..%2Fetc%2Fpasswd`` collapses correctly.
-    decoded_path = unquote(parsed.path)
+    # url2pathname handles Windows drive letters (/C:/... → C:\...) and
+    # also does percent-decoding (no-op on Unix beyond the unquote call).
+    decoded_path = url2pathname(parsed.path)
 
-    if not decoded_path.startswith("/"):
+    if not Path(decoded_path).is_absolute():
         raise ProviderError(
             f"file:// URL requires an absolute path; got {decoded_path!r}",
             error_code=ProviderErrorCode.INVALID_INPUT,
