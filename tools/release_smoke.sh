@@ -3,8 +3,8 @@
 # Pre-release wheel install smoke test.
 #
 # Builds every published package to a local wheelhouse, then installs
-# ``genblaze[all]`` into a fresh venv from that wheelhouse only
-# (``--no-index --find-links``). Asserts every connector imports.
+# every local genblaze wheel into a fresh venv while leaving PyPI enabled
+# for transitive dependencies. Asserts every connector imports.
 #
 # Why this exists:
 #   ``make install-dev`` and the CI matrix both use ``pip install -e``
@@ -78,56 +78,38 @@ python -m venv "${VENV}"
 source "${VENV}/bin/activate"
 pip install --quiet --upgrade pip
 
-echo "==> Installing 'genblaze[all]' from wheelhouse + PyPI for transitive deps"
-# ``--find-links`` makes pip prefer local wheels for genblaze-* packages;
-# the default PyPI index supplies transitive deps (pillow, httpx, etc.)
-# the same way it will for end users post-publish. ``--no-index`` would
-# block transitives — wrong for this smoke test; we're verifying genblaze
-# pyproject pins, not vendoring the entire dep tree.
-pip install --quiet --find-links "${WHEELHOUSE}" "genblaze[all]"
+echo "==> Installing local genblaze wheels + PyPI transitive deps"
+meta_wheels=( "${WHEELHOUSE}"/genblaze-[0-9]*-py3-none-any.whl )
+if [[ ${#meta_wheels[@]} -ne 1 || ! -e "${meta_wheels[0]}" ]]; then
+    echo "Expected exactly one local genblaze umbrella wheel, found ${#meta_wheels[@]}" >&2
+    exit 1
+fi
 
-echo "==> Asserting every connector imports cleanly"
-python - <<'PY'
-import importlib
+local_genblaze_wheels=( "${WHEELHOUSE}"/genblaze_*.whl )
+if [[ ${#local_genblaze_wheels[@]} -eq 0 || ! -e "${local_genblaze_wheels[0]}" ]]; then
+    echo "Expected local genblaze dependency wheels in ${WHEELHOUSE}" >&2
+    exit 1
+fi
+
+meta_wheel_uri="$(
+    python - "${meta_wheels[0]}" <<'PY'
+from pathlib import Path
 import sys
 
-connectors = [
-    "genblaze_core",
-    # Submodule with a hard import-at-load dependency (urllib3, via the
-    # AssetTransfer PoolManager). `import genblaze_core` uses lazy __getattr__
-    # dispatch and never executes this, so it must be imported explicitly to
-    # prove the clean-install contract — the regression class behind #37/#106.
-    # (genblaze_core.testing is NOT checked here: it needs pytest, which
-    # genblaze[all] does not install — that extra is gated in the follow-up.)
-    "genblaze_core.storage",
-    "genblaze_s3",
-    "genblaze_openai",
-    "genblaze_google",
-    "genblaze_runway",
-    "genblaze_luma",
-    "genblaze_decart",
-    "genblaze_replicate",
-    "genblaze_elevenlabs",
-    "genblaze_stability_audio",
-    "genblaze_lmnt",
-    "genblaze_hume",
-    "genblaze_gmicloud",
-    "genblaze_langsmith",
-    "genblaze_nvidia",
-    "genblaze_assemblyai",
-    "genblaze",
-]
-failures = []
-for mod in connectors:
-    try:
-        importlib.import_module(mod)
-        print(f"  ok: {mod}")
-    except Exception as exc:  # noqa: BLE001 — surface all import errors
-        failures.append((mod, exc))
-        print(f"  FAIL: {mod}: {exc}")
-
-if failures:
-    sys.exit(f"{len(failures)} import failure(s)")
+print(Path(sys.argv[1]).resolve().as_uri())
 PY
+)"
+
+# The direct file requirements force every genblaze distribution to come
+# from the wheelhouse even when the same version already exists on PyPI.
+# The default PyPI index remains enabled for third-party transitive deps.
+pip install \
+    --quiet \
+    --find-links "${WHEELHOUSE}" \
+    "genblaze[all] @ ${meta_wheel_uri}" \
+    "${local_genblaze_wheels[@]}"
+
+echo "==> Asserting every genblaze[all] module imports cleanly"
+python "${REPO_ROOT}/tools/release_import_smoke.py"
 
 echo "==> Release smoke test passed."

@@ -117,9 +117,9 @@ Notes on the graph:
   per-package versions + `dry_run` flag to every downstream job.
 * **`changelog-gate`** — fails if `[Unreleased]` still has entries.
 * **`release-smoke`** — runs `make release-smoke`: builds every wheel,
-  installs `genblaze[all]` from a local wheelhouse with `--no-index`,
-  imports every connector. Catches version-pin mismatches before PyPI
-  sees them.
+  installs local genblaze wheels while leaving public PyPI enabled for
+  transitive dependencies, then imports every connector. Catches version-pin
+  mismatches before PyPI sees them.
 * **`pin-parity`** — for every package, compares source
   `[project.dependencies]` **and** `[project.optional-dependencies]`
   against the wheel already on PyPI at the same version. Fails the
@@ -148,12 +148,13 @@ Notes on the graph:
 * **`publish-npm`** — independent of the PyPI graph. Publishes
   `@genblaze/spec` with sigstore provenance.
 * **`install-verify`** — installs `genblaze[all]==$version` from public
-  PyPI in a fresh venv and imports the core packages. The `[all]` form
-  exercises every connector's pin against the live registry, which is
-  what catches drift like the 0.3.2 langsmith/cli wheels (a bare
-  `genblaze==$version` resolve only pulls the umbrella defaults and
-  misses connector-specific pin breakage). Skipped on dry-runs
-  (TestPyPI indexing lag makes this flaky).
+  PyPI in a fresh venv and runs `tools/release_import_smoke.py`, which
+  imports the umbrella, core, s3, and every connector in `genblaze[all]`.
+  The `[all]` form exercises every connector's pin and import surface
+  against the live registry, which is what catches drift like the 0.3.2
+  langsmith/cli wheels (a bare `genblaze==$version` resolve only pulls
+  the umbrella defaults and misses connector-specific pin breakage).
+  Skipped on dry-runs (TestPyPI indexing lag makes this flaky).
 
 ### 2. Dry run (`workflow_dispatch`)
 
@@ -267,9 +268,10 @@ make post-release VERSION=0.4.0
 `VERSION` is the **umbrella** version from `libs/meta/pyproject.toml`,
 not the wave name (e.g. wave 0.3.0 shipped umbrella 0.4.0). The target
 creates a throwaway venv in `/tmp`, installs `genblaze[all]==$VERSION`
-from public PyPI, imports `genblaze_core` and `genblaze_s3`, and prints
-the installed versions of each. On failure the venv is left in place
-so you can re-run the failing command interactively.
+from public PyPI, imports the umbrella, core, s3, and every connector in
+`genblaze[all]`, then prints the installed versions of the umbrella/core/s3
+packages. On failure the venv is left in place so you can re-run the failing
+command interactively.
 
 This is the same check that caught the 0.3.0 `genblaze-s3` dependency-
 pin drift after `install-verify` lagged — it's a backstop, not
