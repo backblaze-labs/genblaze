@@ -65,6 +65,19 @@ def test_step_defaults():
     assert s.assets == []
 
 
+def test_step_rejects_unknown_kwargs():
+    """Unrecognized constructor kwargs must raise, not vanish silently (issue #133).
+
+    Pydantic v2's default ``extra="ignore"`` behavior let callers pass
+    provider-specific keys (e.g. ``duration=10``) directly to ``Step(...)``
+    and have them disappear with no error and no warning — the same class of
+    silent data loss as the ``.step(params={...})`` nesting bug. Unknown keys
+    belong in ``params={...}``.
+    """
+    with pytest.raises(ValidationError, match="duration"):
+        Step(provider="replicate", model="flux-schnell", duration=10)
+
+
 def test_run_with_steps():
     s1 = Step(provider="replicate", model="flux-schnell", prompt="a cat")
     s2 = Step(provider="replicate", model="flux-pro", prompt="enhance")

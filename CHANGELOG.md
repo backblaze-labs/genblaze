@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pytest-free `genblaze_core.mocks` module (still re-exported from
   `genblaze_core.testing` for backward compatibility), so
   `from genblaze_core import MockVideoProvider` works in a runtime-only install.
+- **Fixed** `Pipeline.step(..., params={...})` no longer nests the dict under a
+  literal `"params"` key in `Step.params` (#133). The catch-all kwargs collector
+  was itself named `params`, so a caller passing `params={"image": ..., "length":
+  ...}` (the natural spelling, mirroring the `Step.params` field) got
+  `step.params == {"params": {...}}` instead of the flattened dict, with no error
+  or warning. `.step()` now accepts an explicit `params={}` dict alongside
+  top-level kwargs; both populate `Step.params`, and a top-level kwarg wins on
+  key collision.
+- **Fixed** `Step(...)` now rejects unrecognized constructor kwargs
+  (`model_config = ConfigDict(extra="forbid")`) instead of silently discarding
+  them — the same class of bug via direct model construction rather than
+  `Pipeline.step()`. Provider-specific keys belong in `params={...}` (#133).
 
 ### genblaze-openai
 

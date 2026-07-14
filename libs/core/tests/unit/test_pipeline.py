@@ -2003,6 +2003,52 @@ def test_pipeline_allows_normal_params() -> None:
     assert result.run.status == RunStatus.COMPLETED
 
 
+def test_step_params_dict_flattens_to_top_level() -> None:
+    """params={...} passed to .step() must land as top-level Step.params keys,
+    not nested under a literal 'params' key (issue #133).
+
+    Before the fix, ``**params`` was both the name of the catch-all kwargs
+    dict and the name a caller naturally reaches for (mirroring the
+    documented ``Step.params`` field), so ``step(..., params={"image": ...})``
+    silently nested the whole dict one level too deep: ``{"params": {"image":
+    ...}}`` instead of ``{"image": ...}``. Providers reading ``step.params["image"]``
+    directly (rather than reimplementing genblaze's own allowlist machinery)
+    never saw the key.
+    """
+    p = MockProvider()
+    result = (
+        Pipeline("params-dict-test")
+        .step(
+            p,
+            model="m",
+            prompt="p",
+            params={"image": "http://example.com/ref.png", "length": 20.0},
+        )
+        .run()
+    )
+    step = result.run.steps[0]
+    assert step.params == {"image": "http://example.com/ref.png", "length": 20.0}
+
+
+def test_step_params_kwargs_win_over_params_dict_on_collision() -> None:
+    """Top-level kwargs override a colliding key in params={} — the more
+    specific, call-site-local form wins."""
+    p = MockProvider()
+    result = (
+        Pipeline("params-collision-test")
+        .step(
+            p,
+            model="m",
+            prompt="p",
+            params={"quality": "sd", "size": "512x512"},
+            quality="hd",
+        )
+        .run()
+    )
+    step = result.run.steps[0]
+    assert step.params == {"quality": "hd", "size": "512x512"}
+
+
 # -----------------------------------------------------------------------------
 # F2 — on_step_complete sink hook: fires per-step, survives sink errors.
 # -----------------------------------------------------------------------------

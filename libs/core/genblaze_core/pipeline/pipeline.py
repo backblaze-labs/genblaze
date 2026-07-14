@@ -531,7 +531,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         input_from: list[int] | int | None = None,
         external_inputs: list[Asset] | None = None,
         expected_duration_sec: float | None = None,
-        **params,
+        params: dict[str, Any] | None = None,
+        **extra_params: Any,
     ) -> Pipeline:
         """Add a step to the pipeline.
 
@@ -549,15 +550,27 @@ class Pipeline(Runnable[None, PipelineResult]):
                 UIs. The SDK does not synthesize this — supply your own median
                 from observed runs. Stale values produce worse UX than
                 omitting the field; treat as informational.
+            params: Provider-specific parameters as a dict. Equivalent to
+                passing the same keys as top-level kwargs — use whichever
+                reads better at the call site. If a key appears in both,
+                the top-level kwarg wins (issue #133).
+            **extra_params: Provider-specific parameters as top-level kwargs
+                (e.g. ``duration=10``). Merged with ``params=`` above.
         """
-        # Reject reserved param names that would silently land in **params.
+        # Explicit params= dict and **extra_params kwargs both feed
+        # Step.params; kwargs win on key collision since they're the more
+        # specific, call-site-local override.
+        merged_params: dict[str, Any] = dict(params) if params else {}
+        merged_params.update(extra_params)
+
+        # Reject reserved param names that would silently land in Step.params.
         # `inputs=` / `input=` is the natural-but-wrong name a user trying to
         # seed Step.inputs would reach for; without this guard they get
-        # swallowed by **params, normalized as a model param, and either
+        # swallowed into params, normalized as a model param, and either
         # rejected by the upstream provider or — worse — embedded in the
         # manifest as part of Step.params, drifting the canonical hash.
         for reserved in ("inputs", "input"):
-            if reserved in params:
+            if reserved in merged_params:
                 raise GenblazeError(
                     f"'{reserved}=' is not a valid step() kwarg — did you mean "
                     f"'external_inputs=' (a list of caller-held Assets)? See "
@@ -600,7 +613,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 provider=provider,
                 model=model,
                 prompt=prompt,
-                params=params,
+                params=merged_params,
                 modality=modality,
                 step_type=step_type,
                 fallback_models=fallback_models or [],
