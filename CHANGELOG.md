@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fixed** same Windows `file://` drive-letter bug in `dalle.py`
   (`_resolve_local_file` — DALL-E image-edit local inputs) (#132).
+- **Fixed** `SoraProvider` image-to-video chaining (#126). `submit()` forwarded
+  the routed image slot verbatim as `image=`, but `Videos.create()` has no such
+  kwarg — the openai SDK 2.x start frame goes in `input_reference`, which must
+  be an uploaded file, not a URL string. Chain inputs also arrive as local
+  `file://` temp paths (sink upload happens later), so the URL was unusable as-is
+  even with the right parameter name. `submit()` now materializes the routed
+  image (local `file://` resolve, or SSRF-pinned `https://` download — reusing
+  `DalleProvider`'s existing file-input helpers) into an open file handle before
+  upload. Also stringifies `seconds` (`4`/`8`/`12`), which the SDK types as
+  `Literal["4", "8", "12"]`, not `int`.
 
 ### genblaze-google
 

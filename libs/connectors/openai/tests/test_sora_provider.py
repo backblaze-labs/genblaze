@@ -11,10 +11,29 @@ from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
 
+# SoraProvider reuses DalleProvider's SSRF-pinned https downloader for
+# image-to-video chain inputs (see genblaze_openai/provider.py:submit()).
+_SORA_CONN_PATCH = "genblaze_openai.dalle.open_pinned_https_connection"
+
+
+def _fake_pinned_conn(body: bytes) -> MagicMock:
+    """Minimal http.client-like connection that yields ``body`` once."""
+    conn = MagicMock()
+    resp = MagicMock()
+    resp.status = 200
+    resp.read.side_effect = [body, b""]
+    conn.getresponse.return_value = resp
+    return conn
+
 
 @pytest.fixture
-def mock_openai():
-    """Patch openai module with a mock client."""
+def mock_openai(tmp_path):
+    """Patch openai module with a mock client.
+
+    ``output_dir=tmp_path`` gives ``_resolve_local_file`` an allowed root for
+    the file:// image-input tests below (mirrors DalleProvider's
+    ``mock_b64_dalle`` fixture in test_dalle_provider.py).
+    """
     mock_client = MagicMock()
 
     # Mock videos.create → returns job with id
@@ -40,7 +59,7 @@ def mock_openai():
     with patch.dict("sys.modules", {"openai": MagicMock()}):
         from genblaze_openai import SoraProvider
 
-        provider = SoraProvider(api_key="test-key")
+        provider = SoraProvider(api_key="test-key", output_dir=str(tmp_path))
         provider._client = mock_client
         yield provider, mock_client
 
@@ -107,17 +126,70 @@ def test_invalid_size_raises(mock_openai):
         provider.submit(step)
 
 
-def test_submit_with_image_input(mock_openai):
-    """Image-to-video: image URL is forwarded to the API as 'image' param."""
+def test_submit_with_https_image_input(mock_openai):
+    """Image-to-video: a remote https:// image is downloaded and forwarded as
+    ``input_reference`` — ``videos.create`` has no ``image`` kwarg (#126)."""
     from genblaze_core.models.asset import Asset
 
     provider, client = mock_openai
     img = Asset(url="https://example.com/frame.png", media_type="image/png")
     step = Step(provider="openai-sora", model="sora-2", prompt="animate this", inputs=[img])
-    vid_id = provider.submit(step)
+
+    # The real SDK reads the file body synchronously during create(); capture
+    # it here too, since our own `finally` closes the handle once submit()
+    # returns (matches DalleProvider's file-handle-in-finally convention).
+    captured = {}
+
+    def _capture(**kwargs):
+        captured["bytes"] = kwargs["input_reference"].read()
+        return SimpleNamespace(id="vid-abc123")
+
+    client.videos.create.side_effect = _capture
+
+    with patch(_SORA_CONN_PATCH, return_value=_fake_pinned_conn(b"remote-png-bytes")):
+        vid_id = provider.submit(step)
+
     assert vid_id == "vid-abc123"
     call_kwargs = client.videos.create.call_args[1]
-    assert call_kwargs["image"] == "https://example.com/frame.png"
+    assert "image" not in call_kwargs
+    assert captured["bytes"] == b"remote-png-bytes"
+
+
+def test_submit_with_local_file_image_input(mock_openai, tmp_path):
+    """Chain image-to-video: a local file:// temp path (upstream step output,
+    pre-sink-upload) is read and uploaded via ``input_reference`` (#126)."""
+    from genblaze_core.models.asset import Asset
+
+    provider, client = mock_openai
+    img_path = tmp_path / "frame.png"
+    img_path.write_bytes(b"local-png-bytes")
+    img = Asset(url=f"file://{img_path}", media_type="image/png")
+    step = Step(provider="openai-sora", model="sora-2", prompt="animate this", inputs=[img])
+
+    captured = {}
+
+    def _capture(**kwargs):
+        captured["bytes"] = kwargs["input_reference"].read()
+        return SimpleNamespace(id="vid-abc123")
+
+    client.videos.create.side_effect = _capture
+
+    vid_id = provider.submit(step)
+
+    assert vid_id == "vid-abc123"
+    call_kwargs = client.videos.create.call_args[1]
+    assert "image" not in call_kwargs
+    assert captured["bytes"] == b"local-png-bytes"
+
+
+def test_submit_stringifies_seconds_for_sdk(mock_openai):
+    """openai SDK's VideoSeconds is Literal['4', '8', '12'] — must be str, not int (#126)."""
+    provider, client = mock_openai
+    step = Step(provider="openai-sora", model="sora-2", prompt="a sunset", params={"seconds": 8})
+    provider.submit(step)
+    call_kwargs = client.videos.create.call_args[1]
+    assert call_kwargs["seconds"] == "8"
+    assert isinstance(call_kwargs["seconds"], str)
 
 
 def test_submit_without_inputs_still_works(mock_openai):
@@ -128,6 +200,7 @@ def test_submit_without_inputs_still_works(mock_openai):
     assert vid_id == "vid-abc123"
     call_kwargs = client.videos.create.call_args[1]
     assert "image" not in call_kwargs
+    assert "input_reference" not in call_kwargs
 
 
 def test_submit_skips_non_image_inputs(mock_openai):
