@@ -204,6 +204,63 @@ def test_step_cache_key_tenant_isolation() -> None:
     assert step_cache_key(s, tenant_id="   ") == step_cache_key(s)
 
 
+def test_step_cache_key_input_order_sensitive() -> None:
+    """Issue #71: reversing step.inputs must change the cache key.
+
+    Providers that consume step.inputs positionally (multi-image edit/compose,
+    multimodal chat) produce different output when input order changes.
+    step_cache_key must preserve that order instead of sorting inputs, so a
+    reordered request can't wrongly hit an earlier run's cached asset — this
+    also keeps the cache key consistent with the order-preserving manifest
+    canonical hash.
+    """
+    from genblaze_core.pipeline.cache import step_cache_key
+
+    a1 = Asset(url="https://upload.test/first.png", media_type="image/png", sha256="1" * 64)
+    a2 = Asset(url="https://upload.test/second.png", media_type="image/png", sha256="2" * 64)
+
+    forward = Step(provider="p", model="m", prompt="same", inputs=[a1, a2])
+    backward = Step(provider="p", model="m", prompt="same", inputs=[a2, a1])
+    same_order = Step(provider="p", model="m", prompt="same", inputs=[a1, a2])
+
+    assert step_cache_key(forward) != step_cache_key(backward)
+    assert step_cache_key(forward) == step_cache_key(same_order)
+
+    # URL-fallback branch (sha256=None): #71 explicitly calls out URL-only
+    # inputs, and the `sha256 or url` fallback must stay order-sensitive too.
+    u1 = Asset(url="https://upload.test/first.png", media_type="image/png", sha256=None)
+    u2 = Asset(url="https://upload.test/second.png", media_type="image/png", sha256=None)
+    assert step_cache_key(
+        Step(provider="p", model="m", prompt="same", inputs=[u1, u2])
+    ) != step_cache_key(Step(provider="p", model="m", prompt="same", inputs=[u2, u1]))
+
+
+def test_pipeline_cache_input_order_sensitive(tmp_path: Path) -> None:
+    """Issue #71: a reordered-input request must MISS a shared cache, end to end.
+
+    Mirrors test_pipeline_cache_no_cross_tenant_hit (#68): drives the full
+    Pipeline().cache().run() path so the guarantee holds at the layer that
+    actually serves stale assets, not only at step_cache_key.
+    """
+    cache = StepCache(tmp_path / "cache")
+    a1 = Asset(url="https://upload.test/fg.png", media_type="image/png", sha256="1" * 64)
+    a2 = Asset(url="https://upload.test/bg.png", media_type="image/png", sha256="2" * 64)
+
+    p1 = CountingProvider()
+    Pipeline("c").cache(cache).step(p1, model="m", prompt="p", external_inputs=[a1, a2]).run()
+    assert p1.invoke_count == 1
+
+    # Same step, inputs reversed -> order-sensitive key -> MISS (no wrong-asset hit).
+    p2 = CountingProvider()
+    Pipeline("c").cache(cache).step(p2, model="m", prompt="p", external_inputs=[a2, a1]).run()
+    assert p2.invoke_count == 1
+
+    # Original order again -> cache HIT, provider not called.
+    p3 = CountingProvider()
+    Pipeline("c").cache(cache).step(p3, model="m", prompt="p", external_inputs=[a1, a2]).run()
+    assert p3.invoke_count == 0
+
+
 def test_pipeline_cache_no_cross_tenant_hit(tmp_path: Path) -> None:
     """Issue #68: a shared StepCache must not serve one tenant's result to another."""
     cache = StepCache(tmp_path / "cache")
