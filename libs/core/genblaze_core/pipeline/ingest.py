@@ -198,20 +198,16 @@ def ingest_assets(
                     asset.asset_id,
                 )
 
-    # Sort steps by content — not asset_id, and not before the sink runs —
-    # so the canonical hash is stable across permuted input orders.
-    # asset_id defaults to a random UUID and is excluded from the hash
-    # payload (schema 1.4+), so sorting by it would reshuffle same-content
-    # batches on every call. Sorting *before* sink.put_asset would be just
-    # as unstable: fresh assets typically share identical placeholder
-    # content (no sha256 yet) until the sink hashes them, so an early sort
-    # ties completely and Python's stable sort falls back to caller input
-    # order. Doing this here — after sha256/size_bytes are finalized —
-    # means asset_provenance_key sorts on exactly the fields that feed the
-    # hash, so fresh Asset batches with identical content always converge
-    # on the same order regardless of call-site order. The plan's
-    # hash-determinism gate ("same asset set in different orders →
-    # byte-identical manifest") relies on this.
+    # Sort steps by content — via asset_provenance_key, NOT the random
+    # asset_id (excluded from the hash payload) — so the canonical hash is
+    # stable across permuted input orders and fresh Asset batches. This must
+    # run AFTER sink.put_asset populates sha256/size_bytes: sorting earlier
+    # ties on the placeholder content fresh assets share and falls back to
+    # caller order. See asset_provenance_key for the full rationale. Its
+    # schema_version must match the one compute_hash uses; both resolve to
+    # the SCHEMA_VERSION default via Manifest(run=run) below — thread the
+    # same value into both if this manifest is ever built at a non-default
+    # schema.
     run.steps = sorted(run.steps, key=lambda step: asset_provenance_key(step.assets[0]))
 
     manifest = Manifest(run=run)
