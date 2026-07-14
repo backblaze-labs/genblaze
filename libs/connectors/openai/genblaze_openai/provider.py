@@ -18,13 +18,14 @@ Docs: https://platform.openai.com/docs/api-reference/videos
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, VideoMetadata
@@ -46,6 +47,12 @@ from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
 from genblaze_openai._errors import map_openai_error
+
+# Reuse DalleProvider's file-input machinery (SSRF-pinned https download +
+# allowlisted file:// resolution) rather than duplicating it here — Sora's
+# image-to-video input has the exact same shape (chain output as a local
+# file:// temp path, or a user-supplied https:// URL).
+from genblaze_openai.dalle import _download_https_to_temp, _resolve_local_file
 
 logger = logging.getLogger("genblaze.openai.sora")
 
@@ -271,6 +278,8 @@ class SoraProvider(BaseProvider):
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         """Create a video generation job via POST /v1/videos."""
         client = self._get_client()
+        open_file: Any = None
+        temp_to_clean: Path | None = None
         try:
             # Registry pipeline validates seconds/size, applies resolution+aspect
             # transformer, routes first image input, and SSRF-validates inputs.
@@ -280,9 +289,29 @@ class SoraProvider(BaseProvider):
                 "model": step.model,
                 "prompt": payload.get("prompt", step.prompt or ""),
             }
-            for key in ("seconds", "size", "image"):
+            for key in ("seconds", "size"):
                 if key in payload:
                     params[key] = payload[key]
+            if "seconds" in params:
+                # openai SDK's VideoSeconds is Literal["4", "8", "12"] — not int.
+                params["seconds"] = str(params["seconds"])
+
+            # route_images(slots=("image",)) hands back a plain asset URL, but
+            # Videos.create() has no `image` kwarg — the start frame goes in
+            # `input_reference` as an uploaded file. Chain inputs arrive as
+            # local file:// temp paths (sink upload happens later); direct
+            # inputs may be https:// URLs. Both are materialized to an open
+            # file handle before upload (see #126).
+            image_url = payload.get("image")
+            if image_url is not None:
+                parsed = urlparse(image_url)
+                if parsed.scheme == "file":
+                    local_path = _resolve_local_file(image_url, self._output_dir)
+                else:
+                    local_path = _download_https_to_temp(image_url, self._http_timeout)
+                    temp_to_clean = local_path
+                open_file = local_path.open("rb")
+                params["input_reference"] = open_file
 
             response = client.videos.create(**params)
             return response.id
@@ -294,6 +323,13 @@ class SoraProvider(BaseProvider):
                 error_code=map_openai_error(exc),
                 retry_after=retry_after_from_response(exc),
             ) from exc
+        finally:
+            if open_file is not None:
+                with contextlib.suppress(Exception):
+                    open_file.close()
+            if temp_to_clean is not None:
+                with contextlib.suppress(Exception):
+                    temp_to_clean.unlink(missing_ok=True)
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
         """Check video generation status via GET /v1/videos/{id}."""
@@ -334,8 +370,9 @@ class SoraProvider(BaseProvider):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            # Content endpoint requires the API key in the Authorization header
-            content = client.videos.content(prediction_id, variant="video")
+            # Content endpoint requires the API key in the Authorization header.
+            # openai SDK 2.x renamed videos.content → videos.download_content (#127).
+            content = client.videos.download_content(prediction_id, variant="video")
             if self._output_dir:
                 self._output_dir.mkdir(parents=True, exist_ok=True)
                 out_path = self._output_dir / f"{step.step_id}.mp4"
