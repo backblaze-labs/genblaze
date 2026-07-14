@@ -17,7 +17,11 @@ Docs: https://ai.google.dev/gemini-api/docs/video
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, Track, VideoMetadata
@@ -57,6 +61,8 @@ class VeoProvider(BaseProvider):
         project: GCP project ID for Vertex AI auth (mutually exclusive with api_key).
         location: GCP region for Vertex AI (default "us-central1").
         poll_interval: Seconds between operation polls (default 10).
+        output_dir: Directory for locally-saved video files when the SDK
+            returns bytes inline (Vertex AI mode; default system temp).
         models: Optional custom ``ModelRegistry`` — overrides the class default.
         retry_policy: Optional retry policy override.
         probe_cache_ttl: Per-instance probe-cache TTL.
@@ -100,6 +106,7 @@ class VeoProvider(BaseProvider):
         project: str | None = None,
         location: str = "us-central1",
         poll_interval: float = 10.0,
+        output_dir: str | Path | None = None,
         models: ModelRegistry | None = None,
         retry_policy: RetryPolicy | None = None,
         probe_cache_ttl: float | None = None,
@@ -115,6 +122,7 @@ class VeoProvider(BaseProvider):
         self._api_key = api_key
         self._project = project
         self._location = location
+        self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
 
     def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
@@ -179,6 +187,26 @@ class VeoProvider(BaseProvider):
 
         return types.GenerateVideosConfig(**config_kwargs) if config_kwargs else None
 
+    @staticmethod
+    def _as_operation(prediction_id: Any) -> Any:
+        """Wrap a bare operation-name string for ``client.operations.get()``.
+
+        ``submit()`` returns ``operation.name`` (a plain ``str``, so
+        ``resume()`` works without any in-memory state), but google-genai's
+        ``operations.get()`` reads ``.name`` off its argument — it expects an
+        operation object, not a string, and raises ``AttributeError`` on a
+        bare str (issue #136). Real operation objects (e.g. a cached poll
+        result) are passed through unchanged.
+        """
+        if isinstance(prediction_id, str):
+            from google.genai import types
+
+            # ``name`` is a real field (inherited from the ``Operation``
+            # mixin) and works at runtime; the SDK's type stubs just don't
+            # surface it on this subclass's synthesized __init__.
+            return types.GenerateVideosOperation(name=prediction_id)  # type: ignore[call-arg]
+        return prediction_id
+
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         """Start a video generation operation."""
         client = self._get_client()
@@ -208,7 +236,7 @@ class VeoProvider(BaseProvider):
         """Check if the video generation operation is done."""
         client = self._get_client()
         try:
-            operation = client.operations.get(prediction_id)
+            operation = client.operations.get(self._as_operation(prediction_id))
             if operation.done:
                 self._cache_poll_result(prediction_id, operation)
                 return True
@@ -229,7 +257,7 @@ class VeoProvider(BaseProvider):
             # Use cached poll result if available, otherwise fetch fresh
             operation = self._get_cached_poll_result(prediction_id)
             if operation is None:
-                operation = client.operations.get(prediction_id)
+                operation = client.operations.get(self._as_operation(prediction_id))
 
             # Store provider metadata
             step.provider_payload = {
@@ -259,14 +287,37 @@ class VeoProvider(BaseProvider):
             spec = self._models.get(step.model)
             has_audio = bool(spec.extras.get("has_audio"))
 
-            for gv in response.generated_videos:
+            for i, gv in enumerate(response.generated_videos):
                 video = gv.video
-                # Download to get the file URI
-                client.files.download(file=video)
-                # Use the video's URI as the asset URL
-                video_uri = getattr(video, "uri", None)
+                video_bytes = getattr(video, "video_bytes", None)
+                video_uri: str | None
+                if video_bytes:
+                    # Vertex AI mode: video comes back inline — there's no
+                    # Files API on Vertex, so client.files.download() raises
+                    # ValueError there (issue #136). Save locally and expose
+                    # a file:// asset, matching the local-output convention
+                    # used by ImagenProvider / DecartVideoProvider.
+                    if self._output_dir:
+                        self._output_dir.mkdir(parents=True, exist_ok=True)
+                        # Index by loop position (matches ImagenProvider) so
+                        # number_of_videos > 1 doesn't collide on one path.
+                        out_path = self._output_dir / f"{step.step_id}_{i}.mp4"
+                    else:
+                        fd, tmp = tempfile.mkstemp(suffix=".mp4")
+                        os.close(fd)
+                        out_path = Path(tmp)
+                    out_path.write_bytes(video_bytes)
+                    video_uri = f"file://{quote(str(out_path.resolve()))}"
+                else:
+                    # Gemini Developer API mode: the Files API download
+                    # populates video_bytes as a side effect; the response's
+                    # public `uri` is the asset URL.
+                    client.files.download(file=video)
+                    video_uri = getattr(video, "uri", None)
+                    if video_uri:
+                        validate_asset_url(video_uri)
+
                 if video_uri:
-                    validate_asset_url(video_uri)
                     vm_kwargs: dict[str, Any] = {"has_audio": has_audio}
                     if "resolution" in step.params:
                         vm_kwargs["resolution"] = step.params["resolution"]
@@ -282,11 +333,7 @@ class VeoProvider(BaseProvider):
                         asset.audio = AudioMetadata(codec="aac")
                     step.assets.append(asset)
                 else:
-                    # Fallback: save locally and use file path
-                    raise ProviderError(
-                        "Veo response missing video URI — "
-                        "use client.files.download() to save locally"
-                    )
+                    raise ProviderError("Veo response missing both video_bytes and video URI")
 
             self._apply_registry_pricing(step)
             return step

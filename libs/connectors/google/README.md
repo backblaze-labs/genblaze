@@ -58,6 +58,11 @@ Vertex AI auth instead:
 provider = VeoProvider(project="my-gcp-project", location="us-central1")
 ```
 
+Vertex returns generated video bytes inline (no Files API on Vertex), so
+`fetch_output()` saves them to a local file and exposes a `file://` asset —
+pass `output_dir` to control where those files land (default: system temp),
+same as `ImagenProvider` below.
+
 ## Quickstart — Imagen 3 text-to-image
 
 ```python

@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** same Windows `file://` drive-letter bug in `dalle.py`
   (`_resolve_local_file` — DALL-E image-edit local inputs) (#132).
 
+### genblaze-google
+
+- **Fixed** `VeoProvider` broken in Vertex AI auth mode (`project`/`location`) (#136).
+  `poll()`/`fetch_output()` passed the bare operation-name string returned by
+  `submit()` straight to `client.operations.get()`, which reads `.name` off its
+  argument and raised `AttributeError: 'str' object has no attribute 'name'` on
+  every poll — now wrapped in `types.GenerateVideosOperation` first. `fetch_output()`
+  also called `client.files.download()` unconditionally, which raises `ValueError`
+  on Vertex (the Files API is Gemini-Developer-API-only); Vertex returns video
+  bytes inline instead, so `fetch_output()` now saves those bytes to a local file
+  (new `output_dir` constructor param, indexed per-video for `number_of_videos > 1`)
+  and exposes a `file://` asset, matching the existing `ImagenProvider`/
+  `DecartVideoProvider` convention. The Gemini Developer API path is unchanged.
+
 ### genblaze-cli
 
 - **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
