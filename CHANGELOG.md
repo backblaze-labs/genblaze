@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fixed in: `storage/transfer.py` (`ObjectStorageSink`), `providers/_ffmpeg_utils.py`
   (compositor/transform), `providers/base.py` (`validate_chain_input_url`,
   which also replaces `startswith("/")` with cross-platform `Path.is_absolute()`).
+- **Fixed** 0.3.4 → 0.3.5: `MockProvider`, `MockVideoProvider`, and
+  `MockAudioProvider` no longer require `pytest` at import. They moved to a new
+  pytest-free `genblaze_core.mocks` module (still re-exported from
+  `genblaze_core.testing` for backward compatibility), so
+  `from genblaze_core import MockVideoProvider` works in a runtime-only install.
 
 ### genblaze-openai
 
@@ -38,6 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (new `output_dir` constructor param, indexed per-video for `number_of_videos > 1`)
   and exposes a `file://` asset, matching the existing `ImagenProvider`/
   `DecartVideoProvider` convention. The Gemini Developer API path is unchanged.
+
+### genblaze-cli
+
+- **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
+  to write the manifest JSON to a file, matching the documented usage.
+- **Changed** `--version` now reports `genblaze-cli` rather than `genblaze`,
+  so the CLI's version is no longer mistaken for the umbrella package version.
+
+### genblaze (umbrella)
+
+- **Changed** 0.4.1 → 0.4.2: raises its `genblaze-core` floor to 0.3.5
+  so `pip install genblaze` resolves the mock-import fix above.
 
 ## [0.4.0] - 2026-06-25
 

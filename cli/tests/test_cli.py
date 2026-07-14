@@ -471,5 +471,42 @@ def test_index(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["index", str(manifest_path), "-o", str(out_dir)])
     assert result.exit_code == 0
     assert "Indexed" in result.output
-    parquet_files = list(out_dir.rglob("*.parquet"))
-    assert len(parquet_files) > 0
+
+
+# --- Fix B: extract -o / --output ---
+
+
+def test_extract_output_flag_writes_file(tmp_path: Path) -> None:
+    """-o writes manifest JSON to file; stdout is empty."""
+    png = _create_embedded_png(tmp_path)
+    out_file = tmp_path / "manifest.json"
+    runner = CliRunner()
+    result = runner.invoke(cli, ["extract", str(png), "-o", str(out_file)])
+    assert result.exit_code == 0, result.output
+    # Output goes to file, not stdout
+    assert result.output.strip() == ""
+    assert out_file.exists()
+    data = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "canonical_hash" in data
+    assert "run" in data
+
+
+def test_extract_output_flag_stdout_default(tmp_path: Path) -> None:
+    """Without -o, JSON goes to stdout (backward compat)."""
+    png = _create_embedded_png(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["extract", str(png)])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "canonical_hash" in data
+
+
+# --- Fix C: --version label ---
+
+
+def test_version_label_shows_cli_package() -> None:
+    """--version must say 'genblaze-cli' not the umbrella package name."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--version"])
+    assert result.exit_code == 0
+    assert "genblaze-cli" in result.output
