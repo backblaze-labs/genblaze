@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changed** 0.4.1 → 0.4.2: raises its `genblaze-core` floor to 0.3.5
   so `pip install genblaze` resolves the mock-import fix above.
 
+### Security
+
+- `genblaze-core`: `PromptTemplate` now rejects attribute and item traversal
+  such as `{user.api_key}` and `{settings[voice]}`. Pass explicit top-level
+  values instead, for example `{api_key}` or `{voice}`. Top-level format specs
+  and conversions such as `{price:.2f}` and `{name!r}` remain supported (#88).
+
 ## [0.4.0] - 2026-06-25
 
 Security hardening (SSRF, URL-only asset verification), two new providers

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from genblaze_core.exceptions import GenblazeError
@@ -52,10 +53,89 @@ class TestPromptTemplate:
         assert tpl.render(x="hi") == "hi and hi"
         assert tpl.variables == {"x"}
 
-    def test_render_literal_braces(self):
-        """Literal braces use {{ }} per Python format_map convention."""
+    def test_render_escaped_literal_braces(self):
+        """Doubled braces preserve a literal placeholder-like string."""
         tpl = PromptTemplate(template="{{literal}} {var}")
         assert tpl.render(var="test") == "{literal} test"
+
+    def test_render_single_literal_braces(self):
+        tpl = PromptTemplate(template="cost is 5} dollars for {item}")
+        assert tpl.variables == {"item"}
+        assert tpl.render(item="x") == "cost is 5} dollars for x"
+
+    def test_render_json_template_with_variable(self):
+        tpl = PromptTemplate(template='Return JSON like {"name": "{subject}"}')
+        assert tpl.variables == {"subject"}
+        assert tpl.render(subject="cat") == 'Return JSON like {"name": "cat"}'
+
+    def test_render_missing_var_ignores_json_keys(self):
+        tpl = PromptTemplate(template='Return JSON like {"name": "{subject}"}')
+        with pytest.raises(ValueError, match="Missing template variables: subject"):
+            tpl.render()
+
+    def test_render_format_spec(self):
+        tpl = PromptTemplate(template="Price: {price:.2f}")
+        assert tpl.variables == {"price"}
+        assert tpl.render(price=1.2) == "Price: 1.20"
+
+    def test_render_alignment_format_spec(self):
+        tpl = PromptTemplate(template="Name: {name:>10}")
+        assert tpl.variables == {"name"}
+        assert tpl.render(name="Ada") == "Name:        Ada"
+
+    def test_render_conversion(self):
+        tpl = PromptTemplate(template="Name: {name!r}")
+        assert tpl.variables == {"name"}
+        assert tpl.render(name="Ada") == "Name: 'Ada'"
+
+    @pytest.mark.parametrize(
+        ("template", "kwargs"),
+        [
+            ("User: {user.api_key}", {"user": SimpleNamespace(api_key="secret")}),
+            ("User: {user._token}", {"user": SimpleNamespace(_token="secret")}),
+            (
+                "User: {user.__dict__[api_key]}",
+                {"user": SimpleNamespace(api_key="secret")},
+            ),
+            ("Voice: {settings[voice]}", {"settings": {"voice": "secret"}}),
+            ("First: {items[0]}", {"items": ["cat", "dog"]}),
+        ],
+    )
+    def test_render_rejects_attribute_and_item_lookup(self, template, kwargs):
+        tpl = PromptTemplate(template=template)
+        with pytest.raises(ValueError, match="Unsupported template field"):
+            _ = tpl.variables
+        with pytest.raises(ValueError, match="Unsupported template field"):
+            tpl.render(**kwargs)
+
+    def test_render_placeholder_before_literal_closing_brace(self):
+        tpl = PromptTemplate(template='Return JSON {"count": {count}}')
+        assert tpl.variables == {"count"}
+        assert tpl.render(count=3) == 'Return JSON {"count": 3}'
+
+    def test_render_invalid_field_conversion_raises_value_error(self):
+        tpl = PromptTemplate(template="Name: {name!z}")
+        with pytest.raises(ValueError, match="Unsupported template conversion"):
+            tpl.render(name="Ada")
+
+    def test_render_unclosed_field_raises_value_error(self):
+        tpl = PromptTemplate(template="Name: {name")
+        with pytest.raises(ValueError, match="Invalid template field"):
+            tpl.render(name="Ada")
+
+    def test_render_nested_format_spec_raises_value_error(self):
+        tpl = PromptTemplate(template="Value: {value:{width}}")
+        with pytest.raises(ValueError, match="Nested template fields"):
+            _ = tpl.variables
+        with pytest.raises(ValueError, match="Nested template fields"):
+            tpl.render(value=7, width=3)
+
+    def test_render_large_malformed_field_raises_value_error(self):
+        tpl = PromptTemplate(template="Value: {value:" + ("{" * 300) + "}")
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            _ = tpl.variables
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            tpl.render(value=7)
 
     def test_serialization_roundtrip(self):
         tpl = PromptTemplate(template="A {animal} in {style} style")
