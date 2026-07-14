@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values instead, for example `{api_key}` or `{voice}`. Top-level format specs
   and conversions such as `{price:.2f}` and `{name!r}` remain supported (#88).
 
+### Changed
+
+- `genblaze-gmicloud`: video `duration` now requires whole-second integer
+  values from 1 to 60 seconds; fractional, zero/negative, and oversized
+  inputs fail invalid-input validation instead of being silently truncated
+  or forwarded (#90).
+
 ## [0.4.0] - 2026-06-25
 
 Security hardening (SSRF, URL-only asset verification), two new providers

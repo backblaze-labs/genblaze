@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-07-07 -->
 # Video & Audio Parameter Conventions
 
 Standard `step.params` keys that video/audio providers should map from.
@@ -19,11 +19,11 @@ Standard `step.params` keys that video/audio providers should map from.
 
 ## Provider Mapping
 
-| Standard Key | Runway | Luma | Google Veo |
-|-------------|--------|------|------------|
-| `aspect_ratio` | `ratio` | `aspect_ratio` (native) | `aspect_ratio` (native) |
-| `duration` | `duration` (native, int) | `duration` | `duration_seconds` |
-| `resolution` | — | `resolution` (native) | `resolution` (native) |
+| Standard Key | Runway | Luma | Google Veo | GMICloud video |
+|-------------|--------|------|------------|----------------|
+| `aspect_ratio` | `ratio` | `aspect_ratio` (native) | `aspect_ratio` (native) | `aspect_ratio` (native) |
+| `duration` | `duration` (native, int) | `duration` | `duration_seconds` | `duration` (native, whole-second int, 1–60s) |
+| `resolution` | — | `resolution` (native) | `resolution` (native) | `resolution` (native) |
 
 ## Audio Asset Metadata
 
