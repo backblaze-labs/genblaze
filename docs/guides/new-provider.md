@@ -98,6 +98,8 @@ testpaths = ["tests"]
 
 The entry point under `genblaze.providers` is how `discover_providers()` and the CLI `replay` command find your provider at runtime. Ship a `py.typed` marker file inside the package so consumers get type-checker support.
 
+The package `README.md` is rendered directly on PyPI. Any cross-file links in that README must use absolute GitHub URLs, for example `https://github.com/backblaze-labs/genblaze/blob/main/docs/reference/pricing-recipes.md`; PyPI does not rewrite repository-relative links such as `../../../docs/...`. In-page anchors such as `#usage` and `mailto:` links are allowed.
+
 ## 3. Implement the provider
 
 ### Sync provider (recommended for most APIs)

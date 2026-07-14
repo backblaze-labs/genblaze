@@ -211,7 +211,7 @@ so a retired slug like the historical `nvidia/riva-tts` surfaces as
 | Chat | n/a — `NATIVE` discovery | Any NIM chat model id |
 
 Pricing is **not shipped** — register a strategy from
-[`docs/reference/pricing-recipes.md`](../../../docs/reference/pricing-recipes.md)
+[`docs/reference/pricing-recipes.md`](https://github.com/backblaze-labs/genblaze/blob/main/docs/reference/pricing-recipes.md)
 when one is published for the model line you use. Until then,
 `step.cost_usd` is `None`.
 

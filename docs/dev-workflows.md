@@ -138,6 +138,8 @@ Reports land in `docs/reference/`. `not_found` means the slug is dead and should
 
 Every slug used in any README quickstart, provider docstring, or `examples/*_pipeline.py` script **must also appear in its family's `example_slugs` tuple** (or `unstable_examples` for known-flaky slugs). Keeps the manual check above tractable — one source of truth per family.
 
+Connector package READMEs are also PyPI long descriptions. Cross-file links in those READMEs must use absolute GitHub URLs so they resolve on PyPI; repository-relative links such as `../../../docs/...` fail the PyPI metadata gate. In-page anchors (`#usage`) and `mailto:` links are allowed.
+
 ## Doc Update Mapping
 
 | Change Type | Update Location |
