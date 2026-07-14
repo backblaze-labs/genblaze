@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from genblaze_core._utils import new_id
 from genblaze_core.models.asset import Asset
@@ -30,6 +30,11 @@ UPSTREAM_ID_KEY = "upstream_id"
 
 class Step(BaseModel):
     """A single generation step within a run."""
+
+    # Reject unrecognized constructor kwargs instead of silently discarding
+    # them (Pydantic v2 default is extra="ignore"). Provider-specific keys
+    # belong in ``params={...}``, not top-level — see issue #133.
+    model_config = ConfigDict(extra="forbid")
 
     step_id: str = Field(default_factory=new_id, description="Unique step identifier (UUID).")
     run_id: str | None = Field(default=None, description="Parent run ID. Set by RunBuilder.")

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-20 -->
+<!-- last_verified: 2026-07-14 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -29,7 +29,8 @@ Fluent API for building and executing multi-step generative media workflows with
 - `tenant_id`: str — Tenant identifier
 - `max_concurrency`: int | None — Global concurrency limit for async steps
 - `provider`: BaseProvider — Provider adapter for each step
-- `model`, `prompt`, `step_type`, `**params`: Step configuration
+- `model`, `prompt`, `step_type`: Step configuration
+- Provider-specific parameters: pass as top-level kwargs (`.step(..., duration=10)`) or as a `params={}` dict (`.step(..., params={"duration": 10})`) — both populate `Step.params`. If a key appears in both, the top-level kwarg wins.
 - `fallback_models`: list[str] | None — Models to try on `MODEL_ERROR` failure
 - `sink`: optional BaseSink — Output destination on `.run()`
 - `pipeline_timeout`: float | None — End-to-end timeout in seconds for the entire pipeline (checked before each step)
