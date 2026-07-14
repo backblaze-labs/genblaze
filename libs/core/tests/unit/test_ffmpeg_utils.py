@@ -65,6 +65,24 @@ class TestResolveInputPath:
         with pytest.raises(ProviderError, match="Unsupported URL scheme"):
             resolve_input_path("http://example.com/file.mp4")
 
+    def test_windows_drive_letter_file_url(self, tmp_path, monkeypatch):
+        """Regression for #132: url2pathname() strips the leading slash before a
+        Windows drive letter so Path.resolve() produces an absolute path that
+        passes the allowlist check. Simulates Windows url2pathname behavior."""
+        f = tmp_path / "clip.mp4"
+        f.write_bytes(b"fake")
+        real_path = str(f.resolve())
+        monkeypatch.setattr(
+            "genblaze_core.providers._ffmpeg_utils.url2pathname",
+            lambda _: real_path,
+        )
+        monkeypatch.setattr(
+            "genblaze_core.providers._ffmpeg_utils._ALLOWED_FILE_ROOTS",
+            (tmp_path.resolve(),),
+        )
+        result = resolve_input_path("file:///C:/tmp/clip.mp4")
+        assert result == real_path
+
 
 class TestResolveFfmpeg:
     def test_raises_when_not_found(self):

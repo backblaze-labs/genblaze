@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import urljoin, urlparse
+from urllib.request import url2pathname
 
 import urllib3
 
@@ -283,9 +284,8 @@ def _read_local_file(
     to prevent arbitrary file reads. Resolves symlinks before checking.
     """
     parsed = urlparse(url)
-    from urllib.parse import unquote
-
-    path = unquote(parsed.path)
+    # url2pathname handles Windows drive letters: /C:/... → C:\... (no-op on Unix)
+    path = url2pathname(parsed.path)
     resolved = Path(path).resolve()
 
     # Allowlist: only temp dirs and explicitly provided roots

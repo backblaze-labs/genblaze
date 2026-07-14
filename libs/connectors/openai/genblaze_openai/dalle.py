@@ -41,7 +41,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, urlparse
+from urllib.request import url2pathname
 
 from genblaze_core._utils import open_pinned_https_connection
 from genblaze_core.exceptions import ProviderError
@@ -299,7 +300,8 @@ _ALLOWED_FILE_ROOTS: tuple[Path, ...] = (Path(tempfile.gettempdir()).resolve(),)
 def _resolve_local_file(url: str, extra_root: Path | None) -> Path:
     """Resolve a file:// URL to a Path, checked against allowed roots."""
     parsed = urlparse(url)
-    resolved = Path(unquote(parsed.path)).resolve()
+    # url2pathname handles Windows drive letters: /C:/... → C:\... (no-op on Unix)
+    resolved = Path(url2pathname(parsed.path)).resolve()
     allowed = list(_ALLOWED_FILE_ROOTS)
     if extra_root is not None:
         allowed.append(extra_root.resolve())

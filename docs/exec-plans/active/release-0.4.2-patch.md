@@ -21,11 +21,12 @@ applicable to current source.**
 
 - `genblaze-core`: 0.3.4 → **0.3.5** (Fix A + D)
 - `genblaze-cli`: 0.3.2 → **0.3.3** (Fix B + C)
-- `genblaze` umbrella: stays at **0.4.1** — its core floor is `>=0.3.4,<0.4`; 0.3.5
-  satisfies that constraint, so users get the fix via normal resolution. The umbrella's
-  core floor must advance to `>=0.3.5,<0.4` to satisfy
-  `test_umbrella_core_dependency_floor_matches_local_core`. The umbrella version itself
-  does NOT need a bump.
+- `genblaze` umbrella: 0.4.1 → **0.4.2**. Its core floor must advance to
+  `>=0.3.5,<0.4` to satisfy `test_umbrella_core_dependency_floor_matches_local_core`.
+  Because that widens a dependency constraint in source, the umbrella version itself
+  MUST bump: PyPI cannot overwrite 0.4.1, and `skip-existing` on the publish workflow
+  would silently no-op the corrected wheel unless a fresh version ships (see the
+  pin-parity drift guard in `tools/check_pin_parity.py`).
 - cli's `genblaze-core` floor must advance to `>=0.3.5,<0.4` to maintain the pin-parity
   invariant asserted by `test_cli_core_dependency_floor_matches_local_core`.
 
