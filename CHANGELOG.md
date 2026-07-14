@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`model_config = ConfigDict(extra="forbid")`) instead of silently discarding
   them — the same class of bug via direct model construction rather than
   `Pipeline.step()`. Provider-specific keys belong in `params={...}` (#133).
+- **Fixed** `examples/quickstart_local.py` printed `Verified: False` on a
+  clean `pip install genblaze-core` (#125). The 0.3.4 hardening of
+  `Manifest.verify()` (requires every output asset to declare a `sha256`)
+  wasn't reflected in the example's synthetic output asset. The example now
+  passes a `sha256` for its placeholder demo bytes, matching what a real
+  provider/`ObjectStorageSink` would populate.
 
 ### genblaze-openai
 

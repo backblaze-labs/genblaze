@@ -9,6 +9,8 @@ Usage:
     python examples/quickstart_local.py
 """
 
+import hashlib
+
 from genblaze_core import (
     Manifest,
     Modality,
@@ -19,6 +21,12 @@ from genblaze_core import (
 
 
 def main() -> None:
+    # No network calls means no real video bytes to hash — stand in for what
+    # Sora would have returned. Manifest.verify() requires a sha256 on every
+    # output asset (hardened in genblaze-core 0.3.4), so a real pipeline run
+    # would pass the provider's actual bytes to hashlib.sha256() here instead.
+    video_bytes = b"placeholder bytes standing in for the generated video"
+
     # Build a step as if Sora generated a video
     step = (
         StepBuilder("openai", "sora-2")
@@ -27,7 +35,11 @@ def main() -> None:
         .params(size="1280x720", n_seconds=8)
         .seed(42)
         .status(StepStatus.SUCCEEDED)
-        .asset("file://output/demo.mp4", "video/mp4")
+        .asset(
+            "file://output/demo.mp4",
+            "video/mp4",
+            sha256=hashlib.sha256(video_bytes).hexdigest(),
+        )
         .build()
     )
 
