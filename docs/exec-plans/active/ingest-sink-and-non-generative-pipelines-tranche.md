@@ -87,7 +87,7 @@ You are an expert open-source SDK engineer with experience in DAM, archival, and
 | `Step.provider=None` weakens type guarantees | Validator restricts None to `step_type ∈ {INGEST, IMPORT}` only |
 | Subagent introduces parallel `IngestPipeline` class | Review gate forbids; must be a `Pipeline.ingest()` factory method |
 | Manifest size explodes for 1000+ asset ingest | `MAX_MANIFEST_BYTES` cap; documented; recommend per-batch ingest for large imports |
-| Canonical-hash determinism breaks across asset-order permutations | Test asserts hash equality for same asset set in different orders (sort by `asset_id` at canonicalization) |
+| Canonical-hash determinism breaks across asset-order permutations | Test asserts hash equality for same asset set in different orders (sort by content — `asset_provenance_key`, not `asset_id` — after the sink populates each asset's hash; see issue #76) |
 
 ## Out of scope
 
