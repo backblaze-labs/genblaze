@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
+  Providers that consume inputs positionally (multi-image edit/compose,
+  multimodal chat) produce different output when input order changes, but the
+  sorted key made a reordered request incorrectly reuse an earlier run's
+  cached asset. The key now preserves input order, matching the
+  order-preserving manifest canonical hash. Existing cache entries for
+  multi-input steps whose inputs weren't already in sorted order miss once
+  and recompute (one-time repopulation, no data loss).
 - **Fixed** Windows `file://` URL handling across all call sites (#132).
   On Windows, `urlparse("file:///C:/...").path` returns `/C:/...`, and
   `Path("/C:/...").resolve()` produces a drive-relative path that always

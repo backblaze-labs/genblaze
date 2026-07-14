@@ -43,8 +43,11 @@ def step_cache_key(step: Step, tenant_id: str | None = None) -> str:
         "seed": step.seed,
         "modality": step.modality.value if step.modality else None,
         "step_type": step.step_type.value if step.step_type else None,
-        # Use content hash or URL for cache correctness — asset_id is random per execution
-        "input_ids": sorted(a.sha256 or a.url for a in step.inputs) if step.inputs else None,
+        # Use content hash or URL for cache correctness — asset_id is random per execution.
+        # Order is preserved (not sorted): providers that consume inputs positionally
+        # (multi-image edit/compose, multimodal chat) yield different output when input
+        # order changes, and this must match the order-preserving manifest canonical hash.
+        "input_ids": [a.sha256 or a.url for a in step.inputs] if step.inputs else None,
     }
     if tenant_id is not None:
         key_data["tenant_id"] = tenant_id
