@@ -78,6 +78,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and exposes a `file://` asset, matching the existing `ImagenProvider`/
   `DecartVideoProvider` convention. The Gemini Developer API path is unchanged.
 
+### genblaze-replicate
+
+- **Fixed** `ReplicateProvider.submit()` 404s for community models (#109).
+  `predictions.create(model=<slug>)` only works for Replicate's *official*
+  models — community slugs (e.g. `sczhou/codeformer`, `tencentarc/gfpgan`)
+  404 on that path. `submit()` now picks the endpoint per model: community
+  models resolve to a published version hash and run via
+  `predictions.create(version=<hash>)`, while official/versionless models
+  (e.g. `black-forest-labs/flux-schnell`) keep running via the `model=`
+  path. Resolution accepts an inline `owner/name:hash` pin, otherwise reads
+  `client.models.get(slug).latest_version` and caches the result per-slug —
+  hash or "official, no version" — seeded from `validate_model()`'s existing
+  probe, so a normal `Pipeline.run()` costs no extra round-trip.
+
 ### genblaze-cli
 
 - **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
