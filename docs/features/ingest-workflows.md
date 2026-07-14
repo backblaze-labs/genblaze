@@ -190,16 +190,20 @@ index is opt-in and tenant-scoped.
 
 ## Manifest determinism
 
-`Pipeline.ingest` sorts the input assets by content — not `asset_id` — before
-building steps, using the same fields that feed the manifest hash (`sha256`,
-`media_type`, `size_bytes`, dimensions, ...; see `asset_provenance_key` in
+`Pipeline.ingest` sorts the finished steps by content — not `asset_id` — using
+the same fields that feed the manifest hash (`sha256`, `media_type`,
+`size_bytes`, dimensions, ...; see `asset_provenance_key` in
 `genblaze_core.models.manifest`). `asset_id` defaults to a random UUID and is
 excluded from the hash payload (schema 1.4+), so sorting by it would reshuffle
-same-content batches on every call. Sorting by content instead means the
-resulting manifest's `canonical_hash` is **invariant under permuted input
-order, and even across fresh `Asset` instances with new random ids** —
-calling `ingest(assets=[a, b, c])` and `ingest(assets=[c, a, b])` with the
-same asset content produces a byte-identical manifest hash (modulo
+same-content batches on every call. The sort runs *after* `sink.put_asset` has
+populated each asset's `sha256` / `size_bytes` — sorting before the sink runs
+would tie on the placeholder content every fresh batch shares (no hash yet)
+and silently fall back to caller input order, reintroducing the same
+non-determinism one layer deeper. Sorting by real content after the sink
+writes means the resulting manifest's `canonical_hash` is **invariant under
+permuted input order, and even across fresh `Asset` instances with new random
+ids** — calling `ingest(assets=[a, b, c])` and `ingest(assets=[c, a, b])` with
+the same asset content produces a byte-identical manifest hash (modulo
 `Run.name` and a few other deliberately-included caller-provenance fields):
 
 ```python

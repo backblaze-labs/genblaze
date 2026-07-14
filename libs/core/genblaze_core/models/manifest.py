@@ -121,7 +121,7 @@ def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
         asset[_UNHASHED_ASSET_URL_FIELD] = strip_asset_url_credentials(url)
 
 
-def asset_provenance_key(asset: Asset) -> str:
+def asset_provenance_key(asset: Asset, *, schema_version: str = SCHEMA_VERSION) -> str:
     """Canonical, content-based sort key for an asset.
 
     Reuses ``_strip_asset_for_hash`` — the exact stripping applied before an
@@ -132,12 +132,15 @@ def asset_provenance_key(asset: Asset) -> str:
     payload). Two assets with identical provenance-relevant content always
     produce the same key regardless of their random ``asset_id``, so callers
     that need an input-order-independent ordering — e.g. ``Pipeline.ingest``
-    sorting assets before hashing — should sort on this instead of
-    ``asset_id``. ``mark_unhashed=False`` matches the currently-writable
-    schema policy (1.4/1.5); see ``_SCHEMA_HASH_POLICIES``.
+    sorting steps after hashing — should sort on this instead of
+    ``asset_id``. ``schema_version`` selects the hash policy (see
+    ``_SCHEMA_HASH_POLICIES``) so the key stays aligned with whichever
+    schema the caller is about to write, rather than hardcoding today's
+    default.
     """
     data = asset.model_dump(mode="python")
-    _strip_asset_for_hash(data, mark_unhashed=False)
+    mark_unhashed = _hash_policy(schema_version).mark_unhashed_assets
+    _strip_asset_for_hash(data, mark_unhashed=mark_unhashed)
     return canonical_json(data)
 
 

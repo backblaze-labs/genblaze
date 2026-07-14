@@ -18,12 +18,15 @@ The resulting :class:`PipelineResult` carries:
   source, **source_metadata}``;
 * the asset itself in ``step.assets`` with its durable URL,
   ``sha256``, ``size_bytes`` populated by ``sink.put_asset``;
-* a canonical-hashable :class:`Manifest` whose hash is stable
-  across permuted input orders — the ingest factory sorts the input
-  assets by content (:func:`asset_provenance_key`, not the random
-  ``asset_id``) before building steps so callers can pass the same
-  set in any order — or as fresh ``Asset`` instances with new random
-  ids — and get a byte-identical manifest.
+* a canonical-hashable :class:`Manifest` whose hash is stable across
+  permuted input orders — the ingest factory sorts the finished steps
+  by content (:func:`asset_provenance_key`, not the random
+  ``asset_id``) *after* ``sink.put_asset`` has populated ``sha256`` /
+  ``size_bytes``, so callers can pass the same set in any order — or
+  as fresh ``Asset`` instances with new random ids — and get a
+  byte-identical manifest. Sorting before the sink runs would tie on
+  the placeholder (pre-hash) content every batch shares and silently
+  fall back to caller input order.
 """
 
 from __future__ import annotations
@@ -126,16 +129,6 @@ def ingest_assets(
             "or skip the call entirely."
         )
 
-    # Sort by content — not asset_id — so the canonical hash is stable
-    # across permuted input orders. asset_id defaults to a random UUID and
-    # is excluded from the hash payload (schema 1.4+), so sorting by it
-    # would reshuffle same-content batches on every call. asset_provenance_key
-    # sorts on exactly the fields that feed the hash, so fresh Asset batches
-    # with identical content always converge on the same order. The plan's
-    # hash-determinism gate ("same asset set in different orders →
-    # byte-identical manifest") relies on this.
-    sorted_assets = sorted(asset_list, key=asset_provenance_key)
-
     metadata_template: dict[str, Any] = {"source": source}
     if source_metadata:
         # Caller's keys win on overlap with the source key — but we
@@ -144,11 +137,13 @@ def ingest_assets(
         metadata_template.update(source_metadata)
         metadata_template["source"] = source
 
-    # Build the run + steps WITHOUT touching the sink yet — gives us a
-    # complete in-memory shape so we can compute the manifest_uri (a
-    # function of run.run_id) before calling sink.put_asset.
+    # Build the run + steps in caller order, WITHOUT touching the sink yet
+    # — gives us a complete in-memory shape so we can compute the
+    # manifest_uri (a function of run.run_id) before calling sink.put_asset.
+    # Step order here is provisional; it's fixed to a content-based order
+    # below, after the sink has populated each asset's hash.
     steps: list[Step] = []
-    for asset in sorted_assets:
+    for asset in asset_list:
         step = Step(
             provider=None,
             model=source,
@@ -172,7 +167,9 @@ def ingest_assets(
     # Pre-compute the manifest_uri so put_asset can write the
     # asset_id → manifest_uri sidecar atomically with the asset
     # upload. ``manifest_key_for`` and ``get_durable_url`` exposed on
-    # storage sinks are pure functions of run config + run.run_id.
+    # storage sinks are pure functions of run config + run.run_id —
+    # unaffected by step order, so it's safe to derive this before the
+    # steps are put into their final content-sorted order below.
     manifest_uri = _derive_manifest_uri(sink, run)
 
     # Write asset bytes via the sink. Each call mutates the asset
@@ -180,7 +177,7 @@ def ingest_assets(
     # ``size_bytes`` populated.
     if sink is not None:
         indexed_manifest_uri = manifest_uri if run.tenant_id is not None else None
-        for asset in sorted_assets:
+        for asset in asset_list:
             try:
                 if indexed_manifest_uri is None:
                     sink.put_asset(asset)
@@ -200,6 +197,22 @@ def ingest_assets(
                     type(sink).__name__,
                     asset.asset_id,
                 )
+
+    # Sort steps by content — not asset_id, and not before the sink runs —
+    # so the canonical hash is stable across permuted input orders.
+    # asset_id defaults to a random UUID and is excluded from the hash
+    # payload (schema 1.4+), so sorting by it would reshuffle same-content
+    # batches on every call. Sorting *before* sink.put_asset would be just
+    # as unstable: fresh assets typically share identical placeholder
+    # content (no sha256 yet) until the sink hashes them, so an early sort
+    # ties completely and Python's stable sort falls back to caller input
+    # order. Doing this here — after sha256/size_bytes are finalized —
+    # means asset_provenance_key sorts on exactly the fields that feed the
+    # hash, so fresh Asset batches with identical content always converge
+    # on the same order regardless of call-site order. The plan's
+    # hash-determinism gate ("same asset set in different orders →
+    # byte-identical manifest") relies on this.
+    run.steps = sorted(run.steps, key=lambda step: asset_provenance_key(step.assets[0]))
 
     manifest = Manifest(run=run)
     manifest.compute_hash()

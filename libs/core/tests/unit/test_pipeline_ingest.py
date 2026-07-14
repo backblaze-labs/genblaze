@@ -14,6 +14,7 @@ Coverage by use case (matches the plan's spec):
 
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -46,6 +47,27 @@ def _stub_sink_that_records_calls() -> MagicMock:
     def _put_asset(asset: Asset, **kwargs) -> Asset:
         asset.sha256 = "0" * 64
         asset.size_bytes = 1
+        return asset
+
+    sink = MagicMock()
+    sink.put_asset = MagicMock(side_effect=_put_asset)
+    sink.write_run = MagicMock()
+    sink.manifest_url_for = MagicMock(return_value="https://mem/run/manifest.json")
+    return sink
+
+
+def _stub_sink_that_assigns_content_derived_hashes() -> MagicMock:
+    """A sink mock that assigns a DISTINCT sha256 per asset, derived from
+    its (pre-upload) source URL — unlike ``_stub_sink_that_records_calls``,
+    which hardcodes the same sha256 for every asset and therefore can't
+    distinguish assets by content. Mimics a real content-addressed sink
+    that only learns each asset's hash once it fetches/uploads the bytes,
+    i.e. after the assets have already been queued for ingest — the
+    scenario the sort-by-content fix must handle."""
+
+    def _put_asset(asset: Asset, **kwargs) -> Asset:
+        asset.sha256 = hashlib.sha256(asset.url.encode()).hexdigest()
+        asset.size_bytes = len(asset.url)
         return asset
 
     sink = MagicMock()
@@ -273,8 +295,10 @@ class TestIngestAssets:
 
 class TestCanonicalHashDeterminism:
     """Plan correctness gate: same asset set in different orders →
-    byte-identical manifest hash. The ingest factory sorts by
-    asset_id before building steps; permuted callers converge."""
+    byte-identical manifest hash. The ingest factory sorts steps by
+    content (``asset_provenance_key``) after the sink has populated
+    each asset's hash — not by ``asset_id``, and not before hashing —
+    so permuted callers always converge."""
 
     def test_hash_invariant_across_permuted_input_order(self):
         a = _ingestable_asset(asset_id="01-aaaa", url="https://x/a.mp3")
@@ -296,6 +320,44 @@ class TestCanonicalHashDeterminism:
 
         # Hash equality across all permutations.
         hashes = {r.manifest.canonical_hash for r in runs}
+        assert len(hashes) == 1, f"hashes diverged across permutations: {hashes}"
+
+    def test_hash_invariant_across_permuted_order_with_sink_assigned_hashes(self):
+        """Regression for issue #76 (sink-populated-hash path).
+
+        Assets typically have no ``sha256`` yet when passed to
+        ``Pipeline.ingest`` — the sink assigns it during ``put_asset``,
+        *after* the caller's input order is already fixed. Sorting before
+        the sink runs would tie on the shared pre-hash placeholder content
+        and silently fall back to caller input order, reproducing the bug
+        one layer deeper. The fix sorts steps by content after the sink has
+        populated real, distinct hashes, so permuted input orders must
+        still converge on one canonical hash.
+
+        Each permutation gets FRESH ``Asset`` instances (not the same
+        mutated objects reused across calls) — ``put_asset`` mutates in
+        place, so reusing objects across iterations would carry over
+        already-populated hashes from a prior call and mask exactly the
+        bug this test targets.
+        """
+
+        def _fresh_batch() -> list[Asset]:
+            return [
+                _ingestable_asset(url="https://x/a.mp3"),
+                _ingestable_asset(url="https://x/b.mp3"),
+                _ingestable_asset(url="https://x/c.mp3"),
+            ]
+
+        hashes = set()
+        for perm in ([0, 1, 2], [2, 1, 0], [1, 0, 2]):
+            batch = _fresh_batch()
+            result = Pipeline.ingest(
+                assets=[batch[i] for i in perm],
+                source="t",
+                name="ingest",
+                sink=_stub_sink_that_assigns_content_derived_hashes(),
+            )
+            hashes.add(result.manifest.canonical_hash)
         assert len(hashes) == 1, f"hashes diverged across permutations: {hashes}"
 
     def test_hash_changes_when_asset_set_changes(self):

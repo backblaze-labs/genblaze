@@ -46,10 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hashing, so identical fresh asset batches (new `Asset()` instances with new
   random ids, same content) could produce different `canonical_hash` values
   even though `asset_id` is excluded from the hash payload (#76). Ingest now
-  sorts by `asset_provenance_key` — the same content fields that feed the
-  hash (`sha256`, `media_type`, `size_bytes`, dimensions, ...) — so the
-  determinism contract holds for fresh asset batches, not just permuted
-  reuses of the same objects.
+  sorts the finished steps by `asset_provenance_key` — the same content
+  fields that feed the hash (`sha256`, `media_type`, `size_bytes`,
+  dimensions, ...) — *after* `sink.put_asset` has populated each asset's
+  hash, since sorting beforehand ties on the shared placeholder content
+  every fresh batch starts with and falls back to caller input order. The
+  determinism contract now holds for fresh asset batches and sink-populated
+  hashes, not just permuted reuses of already-hashed objects.
 
 ### genblaze-openai
 
