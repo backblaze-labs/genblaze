@@ -50,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wasn't reflected in the example's synthetic output asset. The example now
   passes a `sha256` for its placeholder demo bytes, matching what a real
   provider/`ObjectStorageSink` would populate.
+- **Fixed** `Pipeline.ingest` sorted assets by the random `asset_id` before
+  hashing, so identical fresh asset batches (new `Asset()` instances with new
+  random ids, same content) could produce different `canonical_hash` values
+  even though `asset_id` is excluded from the hash payload (#76). Ingest now
+  sorts the finished steps by `asset_provenance_key` — the same content
+  fields that feed the hash (`sha256`, `media_type`, `size_bytes`,
+  dimensions, ...) — *after* `sink.put_asset` has populated each asset's
+  hash, since sorting beforehand ties on the shared placeholder content
+  every fresh batch starts with and falls back to caller input order. The
+  determinism contract now holds for fresh asset batches and sink-populated
+  hashes, not just permuted reuses of already-hashed objects.
 
 ### genblaze-openai
 

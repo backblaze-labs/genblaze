@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from genblaze_core._asset_url import strip_asset_url_credentials
 from genblaze_core.canonical.json import canonical_hash, canonical_json
 from genblaze_core.exceptions import ManifestError, UnsupportedSchemaVersionError
-from genblaze_core.models.asset import is_valid_sha256
+from genblaze_core.models.asset import Asset, is_valid_sha256
 from genblaze_core.models.enums import PromptVisibility
 from genblaze_core.models.run import Run
 
@@ -119,6 +119,43 @@ def _strip_asset_for_hash(asset: dict, *, mark_unhashed: bool) -> None:
     if mark_unhashed and not has_sha256 and url is not None:
         asset["asset_integrity"] = _UNHASHED_ASSET_MARKER
         asset[_UNHASHED_ASSET_URL_FIELD] = strip_asset_url_credentials(url)
+
+
+def asset_provenance_key(
+    asset: Asset, *, schema_version: str = SCHEMA_VERSION
+) -> tuple[str, int, str]:
+    """Canonical, content-based sort key for an asset.
+
+    Reuses ``_strip_asset_for_hash`` — the exact stripping applied before an
+    asset is folded into the manifest hash — so this key is built from
+    precisely the fields that make it into ``canonical_hash`` (``sha256``,
+    ``media_type``, ``size_bytes``, dimensions, ...), never ``asset_id``
+    (random UUID) or ``url`` (transport hint, both excluded from the hash
+    payload). Two assets with identical provenance-relevant content always
+    produce the same key regardless of their random ``asset_id``, so callers
+    that need an input-order-independent ordering — e.g. ``Pipeline.ingest``
+    sorting steps after hashing — should sort on this instead of
+    ``asset_id``. ``schema_version`` selects the hash policy (see
+    ``_SCHEMA_HASH_POLICIES``) so the key stays aligned with whichever
+    schema the caller is about to write, rather than hardcoding today's
+    default.
+
+    The trailing canonical-JSON element is the authoritative content
+    identity: two assets tie iff their manifest hash contribution is
+    byte-identical. The leading ``sha256`` / ``size_bytes`` scalars are pure
+    comparison accelerators — in canonical (alphabetical) key order sha256
+    sorts behind any large shared ``metadata`` / media blocks, so front-
+    loading the cheap discriminators lets a big batch resolve ordering
+    without scanning those prefixes byte-by-byte. They are redundant with the
+    JSON tail and MUST NOT replace it: dropping the canonical JSON would let
+    assets that differ only in nested hashed fields tie in the sort and
+    reintroduce the input-order dependence this key exists to remove (#76).
+    """
+    data = asset.model_dump(mode="python")
+    mark_unhashed = _hash_policy(schema_version).mark_unhashed_assets
+    _strip_asset_for_hash(data, mark_unhashed=mark_unhashed)
+    size = asset.size_bytes if asset.size_bytes is not None else -1
+    return (asset.sha256 or "", size, canonical_json(data))
 
 
 def _unhashed_output_asset_ids(run: Run) -> list[str]:
