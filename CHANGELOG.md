@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DalleProvider`'s existing file-input helpers) into an open file handle before
   upload. Also stringifies `seconds` (`4`/`8`/`12`), which the SDK types as
   `Literal["4", "8", "12"]`, not `int`.
+- **Fixed** `SoraProvider.fetch_output()` download against openai SDK 2.x (#127).
+  It called `videos.content()`, which the SDK renamed to `download_content()`;
+  every completed generation failed at the download step with `'Videos' object
+  has no attribute 'content'` — after the generation cost was already incurred.
+  The returned binary response still supports `write_to_file()`, so the method
+  rename is the only change needed.
 
 ### genblaze-google
 

@@ -46,7 +46,10 @@ def mock_openai(tmp_path):
         model="sora-2",
     )
 
-    # Mock videos.content → returns writable response
+    # Mock videos.download_content → returns writable response.
+    # openai SDK 2.x renamed videos.content → videos.download_content; the old
+    # name is gone, so make any lingering .content call blow up like the real
+    # SDK would (a bare MagicMock would silently auto-create it) (#127).
     mock_content = MagicMock()
 
     def _write_video(path):
@@ -54,7 +57,10 @@ def mock_openai(tmp_path):
             f.write(b"video")
 
     mock_content.write_to_file = MagicMock(side_effect=_write_video)
-    mock_client.videos.content.return_value = mock_content
+    mock_client.videos.download_content.return_value = mock_content
+    mock_client.videos.content.side_effect = AttributeError(
+        "'Videos' object has no attribute 'content'"
+    )
 
     with patch.dict("sys.modules", {"openai": MagicMock()}):
         from genblaze_openai import SoraProvider
@@ -91,6 +97,16 @@ def test_fetch_output_attaches_asset(mock_openai):
     assert result.assets[0].media_type == "video/mp4"
     # Now saves locally as file:// URI instead of unauthenticated API URL
     assert result.assets[0].url.startswith("file://")
+
+
+def test_fetch_output_uses_download_content(mock_openai):
+    """Download must go through videos.download_content, not the removed
+    videos.content, and keep passing variant='video' (#127)."""
+    provider, client = mock_openai
+    step = Step(provider="openai-sora", model="sora-2", prompt="a sunset")
+    provider.fetch_output("vid-abc123", step)
+    client.videos.download_content.assert_called_once_with("vid-abc123", variant="video")
+    client.videos.content.assert_not_called()
 
 
 def test_fetch_output_failed_raises(mock_openai):
@@ -254,7 +270,7 @@ class TestSoraCompliance(ProviderComplianceTests):
         mock_client.videos.retrieve.return_value = SimpleNamespace(
             id="vid-abc123", status="completed", model="sora-2"
         )
-        mock_client.videos.content.return_value = mock_content
+        mock_client.videos.download_content.return_value = mock_content
         provider = SoraProvider(api_key="test-key")
         provider._client = mock_client
         return provider

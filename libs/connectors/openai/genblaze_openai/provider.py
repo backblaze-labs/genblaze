@@ -370,8 +370,9 @@ class SoraProvider(BaseProvider):
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
-            # Content endpoint requires the API key in the Authorization header
-            content = client.videos.content(prediction_id, variant="video")
+            # Content endpoint requires the API key in the Authorization header.
+            # openai SDK 2.x renamed videos.content → videos.download_content (#127).
+            content = client.videos.download_content(prediction_id, variant="video")
             if self._output_dir:
                 self._output_dir.mkdir(parents=True, exist_ok=True)
                 out_path = self._output_dir / f"{step.step_id}.mp4"
