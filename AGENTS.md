@@ -34,6 +34,7 @@ Orchestration framework for generative media pipelines with manifest-based prove
 - [RELEASING.md](RELEASING.md) — Release wave naming, publish pipeline, dry-run path
 - [CONTRIBUTING.md](CONTRIBUTING.md) — Dev setup, PR process, release notes via CHANGELOG
 - [docs/features/](docs/features/) — Feature docs (one per core feature)
+- [docs/features/maintainer-agent.md](docs/features/maintainer-agent.md) — Maintainer agent flow, modes, and invariants (human reference)
 - [docs/app-workflows.md](docs/app-workflows.md) — User journeys
 - [docs/dev-workflows.md](docs/dev-workflows.md) — Engineering workflows
 - [docs/exec-plans/active/](docs/exec-plans/active/) — Active execution plans

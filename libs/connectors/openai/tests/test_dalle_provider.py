@@ -538,6 +538,35 @@ def test_edit_file_url_outside_allowed_roots_rejected(mock_b64_dalle):
         provider.generate(step)
 
 
+def test_edit_windows_drive_letter_file_url(mock_b64_dalle, tmp_path, monkeypatch):
+    """Regression for #132: url2pathname() strips the leading slash before a
+    Windows drive letter in _resolve_local_file. Simulates Windows url2pathname
+    behavior so the allowlist check receives the correct absolute path."""
+    provider, client, _ = mock_b64_dalle
+    from genblaze_core.models.asset import Asset as _Asset
+
+    # Create a real image file in tmp_path so resolved.is_file() passes
+    img = tmp_path / "input.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    real_path = str(img.resolve())
+
+    # Simulate what Windows url2pathname does for file:///C:/tmp/input.png
+    monkeypatch.setattr(
+        "genblaze_openai.dalle.url2pathname",
+        lambda _: real_path,
+    )
+
+    step = Step(
+        provider="openai-dalle",
+        model="gpt-image-2",
+        prompt="edit this",
+        inputs=[_Asset(url="file:///C:/tmp/input.png", media_type="image/png")],
+    )
+    # The provider resolves the file, calls images.edit; no ProviderError
+    provider.generate(step)
+    assert client.images.edit.called
+
+
 # --- Unknown model passthrough ---
 
 

@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- Add new entries here. -->
+### genblaze-core
+
+- **Fixed** Windows `file://` URL handling across all call sites (#132).
+  On Windows, `urlparse("file:///C:/...").path` returns `/C:/...`, and
+  `Path("/C:/...").resolve()` produces a drive-relative path that always
+  fails the `is_relative_to(temp_root)` allowlist check. All affected sites
+  now use `urllib.request.url2pathname`, which strips the leading `/` before
+  a drive letter so `Path.resolve()` gets a properly anchored path.
+  On Unix `url2pathname` is an alias for `unquote` — no behaviour change.
+  Fixed in: `storage/transfer.py` (`ObjectStorageSink`), `providers/_ffmpeg_utils.py`
+  (compositor/transform), `providers/base.py` (`validate_chain_input_url`,
+  which also replaces `startswith("/")` with cross-platform `Path.is_absolute()`).
+- **Fixed** 0.3.4 → 0.3.5: `MockProvider`, `MockVideoProvider`, and
+  `MockAudioProvider` no longer require `pytest` at import. They moved to a new
+  pytest-free `genblaze_core.mocks` module (still re-exported from
+  `genblaze_core.testing` for backward compatibility), so
+  `from genblaze_core import MockVideoProvider` works in a runtime-only install.
+
+### genblaze-openai
+
+- **Fixed** same Windows `file://` drive-letter bug in `dalle.py`
+  (`_resolve_local_file` — DALL-E image-edit local inputs) (#132).
+
+### genblaze-google
+
+- **Fixed** `VeoProvider` broken in Vertex AI auth mode (`project`/`location`) (#136).
+  `poll()`/`fetch_output()` passed the bare operation-name string returned by
+  `submit()` straight to `client.operations.get()`, which reads `.name` off its
+  argument and raised `AttributeError: 'str' object has no attribute 'name'` on
+  every poll — now wrapped in `types.GenerateVideosOperation` first. `fetch_output()`
+  also called `client.files.download()` unconditionally, which raises `ValueError`
+  on Vertex (the Files API is Gemini-Developer-API-only); Vertex returns video
+  bytes inline instead, so `fetch_output()` now saves those bytes to a local file
+  (new `output_dir` constructor param, indexed per-video for `number_of_videos > 1`)
+  and exposes a `file://` asset, matching the existing `ImagenProvider`/
+  `DecartVideoProvider` convention. The Gemini Developer API path is unchanged.
+
+### genblaze-cli
+
+- **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
+  to write the manifest JSON to a file, matching the documented usage.
+- **Changed** `--version` now reports `genblaze-cli` rather than `genblaze`,
+  so the CLI's version is no longer mistaken for the umbrella package version.
+
+### genblaze (umbrella)
+
+- **Changed** 0.4.1 → 0.4.2: raises its `genblaze-core` floor to 0.3.5
+  so `pip install genblaze` resolves the mock-import fix above.
 
 ## [0.4.0] - 2026-06-25
 

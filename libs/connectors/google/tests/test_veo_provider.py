@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
@@ -23,6 +24,28 @@ def _make_completed_operation():
 
 def _make_pending_operation():
     return SimpleNamespace(done=False, name="op-123", error=None, response=None)
+
+
+def _make_completed_vertex_operation(count: int = 1):
+    """Vertex AI mode: video bytes come back inline, no Files API ``uri``."""
+    videos = [
+        SimpleNamespace(uri=None, video_bytes=f"fake-mp4-bytes-{i}".encode()) for i in range(count)
+    ]
+    response = SimpleNamespace(generated_videos=[SimpleNamespace(video=v) for v in videos])
+    return SimpleNamespace(done=True, name="op-123", error=None, response=response)
+
+
+def _strict_operations_get(operation):
+    """Simulate google-genai's real ``Operations.get()`` contract.
+
+    The real SDK does ``operation_name = operation.name`` on its argument —
+    it expects an *operation object*, not a bare string. Passing a plain str
+    (as ``poll``/``fetch_output`` used to, per issue #136) raises
+    ``AttributeError`` here exactly as it does against the live SDK.
+    """
+    if not hasattr(operation, "name"):
+        raise AttributeError("'str' object has no attribute 'name'")
+    return _make_completed_operation()
 
 
 @pytest.fixture
@@ -93,6 +116,87 @@ def test_fetch_output_attaches_asset(mock_google):
     assert result.assets[0].media_type == "video/mp4"
     _host = urlparse(result.assets[0].url).hostname or ""
     assert _host == "storage.googleapis.com" or _host.endswith(".storage.googleapis.com")
+
+
+def test_poll_wraps_bare_operation_name_string(mock_google):
+    """poll() must not hand a bare str to client.operations.get() — the real
+    SDK reads ``.name`` off its argument and raises AttributeError for a
+    plain string (issue #136, Vertex AI mode)."""
+    provider, client = mock_google
+    client.operations.get.side_effect = _strict_operations_get
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    pred_id = provider.submit(step)
+    assert provider.poll(pred_id) is True
+
+
+def test_fetch_output_wraps_bare_operation_name_when_uncached(mock_google):
+    """fetch_output()'s uncached fallback (``client.operations.get(prediction_id)``)
+    must also wrap the bare operation-name string (issue #136)."""
+    provider, client = mock_google
+    client.operations.get.side_effect = _strict_operations_get
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    pred_id = provider.submit(step)
+    # No poll() call — nothing cached, forces fetch_output to hit operations.get directly.
+    result = provider.fetch_output(pred_id, step)
+    assert len(result.assets) == 1
+
+
+def test_fetch_output_vertex_inline_bytes(tmp_path, mock_google):
+    """Vertex AI returns video bytes inline (no Files API). fetch_output must
+    save them locally and expose a file:// asset instead of calling
+    client.files.download(), which raises ValueError on Vertex (issue #136)."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_vertex_operation()
+    provider.poll(pred_id)
+
+    result = provider.fetch_output(pred_id, step)
+    client.files.download.assert_not_called()
+    assert len(result.assets) == 1
+    asset = result.assets[0]
+    assert asset.url.startswith("file://")
+    assert asset.media_type == "video/mp4"
+
+
+def test_fetch_output_vertex_inline_bytes_no_output_dir(mock_google):
+    """Vertex inline bytes without a configured output_dir fall back to a
+    unique tempfile (default provider._output_dir is None)."""
+    provider, client = mock_google
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_vertex_operation()
+    provider.poll(pred_id)
+
+    result = provider.fetch_output(pred_id, step)
+    client.files.download.assert_not_called()
+    assert result.assets[0].url.startswith("file://")
+
+
+def test_fetch_output_vertex_multiple_videos_no_collision(tmp_path, mock_google):
+    """number_of_videos > 1 in Vertex mode must not collide on one output
+    path — each generated video needs its own file (issue #136 follow-up:
+    the initial fix indexed by step_id alone, overwriting all but the last)."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(
+        provider="google-veo",
+        model="veo-2.0-generate-001",
+        prompt="a sunset",
+        params={"number_of_videos": "2"},
+    )
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_vertex_operation(count=2)
+    provider.poll(pred_id)
+
+    result = provider.fetch_output(pred_id, step)
+    assert len(result.assets) == 2
+    urls = {asset.url for asset in result.assets}
+    assert len(urls) == 2, "each video must get a distinct file:// path"
+    for asset in result.assets:
+        path = urlparse(asset.url).path
+        assert Path(path).read_bytes()  # each file actually has its own bytes
 
 
 def test_fetch_output_error_raises(mock_google):
