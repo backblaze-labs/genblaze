@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-30 -->
+<!-- last_verified: 2026-07-14 -->
 # Ingest workflows
 
 genblaze's pipeline surface is generation-shaped by default — you compose
@@ -190,12 +190,17 @@ index is opt-in and tenant-scoped.
 
 ## Manifest determinism
 
-`Pipeline.ingest` sorts the input assets by `asset_id` before building
-steps. The resulting manifest's `canonical_hash` is therefore **invariant
-under permuted input order** — calling `ingest(assets=[a, b, c])` and
-`ingest(assets=[c, a, b])` with the same asset set produces a
-byte-identical manifest hash (modulo `Run.name` and a few other
-deliberately-included caller-provenance fields):
+`Pipeline.ingest` sorts the input assets by content — not `asset_id` — before
+building steps, using the same fields that feed the manifest hash (`sha256`,
+`media_type`, `size_bytes`, dimensions, ...; see `asset_provenance_key` in
+`genblaze_core.models.manifest`). `asset_id` defaults to a random UUID and is
+excluded from the hash payload (schema 1.4+), so sorting by it would reshuffle
+same-content batches on every call. Sorting by content instead means the
+resulting manifest's `canonical_hash` is **invariant under permuted input
+order, and even across fresh `Asset` instances with new random ids** —
+calling `ingest(assets=[a, b, c])` and `ingest(assets=[c, a, b])` with the
+same asset content produces a byte-identical manifest hash (modulo
+`Run.name` and a few other deliberately-included caller-provenance fields):
 
 ```python
 import itertools
@@ -207,7 +212,8 @@ assert len(hashes) == 1  # invariant holds across all 6 permutations
 ```
 
 This matters for reproducibility: a DAM bulk-import that retries with a
-different scan order still produces the same provenance fingerprint.
+different scan order — or rebuilds fresh `Asset` objects for the same
+underlying files — still produces the same provenance fingerprint.
 
 ## INGEST vs IMPORT
 

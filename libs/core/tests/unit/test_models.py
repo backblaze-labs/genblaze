@@ -749,6 +749,24 @@ def test_equivalent_reruns_produce_same_hash():
     assert m1.canonical_hash == m2.canonical_hash
 
 
+def test_asset_provenance_key_ignores_asset_id_and_url():
+    """Regression for issue #76: the content-based sort key used by
+    Pipeline.ingest must tie for assets that differ only in asset_id/url —
+    the same fields _hash_payload excludes — and differ when actual
+    hash-relevant content (sha256) differs."""
+    from genblaze_core.models.manifest import asset_provenance_key
+
+    a1 = Asset(url="https://x/a.mp3", media_type="audio/mp3", sha256="a" * 64, size_bytes=1)
+    a2 = Asset(
+        url="https://x/different.mp3", media_type="audio/mp3", sha256="a" * 64, size_bytes=1
+    )
+    assert a1.asset_id != a2.asset_id
+    assert asset_provenance_key(a1) == asset_provenance_key(a2)
+
+    b = Asset(url="https://x/b.mp3", media_type="audio/mp3", sha256="b" * 64, size_bytes=1)
+    assert asset_provenance_key(a1) != asset_provenance_key(b)
+
+
 def test_old_v1_3_manifest_still_verifies():
     """Manifests created under v1.3 (IDs included in hash) still verify."""
     from genblaze_core.models.manifest import parse_manifest

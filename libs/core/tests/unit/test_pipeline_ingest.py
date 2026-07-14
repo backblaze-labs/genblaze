@@ -307,6 +307,41 @@ class TestCanonicalHashDeterminism:
         r2 = Pipeline.ingest(assets=[a, b], source="t")
         assert r1.manifest.canonical_hash != r2.manifest.canonical_hash
 
+    def test_hash_stable_across_fresh_asset_batches_with_same_content(self):
+        """Regression for issue #76.
+
+        ``asset_id`` defaults to a random UUID and is excluded from the hash
+        payload (schema 1.4+), so sorting ingested assets by ``asset_id``
+        reshuffles same-content batches on every call and produces different
+        canonical hashes. Rebuilding fresh ``Asset`` instances (new random
+        asset_id each call, same url/media_type/sha256/size_bytes) must
+        converge on ONE canonical_hash across repeated ingests.
+        """
+
+        def _fresh_batch() -> list[Asset]:
+            # Distinct content per asset (different sha256/size) so a
+            # content-based sort actually orders them — unlike the
+            # permutation test above, ties here would mask the bug.
+            return [
+                Asset(
+                    url="https://x/a.mp3", media_type="audio/mp3", sha256="a" * 64, size_bytes=100
+                ),
+                Asset(
+                    url="https://x/b.mp3", media_type="audio/mp3", sha256="b" * 64, size_bytes=200
+                ),
+                Asset(
+                    url="https://x/c.mp3", media_type="audio/mp3", sha256="c" * 64, size_bytes=300
+                ),
+            ]
+
+        hashes = {
+            Pipeline.ingest(
+                assets=_fresh_batch(), source="t", name="ingest"
+            ).manifest.canonical_hash
+            for _ in range(10)
+        }
+        assert len(hashes) == 1, f"hash unstable across fresh asset_id batches: {hashes}"
+
 
 # ---------------------------------------------------------------------------
 # Edge cases + error handling

@@ -20,8 +20,10 @@ The resulting :class:`PipelineResult` carries:
   ``sha256``, ``size_bytes`` populated by ``sink.put_asset``;
 * a canonical-hashable :class:`Manifest` whose hash is stable
   across permuted input orders — the ingest factory sorts the input
-  assets by ``asset_id`` before building steps so callers can pass
-  the same set in any order and get a byte-identical manifest.
+  assets by content (:func:`asset_provenance_key`, not the random
+  ``asset_id``) before building steps so callers can pass the same
+  set in any order — or as fresh ``Asset`` instances with new random
+  ids — and get a byte-identical manifest.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from genblaze_core._utils import normalize_tenant_id
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, RunStatus, StepStatus, StepType
-from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.manifest import Manifest, asset_provenance_key
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.pipeline.result import PipelineResult
@@ -124,10 +126,15 @@ def ingest_assets(
             "or skip the call entirely."
         )
 
-    # Sort by asset_id so the canonical hash is stable across permuted
-    # input orders. The plan's hash-determinism gate ("same asset set
-    # in different orders → byte-identical manifest") relies on this.
-    sorted_assets = sorted(asset_list, key=lambda a: a.asset_id)
+    # Sort by content — not asset_id — so the canonical hash is stable
+    # across permuted input orders. asset_id defaults to a random UUID and
+    # is excluded from the hash payload (schema 1.4+), so sorting by it
+    # would reshuffle same-content batches on every call. asset_provenance_key
+    # sorts on exactly the fields that feed the hash, so fresh Asset batches
+    # with identical content always converge on the same order. The plan's
+    # hash-determinism gate ("same asset set in different orders →
+    # byte-identical manifest") relies on this.
+    sorted_assets = sorted(asset_list, key=asset_provenance_key)
 
     metadata_template: dict[str, Any] = {"source": source}
     if source_metadata:
