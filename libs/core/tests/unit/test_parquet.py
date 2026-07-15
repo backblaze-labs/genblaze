@@ -151,6 +151,39 @@ def test_idempotent_write_when_content_changes_moves_partition(tmp_path: Path):
     assert pq.ParquetFile(assets_files[0]).read().num_rows == 2
 
 
+def test_new_run_write_does_not_scan_unrelated_partitions(tmp_path: Path, monkeypatch):
+    """A brand-new run_id must resolve via the run_id -> partition index (a
+    single file stat) rather than a full-tree glob over runs/, even once the
+    tree already holds many unrelated partitions (#150)."""
+    sink = ParquetSink(tmp_path / "out")
+
+    # Populate several unrelated partitions (distinct run_ids/tenants).
+    for i in range(5):
+        step = Step(provider="test", model="m")
+        run = Run(steps=[step], tenant_id=f"tenant-{i}")
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+        sink.write_run(run, manifest)
+
+    glob_calls: list[str] = []
+    original_glob = Path.glob
+
+    def spy_glob(self, pattern, *args, **kwargs):
+        glob_calls.append(pattern)
+        return original_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", spy_glob)
+
+    # A genuinely new run_id — must never trigger a full-tree glob.
+    new_step = Step(provider="test", model="m")
+    new_run = Run(steps=[new_step], tenant_id="tenant-new")
+    new_manifest = Manifest(run=new_run)
+    new_manifest.compute_hash()
+    sink.write_run(new_run, new_manifest)
+
+    assert glob_calls == []
+
+
 def test_write_run_applies_embed_policy_redaction(tmp_path: Path):
     """ParquetSink redacts prompt, params, and seed when policy requires it."""
     step = Step(

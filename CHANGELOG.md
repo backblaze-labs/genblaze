@@ -123,6 +123,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `output_asset_ids_with_invalid_metadata()` is the new verification
   boundary that surfaces out-of-spec metadata on loaded data, mirroring
   `output_asset_ids_missing_sha256()`.
+- **Fixed** `ParquetSink.write_run()` globbed the entire `runs/` tree on
+  every write for a brand-new `run_id`, not just the idempotent-rewrite
+  case the #72 fix targeted — an O(number of partitions) cost paid on every
+  single write over a long-lived dataset (#150). `write_run()` now
+  maintains a persisted `run_id -> partition` index (one small file per
+  `run_id`, so concurrent writers sinking different `run_id`s never race on
+  a shared file) and only touches the file for that specific `run_id`
+  instead of walking the tree; an existing `runs/` tree without an index
+  yet is backfilled once, at the first `ParquetSink` construction, not on
+  every write.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

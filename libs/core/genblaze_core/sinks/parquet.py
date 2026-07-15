@@ -35,6 +35,14 @@ from genblaze_core.sinks.base import BaseSink
 # Only allow safe characters in partition path components
 _SAFE_PARTITION = re.compile(r"[^A-Za-z0-9_\-.]")
 
+# run_id -> partition index, one small file per run_id under this directory
+# (a sibling of runs/steps/assets, not inside them, so Hive-style dataset
+# readers scanning those trees never see it). Sharding by run_id — rather
+# than one shared index file — means concurrent writers sinking *different*
+# run_ids into the same base_dir (e.g. parallel `genblaze index` invocations)
+# never race on the same file (#150).
+_INDEX_DIRNAME = "_run_index"
+
 
 def _atomic_write_table(table: pa.Table, dest: Path) -> None:
     """Write a Parquet table atomically via temp file + os.replace."""
@@ -43,6 +51,22 @@ def _atomic_write_table(table: pa.Table, dest: Path) -> None:
     os.close(fd)
     try:
         pq.write_table(table, tmp)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_bytes(data: bytes, dest: Path) -> None:
+    """Write bytes atomically via temp file + os.replace (mirrors _atomic_write_table)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
         os.replace(tmp, dest)
     except BaseException:
         try:
@@ -66,10 +90,55 @@ class ParquetSink(BaseSink):
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._policy = policy
         self._lock = threading.Lock()
+        self._index_dir = self.base_dir / _INDEX_DIRNAME
+        self._bootstrap_run_index()
 
     def _sanitize(self, value: str) -> str:
         """Sanitize a string for use in partition paths (prevent traversal)."""
         return _SAFE_PARTITION.sub("_", value)
+
+    def _bootstrap_run_index(self) -> None:
+        """One-time backfill of the run_id -> partition index from an
+        existing ``runs/`` tree (e.g. the first use after upgrading past
+        #150). The index directory's mere existence marks this done, so a
+        brand-new or already-bootstrapped ``base_dir`` costs a single
+        directory stat and never pays for a full-tree glob again.
+        """
+        if self._index_dir.exists():
+            return
+        runs_dir = self.base_dir / "runs"
+        if runs_dir.exists():
+            for sentinel in runs_dir.glob("**/*.parquet"):
+                partition = sentinel.relative_to(runs_dir).parent.as_posix()
+                self._write_run_index_entry(sentinel.stem, partition)
+        self._index_dir.mkdir(parents=True, exist_ok=True)
+
+    def _run_index_entry_path(self, run_id: str) -> Path:
+        return self._index_dir / f"{run_id}.partition"
+
+    def _lookup_run_partition(self, run_id: str) -> str | None:
+        """Return the partition this run_id was last sunk under, or None if unknown."""
+        try:
+            return self._run_index_entry_path(run_id).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
+    def _write_run_index_entry(self, run_id: str, partition: str) -> None:
+        """Persist run_id -> partition as its own small file (see _INDEX_DIRNAME)."""
+        _atomic_write_bytes(partition.encode("utf-8"), self._run_index_entry_path(run_id))
+
+    def _remove_partition_files(self, run_id: str, partition: str) -> None:
+        """Remove a stale run's steps/assets/runs files under `partition`.
+
+        Steps/assets removed before runs (mirroring "runs is written last" on
+        the write side) so an interrupted cleanup is safely retryable: if a
+        crash lands mid-cleanup, the stale runs sentinel is still present, a
+        retry's probe finds it again, and the whole stale partition is
+        cleaned from scratch — never leaving orphaned steps/assets with no
+        sentinel pointing at them.
+        """
+        for table in ("steps", "assets", "runs"):
+            (self.base_dir / table / partition / f"{run_id}.parquet").unlink(missing_ok=True)
 
     def _partition_path(self, run: Run) -> str:
         date_str = run.created_at.strftime("%Y-%m-%d")
@@ -111,26 +180,14 @@ class ParquetSink(BaseSink):
         # partition, so it misses a sentinel written earlier under a
         # *different* partition, letting a second `runs` row and duplicate
         # `steps`/`assets` rows accumulate for one run_id (#72). Only pay for
-        # a full-tree probe once the fast path misses (new run_id or a moved
-        # partition): find any prior sentinel and remove its partition's
-        # files first — the run_id, not the partition, is the identity, and
-        # the freshest write should win.
-        # Materialize before deleting — mutating the tree mid-walk while a
-        # generator is still traversing it is unsafe.
-        stale_sentinels = list((self.base_dir / "runs").glob(f"**/{run.run_id}.parquet"))
-        for stale_runs_path in stale_sentinels:
-            stale_partition = stale_runs_path.relative_to(self.base_dir / "runs").parent
-            # Delete steps/assets before the runs sentinel itself (mirroring
-            # "runs is written last" on the write side) so an interrupted
-            # cleanup is safely retryable: if a crash lands mid-cleanup, the
-            # stale runs sentinel is still present, a retry's probe finds it
-            # again, and the whole stale partition is cleaned from scratch —
-            # never leaving orphaned steps/assets with no sentinel pointing
-            # at them.
-            for table in ("steps", "assets", "runs"):
-                (self.base_dir / table / stale_partition / f"{run.run_id}.parquet").unlink(
-                    missing_ok=True
-                )
+        # a lookup once the fast path misses (new run_id or a moved
+        # partition): find any prior sentinel via the persisted run_id ->
+        # partition index instead of globbing the whole tree on every write
+        # (#150) — a genuinely new run_id has no index entry and costs a
+        # single file stat.
+        stale_partition = self._lookup_run_partition(run.run_id)
+        if stale_partition is not None and stale_partition != partition:
+            self._remove_partition_files(run.run_id, stale_partition)
 
         # --- steps table (written before runs) ---
         step_rows = []
@@ -222,6 +279,16 @@ class ParquetSink(BaseSink):
             "created_at": run.created_at.isoformat(),
         }
         _atomic_write_table(pa.Table.from_pylist([run_row]), runs_path)
+
+        # Record the partition this run_id now lives at *after* the sentinel
+        # write succeeds, so the index only ever reflects confirmed on-disk
+        # state. As with the stale-partition cleanup above, this is not a
+        # cross-file transaction: a crash between the sentinel write and this
+        # persist leaves this run_id's index entry stale (pointing at the
+        # *previous* partition) — the same accepted trade-off already
+        # documented for the sentinel-cleanup step, and just as narrow: the
+        # run's own data is fully and correctly sunk either way.
+        self._write_run_index_entry(run.run_id, partition)
 
     def close(self) -> None:
         pass
