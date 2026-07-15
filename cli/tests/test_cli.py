@@ -58,6 +58,28 @@ def _create_url_only_manifest(*, schema_version: str | None = None) -> Manifest:
     return manifest
 
 
+def _url_only_manifest_with_bad_metadata() -> Manifest:
+    """A hash-valid, sha256-valid manifest whose sole output asset carries an
+    out-of-spec dimension (width=0) — the shape parse_manifest() tolerates on
+    load but verify() must reject (#149). Injected via object.__setattr__ to
+    bypass construction validation, mirroring a foreign-authored manifest."""
+    manifest = _create_url_only_manifest()
+    asset = manifest.run.steps[0].assets[0]
+    object.__setattr__(asset, "sha256", "a" * 64)  # valid, so only metadata fails
+    object.__setattr__(asset, "width", 0)
+    manifest.compute_hash()
+    return manifest
+
+
+def _combined_output(result) -> str:
+    """CLI stdout+stderr, robust across Click versions. Click >=8.2 captures
+    stderr separately; 8.1.x mixes it into output and raises on ``.stderr``."""
+    try:
+        return result.output + result.stderr
+    except ValueError:
+        return result.output
+
+
 def test_extract_json(tmp_path: Path) -> None:
     png = _create_embedded_png(tmp_path)
     runner = CliRunner()
@@ -94,6 +116,7 @@ def test_extract_summary(tmp_path: Path) -> None:
     assert "Run ID:" in result.output
     assert "Hash OK:" in result.output
     assert "Output sha256:" in result.output
+    assert "Output metadata:" in result.output
     assert "Verified:" in result.output
 
 
@@ -242,6 +265,75 @@ def test_verify_rejects_malformed_output_sha256(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "1 output asset(s) missing or malformed sha256" in combined
+
+
+def test_verify_rejects_out_of_spec_asset_metadata(tmp_path: Path) -> None:
+    """#149/#155: a manifest with a valid hash and valid sha256 but out-of-spec
+    asset metadata (e.g. width=0, which parse_manifest() tolerates on load) must
+    fail `verify`, so the CLI verdict agrees with Manifest.verify()/report.ok
+    rather than reporting OK because only sha256 was checked."""
+    manifest = _url_only_manifest_with_bad_metadata()
+    # Assert the model layer first so this pins the boundary even in a Click
+    # build where CLI output parsing behaves differently.
+    assert not manifest.verify()
+
+    png_path = tmp_path / "bad-metadata.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    png_path.with_suffix(png_path.suffix + ".genblaze.json").write_text(
+        manifest.to_canonical_json(),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", str(png_path)])
+    combined = _combined_output(result)
+
+    assert result.exit_code != 0
+    assert "out-of-spec" in combined
+    # Prove it's the metadata boundary, not a sha256 or hash failure.
+    assert "missing or malformed sha256" not in combined
+    assert "hash mismatch" not in combined
+
+
+def test_verify_hash_only_skips_metadata_check(tmp_path: Path) -> None:
+    """--hash-only must short-circuit before the metadata check: an out-of-spec
+    manifest whose hash still matches exits 0 (metadata lives inside the hash
+    payload, so hash-only stays an honest integrity-only claim). Pins the check
+    order so a refactor can't move the metadata guard ahead of the early return."""
+    manifest = _url_only_manifest_with_bad_metadata()
+    png_path = tmp_path / "bad-metadata-hash-only.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    png_path.with_suffix(png_path.suffix + ".genblaze.json").write_text(
+        manifest.to_canonical_json(),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--hash-only", str(png_path)])
+
+    assert result.exit_code == 0
+    assert "manifest hash verified" in result.output
+
+
+def test_extract_summary_surfaces_out_of_spec_metadata(tmp_path: Path) -> None:
+    """#149/#155: `extract --format summary` itemizes invalid metadata so a
+    `Verified: False` verdict always has a visible reason and agrees with
+    `verify` (mirrors the sha256 parity test)."""
+    manifest = _url_only_manifest_with_bad_metadata()
+    png_path = tmp_path / "bad-metadata-extract.png"
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(png_path)
+    png_path.with_suffix(png_path.suffix + ".genblaze.json").write_text(
+        manifest.to_canonical_json(),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["extract", "--format", "summary", str(png_path)])
+
+    assert result.exit_code == 0
+    assert "Output sha256: 0 missing or malformed" in result.output
+    assert "Output metadata: 1 out of spec" in result.output
+    assert "Verified:  False" in result.output
 
 
 def test_verify_reports_legacy_unverified_assets(tmp_path: Path) -> None:

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-20 -->
+<!-- last_verified: 2026-07-15 -->
 # Feature: Manifest Provenance
 
 ## Purpose
@@ -10,7 +10,7 @@ Produce hash-verified, canonical JSON manifests that capture full provenance of 
 
 ## Core Functions
 - `Manifest.from_run(run)` — Construct manifest from run and compute hash
-- `Manifest.verify()` — Validate canonical_hash matches content and every output asset declares a valid lowercase `sha256`
+- `Manifest.verify()` — Validate canonical_hash matches content, every output asset declares a valid lowercase `sha256`, and every output asset's numeric/`media_type` metadata is in spec
 - `Manifest.verify_hash()` — Validate only that canonical_hash matches the canonical payload
 - `canonical_json()` — Deterministic serialization (sorted keys, normalized floats, NFC unicode)
 - `Manifest.to_embed_json()` — Policy-filtered JSON for embedding
@@ -34,12 +34,16 @@ Produce hash-verified, canonical JSON manifests that capture full provenance of 
 - SHA-256 hash computed over canonical bytes
 - Hash stored as `canonical_hash`
 - `verify_hash()` re-serializes and compares the canonical hash
-- `verify()` calls `verify_hash()` and returns `False` when any output asset lacks a valid lowercase `sha256`
+- `verify()` calls `verify_hash()` and returns `False` when any output asset lacks a valid lowercase `sha256` or carries out-of-spec numeric/`media_type` metadata (`output_asset_ids_with_invalid_metadata()`, #149)
 
 ## Edge Cases
 - Float precision differences → normalization ensures consistency
 - Unicode variants → NFC normalization before hashing
 - Empty run (no steps) → valid manifest with empty steps list
+- Older/foreign manifest with an out-of-spec asset field (`width=0`, a
+  non-MIME `media_type`, ...) → `parse_manifest()` loads it tolerantly
+  (`Asset` still rejects these on ordinary construction); `verify()` is the
+  boundary that surfaces the problem instead of a load-time crash (#149)
 
 ## Hash payload vs canonical JSON
 
@@ -68,7 +72,7 @@ authoritative reference.
 ### Self-verification flow
 1. Read the embedded / sidecar manifest JSON (full canonical form).
 2. Parse with `parse_manifest(json.loads(text))` so schema migrations and manifest invariants are enforced.
-3. Call `manifest.verify_hash()` to check only canonical payload integrity, or `manifest.verify()` to also reject URL-only output assets and malformed sha256 declarations.
+3. Call `manifest.verify_hash()` to check only canonical payload integrity, or `manifest.verify()` to also reject URL-only output assets, malformed sha256 declarations, and out-of-spec asset metadata.
 4. If you will fetch asset URLs, hash those fetched bytes separately and compare them with `asset.sha256`; manifest verification does not perform network reads.
 
 ### Trust modes

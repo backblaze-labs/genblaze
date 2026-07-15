@@ -118,6 +118,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the fast path misses, and removes a stale partition's files
   (`steps`/`assets` before `runs`, so an interrupted cleanup is safely
   retryable) before writing the fresh ones.
+- **Fixed** the numeric/`media_type` field constraints added for #78
+  (`width`/`height`/`bitrate`/`sample_rate`/`channels` `gt=0`,
+  `duration`/`frame_rate` finite, `media_type` shape) were enforced on the
+  manifest **load** path too, so an older or foreign-authored manifest
+  carrying a previously-valid value (e.g. `width=0` as an "unknown
+  dimensions" placeholder, or a non-MIME `media_type`) raised
+  `ValidationError` from `parse_manifest()`, breaking `verify`/`index`/
+  `replay` on files that used to load fine (#149). These fields now follow
+  the same tolerant-load pattern already established for `sha256`:
+  constraints still reject impossible values on ordinary construction, but
+  `parse_manifest()` validates with `context={"tolerant_load": True}` so a
+  tolerant load never crashes. `Manifest.verify()` /
+  `output_asset_ids_with_invalid_metadata()` is the new verification
+  boundary that surfaces out-of-spec metadata on loaded data, mirroring
+  `output_asset_ids_missing_sha256()`.
+- **Fixed** `ParquetSink.write_run()` globbed the entire `runs/` tree on
+  every write for a brand-new `run_id`, not just the idempotent-rewrite
+  case the #72 fix targeted — an O(number of partitions) cost paid on every
+  single write over a long-lived dataset (#150). `write_run()` now
+  maintains a persisted `run_id -> partition` index (one small file per
+  `run_id`, so concurrent writers sinking different `run_id`s never race on
+  a shared file) and only touches the file for that specific `run_id`
+  instead of walking the tree. An existing `runs/` tree without an index
+  yet is backfilled once, atomically (built in a temp directory and
+  `os.replace`d into place so a crash mid-backfill can never leave a
+  partially-populated index that a later `ParquetSink` mistakes for
+  complete), at the first `ParquetSink` construction, not on every write.
+- **Fixed** the #72 idempotency fix still silently dropped a same-partition
+  re-sink whose content changed — e.g. a resume that completes more steps
+  without changing the modality/provider set, so the partition path (and
+  therefore the fast-path check) is unchanged (#152). `write_run()` now
+  compares the existing sentinel's `canonical_hash` against the new
+  manifest's before short-circuiting; only a byte-for-byte repeat is a
+  no-op, and a genuine content change rewrites the `runs`/`steps`/`assets`
+  rows in place. The no-op path also refreshes the run's index entry, so a
+  prior write that crashed between writing its sentinel and persisting its
+  index entry self-heals on the next call for that `run_id` instead of
+  only on a future rewrite.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the
@@ -260,6 +298,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to write the manifest JSON to a file, matching the documented usage.
 - **Changed** `--version` now reports `genblaze-cli` rather than `genblaze`,
   so the CLI's version is no longer mistaken for the umbrella package version.
+- **Fixed** `verify` reported `OK` (exit 0) for a manifest whose asset
+  metadata is out of spec (e.g. a `width=0` value a tolerant load accepts)
+  even though `Manifest.verify()` rejects it — the command checked only
+  `hash_ok` and sha256, never the new `invalid_metadata_ids` boundary (#149).
+  `verify` now fails such a manifest with a clear message, and `extract
+  --format summary` gains an `Output metadata:` line so a `Verified: False`
+  verdict always shows its reason.
 
 ### genblaze (umbrella)
 
