@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of at construction keeps `parse_manifest()` from crashing on
   older or foreign-authored manifests. `Asset.set_hash()` is unaffected —
   it only ever produces valid hashes and non-negative sizes.
+- **Fixed** `ParquetSink` double-counted a `run_id` when its content changed
+  between sinks — e.g. a resume that completes more steps (#72). The
+  idempotency sentinel path (`runs/{partition}/{run_id}.parquet`) is derived
+  from run content (step modality/provider set), so a same-partition
+  existence check missed a sentinel written earlier under a *different*
+  partition, letting a second `runs` row and duplicate `steps`/`assets` rows
+  accumulate for one `run_id`. `write_run()` now probes every partition for
+  an existing sentinel: an exact-path match stays a no-op, and a match
+  elsewhere removes the stale partition's files first so the freshest write
+  wins and the run collapses to exactly one location.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

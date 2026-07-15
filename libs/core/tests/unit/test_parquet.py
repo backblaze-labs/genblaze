@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pyarrow.parquet as pq
-from genblaze_core.models import EmbedPolicy, Manifest, PromptVisibility, Run, Step
+from genblaze_core.models import EmbedPolicy, Manifest, Modality, PromptVisibility, Run, Step
 from genblaze_core.models.asset import Asset
 from genblaze_core.sinks.parquet import ParquetSink
 
@@ -99,6 +99,56 @@ def test_idempotent_write(tmp_path: Path):
 
     parquet_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
     assert len(parquet_files) == 1
+
+
+def test_idempotent_write_when_content_changes_moves_partition(tmp_path: Path):
+    """Re-sinking a run_id whose content changed (moving the content-derived
+    partition) must not create duplicate runs/steps/assets rows (#72).
+
+    This is the normal resume/CLI-replay shape: a first partial sink, then a
+    later sink once more steps complete. The partition is derived from the
+    step modality/provider set, so it moves between the two writes even
+    though run_id — the documented idempotency key — is unchanged.
+    """
+    step1 = Step(provider="replicate", model="m", modality=Modality.IMAGE)
+    step1.assets.append(Asset(url="https://example.com/out.png", media_type="image/png"))
+    run = Run(steps=[step1])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+
+    sink = ParquetSink(tmp_path / "out")
+    sink.write_run(run, manifest)
+    stale_runs_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
+    assert len(stale_runs_files) == 1
+
+    # Same run_id gains a second step with a different modality/provider —
+    # the content-derived partition path for this run_id now differs.
+    step2 = Step(provider="elevenlabs", model="m2", modality=Modality.AUDIO)
+    step2.assets.append(Asset(url="https://example.com/out.mp3", media_type="audio/mp3"))
+    run.steps.append(step2)
+    manifest2 = Manifest(run=run)
+    manifest2.compute_hash()
+    sink.write_run(run, manifest2)
+
+    runs_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
+    steps_files = list((tmp_path / "out" / "steps").rglob("*.parquet"))
+    assets_files = list((tmp_path / "out" / "assets").rglob("*.parquet"))
+
+    # Exactly one runs sentinel for this run_id — the stale one under the
+    # old partition was removed, not left alongside a new duplicate.
+    assert len(runs_files) == 1
+    assert runs_files != stale_runs_files
+    run_table = pq.ParquetFile(runs_files[0]).read()
+    assert run_table.num_rows == 1
+    assert run_table.column("run_id")[0].as_py() == run.run_id
+    assert run_table.column("step_count")[0].as_py() == 2
+
+    # steps/assets tables reflect the latest write only — no duplicates
+    # accumulated from the first (now-stale) partial write.
+    assert len(steps_files) == 1
+    assert pq.ParquetFile(steps_files[0]).read().num_rows == 2
+    assert len(assets_files) == 1
+    assert pq.ParquetFile(assets_files[0]).read().num_rows == 2
 
 
 def test_write_run_applies_embed_policy_redaction(tmp_path: Path):

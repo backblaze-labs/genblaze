@@ -96,10 +96,27 @@ class ParquetSink(BaseSink):
         partition = self._partition_path(run)
 
         # Idempotency: runs table is written last as a completion sentinel.
-        # If it exists, all tables are already written.
+        # The partition is derived from run *content* (step modality/provider
+        # set), which can change between sinks of the same run_id — e.g. a
+        # resume that completes more steps, or a CLI replay re-indexing a
+        # richer manifest. A same-path check alone would then miss the prior
+        # sentinel (it now lives under a different partition), letting a
+        # second `runs` row and duplicate `steps`/`assets` rows accumulate
+        # for one run_id (#72). Probe every partition for an existing
+        # sentinel instead: an exact-path match is a pure no-op re-write;
+        # a match elsewhere means content changed since the last sink, so
+        # remove the stale partition's files first — the run_id, not the
+        # partition, is the identity, and the freshest write should win.
         runs_path = self.base_dir / "runs" / partition / f"{run.run_id}.parquet"
-        if runs_path.exists():
+        existing_sentinels = list((self.base_dir / "runs").glob(f"**/{run.run_id}.parquet"))
+        if runs_path in existing_sentinels:
             return
+        for stale_runs_path in existing_sentinels:
+            stale_partition = stale_runs_path.relative_to(self.base_dir / "runs").parent
+            for table in ("runs", "steps", "assets"):
+                (self.base_dir / table / stale_partition / f"{run.run_id}.parquet").unlink(
+                    missing_ok=True
+                )
 
         # --- steps table (written before runs) ---
         step_rows = []

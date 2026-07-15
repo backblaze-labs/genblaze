@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-06 -->
+<!-- last_verified: 2026-07-14 -->
 # Feature: Parquet Sink
 
 ## Purpose
@@ -29,10 +29,18 @@ Write structured run/step/asset data to partitioned Parquet files for analytics 
 - `write_run()` flattens run/steps/assets into tabular rows
 - When `policy` is set, redacts prompt/params/seed per `EmbedPolicy` rules before writing step rows
 - Writes to partitioned Parquet using pyarrow
-- Idempotent: skips if `{run_id}.parquet` already exists
+- Idempotent by `run_id`: the partition is derived from run content
+  (step modality/provider set), so it can move between sinks of the same
+  `run_id` (e.g. a resume that completes more steps). A same-partition
+  match is a no-op; a match under a *different* partition means content
+  changed since the last sink — the stale partition's `runs`/`steps`/`assets`
+  files are removed before writing the fresh ones, so exactly one row set
+  exists per `run_id` at all times (#72)
 
 ## Edge Cases
-- Duplicate `run_id` → write skipped (idempotent)
+- Duplicate `run_id`, same content → write skipped (idempotent)
+- Duplicate `run_id`, changed content (moved partition) → stale partition's
+  files are replaced by the new write, not duplicated
 - Missing pyarrow → `ImportError` at sink creation (optional dependency)
 - Concurrent writes → thread-safe via internal lock
 - `EmbedPolicy` with `prompt_visibility=PRIVATE` → prompts written as empty strings
