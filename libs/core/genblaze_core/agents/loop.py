@@ -21,7 +21,7 @@ import asyncio
 import logging
 import queue
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from genblaze_core.agents.evaluator import EvaluationResult, Evaluator
 from genblaze_core.exceptions import GenblazeError
@@ -99,13 +99,6 @@ class AgentLoop:
             retry of persistent failures (auth, network, model not found).
     """
 
-    # Holds the "active" stream emitter for whichever thread/task is
-    # currently inside stream()/astream()'s worker. ContextVar-backed (not
-    # an instance attribute) so concurrent stream()/astream() calls on the
-    # SAME AgentLoop instance don't cross-deliver events (#79). See
-    # EmitterSlot's docstring for why this needs no additional locking.
-    _emitter_slot: ClassVar[EmitterSlot] = EmitterSlot("genblaze_agent_emitter")
-
     def __init__(
         self,
         pipeline_factory: Callable[[AgentContext], Pipeline],
@@ -122,6 +115,19 @@ class AgentLoop:
         self._max_iterations = max_iterations
         self._tracer = tracer or NoOpTracer()
         self._stop_on_failure = stop_on_pipeline_failure
+        # Holds the "active" stream emitter for whichever thread/task is
+        # currently inside stream()/astream()'s worker. ContextVar-backed
+        # (not a plain mutable instance attribute) so concurrent
+        # stream()/astream() calls on the SAME AgentLoop instance don't
+        # cross-deliver events (#79). See EmitterSlot's docstring for why
+        # this needs no additional locking.
+        #
+        # Built fresh per instance (NOT a class-level singleton) for the
+        # same reason as Pipeline._emitter_slot (#151): a class-level slot
+        # is one ContextVar shared by every AgentLoop in the process, so a
+        # distinct AgentLoop instance run synchronously inside this one's
+        # stream()/astream() worker would read this instance's emitter.
+        self._emitter_slot = EmitterSlot("genblaze_agent_emitter")
 
     # ------------------------------------------------------------------
     # Public API — run / arun / stream / astream

@@ -19,6 +19,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was therefore strictly weaker than the pre-#146 heuristic-only guard for
   exactly the shapes it targets. `re2` is now an additional gate rather
   than a replacement; the heuristic always runs.
+- **Fixed** a distinct `Pipeline`/`AgentLoop` instance run synchronously inside
+  another instance's `stream()`/`astream()` worker (e.g. a step provider,
+  moderation hook, or callback that drives its own sub-pipeline, or a nested
+  `batch_run()`/`abatch_run()`) no longer cross-delivers its events into the
+  outer consumer's queue (#151). `_emitter_slot` was a `ClassVar[EmitterSlot]`
+  — one `contextvars.ContextVar` shared by every instance in the process —
+  which correctly isolated concurrent `stream()`/`astream()` calls on the
+  *same* instance (#147) but did nothing to isolate *different* instances
+  sharing the same thread/task Context. Both classes now build their own
+  `EmitterSlot` per instance in `__init__`; `Pipeline.__copy__`/`__getstate__`/
+  `__setstate__` always give a clone (including `batch_run()`/`abatch_run()`
+  clones) a fresh, independent slot, never a shared one.
+- **Fixed** `Pipeline.step(metadata=..., prompt_visibility=...)` now route to
+  the corresponding `Step` fields instead of being silently absorbed into
+  provider `params` (#53). `prompt_visibility` is privacy-sensitive — it
+  controls whether the prompt is persisted/cached in cleartext — so silently
+  defaulting every step to `PUBLIC` regardless of what the caller passed was
+  a data-exposure footgun. The reserved-name guard now also rejects
+  `metadata=`/`prompt_visibility=` smuggled through `params={}`, and rejects
+  caller `metadata=` keys that collide with the internal `_fallback_models`/
+  `_input_from` graph-bookkeeping keys. A model-fallback retry no longer wipes
+  caller metadata (previously reassigned `Step.metadata` wholesale instead of
+  merging). `batch_run(items=[...])` routes `metadata`/`prompt_visibility`
+  item keys the same way and rejects the same reserved-key collisions,
+  closing the same two gaps via the batch entry point. A step pre-failed by
+  an invalid `input_from` reference now preserves `prompt_visibility` too
+  (it previously defaulted back to `PUBLIC` on that path, even though the
+  failed `Step` still carries the cleartext prompt). Added
+  `Pipeline.metadata(**kwargs)` for run-scoped metadata (additive, merged
+  into `Run.metadata` via `RunBuilder.meta()`).
+- **Fixed** `Pipeline.batch_run()`'s `max_concurrency` was a documented but
+  dead argument — the sync implementation always ran items in a sequential
+  loop — and `Pipeline.abatch_run(max_concurrency=0)` built an
+  `asyncio.Semaphore` no task could ever acquire, hanging forever instead of
+  failing fast (#83). Both APIs now validate `max_concurrency >= 1`
+  (`GenblazeError` otherwise). `batch_run()`'s `max_concurrency` stays
+  validated-but-inert by design — provider/sink instances are shared across
+  batch clones and not guaranteed thread-safe under real OS-thread
+  concurrency — but an explicit value now emits a one-time `UserWarning`
+  pointing at `abatch_run()` for genuine concurrency; omitting it (the new
+  `None` default) stays silent so existing call sites see no behavior change.
+- **Fixed** `PipelineTemplate.instantiate(variables=...)` rendered `{variable}`
+  substitutions in `StepTemplate.prompt` only; `StepTemplate.params` passed
+  through completely unrendered, so a template with `params={"voice":
+  "{locale}_voice"}` reached the provider with the literal, unsubstituted
+  string (#52). String values inside `params` — top-level or nested in
+  `dict`/`list`/`tuple` — now render through the same `PromptTemplate` engine
+  as `prompt`, so missing-variable behavior and doubled-brace escaping match
+  exactly. **Behavior note:** templates that pass `variables=` AND have a
+  literal identifier-shaped `{...}` string in `params` not meant as a
+  placeholder must now double the braces (`{{...}}`), exactly as `prompt`
+  already required — templates that never pass `variables=` are unaffected.
 - **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
   `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
   emitter was a single mutable instance attribute, so a second concurrent

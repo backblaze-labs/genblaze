@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-08 -->
+<!-- last_verified: 2026-07-15 -->
 # Architecture
 
 ## Components
@@ -91,7 +91,7 @@
 - Providers implement 3-method lifecycle: `submit/poll/fetch_output`
 - Fluent builders: `StepBuilder`, `RunBuilder`; manifests via `Manifest.from_run()`
 - Canonical JSON: deterministic key sorting + float normalization + Unicode NFC + SHA-256
-- Pipeline: `batch_run`/`abatch_run` for multi-prompt execution with semaphore-based concurrency control
+- Pipeline: `batch_run`/`abatch_run` for multi-prompt execution. `abatch_run` uses semaphore-based concurrency control (validated `max_concurrency >= 1`); `batch_run` always executes sequentially — `max_concurrency` is validated but inert (warns once if passed explicitly), since batch clones share provider/sink instances that aren't guaranteed thread-safe under real concurrent execution
 - Pipeline concurrency: `arun()` with `chain=False` runs steps concurrently; `max_concurrency` limits parallelism
 - Pipeline fan-in: `input_from` on `.step()` routes outputs from specific prior steps (by index) into a later step, enabling AV mux patterns
 - Pipeline fan-in safety: `input_from` dependencies must point at succeeded steps with assets; missing producer outputs fail the consumer with `INVALID_INPUT` before provider invocation
@@ -99,6 +99,7 @@
 - `on_submit` callback: fires after `submit()` with `(step_id, prediction_id)` for crash-recovery checkpointing
 - Parameter normalization: `provider.normalize_params()` maps standard names (duration, resolution) to native ones
 - Model fallback chains: `fallback_models` in `.step()` auto-retries with alternate models on `MODEL_ERROR`
+- Step provenance fields: `.step(metadata=..., prompt_visibility=...)` route to dedicated `Step` fields, not provider `params` — reserved-name guard raises if either is smuggled through `params={}` or collides with internal `_fallback_models`/`_input_from` graph metadata. `Pipeline.metadata(**kwargs)` attaches run-scoped metadata additively
 - Cost tracking: pricing is **user-registered** as of 0.3.0 — connectors ship zero hardcoded prices; users register a `PricingStrategy` per slug (or per family) and the base class populates `step.cost_usd` after `fetch_output()`. Per-provider rate sheets live in `docs/reference/pricing-recipes.md`
 - Catalog routing: connectors ship pattern-keyed `ModelFamily` rules instead of slug lists. Each family declares a regex, a `spec_template`, and optionally a `FamilyProbe`. The registry's `validate_model()` returns a typed `ValidationResult` (`OK_AUTHORITATIVE` / `OK_PROVISIONAL` / `NOT_FOUND` / `KNOWN_UNSTABLE`); `Pipeline.preflight()` gates against it. Provider classes declare a `DiscoverySupport` tier (`NATIVE` / `PARTIAL` / `NONE`) so the SDK is honest about what it can verify
 - Capability validation: `ProviderCapabilities.accepts_chain_input` flag; pipeline validates modality + chain compatibility at `run()` time before executing any steps
@@ -112,7 +113,7 @@
 - FFmpeg compositing: `FFmpegCompositor` SyncProvider muxes video + audio into MP4 via ffmpeg subprocess
 - FFmpeg transforms: `FFmpegTransform` SyncProvider for resize, crop, overlay_text, audio_normalize, and format conversion
 - Prompt templates: `PromptTemplate` with top-level format fields for batch workflows, while non-field braces remain literal prompt text and attribute/item traversal is rejected; `batch_run` accepts `list[dict]`
-- Pipeline templates: `PipelineTemplate` serializable pipeline definitions (JSON); `Pipeline.to_template()` for export
+- Pipeline templates: `PipelineTemplate` serializable pipeline definitions (JSON); `Pipeline.to_template()` for export; `instantiate(variables=...)` renders `{placeholder}` substitutions in both `prompt` and string values inside `params` (nested dict/list/tuple included)
 - Moderation hooks: `ModerationHook` ABC with `check_prompt`/`check_output` pre/post-step content screening
 - Webhook notifications: `WebhookNotifier` fire-and-forget HTTP status events via background thread; HTTPS-only URLs validated at construction, DNS-resolved against private IP ranges on first dispatch
 - SSRF protection: shared `check_ssrf()` in `_utils.py` blocks private/loopback IPs; used by both `AssetTransfer` and `WebhookNotifier`

@@ -17,6 +17,7 @@ import asyncio
 import copy
 import logging
 import pickle
+import queue
 import re
 import threading
 import time
@@ -447,3 +448,50 @@ class TestPipelineCopySemantics:
         # across the whole batch — this must NOT change.
         assert clone._warned_preflight_lock is p._warned_preflight_lock
         assert clone._warned_preflight is p._warned_preflight
+
+
+class TestPipelineEmitterSlotCopySemantics:
+    """Issue #151: the per-instance stream emitter slot must never be shared.
+
+    Unlike the WARN-dedup lock/set, ALL THREE copy protocols give the clone a
+    brand-new ``EmitterSlot`` — including shallow ``copy.copy`` (used by
+    batch_run/abatch_run). A shallow-shared emitter slot would let a
+    batch_run() clone read the spawning pipeline's active stream emitter when
+    both run in the same thread/task Context, reintroducing #151's leak in a
+    narrower shape. See ``test_batch_run_clone_inside_outer_stream_does_not_leak``
+    in test_streaming.py for the corresponding behavioral regression test.
+    """
+
+    def test_deepcopy_isolates_emitter_slot(self) -> None:
+        p = Pipeline("orig")
+        clone = copy.deepcopy(p)
+        assert clone._emitter_slot is not p._emitter_slot
+
+    def test_pickle_roundtrip_rebuilds_emitter_slot(self) -> None:
+        p = Pipeline("orig")
+        clone = pickle.loads(pickle.dumps(p))  # noqa: S301 — round-tripping our own pipeline in a test
+        assert isinstance(clone, Pipeline)
+        assert clone._emitter_slot is not p._emitter_slot
+        # The rebuilt slot must be a real, usable EmitterSlot (get() works).
+        assert clone._emitter_slot.get() is None
+
+    def test_shallow_copy_does_not_share_emitter_slot(self) -> None:
+        """Unlike the WARN-dedup lock, batch clones must NOT share the emitter slot."""
+        p = Pipeline("orig")
+        clone = copy.copy(p)
+        assert clone._emitter_slot is not p._emitter_slot
+
+    def test_shallow_copy_clone_does_not_observe_original_emitter(self) -> None:
+        """A clone's ``_event_emitter`` must stay None even when the original
+        has an emitter installed in the SAME thread/task Context — the exact
+        scenario a nested batch_run() invoked from inside stream() hits.
+        """
+        from genblaze_core.pipeline.streaming import QueueEmitter
+
+        p = Pipeline("orig")
+        p.attach_emitter(QueueEmitter(q=queue.Queue()))
+        try:
+            clone = copy.copy(p)
+            assert clone._event_emitter is None
+        finally:
+            p.attach_emitter(None)

@@ -15,6 +15,30 @@ if TYPE_CHECKING:
     from genblaze_core.providers.base import BaseProvider
 
 
+def _render_template_value(value: Any, variables: dict[str, str]) -> Any:
+    """Recursively render ``{variable}`` placeholders in string leaves.
+
+    Walks ``dict``/``list``/``tuple`` containers (mirroring the walk shape
+    ``genblaze_core.pipeline.pipeline._reject_credentials_in_params`` uses for
+    the analogous params scan), rendering string leaves through the same
+    :class:`PromptTemplate` engine used for step prompts — so missing-variable
+    behavior (raises ``ValueError``) and doubled-brace escaping stay identical
+    between prompt and param rendering (#52). Non-string leaves (``int``,
+    ``float``, ``bool``, ``None``, ...) pass through unchanged.
+    """
+    if isinstance(value, str):
+        from genblaze_core.models.prompt_template import PromptTemplate
+
+        return PromptTemplate(template=value).render(**variables)
+    if isinstance(value, dict):
+        return {k: _render_template_value(v, variables) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_render_template_value(v, variables) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_render_template_value(v, variables) for v in value)
+    return value
+
+
 class StepTemplate(BaseModel):
     """Serializable definition of a single pipeline step.
 
@@ -108,8 +132,15 @@ class PipelineTemplate(BaseModel):
         Args:
             providers: Dict mapping provider name → provider instance.
                 If None, uses discover_providers() to auto-discover.
-            variables: Optional dict of {variable} placeholders to render
-                in step prompts via str.format_map().
+            variables: Optional dict of {variable} placeholders to render in
+                step prompts AND string values inside step params (top-level
+                or nested in dict/list/tuple) — e.g. ``params={"voice":
+                "{locale}_voice"}``. Same substitution engine as prompts, so
+                missing-variable behavior and doubled-brace escaping match
+                (#52). Literal ``{...}``-shaped param strings that are not
+                meant to be templates must double their braces (``{{...}}``)
+                when ``variables=`` is passed, exactly as prompts already
+                require.
             tenant_id: Optional tenant ID for the pipeline.
             project_id: Optional project ID for the pipeline.
 
@@ -162,6 +193,14 @@ class PipelineTemplate(BaseModel):
 
                 prompt = PromptTemplate(template=prompt).render(**variables)
 
+            # Render the same {variable} substitution through string leaves of
+            # params — previously only prompt was rendered, so a template's
+            # params={"voice": "{locale}_voice"} reached the provider with
+            # the literal, unsubstituted string (#52).
+            params = st.params
+            if params and variables:
+                params = _render_template_value(params, variables)
+
             pipe.step(
                 provider,
                 model=st.model,
@@ -170,7 +209,7 @@ class PipelineTemplate(BaseModel):
                 step_type=st.step_type,
                 fallback_models=st.fallback_models,
                 input_from=st.input_from,
-                **st.params,
+                **params,
             )
 
         return pipe
