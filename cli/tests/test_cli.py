@@ -6,6 +6,7 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 from genblaze_cli.main import cli
 from genblaze_core._utils import MAX_MANIFEST_BYTES
@@ -13,8 +14,10 @@ from genblaze_core.builders import RunBuilder, StepBuilder
 from genblaze_core.canonical.json import canonical_json
 from genblaze_core.media.png import PngHandler
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
+from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus, StepType
 from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.run import Run
+from genblaze_core.models.step import Step
 from genblaze_core.testing import MockProvider
 from PIL import Image
 
@@ -431,6 +434,30 @@ def test_replay_aborts_when_no_allowlist_and_declined(tmp_path: Path) -> None:
     assert "Aborted" in result.output or "Execute with provider" in result.output
 
 
+def test_replay_reports_clear_error_for_providerless_step(tmp_path: Path) -> None:
+    """A provider-less step (INGEST/IMPORT, valid per Step's own model) must
+    produce a clear ClickException on replay --no-dry-run, not a TypeError
+    from None flowing into sorted()/dict keys/_load_provider (issue #43)."""
+    step = Step(
+        provider=None,
+        model="rss",
+        step_type=StepType.INGEST,
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url="https://example.com/a.png", media_type="image/png")],
+    )
+    run = Run(name="ingest-test", steps=[step])
+    manifest = Manifest.from_run(run)
+    manifest_path = tmp_path / "ingest.json"
+    manifest_path.write_text(manifest.to_canonical_json(), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["replay", str(manifest_path), "--no-dry-run"])
+
+    assert result.exit_code != 0
+    assert "TypeError" not in result.output
+    assert "no provider" in result.output.lower()
+
+
 def test_replay_no_dry_run_exits_nonzero_when_run_fails(tmp_path: Path, monkeypatch) -> None:
     """A replayed failed run must not look successful to automation."""
 
@@ -471,6 +498,40 @@ def test_index(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["index", str(manifest_path), "-o", str(out_dir)])
     assert result.exit_code == 0
     assert "Indexed" in result.output
+
+
+# --- Issue #64: directories rejected with a clear error; non-object JSON is
+# handled consistently across index/replay ---
+
+
+@pytest.mark.parametrize("command", ["extract", "verify", "index", "replay"])
+def test_commands_reject_directory_with_clear_error(tmp_path: Path, command: str) -> None:
+    """A directory argument must fail with click's own actionable error
+    instead of leaking a confusing downstream error (e.g. EmbeddingError or
+    [Errno 21] Is a directory)."""
+    runner = CliRunner()
+    result = runner.invoke(cli, [command, str(tmp_path)])
+    assert result.exit_code != 0
+    assert "is a directory" in result.output.lower()
+
+
+@pytest.mark.parametrize("command", ["index", "replay"])
+def test_non_object_manifest_json_gives_consistent_clean_error(
+    tmp_path: Path, command: str
+) -> None:
+    """A top-level JSON array (valid JSON, invalid manifest shape) must fail
+    with the same clean error for both index and replay, not an internal
+    AttributeError leaked from parse_manifest's dict-only .get() call."""
+    array_path = tmp_path / "not-a-manifest.json"
+    array_path.write_text("[1, 2, 3]", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [command, str(array_path)])
+
+    assert result.exit_code != 0
+    assert "must be a JSON object" in result.output
+    assert "AttributeError" not in result.output
+    assert "'list' object has no attribute 'get'" not in result.output
 
 
 # --- Fix B: extract -o / --output ---

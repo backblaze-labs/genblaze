@@ -434,6 +434,11 @@ def parse_manifest(data: dict) -> Manifest:
     read paths report a deliberate upgrade-required condition rather than a
     generic validation failure.
     """
+    if not isinstance(data, dict):
+        raise ManifestError(
+            f"manifest must be a JSON object, got {type(data).__name__} — "
+            "check that the file contains a single manifest, not a list or scalar"
+        )
     version = data.get("schema_version") or "1.0"
     data["schema_version"] = version
     if version not in SUPPORTED_SCHEMA_VERSIONS:
