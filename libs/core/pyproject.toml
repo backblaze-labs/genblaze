@@ -57,13 +57,15 @@ audio = ["mutagen>=1.47,<1.49"]
 # already on httpx>=0.24 (nvidia, gmicloud, stability-audio, replicate).
 http = ["httpx>=0.24"]
 otel = ["opentelemetry-api>=1.20"]
-# Authoritative linear-time backstop for providers/pattern_safety.py's
-# ReDoS guard (issue #80). Guarded at the import site (try/except
-# ImportError) and absent by default — without it, assert_safe() falls back
-# to the static heuristic. google-re2 ships prebuilt wheels for macOS,
-# manylinux (x86_64/aarch64), and Windows across the Python versions this
-# repo supports, so declaring it here (and in `dev`, below) is low-risk and
-# is what actually activates the authoritative path in CI.
+# Additional linear-time gate for providers/pattern_safety.py's ReDoS guard
+# (issue #80), on top of the static heuristic that always runs regardless
+# (issue #148 — re2 accepting a pattern doesn't make it safe under the
+# stdlib `re` engine actually used at match time). Guarded at the import
+# site (try/except ImportError) and absent by default. google-re2 ships
+# prebuilt wheels for macOS, manylinux (x86_64/aarch64), and Windows across
+# the Python versions this repo supports, so declaring it here (and in
+# `dev`, below) is low-risk and is what actually activates this extra gate
+# in CI.
 re2 = ["google-re2>=1.0"]
 # genblaze_core.testing ships in the wheel and is a public, documented surface
 # (MockProvider/ProviderComplianceTests — see connector test suites and the

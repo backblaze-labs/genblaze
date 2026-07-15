@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Security** `pattern_safety.assert_safe()` no longer skips its
+  catastrophic-backtracking heuristic when `google-re2` is installed (#148).
+  A prior version (#80/#146) returned early once `re2.compile()` succeeded,
+  but `re2` accepts nested-quantifier shapes like `(a+)+$` because *its own*
+  engine matches them in linear time — `ModelFamily.matches()` always
+  matches with stdlib `re`, which still backtracks catastrophically on the
+  same input. Any environment with `re2` installed (CI, `[dev]`, `[re2]`)
+  was therefore strictly weaker than the pre-#146 heuristic-only guard for
+  exactly the shapes it targets. `re2` is now an additional gate rather
+  than a replacement; the heuristic always runs.
 - **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
   `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
   emitter was a single mutable instance attribute, so a second concurrent
