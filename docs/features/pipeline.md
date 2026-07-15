@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-14 -->
+<!-- last_verified: 2026-07-15 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -9,12 +9,13 @@ Fluent API for building and executing multi-step generative media workflows with
 - Integrates with: providers, sinks, media embedding
 
 ## Core Functions
-- `Pipeline.step()` — Add a generation step (supports `fallback_models` for model fallback chains)
+- `Pipeline.step()` — Add a generation step (supports `fallback_models` for model fallback chains, `metadata=`/`prompt_visibility=` for provenance fields — see below)
+- `Pipeline.metadata(**kwargs)` — Attach arbitrary metadata to the resulting `Run` (additive across calls; run-scoped — use `.step(..., metadata={...})` for per-step metadata)
 - `Pipeline.cache(StepCache)` — Enable step-level caching
 - `Pipeline.run(sink=None, fail_fast=True, pipeline_timeout=None, on_step_complete=None)` — Execute all steps synchronously, return `PipelineResult`
 - `Pipeline.arun(sink=None, fail_fast=True, max_concurrency=None, pipeline_timeout=None, on_step_complete=None)` — Execute all steps asynchronously with optional concurrency limit
-- `Pipeline.batch_run(prompts, max_concurrency=5, sink=None, pipeline_timeout=None, on_step_complete=None)` — Execute pipeline independently for each prompt (sync)
-- `Pipeline.abatch_run(prompts, max_concurrency=5, sink=None, pipeline_timeout=None, on_step_complete=None)` — Execute pipeline for each prompt with async concurrency control
+- `Pipeline.batch_run(prompts, max_concurrency=None, sink=None, pipeline_timeout=None, on_step_complete=None)` — Execute pipeline independently for each prompt, **sequentially** (sync). `max_concurrency` is validated (`>= 1`) but does not parallelize — provider/sink instances are shared across batch clones and not guaranteed thread-safe under real concurrent execution. Passing it explicitly emits one `UserWarning` pointing at `abatch_run()`; omitting it (the default) is silent.
+- `Pipeline.abatch_run(prompts, max_concurrency=5, sink=None, pipeline_timeout=None, on_step_complete=None)` — Execute pipeline for each prompt with genuine async concurrency control (validated `>= 1`)
 - `PipelineResult.save()` — Save output with optional manifest embedding
 - `StepCache` — File-based cache keyed by deterministic hash of step inputs; partitioned by `tenant_id` only when a tenant is set (via `Pipeline(tenant_id=...)`, or passed directly to `StepCache.get`/`put`), so a shared cache stays isolated across tenants. Single-tenant keys are unchanged.
 - `StepCompleteEvent` — Dataclass fired via `on_step_complete` after each step finishes
@@ -30,7 +31,9 @@ Fluent API for building and executing multi-step generative media workflows with
 - `max_concurrency`: int | None — Global concurrency limit for async steps
 - `provider`: BaseProvider — Provider adapter for each step
 - `model`, `prompt`, `step_type`: Step configuration
-- Provider-specific parameters: pass as top-level kwargs (`.step(..., duration=10)`) or as a `params={}` dict (`.step(..., params={"duration": 10})`) — both populate `Step.params`. If a key appears in both, the top-level kwarg wins.
+- Provider-specific parameters: pass as top-level kwargs (`.step(..., duration=10)`) or as a `params={}` dict (`.step(..., params={"duration": 10})`) — both populate `Step.params`. If a key appears in both, the top-level kwarg wins. `metadata`/`prompt_visibility` are reserved names inside `params={}` — they raise `GenblazeError` there since each has a dedicated top-level `step()` kwarg instead (below).
+- `metadata`: dict[str, Any] | None — Arbitrary caller metadata (campaign, SKU, locale, reviewer, correlation id, ...) merged into `Step.metadata` alongside internal graph bookkeeping (`_fallback_models`/`_input_from`). Raises if a key collides with those internal keys.
+- `prompt_visibility`: `PromptVisibility` — Prompt redaction level persisted on the `Step` (default `PUBLIC`). Set `PRIVATE` for privacy-sensitive prompts — affects the step cache key and manifest/cache redaction on reuse.
 - `fallback_models`: list[str] | None — Models to try on `MODEL_ERROR` failure
 - `sink`: optional BaseSink — Output destination on `.run()`
 - `pipeline_timeout`: float | None — End-to-end timeout in seconds for the entire pipeline (checked before each step)
@@ -91,7 +94,7 @@ chain-input compatibility) run inline. `run()` behavior is unchanged (sync
 - Cache stores only successful steps — failed steps are not cached
 - Exception-raising tasks in `_gather_fail_fast` → captured as FAILED steps (not dropped), preserving the `step_id` already announced via that step's `step.started` event so cancelled/errored steps correlate correctly with their own stream events
 - Model fallback: on `MODEL_ERROR`, tries each `fallback_models` entry; records `fallback_from`/`fallback_model` in step metadata. Cache stores successful fallback results under the fallback model's key (not the original), so a later run with the fallback model as primary gets a cache hit
-- `batch_run` / `abatch_run`: each prompt gets independent pipeline execution; `max_concurrency` limits parallel runs
+- `batch_run` / `abatch_run`: each prompt gets independent pipeline execution. `abatch_run`'s `max_concurrency` genuinely limits parallel runs (validated `>= 1`, else `GenblazeError`). `batch_run` always executes sequentially — `max_concurrency` is validated but otherwise inert; an explicit value warns (`UserWarning`) and points at `abatch_run`, since provider/sink instances are shared across batch clones and not guaranteed thread-safe under real concurrent execution
 - `pipeline_timeout` raises `PipelineTimeoutError` when wall-clock time exceeds limit (checked before each step, not mid-step)
 - `on_step_complete` fires for both succeeded and failed steps; for concurrent `arun()`, fires after all steps complete
 - `input_from` on `.step()` allows fan-in from specific prior steps by index (overrides chain mode)

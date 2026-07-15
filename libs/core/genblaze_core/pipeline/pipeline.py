@@ -133,6 +133,44 @@ def _resolve_raise_on_failure(
     return False
 
 
+# batch_run()'s historical default — sync batch execution has always been
+# sequential regardless of max_concurrency (see _resolve_batch_max_concurrency).
+_BATCH_MAX_CONCURRENCY_DEFAULT = 5
+
+
+def _resolve_batch_max_concurrency(max_concurrency: int | None) -> int:
+    """Resolve ``batch_run()``'s ``max_concurrency``, warning only when the
+    caller explicitly overrides the silent sequential default (issue #83).
+
+    Sync ``batch_run()`` always executes items sequentially — provider
+    adapters and sinks are not guaranteed thread-safe under real OS-thread
+    parallelism (batch clones share the same provider/sink instances), so
+    genuine concurrency is deliberately NOT implemented here; use
+    ``abatch_run()`` instead. ``max_concurrency=None`` (the caller didn't pass
+    it) silently resolves to the historical default so the overwhelming
+    majority of existing call sites see no behavior change and no warning.
+    Any EXPLICIT value — including literally the same default — is a
+    deliberate ask for concurrency the sync path can't provide, so it warns
+    once, mirroring the ``None``-sentinel convention ``_resolve_raise_on_failure``
+    already uses in this file.
+    """
+    if max_concurrency is None:
+        return _BATCH_MAX_CONCURRENCY_DEFAULT
+    if max_concurrency < 1:
+        raise GenblazeError(f"max_concurrency must be >= 1, got {max_concurrency}")
+    import warnings
+
+    warnings.warn(
+        "Pipeline.batch_run() executes items sequentially regardless of "
+        "max_concurrency — provider/sink objects are not guaranteed thread-safe "
+        "under real concurrent execution. Use Pipeline.abatch_run() for genuine "
+        "concurrent batch execution.",
+        UserWarning,
+        stacklevel=3,
+    )
+    return max_concurrency
+
+
 def _maybe_raise_pipeline_error(
     pipeline_result: PipelineResult,
     completed_steps: list[Step],
@@ -2636,7 +2674,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         prompts: list[str] | list[dict[str, str]] | None = None,
         *,
         items: list[dict[str, Any]] | None = None,
-        max_concurrency: int = 5,
+        max_concurrency: int | None = None,
         sink: BaseSink | None = None,
         fail_fast: bool = True,
         raise_on_failure: bool | None = None,
@@ -2648,8 +2686,8 @@ class Pipeline(Runnable[None, PipelineResult]):
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (sync).
 
-        Each entry produces its own run with cloned steps. Results are
-        returned in input order.
+        Each entry produces its own run with cloned steps, executed
+        SEQUENTIALLY. Results are returned in input order.
 
         Args:
             prompts: Per-item prompt overrides. Strings override step 0's
@@ -2659,7 +2697,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                 fan-outs where each iteration needs different ``seed``,
                 ``aspect_ratio``, ``quality``, etc. Mutually exclusive with
                 ``prompts=``.
-            max_concurrency: Max concurrent pipeline executions (``abatch_run``).
+            max_concurrency: Validated (``>= 1``, else ``GenblazeError``) but
+                otherwise inert — sync ``batch_run()`` always executes items
+                sequentially; provider/sink instances are shared across
+                clones and not guaranteed thread-safe under real concurrent
+                execution (issue #83). Passing an explicit value emits one
+                ``UserWarning`` pointing at :meth:`abatch_run` for genuine
+                concurrency; omitting it (``None``, the default) is silent.
             sink: Optional sink to write each run to. Shared across all items
                 and closed once after the whole batch (not per item), unless the
                 sink opts out via ``_close_with_run = False``.
@@ -2674,6 +2718,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         import copy
 
         self._validate_batch_args(prompts, items)
+        # Validates >= 1 and warns once if the caller explicitly asked for
+        # concurrency this sequential sync path can't provide (#83). The
+        # resolved value has no effect on execution — sync batch_run() has
+        # always run items sequentially, by design (see the helper's docstring).
+        _resolve_batch_max_concurrency(max_concurrency)
         # Resolve the deprecation sentinel ONCE per batch — otherwise each
         # per-item ``pipe.run()`` would re-trigger the warning, swamping logs
         # for callers iterating over hundreds of items. The warning text
@@ -2751,10 +2800,17 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Uses a semaphore to limit concurrency. Either ``prompts=`` or ``items=``
         must be supplied; see :meth:`batch_run` for the semantic difference.
+
+        Raises:
+            GenblazeError: If ``max_concurrency < 1`` — a non-positive value
+                would otherwise build a ``asyncio.Semaphore`` no task can ever
+                acquire, hanging forever instead of failing fast (issue #83).
         """
         import copy
 
         self._validate_batch_args(prompts, items)
+        if max_concurrency < 1:
+            raise GenblazeError(f"max_concurrency must be >= 1, got {max_concurrency}")
         # Resolve the deprecation sentinel ONCE per batch — see batch_run.
         # Same collect-then-raise semantics: each per-item run is silenced,
         # ``BatchPipelineError`` is synthesized after gather completes.

@@ -1052,6 +1052,81 @@ async def test_abatch_run_respects_concurrency() -> None:
     assert len(results) == 4
 
 
+# --- #83 — batch max_concurrency validation + honesty about concurrency ---
+
+
+def test_batch_run_rejects_zero_max_concurrency() -> None:
+    """max_concurrency=0 must fail fast, not silently no-op (issue #83)."""
+    provider = MockProvider()
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        Pipeline("batch-zero").step(provider, model="m").batch_run(
+            ["a"], max_concurrency=0, raise_on_failure=False
+        )
+
+
+def test_batch_run_rejects_negative_max_concurrency() -> None:
+    provider = MockProvider()
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        Pipeline("batch-neg").step(provider, model="m").batch_run(
+            ["a"], max_concurrency=-1, raise_on_failure=False
+        )
+
+
+def test_batch_run_implicit_default_does_not_warn(recwarn) -> None:
+    """Omitting max_concurrency (the common case) must stay silent — only an
+    EXPLICIT value should warn about the sequential-only contract (#83)."""
+    provider = MockProvider()
+    Pipeline("batch-implicit").step(provider, model="m").batch_run(["a"], raise_on_failure=False)
+    assert not any(w.category is UserWarning for w in recwarn.list)
+
+
+def test_batch_run_explicit_max_concurrency_warns(recwarn) -> None:
+    """An explicit max_concurrency (even the historical default value) warns
+    that sync batch_run() doesn't actually parallelize (#83)."""
+    provider = MockProvider()
+    Pipeline("batch-explicit").step(provider, model="m").batch_run(
+        ["a"], max_concurrency=5, raise_on_failure=False
+    )
+    assert any(w.category is UserWarning for w in recwarn.list)
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_rejects_zero_max_concurrency() -> None:
+    """abatch_run(max_concurrency=0) must raise immediately instead of
+    building a Semaphore no task can ever acquire — a permanent hang (#83)."""
+    provider = MockProvider()
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        await (
+            Pipeline("abatch-zero")
+            .step(provider, model="m")
+            .abatch_run(["a"], max_concurrency=0, raise_on_failure=False)
+        )
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_rejects_negative_max_concurrency() -> None:
+    provider = MockProvider()
+    with pytest.raises(GenblazeError, match="max_concurrency"):
+        await (
+            Pipeline("abatch-neg")
+            .step(provider, model="m")
+            .abatch_run(["a"], max_concurrency=-1, raise_on_failure=False)
+        )
+
+
+@pytest.mark.asyncio
+async def test_abatch_run_never_warns_about_concurrency(recwarn) -> None:
+    """abatch_run() genuinely honors max_concurrency — it must never emit the
+    sync-only sequential-contract warning, explicit value or not (#83)."""
+    provider = MockProvider()
+    await (
+        Pipeline("abatch-explicit")
+        .step(provider, model="m")
+        .abatch_run(["a"], max_concurrency=3, raise_on_failure=False)
+    )
+    assert not any(w.category is UserWarning for w in recwarn.list)
+
+
 # --- Fallback model tests ---
 
 

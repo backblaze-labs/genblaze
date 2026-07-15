@@ -49,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed `Step` still carries the cleartext prompt). Added
   `Pipeline.metadata(**kwargs)` for run-scoped metadata (additive, merged
   into `Run.metadata` via `RunBuilder.meta()`).
+- **Fixed** `Pipeline.batch_run()`'s `max_concurrency` was a documented but
+  dead argument — the sync implementation always ran items in a sequential
+  loop — and `Pipeline.abatch_run(max_concurrency=0)` built an
+  `asyncio.Semaphore` no task could ever acquire, hanging forever instead of
+  failing fast (#83). Both APIs now validate `max_concurrency >= 1`
+  (`GenblazeError` otherwise). `batch_run()`'s `max_concurrency` stays
+  validated-but-inert by design — provider/sink instances are shared across
+  batch clones and not guaranteed thread-safe under real OS-thread
+  concurrency — but an explicit value now emits a one-time `UserWarning`
+  pointing at `abatch_run()` for genuine concurrency; omitting it (the new
+  `None` default) stays silent so existing call sites see no behavior change.
 - **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
   `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
   emitter was a single mutable instance attribute, so a second concurrent

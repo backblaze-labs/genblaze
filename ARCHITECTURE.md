@@ -91,7 +91,7 @@
 - Providers implement 3-method lifecycle: `submit/poll/fetch_output`
 - Fluent builders: `StepBuilder`, `RunBuilder`; manifests via `Manifest.from_run()`
 - Canonical JSON: deterministic key sorting + float normalization + Unicode NFC + SHA-256
-- Pipeline: `batch_run`/`abatch_run` for multi-prompt execution with semaphore-based concurrency control
+- Pipeline: `batch_run`/`abatch_run` for multi-prompt execution. `abatch_run` uses semaphore-based concurrency control (validated `max_concurrency >= 1`); `batch_run` always executes sequentially — `max_concurrency` is validated but inert (warns once if passed explicitly), since batch clones share provider/sink instances that aren't guaranteed thread-safe under real concurrent execution
 - Pipeline concurrency: `arun()` with `chain=False` runs steps concurrently; `max_concurrency` limits parallelism
 - Pipeline fan-in: `input_from` on `.step()` routes outputs from specific prior steps (by index) into a later step, enabling AV mux patterns
 - Pipeline fan-in safety: `input_from` dependencies must point at succeeded steps with assets; missing producer outputs fail the consumer with `INVALID_INPUT` before provider invocation
