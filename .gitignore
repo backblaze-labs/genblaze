@@ -54,7 +54,12 @@ ehthumbs.db
 !.env.example
 *.pem
 *.key
-credentials.json
+credentials*
+*.credentials
+*_rsa
+*.p12
+*.pfx
+*.keystore
 
 # Jupyter
 .ipynb_checkpoints/

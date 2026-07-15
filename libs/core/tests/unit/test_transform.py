@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -279,7 +280,75 @@ def test_escape_drawtext_colons():
 
 
 def test_escape_drawtext_quotes():
-    assert _escape_drawtext("it's") == "it\\'s"
+    # ffmpeg's single-quoted values have no backslash-escape mechanism of
+    # their own — the only correct way to embed a literal quote is to close
+    # the quote, add a backslash-escaped quote outside it, then reopen a new
+    # quote. Verified against real ffmpeg (7.0.1): `\'` alone (the previous
+    # behavior) ends the quoted string early instead of escaping it.
+    assert _escape_drawtext("it's") == "it'\\''s"
+
+
+def test_escape_drawtext_quote_then_semicolon_cannot_break_out_of_filtergraph():
+    """Regression for #17 (filtergraph-injection variant found in review):
+    a naive `\\'` quote escape ends the quoted string early, so a `;`
+    immediately after an embedded quote becomes filtergraph-syntax-
+    significant — ffmpeg then parses the remainder as a new filter chain
+    (e.g. splicing in an attacker-named `scale` filter). Confirmed
+    reproducible against real ffmpeg 7.0.1 with the old escaping
+    (`Error applying option 'fontsize' to filter 'scale'`). The corrected
+    quote escaping keeps the whole payload inside one quoted string."""
+    escaped = _escape_drawtext("x';scale=")
+    assert escaped == "x'\\'';scale="
+    # No bare, unescaped quote is ever followed by unquoted content that a
+    # filtergraph parser could reinterpret — every quote is part of the
+    # close-escape-reopen sequence.
+    assert "\\';" not in escaped
+
+
+def test_escape_drawtext_percent_expansion():
+    """Regression for #17: unescaped '%' triggers ffmpeg's text-expansion
+    parser (enabled by default). '%%' is ffmpeg's own literal-percent escape."""
+    assert _escape_drawtext("100% done") == "100%% done"
+
+
+def test_escape_drawtext_percent_brace_sequence_rendered_literally():
+    """A crafted '%{...}' text-expansion sequence must not survive as an
+    active expansion once escaped. ffmpeg's expansion parser only triggers on
+    a single unescaped '%' directly followed by '{'; doubling to '%%' makes
+    ffmpeg consume the pair as one literal '%', leaving '{' as ordinary text
+    that starts no expansion — i.e. the whole sequence renders literally."""
+    escaped = _escape_drawtext("value=%{expr:1+1}")
+    assert escaped == "value=%%{expr\\:1+1}"
+    # Not a bare, unescaped '%' immediately before '{' (that shape is what
+    # triggers expansion) — every '%' here is part of a doubled '%%' pair.
+    assert re.search(r"(?<!%)%(?!%)\{", escaped) is None
+
+
+def test_escape_drawtext_backslash_n_literal():
+    """A caller-supplied literal two-char '\\n' (backslash + 'n', not an
+    actual newline byte) must render as literal text, not be interpreted by
+    ffmpeg's escape parser as a control sequence. Doubling the backslash
+    first means ffmpeg sees an escaped backslash followed by a bare 'n'."""
+    assert _escape_drawtext("line1\\nline2") == "line1\\\\nline2"
+
+
+@patch(f"{_UTILS}.shutil.which", return_value="/usr/bin/ffmpeg")
+@patch(f"{_UTILS}.subprocess.run")
+def test_overlay_text_escapes_percent_expansion(mock_run, mock_which):
+    """End-to-end: a '%{...}' expansion sequence in the text param must not
+    survive unescaped into the constructed -vf filter argument."""
+    mock_run.return_value = MagicMock(returncode=0, stderr=b"")
+    transform = FFmpegTransform()
+    step = _make_step("overlay_text", _make_video_asset(), text="score: %{eif:1+1:d}")
+
+    with patch("pathlib.Path.stat") as mock_stat:
+        mock_stat.return_value = MagicMock(st_size=1_000_000)
+        transform.generate(step)
+
+    cmd = mock_run.call_args[0][0]
+    drawtext_arg = cmd[cmd.index("-vf") + 1]
+    assert "%%{" in drawtext_arg
+    assert re.search(r"(?<!%)%(?!%)\{", drawtext_arg) is None
 
 
 # --- Capabilities and integration ---

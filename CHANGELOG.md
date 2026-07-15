@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Security** `check_ssrf`/`resolve_ssrf` now catch IPv4-mapped IPv6, RFC 6052
+  NAT64 (`64:ff9b::/96`), and the unspecified `::/128` address, and add a
+  property-based backstop (`is_private`/`is_loopback`/`is_link_local`/
+  `is_reserved`/`is_unspecified`) alongside the explicit denylist so ranges
+  neither enumerates are still caught (#16).
+- **Security** ffmpeg `drawtext` overlay text now escapes `%`, neutralizing
+  ffmpeg's text-expansion parser (`%{expr:...}`, `%{pts}`, etc., active by
+  default) so a crafted `text` param can no longer alter the rendered
+  filter (#17). Also fixes a pre-existing single-quote escaping bug found
+  during review: ffmpeg's quoted values have no backslash-escape mechanism
+  of their own, so the previous `\'` still ended the quoted string early —
+  a `text` value like `x';scale=` spliced an attacker-chosen filter name
+  into the graph (confirmed against real ffmpeg 7.0.1). Quotes are now
+  escaped via close-quote/escaped-quote/reopen-quote, ffmpeg's own
+  documented mechanism.
+- **Security** `.gitignore` now matches `credentials*` (previously only the
+  literal `credentials.json`) plus `*.credentials`, `*_rsa`, `*.p12`,
+  `*.pfx`, and `*.keystore` (#18).
+- **Security** ffmpeg's DEBUG command log now redacts the query string of
+  any `http(s)` argument before logging, so a chained step's presigned
+  object-storage URL (a bearer credential until its signature expires) no
+  longer leaks into `genblaze.ffmpeg` DEBUG logs. Execution still uses the
+  untouched command (#75). Also redacts the same signature from a second
+  leak path found during review: ffmpeg's own stderr can echo the input
+  URL verbatim on a fetch failure, and that stderr became the
+  `ProviderError` message logged on step failure.
+- **Security** `pattern_safety.assert_safe()`'s `google-re2` check was
+  silently inert — it imported `google.re2`, but the current `google-re2`
+  distribution ships a top-level `re2` module, so the authoritative
+  linear-time check never activated regardless of installation. Fixed the
+  import, added a `re2` optional extra (also included in `dev`, so CI now
+  runs the authoritative check), closed three heuristic bypasses for
+  environments without `re2` (the `{n,}` brace-quantifier form of `+`,
+  unbounded quantifiers nested inside a sub-group like `([a-z]+(?:x)?)+`,
+  and 2+ adjacent parenthesized groups each carrying an unbounded
+  quantifier like `(a+)(a+)` — confirmed exponential, ~10s to match a
+  100-character adversarial string under stdlib `re`), and added the
+  performance gate (`tests/perf/test_registry_perf.py`) the module
+  docstring already claimed existed (#80).
+- **Security** `canonical_hash`/`canonical_json` no longer crash with an
+  uncaught `RecursionError` on pathologically deep `step.params` nesting
+  (free-form, caller-supplied data hashed into every manifest and cache
+  key). `normalize()` now raises a typed, catchable `ManifestError` past a
+  100-level depth cap (#81).
 - **Added** unit tests for the previously-untested canonical-hash
   normalization branches (#50): NaN/Inf floats, `Enum.value` extraction, a
   naive datetime raising `TypeError`, and aware-datetime timezone
