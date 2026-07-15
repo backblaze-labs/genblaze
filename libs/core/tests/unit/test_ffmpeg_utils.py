@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from unittest.mock import patch
 
 import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.providers._ffmpeg_utils import (
+    _redact_cmd_for_log,
+    _redact_url_query,
     get_output_path,
     resolve_ffmpeg,
     resolve_input_path,
@@ -125,6 +128,64 @@ class TestRunFfmpeg:
         ):
             with pytest.raises(ProviderError, match="Failed to run ffmpeg"):
                 run_ffmpeg(["ffmpeg", "-version"])
+
+
+class TestRedactCmdForLog:
+    """Regression for #75: presigned URL signatures must not reach logs."""
+
+    def test_redacts_query_string_from_https_arg(self):
+        url = "https://s3.us-west-004.backblazeb2.com/bucket/obj?X-Amz-Signature=deadbeefcafef00d"
+        redacted = _redact_url_query(url)
+        assert "X-Amz-Signature=deadbeefcafef00d" not in redacted
+        assert redacted == ("https://s3.us-west-004.backblazeb2.com/bucket/obj?REDACTED")
+
+    def test_leaves_non_url_args_unchanged(self):
+        for arg in ("-i", "-vf", "scale=1280:720", "/media/out.mp4", "-y"):
+            assert _redact_url_query(arg) == arg
+
+    def test_leaves_url_without_query_unchanged(self):
+        assert _redact_url_query("https://cdn.example.com/video.mp4") == (
+            "https://cdn.example.com/video.mp4"
+        )
+
+    def test_redact_cmd_for_log_only_touches_url_args(self):
+        cmd = [
+            "ffmpeg",
+            "-i",
+            "https://s3.example.com/bucket/obj?X-Amz-Signature=deadbeef",
+            "-c",
+            "copy",
+            "-y",
+            "/media/out.mp4",
+        ]
+        rendered = _redact_cmd_for_log(cmd)
+        assert "X-Amz-Signature=deadbeef" not in rendered
+        assert (
+            "ffmpeg -i https://s3.example.com/bucket/obj?REDACTED -c copy -y /media/out.mp4"
+            == rendered
+        )
+
+    def test_run_ffmpeg_redacts_presigned_url_from_debug_log(self, caplog):
+        cmd = [
+            "ffmpeg",
+            "-i",
+            "https://s3.us-west-004.backblazeb2.com/bucket/obj?X-Amz-Signature=deadbeefcafef00d",
+            "-c",
+            "copy",
+            "-y",
+            "/media/out.mp4",
+        ]
+        fake_result = subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+        with patch(
+            "genblaze_core.providers._ffmpeg_utils.subprocess.run",
+            return_value=fake_result,
+        ):
+            with caplog.at_level(logging.DEBUG, logger="genblaze.ffmpeg"):
+                run_ffmpeg(cmd)
+        assert "X-Amz-Signature=deadbeefcafef00d" not in caplog.text
+        assert "REDACTED" in caplog.text
+        # Execution itself must still use the untouched cmd (query intact).
+        assert cmd[2].endswith("?X-Amz-Signature=deadbeefcafef00d")
 
 
 class TestGetOutputPath:

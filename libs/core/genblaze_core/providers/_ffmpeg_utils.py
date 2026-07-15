@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 from urllib.request import url2pathname
 
 from genblaze_core._utils import ALLOWED_FILE_ROOTS as _ALLOWED_FILE_ROOTS
@@ -79,12 +79,35 @@ def resolve_input_path(url: str, *, extra_roots: list[Path] | None = None) -> st
     )
 
 
+def _redact_url_query(arg: str) -> str:
+    """Strip the query string from a URL-shaped command argument.
+
+    A chained step's ``-i <url>`` argument can be a presigned object-storage
+    URL (e.g. ``https://...&X-Amz-Signature=...``); the query string is a
+    bearer credential for that object until the signature expires. Only
+    ``http``/``https`` arguments with a query string are touched — plain
+    filter strings, paths, and flags (``-vf``, ``scale=1280:720``, etc.) pass
+    through unchanged because ``urlsplit`` reports no scheme for them.
+    """
+    parsed = urlsplit(arg)
+    if parsed.scheme in ("http", "https") and parsed.query:
+        return urlunsplit(parsed._replace(query="REDACTED"))
+    return arg
+
+
+def _redact_cmd_for_log(cmd: list[str]) -> str:
+    """Render a command list for logging with URL query strings redacted."""
+    return " ".join(_redact_url_query(arg) for arg in cmd)
+
+
 def run_ffmpeg(
     cmd: list[str],
     timeout: float = 120,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run an ffmpeg command with timeout and error handling."""
-    logger.debug("Running ffmpeg: %s", " ".join(cmd))
+    # The command actually executed (`cmd`) is untouched; only the DEBUG log
+    # line is redacted (#75 — presigned URL query strings must not reach logs).
+    logger.debug("Running ffmpeg: %s", _redact_cmd_for_log(cmd))
     try:
         result = subprocess.run(  # noqa: S603
             cmd,
