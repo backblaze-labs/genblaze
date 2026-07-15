@@ -783,3 +783,185 @@ def test_step_retried_event_user_callback_still_fires() -> None:
     assert user_events[0].type == "step.retried"
     # And the stream still saw it.
     assert sum(1 for e in events if e.type == "step.retried") == 1
+
+
+# --- Concurrent stream()/astream() isolation (#79, #84) -----------------------
+
+
+def test_concurrent_streams_on_same_pipeline_do_not_cross_deliver() -> None:
+    """Two simultaneous stream() calls on ONE Pipeline instance must not mix
+    events between consumers.
+
+    Regression: self._event_emitter used to be a single mutable instance
+    attribute, so the second stream()'s install silently clobbered the
+    first's, and events cross-delivered between the two consumers.
+    """
+    import threading
+
+    gate = threading.Event()
+
+    class _GatedProvider(BaseProvider):
+        name = "gated"
+
+        def submit(self, step, config=None) -> Any:
+            gate.wait(timeout=5.0)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="c" * 64)
+            )
+            return step
+
+    pipe = Pipeline("t").step(_GatedProvider(), model="m", prompt="p")
+
+    gen_a = pipe.stream()
+    gen_b = pipe.stream()
+
+    # Drive both generators up to pipeline.started before releasing the
+    # gate, so both workers are genuinely in flight at the same time.
+    started_a = next(gen_a)
+    started_b = next(gen_b)
+    assert started_a.type == "pipeline.started"
+    assert started_b.type == "pipeline.started"
+    run_a, run_b = started_a.run_id, started_b.run_id
+    assert run_a != run_b
+
+    gate.set()  # let both submit() calls proceed concurrently
+
+    events_a = [started_a, *list(gen_a)]
+    events_b = [started_b, *list(gen_b)]
+
+    assert all(e.run_id in (None, run_a) for e in events_a), events_a
+    assert all(e.run_id in (None, run_b) for e in events_b), events_b
+    assert events_a[-1].type == "pipeline.completed"
+    assert events_b[-1].type == "pipeline.completed"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_astreams_on_same_pipeline_do_not_cross_deliver() -> None:
+    """Async sibling of the sync cross-delivery regression test."""
+    import asyncio as _asyncio
+
+    class _GatedAsyncProvider(BaseProvider):
+        name = "gated-async"
+
+        def submit(self, step, config=None) -> Any:
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="d" * 64)
+            )
+            return step
+
+    pipe = Pipeline("t").step(_GatedAsyncProvider(), model="m", prompt="p")
+
+    async def _consume() -> list[StreamEvent]:
+        events: list[StreamEvent] = []
+        async for ev in pipe.astream():
+            events.append(ev)
+        return events
+
+    task_a = _asyncio.create_task(_consume())
+    task_b = _asyncio.create_task(_consume())
+    events_a, events_b = await _asyncio.gather(task_a, task_b)
+
+    run_a = events_a[0].run_id
+    run_b = events_b[0].run_id
+    assert run_a != run_b
+    assert all(e.run_id in (None, run_a) for e in events_a), events_a
+    assert all(e.run_id in (None, run_b) for e in events_b), events_b
+    assert events_a[-1].type == "pipeline.completed"
+    assert events_b[-1].type == "pipeline.completed"
+
+
+# --- Abandoned-consumer backpressure (#74) -------------------------------------
+
+
+def test_stream_early_break_stops_terminal_event_after_close() -> None:
+    """Early break must close the emitter so the daemon worker's remaining
+    events — in particular the terminal event, which only fires after the
+    WHOLE pipeline finishes — never land on the abandoned queue.
+
+    Regression: the queue had no maxsize and nothing stopped the abandoned
+    worker from enqueuing events for the full remaining run length. This
+    also guards a fix-interaction: once the emitter moved to a per-thread
+    ContextVar slot (#79/#84), the consumer thread can no longer reach into
+    the worker thread's slot to implicitly cut it off — an explicit
+    ``emitter.close()`` on early break is what stops the worker now.
+    """
+    import queue as _queue
+    import threading
+    import time as _time
+    from unittest.mock import patch
+
+    captured: list[object] = []
+    real_queue_cls = _queue.Queue
+
+    class _SpyQueue(real_queue_cls):
+        def put(self, item, *a, **kw):
+            captured.append(item)
+            return super().put(item, *a, **kw)
+
+    class _SlowProvider(BaseProvider):
+        name = "slow"
+
+        def submit(self, step, config=None) -> Any:
+            _time.sleep(0.1)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="e" * 64)
+            )
+            return step
+
+    pipe = (
+        Pipeline("t")
+        .step(_SlowProvider(), model="m", prompt="p1")
+        .step(_SlowProvider(), model="m", prompt="p2")
+        .step(_SlowProvider(), model="m", prompt="p3")
+    )
+
+    with patch("queue.Queue", _SpyQueue):
+        # Snapshot before spawning so we can identify THIS test's own
+        # worker by identity, not by name — a same-named thread lingering
+        # from a previous test (which shares "genblaze-stream") must not be
+        # mistaken for ours.
+        pre_existing = {t.ident for t in threading.enumerate()}
+        for ev in pipe.stream():
+            if ev.type == "step.completed":
+                break
+
+        new_workers = [
+            t
+            for t in threading.enumerate()
+            if t.name == "genblaze-stream" and t.ident not in pre_existing
+        ]
+        assert len(new_workers) == 1, (
+            f"expected exactly one new worker thread, found {new_workers}"
+        )
+        worker = new_workers[0]
+        worker.join(timeout=5.0)
+        assert not worker.is_alive()
+
+    # Guard against the queue.Queue patch silently failing to intercept
+    # (e.g. a future import-style change in stream()) and giving false
+    # confidence that the terminal-event assertion below actually ran.
+    assert captured, "spy did not capture any queue.Queue.put calls"
+
+    types = [getattr(item, "type", "<sentinel>") for item in captured]
+    assert "pipeline.completed" not in types, (
+        f"abandoned worker ran the full pipeline and emitted a terminal "
+        f"event onto a queue nobody drains: {types}"
+    )

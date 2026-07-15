@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from genblaze_core._utils import (
     _SECRET_PATTERNS,
@@ -49,7 +49,7 @@ from genblaze_core.observability.events import (
 from genblaze_core.observability.tracer import LoggingTracer, NoOpTracer, Tracer, safe_call
 from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
-from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
+from genblaze_core.pipeline.streaming import EmitterSlot, QueueEmitter, progress_to_stream_event
 from genblaze_core.progress_display import Spinner, should_auto_enable
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.providers.validation import ValidationOutcome, ValidationResult
@@ -315,6 +315,13 @@ class Pipeline(Runnable[None, PipelineResult]):
         structured_log: If True, emit JSON log events via StructuredLogger.
     """
 
+    # Holds the "active" stream emitter for whichever thread/task is
+    # currently inside stream()/astream()'s worker. ContextVar-backed
+    # (not an instance attribute) so concurrent stream()/astream() calls on
+    # the SAME Pipeline instance don't cross-deliver events (#79, #84). See
+    # EmitterSlot's docstring for why this needs no additional locking.
+    _emitter_slot: ClassVar[EmitterSlot] = EmitterSlot("genblaze_pipeline_emitter")
+
     def __init__(
         self,
         name: str | None = None,
@@ -368,7 +375,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._tracer = LoggingTracer()
         else:
             self._tracer = NoOpTracer()
-        self._event_emitter: QueueEmitter | None = None
 
     # --- Copy / serialization protocols ---------------------------------
     # The WARN-dedup ``threading.Lock`` added for #56 is neither copyable nor
@@ -1344,14 +1350,20 @@ class Pipeline(Runnable[None, PipelineResult]):
             logger.warning("%s callback raised", name, exc_info=True)
 
     def attach_emitter(self, emitter: QueueEmitter | None) -> QueueEmitter | None:
-        """Install (or clear) the stream event emitter, returning the prior one.
+        """Install (or clear) the stream event emitter for the calling
+        thread/task, returning the prior one.
 
-        Public so composable runners (e.g. AgentLoop) can pipe pipeline events
-        into their own event stream without poking private state.
+        Storage is ``_emitter_slot`` (contextvars-backed), not an instance
+        attribute — isolating concurrent stream()/astream() calls on the
+        same Pipeline instance from each other (#79, #84). Public so
+        composable runners (e.g. AgentLoop) can pipe pipeline events into
+        their own event stream without poking private state.
         """
-        prior = self._event_emitter
-        self._event_emitter = emitter
-        return prior
+        return self._emitter_slot.set(emitter)
+
+    @property
+    def _event_emitter(self) -> QueueEmitter | None:
+        return self._emitter_slot.get()
 
     def _install_progress_tracer(
         self,
@@ -1544,8 +1556,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         Early break: if the caller breaks out of iteration before the
         terminal event, we return immediately and let the (daemon) worker
         thread finish in the background. Remaining events are discarded
-        and any post-break exception in the pipeline is suppressed.
+        and any post-break exception in the pipeline is suppressed. The
+        emitter is closed as soon as we detect the early break, so the
+        abandoned worker's remaining ``put()`` calls become no-ops instead
+        of piling onto a queue nobody will ever drain (#74).
         """
+        import contextvars
         import queue as _queue
         import threading
 
@@ -1553,12 +1569,15 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         q: _queue.Queue = _queue.Queue()
         emitter = QueueEmitter(q, include_heartbeats=heartbeats)
-        prior = self.attach_emitter(emitter)
 
         exc_box: list[BaseException] = []
         done = threading.Event()
 
         def _worker() -> None:
+            # Installed inside the worker thread so it lands in this
+            # thread's own Context — isolated from a concurrent stream()
+            # call's worker thread on the same Pipeline instance (#84).
+            self.attach_emitter(emitter)
             try:
                 self.run(**run_kwargs)
             except BaseException as exc:  # noqa: BLE001 — propagate via queue
@@ -1567,18 +1586,29 @@ class Pipeline(Runnable[None, PipelineResult]):
                 emitter.close()
                 done.set()
 
-        t = threading.Thread(target=_worker, daemon=True, name="genblaze-stream")
+        # Run the worker inside its own throwaway Context — the same trick
+        # asyncio.create_task() already gets for free — so the attach_emitter
+        # install above can never leak onto the underlying OS thread itself.
+        # Safe today regardless (a fresh Thread's default context is already
+        # empty), but this keeps correctness structural rather than
+        # incidental if a future caller ever reuses worker threads via a
+        # pooled executor instead of spawning one per stream() call.
+        ctx = contextvars.copy_context()
+        t = threading.Thread(target=ctx.run, args=(_worker,), daemon=True, name="genblaze-stream")
         t.start()
         try:
             yield from drain_queue_sync(q)
         finally:
-            self.attach_emitter(prior)
             if done.is_set():
                 t.join()  # fast — worker already returned
                 if exc_box:
                     raise exc_box[0]
-            # else: consumer broke early; worker keeps running as a daemon
-            # thread and exits when the pipeline naturally completes.
+            else:
+                # Consumer broke early; the worker keeps running as a
+                # daemon thread until the pipeline naturally completes, but
+                # close the emitter now so it stops enqueuing further
+                # events (#74).
+                emitter.close()
 
     async def astream(self, *, heartbeats: bool = True, **run_kwargs: Any):
         """Async version of :meth:`stream`.
@@ -1588,15 +1618,20 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Early break: cancels the worker task so in-flight provider calls
         unwind at their next await point. Any post-break exception from
-        the pipeline is suppressed.
+        the pipeline is suppressed. The emitter is closed before
+        cancellation so any event racing the cancel becomes a no-op instead
+        of reaching an abandoned queue (#74).
         """
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
         emitter = QueueEmitter(q, include_heartbeats=heartbeats)
-        prior = self.attach_emitter(emitter)
 
         async def _worker() -> None:
+            # Installed inside the task's own (copied) context — isolated
+            # from a concurrent astream() call's task on the same Pipeline
+            # instance (#84).
+            self.attach_emitter(emitter)
             try:
                 await self.arun(**run_kwargs)
             finally:
@@ -1607,10 +1642,12 @@ class Pipeline(Runnable[None, PipelineResult]):
             async for ev in drain_queue_async(q):
                 yield ev
         finally:
-            self.attach_emitter(prior)
             if task.done():
                 await task  # re-raises if worker failed
             else:
+                # Consumer broke early — close first so anything racing the
+                # cancellation becomes a no-op (#74), then cancel the worker.
+                emitter.close()
                 task.cancel()
                 try:
                     await task

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
+  `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
+  emitter was a single mutable instance attribute, so a second concurrent
+  call's install silently clobbered the first's, mixing one stream's events
+  into the other's queue. Both classes now install the emitter on an
+  `EmitterSlot` (`contextvars.ContextVar`-backed), which is isolated per
+  thread/task with no additional locking required.
+- **Fixed** `stream()`/`astream()` no longer leak an abandoned worker's
+  remaining events onto an undrained queue after an early break (#74). The
+  worker used to keep running in the background for the rest of the
+  pipeline's duration, enqueuing every subsequent event with nobody to drain
+  it. The emitter now closes as soon as the early break is detected, so
+  further `put()` calls become no-ops instead of buffering unboundedly.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the
