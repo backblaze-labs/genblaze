@@ -1294,8 +1294,17 @@ class Pipeline(Runnable[None, PipelineResult]):
         sink: BaseSink | None,
         run_id: str,
         started_at_ts: float | None = None,
+        *,
+        force_status: RunStatus | None = None,
     ) -> PipelineResult:
-        """Build run, manifest, and write to sink."""
+        """Build run, manifest, and write to sink.
+
+        ``force_status`` overrides the inferred COMPLETED/FAILED status.
+        Used by run()/arun()'s exception fallback so a run that aborted
+        before reaching normal completion is never reported as COMPLETED,
+        regardless of how many of its steps happened to succeed before the
+        abort (#85).
+        """
         builder = RunBuilder(self._name)
         builder.run_id(run_id)
         if self._tenant_id:
@@ -1309,7 +1318,10 @@ class Pipeline(Runnable[None, PipelineResult]):
         for s in completed_steps:
             builder.add_step(s)
 
-        builder.status(RunStatus.COMPLETED if all_succeeded else RunStatus.FAILED)
+        if force_status is not None:
+            builder.status(force_status)
+        else:
+            builder.status(RunStatus.COMPLETED if all_succeeded else RunStatus.FAILED)
         run_obj = builder.build()
 
         if started_at_ts is not None:
@@ -1505,7 +1517,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                 exc,
             )
 
-    def _emit_pipeline_end(self, result: PipelineResult, run_id: str) -> None:
+    def _emit_pipeline_end(
+        self, result: PipelineResult, run_id: str, *, message: str | None = None
+    ) -> None:
+        """Emit the terminal pipeline event.
+
+        ``message`` overrides the step-derived ``error_summary()`` — used by
+        run()/arun()'s exception fallback to surface the abort reason (e.g.
+        a timeout) even when no step recorded an error (#85).
+        """
         failed = result.run.status == RunStatus.FAILED
         # Pre-compute wire-safe fields so consumers of to_dict() / JSON Schema
         # still see terminal status + manifest hash when the in-process
@@ -1516,7 +1536,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             event: StreamEvent = PipelineFailedEvent(
                 run_id=run_id,
                 result=result,
-                message=result.error_summary(),
+                message=message if message is not None else result.error_summary(),
                 run_status=run_status,
                 manifest_hash=manifest_hash,
             )
@@ -1801,6 +1821,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         completed_steps: list[Step] = []
         prev_assets: list[Asset] = []
         pipeline_result: PipelineResult | None = None
+        abort_message: str | None = None
         try:
             for i, ps in enumerate(self._steps, 1):
                 # Check pipeline-level timeout before each step
@@ -1883,13 +1904,27 @@ class Pipeline(Runnable[None, PipelineResult]):
             should_raise = _resolve_raise_on_failure(raise_on_failure)
             _maybe_raise_pipeline_error(pipeline_result, completed_steps, should_raise)
             return pipeline_result
+        except BaseException as exc:
+            # Only stash a synthetic abort message when _finalize never ran
+            # for this run (pipeline_result still None) — e.g. a mid-loop
+            # PipelineTimeoutError. A PipelineError raised by
+            # _maybe_raise_pipeline_error AFTER a normal _finalize already
+            # carries accurate step-level errors via error_summary().
+            if pipeline_result is None:
+                abort_message = sanitize_error(str(exc))
+            raise
         finally:
             # Guarantee on_run_end fires — covers timeouts, KeyboardInterrupt,
-            # and bugs in _finalize. Synthesizes an aborted result if the
-            # normal flow didn't reach _finalize.
+            # and bugs in _finalize. A run that aborted before _finalize is
+            # always reported FAILED here, never inferred as COMPLETED from
+            # an empty or all-succeeded step prefix (#85).
             self._emit_pipeline_end(
-                pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
+                pipeline_result
+                or self._finalize(
+                    completed_steps, None, run_id, started_at_ts, force_status=RunStatus.FAILED
+                ),
                 run_id,
+                message=abort_message,
             )
             if spinner is not None:
                 spinner.stop()
@@ -2015,6 +2050,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._emit_run_start(run_id, total_steps)
         completed_steps: list[Step] = []
         pipeline_result: PipelineResult | None = None
+        abort_message: str | None = None
         try:
             if sequential:
                 # Sequential: each step's outputs feed the next step's inputs.
@@ -2109,13 +2145,11 @@ class Pipeline(Runnable[None, PipelineResult]):
                 steps_and_models = [
                     (ps, self._build_step(ps, ps.external_inputs)) for ps in self._steps
                 ]
-                for idx, (ps, step) in enumerate(steps_and_models):
-                    self._emit_step_start(
-                        _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
-                        step,
-                        ps,
-                    )
 
+                # Check the pipeline timeout BEFORE announcing any step —
+                # otherwise a run that never actually starts a step still
+                # emits step.started, making an aborted run look like it was
+                # underway (#85).
                 if pipeline_timeout is not None:
                     elapsed = time.monotonic() - started_at_mono
                     if elapsed >= pipeline_timeout:
@@ -2124,6 +2158,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                             f" (limit: {pipeline_timeout}s)"
                         )
                         raise PipelineTimeoutError(msg)
+
+                for idx, (ps, step) in enumerate(steps_and_models):
+                    self._emit_step_start(
+                        _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
+                        step,
+                        ps,
+                    )
 
                 concurrency = max_concurrency or self._max_concurrency
                 sem = asyncio.Semaphore(concurrency) if concurrency else None
@@ -2217,12 +2258,28 @@ class Pipeline(Runnable[None, PipelineResult]):
             should_raise = _resolve_raise_on_failure(raise_on_failure)
             _maybe_raise_pipeline_error(pipeline_result, completed_steps, should_raise)
             return pipeline_result
+        except BaseException as exc:
+            # Only stash a synthetic abort message when _finalize never ran
+            # for this run (pipeline_result still None) — e.g. a mid-loop
+            # PipelineTimeoutError or fail-fast cancellation. A
+            # PipelineError raised by _maybe_raise_pipeline_error AFTER a
+            # normal _finalize already carries accurate step-level errors
+            # via error_summary().
+            if pipeline_result is None:
+                abort_message = sanitize_error(str(exc))
+            raise
         finally:
             # Guarantee on_run_end fires — covers timeouts, cancellation,
-            # and bugs in _finalize. Synthesizes a result if we didn't reach it.
+            # and bugs in _finalize. A run that aborted before _finalize is
+            # always reported FAILED here, never inferred as COMPLETED from
+            # an empty or all-succeeded step prefix (#85).
             self._emit_pipeline_end(
-                pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
+                pipeline_result
+                or self._finalize(
+                    completed_steps, None, run_id, started_at_ts, force_status=RunStatus.FAILED
+                ),
                 run_id,
+                message=abort_message,
             )
             if spinner is not None:
                 spinner.stop()

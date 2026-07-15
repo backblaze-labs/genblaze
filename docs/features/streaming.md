@@ -188,7 +188,15 @@ for event in pipe.stream(on_progress=log_progress):  # both fire
 
 ## Error handling
 
-If the pipeline raises an uncaught exception (not captured as a step failure), `stream()` drains any events already queued, then re-raises the exception after the iterator completes. Wrap iteration in a try/except to surface it.
+If the pipeline raises an uncaught exception (not captured as a step failure) — including a `pipeline_timeout` expiring before any step even started — `stream()`/`astream()` still emit a terminal `pipeline.failed` event (never `pipeline.completed`) before draining and re-raising the exception. Wrap iteration in a try/except to surface it:
+
+```python
+try:
+    for event in pipe.stream(pipeline_timeout=30):
+        ...
+except PipelineTimeoutError:
+    ...  # pipeline.failed was already observed on the stream before this raises
+```
 
 ## Early break
 

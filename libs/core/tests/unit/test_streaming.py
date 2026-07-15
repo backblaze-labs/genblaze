@@ -965,3 +965,59 @@ def test_stream_early_break_stops_terminal_event_after_close() -> None:
         f"abandoned worker ran the full pipeline and emitted a terminal "
         f"event onto a queue nobody drains: {types}"
     )
+
+
+# --- Aborted-run terminal event correctness (#85) ------------------------------
+
+
+def test_stream_timeout_before_any_step_emits_failed_not_completed() -> None:
+    """A pipeline_timeout=0 exit before any step runs must emit
+    pipeline.failed, never pipeline.completed.
+
+    Regression: the run()/arun() ``finally`` fallback called ``_finalize``
+    with an empty completed_steps list, and ``all([])`` is True, so the
+    aborted run was reported COMPLETED.
+    """
+    events: list[StreamEvent] = []
+    with pytest.raises(PipelineTimeoutError):
+        for ev in (
+            Pipeline("t").step(_OKProvider(), model="m", prompt="p").stream(pipeline_timeout=0)
+        ):
+            events.append(ev)
+    types = _event_types(events)
+    assert "pipeline.completed" not in types
+    assert types[-1] == "pipeline.failed"
+
+
+@pytest.mark.asyncio
+async def test_astream_timeout_before_any_step_emits_failed_not_completed() -> None:
+    """Async sibling of the sync timeout-before-any-step regression test."""
+    events: list[StreamEvent] = []
+    with pytest.raises(PipelineTimeoutError):
+        async for ev in (
+            Pipeline("t").step(_OKProvider(), model="m", prompt="p").astream(pipeline_timeout=0)
+        ):
+            events.append(ev)
+    types = _event_types(events)
+    assert "pipeline.completed" not in types
+    assert types[-1] == "pipeline.failed"
+
+
+@pytest.mark.asyncio
+async def test_astream_concurrent_timeout_fires_before_step_started() -> None:
+    """Concurrent (non-chained) async pipelines must not emit step.started
+    for steps that will never run when pipeline_timeout=0 fires immediately.
+    """
+    events: list[StreamEvent] = []
+    with pytest.raises(PipelineTimeoutError):
+        async for ev in (
+            Pipeline("t")
+            .step(_OKProvider(), model="m", prompt="p1")
+            .step(_OKProvider(), model="m", prompt="p2")
+            .astream(pipeline_timeout=0)
+        ):
+            events.append(ev)
+    types = _event_types(events)
+    assert "step.started" not in types
+    assert "pipeline.completed" not in types
+    assert types[-1] == "pipeline.failed"

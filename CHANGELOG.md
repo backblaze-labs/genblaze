@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline's duration, enqueuing every subsequent event with nobody to drain
   it. The emitter now closes as soon as the early break is detected, so
   further `put()` calls become no-ops instead of buffering unboundedly.
+- **Fixed** `stream()`/`astream()` no longer emit a successful
+  `pipeline.completed` terminal event for a run that aborts before reaching
+  normal finalization — e.g. `pipeline_timeout` expiring before any step
+  starts (#85). `all([])` treated an empty completed-steps list as
+  "succeeded"; aborted runs are now always finalized as `FAILED` and emit
+  `pipeline.failed`, with the abort's exception message attached.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the
