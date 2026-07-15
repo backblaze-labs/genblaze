@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-07-14 -->
 # Model Registry
 
 Unified, declarative surface for per-model configuration across every
@@ -415,7 +415,7 @@ Existing `step.model="Seedream-5.0-Lite"` calls resolve to the new spec, a singl
 
 - `get(model_id)` (user-spec hit): ~80 ns (single dict lookup)
 - `match_family(model_id)` (32 families, miss): <50 µs (linear scan)
-- `match_family()` (adversarial input, 32 families): <100 µs (`pattern_safety` rejects unsafe patterns at construction; `re2` if available)
+- `match_family()` (adversarial input, 32 families): <100 µs (`pattern_safety` rejects unsafe patterns at construction; authoritative under `google-re2`, installed via the `re2`/`dev` extras — heuristic fallback otherwise). Enforced by `libs/core/tests/perf/test_registry_perf.py`.
 - Full `prepare_payload` at 10 params: ~6 µs
 - `PricingContext` construction + strategy: <1 µs
 - `validate_model()` (no fetch, family-cached): <50 µs

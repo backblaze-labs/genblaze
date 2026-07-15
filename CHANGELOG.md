@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object-storage URL (a bearer credential until its signature expires) no
   longer leaks into `genblaze.ffmpeg` DEBUG logs. Execution still uses the
   untouched command (#75).
+- **Security** `pattern_safety.assert_safe()`'s `google-re2` check was
+  silently inert — it imported `google.re2`, but the current `google-re2`
+  distribution ships a top-level `re2` module, so the authoritative
+  linear-time check never activated regardless of installation. Fixed the
+  import, added a `re2` optional extra (also included in `dev`, so CI now
+  runs the authoritative check), closed two heuristic bypasses for
+  environments without `re2` (the `{n,}` brace-quantifier form of `+`, and
+  unbounded quantifiers nested inside a sub-group like
+  `([a-z]+(?:x)?)+`), and added the performance gate
+  (`tests/perf/test_registry_perf.py`) the module docstring already
+  claimed existed (#80).
 - **Security** `canonical_hash`/`canonical_json` no longer crash with an
   uncaught `RecursionError` on pathologically deep `step.params` nesting
   (free-form, caller-supplied data hashed into every manifest and cache
