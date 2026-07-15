@@ -5,7 +5,22 @@ from __future__ import annotations
 import re
 
 import pytest
+from genblaze_core.providers import pattern_safety
 from genblaze_core.providers.pattern_safety import _heuristic_unsafe, assert_safe, has_re2
+
+
+class _FakeRe2:
+    """Stand-in for the ``re2`` module, used to force the ``_HAS_RE2 = True``
+    branch deterministically regardless of whether ``google-re2`` is
+    actually installed in the test environment. ``compile()`` mirrors re2's
+    real behavior for the nested-quantifier shapes this module cares about:
+    it happily accepts them (re2's own engine matches them in linear time),
+    which is exactly why the heuristic must run in addition to, not instead
+    of, the re2 check (#148)."""
+
+    @staticmethod
+    def compile(src: str) -> re.Pattern[str]:
+        return re.compile(src)
 
 
 class TestAssertSafe:
@@ -26,22 +41,24 @@ class TestAssertSafe:
     def test_empty_pattern_passes(self) -> None:
         assert_safe(re.compile(r""))
 
-    @pytest.mark.skipif(has_re2(), reason="re2 enforces its own checks")
+    # The four tests below used to skip whenever re2 was installed, because
+    # a prior version of assert_safe() returned early after a successful
+    # re2 compile, never reaching the heuristic — re2 itself accepts these
+    # shapes (see TestRedosGuardAlwaysRunsHeuristic below for why that's
+    # unsafe). The heuristic now always runs, so these hold unconditionally
+    # (#148).
     def test_nested_unbounded_plus_rejected(self) -> None:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(r"(a+)+"))
 
-    @pytest.mark.skipif(has_re2(), reason="re2 enforces its own checks")
     def test_nested_unbounded_star_rejected(self) -> None:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(r"(.+)+"))
 
-    @pytest.mark.skipif(has_re2(), reason="re2 enforces its own checks")
     def test_duplicate_alternation_rejected(self) -> None:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(r"(a|a)*"))
 
-    @pytest.mark.skipif(has_re2(), reason="re2 enforces its own checks")
     def test_realistic_evil_pattern_rejected(self) -> None:
         # The classic "(x+x+)+y" shape. Heuristic flags the nested quantifier;
         # that's enough to fail closed. Assembled at runtime (this fixture is only
@@ -51,13 +68,52 @@ class TestAssertSafe:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(evil))
 
-    @pytest.mark.skipif(not has_re2(), reason="requires re2 to exercise the authoritative branch")
+    @pytest.mark.skipif(not has_re2(), reason="requires re2 to exercise the additional re2 gate")
     def test_re2_rejects_backreference(self) -> None:
         # Backreferences aren't supported by RE2's linear-time engine — this
-        # exercises the authoritative branch itself (distinct from the
-        # heuristic-shape tests above, which are skipped once re2 is active).
+        # exercises the re2 gate itself (distinct from the heuristic-shape
+        # tests above, which now run regardless of whether re2 is active).
         with pytest.raises(ValueError, match="rejected by google-re2"):
             assert_safe(re.compile(r"(a)\1"))
+
+
+class TestRedosGuardAlwaysRunsHeuristic:
+    """Regression test for #148: ``assert_safe()`` must reject catastrophic
+    -backtracking patterns whether or not ``google-re2`` is installed.
+
+    ``re2.compile()`` only confirms a pattern is *syntactically compatible*
+    with re2 — it accepts nested-quantifier shapes like ``(a+)+$`` because
+    re2's own engine matches them in linear time. Runtime slug matching
+    (``ModelFamily.matches()``, ``family.py``) always uses stdlib ``re``,
+    which still backtracks catastrophically on the same input. A prior
+    version of ``assert_safe()`` returned early once ``_re2.compile()``
+    succeeded, so re2's acceptance silently disabled the heuristic for
+    exactly these shapes. Both branches are exercised via
+    ``monkeypatch.setattr`` so the test is deterministic regardless of
+    whether ``google-re2`` happens to be installed in the environment
+    actually running this suite.
+    """
+
+    @pytest.mark.parametrize(
+        "src",
+        [r"(a+)+$", r"([a-z]+)+$", r"(v\d+)+.*"],
+        ids=["nested-plus-anchored", "nested-charclass-anchored", "version-prefix-catastrophic"],
+    )
+    @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
+    def test_rejected_regardless_of_has_re2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        src: str,
+        has_re2_value: bool,
+    ) -> None:
+        monkeypatch.setattr(pattern_safety, "_HAS_RE2", has_re2_value)
+        if has_re2_value:
+            # Force the re2 gate to "accept" the pattern (as real re2 does
+            # for these shapes) without depending on re2 actually being
+            # importable in this environment.
+            monkeypatch.setattr(pattern_safety, "_re2", _FakeRe2)
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(src))
 
 
 class TestHeuristicUnsafe:

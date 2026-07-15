@@ -65,14 +65,13 @@ class TestConstruction:
             )
 
     # `(a+)+` is rejected by the static heuristic (nested unbounded
-    # quantifier) but is exactly the shape `re2` guarantees linear-time
-    # matching for, so it's *accepted* — safely — once `re2` is active
-    # (e.g. the `dev`/`re2` extras, installed in CI as of #80). Branching on
-    # `has_re2()` keeps this construction-level smoke test meaningful under
-    # either strategy; `test_pattern_safety.py` covers each branch in depth.
-    @pytest.mark.skipif(
-        has_re2(), reason="re2 matches this pattern safely instead of rejecting it"
-    )
+    # quantifier). This used to skip when `re2` was active, on the mistaken
+    # assumption that `re2` accepting the pattern for its own linear-time
+    # engine made it safe overall — but `ModelFamily.matches()` always
+    # matches with stdlib `re`, which still backtracks catastrophically on
+    # this shape regardless of `re2`. That gap was itself issue #148; the
+    # heuristic now always runs, so construction must fail closed under
+    # either strategy. `test_pattern_safety.py` covers each branch in depth.
     def test_unsafe_pattern_rejected_at_construction(self) -> None:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             ModelFamily(

@@ -9,15 +9,24 @@ DoS vector.
 
 This module guards against that at ``ModelFamily`` construction time —
 patterns that fail the safety check raise ``ValueError`` during connector
-import, before any user code runs. Two strategies, evaluated in order:
+import, before any user code runs. Runtime slug matching
+(``ModelFamily.matches()``, ``family.py``) always matches with a stdlib
+``re.Pattern``, never ``re2`` — so the static heuristic below always runs,
+regardless of whether ``re2`` is installed. Two gates are applied:
 
-* If ``google-re2`` is installed, every pattern is recompiled through it
-  to confirm linear-time matching. ``re2`` rejects unsupported constructs
-  outright, so the check is authoritative. Install it via the ``re2``
-  extra (``pip install "genblaze-core[re2]"``) or the ``dev`` extra, which
-  includes it — CI installs ``libs/core[dev]``, so this path is active
-  there by default.
-* Otherwise, fall back to a static heuristic that flags the most common
+* If ``google-re2`` is installed, every pattern is ALSO recompiled through
+  it as an additional gate: ``re2`` rejects constructs its own engine can't
+  support (e.g. backreferences) outright. This is *not* a substitute for
+  the heuristic — ``re2`` accepts nested-quantifier shapes like ``(a+)+``
+  because *its own* linear-time engine matches them fine, but stdlib
+  ``re`` (the engine actually used at match time) still backtracks
+  catastrophically on the same input. A prior version of this guard
+  returned early once the re2 compile succeeded, silently disabling the
+  heuristic for exactly these shapes whenever re2 was installed (#148).
+  Install re2 via the ``re2`` extra (``pip install "genblaze-core[re2]"``)
+  or the ``dev`` extra, which includes it — CI installs ``libs/core[dev]``,
+  so this path is active there by default.
+* The static heuristic always runs and flags the most common
   catastrophic-backtracking shapes: nested unbounded quantifiers (bare
   ``+``/``*`` or an open-ended ``{n,}`` brace quantifier, at any nesting
   depth), alternations of identical branches, runs of the same atom
@@ -177,14 +186,15 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
 
 
 def _heuristic_unsafe(src: str) -> bool:
-    """Static ReDoS heuristic used when ``re2`` isn't installed.
+    """Static ReDoS heuristic that always runs, whether or not ``re2`` is
+    installed.
 
-    Factored out of :func:`assert_safe` so it can be unit-tested directly.
-    ``assert_safe``'s branch selection depends on whether ``re2`` happens to
-    be importable in the current environment — testing only through
-    ``assert_safe`` would make these cases silently no-op wherever ``re2``
-    is installed (e.g. CI, once the authoritative check is wired in via the
-    ``dev`` extra).
+    Runtime slug matching (``ModelFamily.matches()``) always uses stdlib
+    ``re``, never ``re2`` — so ``re2`` accepting a pattern says nothing
+    about that pattern's safety under the engine actually used at match
+    time (#148). Factored out of :func:`assert_safe` so it can be
+    unit-tested directly regardless of whether ``re2`` happens to be
+    importable in the current environment.
     """
     return bool(
         _NESTED_QUANTIFIER.search(src)
@@ -200,6 +210,12 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
 
     Call from ``ModelFamily.__post_init__`` so connector imports fail fast
     when a pattern would put preflight at risk under adversarial input.
+
+    Two independent gates apply, both when ``re2`` is installed: the re2
+    compile check catches constructs re2 itself can't support, and the
+    heuristic below always runs regardless, because runtime matching
+    (``ModelFamily.matches()``) uses stdlib ``re``, which re2's acceptance
+    of a pattern says nothing about (#148).
     """
     src = pattern.pattern
 
@@ -211,7 +227,6 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
                 f"Pattern {src!r} rejected by google-re2 "
                 f"(linear-time guarantee unavailable): {exc}"
             ) from exc
-        return
 
     if _heuristic_unsafe(src):
         raise ValueError(
@@ -220,8 +235,9 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
             f"adjacent unbounded-quantified groups, and is rejected to "
             f"prevent catastrophic backtracking on adversarial input. "
             f"Rewrite the pattern (anchor it, use non-capturing groups, or "
-            f"make quantifiers possessive) or install google-re2 for an "
-            f"authoritative linear-time check."
+            f"make quantifiers possessive) — installing google-re2 does not "
+            f"bypass this check, since runtime matching always uses stdlib "
+            f"re, which this heuristic protects."
         )
 
 
@@ -229,6 +245,8 @@ def has_re2() -> bool:
     """Return ``True`` if ``google-re2`` is installed and active.
 
     Exposed for tests and observability — the registry doesn't change
-    behavior based on this; ``assert_safe`` already chose the strategy.
+    behavior based on this; ``assert_safe`` runs the heuristic gate
+    unconditionally and additionally runs the re2 gate when this is
+    ``True``.
     """
     return _HAS_RE2
