@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Added** unit tests for the previously-untested canonical-hash
+  normalization branches (#50): NaN/Inf floats, `Enum.value` extraction, a
+  naive datetime raising `TypeError`, and aware-datetime timezone
+  canonicalization (`+00:00` → `Z`, non-UTC offsets preserved and stable).
+  `genblaze_core/canonical/_normalize.py` coverage rises from 71% to 89%.
 - **Fixed** `parse_manifest()` leaked a raw `AttributeError:
   'list' object has no attribute 'get'` when given valid JSON whose
   top-level value isn't an object (e.g. a JSON array) (#64). Both the

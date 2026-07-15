@@ -1,7 +1,10 @@
 """Tests for canonical JSON and hashing."""
 
 import math
+from datetime import UTC, datetime, timedelta, timezone
+from enum import Enum
 
+import pytest
 from genblaze_core.canonical._normalize import normalize
 from genblaze_core.canonical.json import canonical_hash, canonical_json
 
@@ -15,6 +18,48 @@ def test_float_normalization():
     assert normalize(1.00000000001) == 1.0
     assert normalize(math.nan) is None
     assert normalize(math.inf) is None
+    assert normalize(-math.inf) is None
+
+
+# --- Issue #50: cover the normalization branches left untested — these feed
+# canonical_hash()/to_canonical_json(), so a regression here silently changes
+# (or fails to change) a manifest's provenance hash. ---
+
+
+def test_enum_normalization():
+    """Enum values normalize to .value, not their name or repr."""
+
+    class Color(Enum):
+        RED = "red"
+
+    assert normalize(Color.RED) == "red"
+    assert canonical_json({"color": Color.RED}) == '{"color":"red"}'
+
+
+def test_naive_datetime_raises_type_error():
+    """A timezone-naive datetime is rejected outright — canonical hashing
+    requires an explicit offset so the same instant always normalizes
+    identically regardless of the caller's local timezone."""
+    naive = datetime(2026, 1, 1, 12, 0, 0)
+    with pytest.raises(TypeError, match="naive datetime"):
+        normalize(naive)
+
+
+def test_aware_utc_datetime_serializes_with_z_suffix():
+    """A +00:00 offset canonicalizes to the RFC 3339 'Z' shorthand."""
+    dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    assert normalize(dt) == "2026-01-01T12:00:00Z"
+
+
+def test_aware_non_utc_datetime_round_trips_stably():
+    """A non-UTC offset is preserved (not forced to Z or shifted to UTC) and
+    is stable across repeated normalization calls — the hash must not depend
+    on incidental timezone-conversion behavior."""
+    dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    result = normalize(dt)
+    assert result == dt.isoformat()
+    assert not result.endswith("Z")
+    assert normalize(dt) == result
 
 
 def test_nested_sort():
