@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-27 -->
+<!-- last_verified: 2026-07-14 -->
 # Streaming
 
 Push-style event iterators over pipeline execution. Use for progress UIs, dashboards, or feeding an agent loop.
@@ -56,7 +56,7 @@ Notes:
 - **`step` / `result` are in-process only** — present on the Python object, excluded from JSON serialization. Wire consumers read the derived `step_status` / `manifest_hash` / `run_status` / `error` fields.
 - **`step.failed` carries `error`, not `message`.** The legacy dataclass emitted both keys with the same string for failure events; the discriminated union keeps only `error`. Webhook / SSE / log consumers that key on `message` for failures should switch.
 - **Agent events expose flat fields.** `event.iteration` / `event.score` / `event.passed`, not `event.data["iteration"]` etc.
-- Not every variant has `run_id` — agent-loop events don't (they're pipeline-independent).
+- Not every variant has `run_id` — agent-loop events don't (they're pipeline-independent). Every pipeline-scoped variant, including `step.completed` / `step.failed`, carries the enclosing run's `run_id`.
 
 ## ETA hint (`expected_duration_sec`)
 
@@ -188,21 +188,34 @@ for event in pipe.stream(on_progress=log_progress):  # both fire
 
 ## Error handling
 
-If the pipeline raises an uncaught exception (not captured as a step failure), `stream()` drains any events already queued, then re-raises the exception after the iterator completes. Wrap iteration in a try/except to surface it.
+If the pipeline raises an uncaught exception (not captured as a step failure) — including a `pipeline_timeout` expiring before any step even started — `stream()`/`astream()` still emit a terminal `pipeline.failed` event (never `pipeline.completed`) before draining and re-raising the exception. Wrap iteration in a try/except to surface it:
+
+```python
+try:
+    for event in pipe.stream(pipeline_timeout=30):
+        ...
+except PipelineTimeoutError:
+    ...  # pipeline.failed was already observed on the stream before this raises
+```
 
 ## Early break
 
-Breaking out of iteration before the terminal event (`pipeline.completed` / `pipeline.failed`) is safe and non-blocking. The worker thread (sync) or task (async) keeps running until the pipeline naturally completes, but control returns to the caller immediately. Consequences:
+Breaking out of iteration before the terminal event (`pipeline.completed` / `pipeline.failed`) is safe and non-blocking. Control returns to the caller immediately. Consequences:
 
-- Remaining events after the break are discarded.
+- **Sync `stream()`**: the worker thread keeps running in the background until the pipeline naturally completes, but the emitter is closed as soon as the break is detected, so its remaining events become no-ops instead of piling onto a queue nobody drains (see Buffering below).
+- **Async `astream()`**: the worker task is cancelled at its next `await` point, unwinding in-flight provider calls; the emitter is likewise closed first so anything racing the cancellation is dropped.
 - Any post-break exception in the pipeline is suppressed.
-- Asset generation, sink writes, and tracer callbacks still run to completion — breaking out of the stream does **not** abort the pipeline.
+- Asset generation, sink writes, and tracer callbacks still run to completion for whatever work was already in flight — breaking out of the stream does **not** roll back partial work.
 
 To actually cancel pending work, use `astream()` (which cancels the worker task; in-flight `asyncio` awaits raise `CancelledError`) or kill the surrounding process. There is no way to interrupt a sync `run()` mid-flight.
 
 ## Buffering / backpressure
 
-Event queues are unbounded. In practice this is fine — even a 30-minute video run emits only ~60 events (≤100 KB) because providers poll at 1–30s intervals. The queue grows only while a consumer is blocked; a slow consumer holding the iterator for minutes could buffer a few MB at most. No backpressure is applied to providers; if you need to throttle work, use `max_concurrency` on the pipeline rather than slowing the stream consumer.
+Event queues have no `maxsize`, but growth is bounded to the in-flight window: on early break, the emitter closes immediately, so an abandoned worker's remaining `put()` calls become silent no-ops instead of buffering events for the rest of the run. A fully-drained stream (consumer keeps iterating to the terminal event) still only accumulates events while the consumer is momentarily behind the producer — in practice a few KB even for long video runs, since providers poll at 1–30s intervals. No backpressure is applied to providers; if you need to throttle work, use `max_concurrency` on the pipeline rather than slowing the stream consumer.
+
+## Concurrent stream()/astream() calls
+
+Calling `stream()`/`astream()` more than once on the **same** `Pipeline` or `AgentLoop` instance — e.g., two concurrent web requests reusing a shared, preconfigured object — is supported and isolated. Each call installs its emitter on a thread/task-local slot (`contextvars.ContextVar`-backed), so events from one call's worker never cross-deliver into another call's queue, and each stream's terminal event always reflects its own run. There is no shared mutable state to lock around.
 
 ## Narrowing with `isinstance`
 
@@ -253,5 +266,6 @@ The authoritative JSON Schemas live at `libs/spec/schemas/events/v1/` (one per v
 
 - `stream()` runs `run()` in a worker thread, yielding from `queue.Queue`.
 - `astream()` runs `arun()` as an `asyncio.Task`, yielding from `asyncio.Queue`.
+- The active emitter is held in an `EmitterSlot` (`libs/core/genblaze_core/pipeline/streaming.py`) — a `contextvars.ContextVar`-backed slot, not a plain instance attribute. Each `Pipeline`/`AgentLoop` worker thread/task installs its own emitter there. The sync `stream()` worker runs via `contextvars.copy_context().run(...)` inside its `threading.Thread` (mirroring the isolation `asyncio.create_task()` already gets for free), so the install is scoped to that one throwaway `Context` rather than the OS thread itself — correct even if a future caller reuses worker threads via a pooled executor instead of spawning one per call.
 - Event variants + `AnyStreamEvent` + `StreamEventAdapter`: `libs/core/genblaze_core/observability/events.py`.
 - Construction sites: `libs/core/genblaze_core/pipeline/streaming.py`, `pipeline/pipeline.py`, `agents/loop.py`.

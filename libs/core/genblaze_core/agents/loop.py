@@ -21,7 +21,7 @@ import asyncio
 import logging
 import queue
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from genblaze_core.agents.evaluator import EvaluationResult, Evaluator
 from genblaze_core.exceptions import GenblazeError
@@ -32,7 +32,7 @@ from genblaze_core.observability.events import (
     StreamEvent,
 )
 from genblaze_core.observability.tracer import NoOpTracer, Tracer, safe_call
-from genblaze_core.pipeline.streaming import QueueEmitter
+from genblaze_core.pipeline.streaming import EmitterSlot, QueueEmitter
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -99,6 +99,13 @@ class AgentLoop:
             retry of persistent failures (auth, network, model not found).
     """
 
+    # Holds the "active" stream emitter for whichever thread/task is
+    # currently inside stream()/astream()'s worker. ContextVar-backed (not
+    # an instance attribute) so concurrent stream()/astream() calls on the
+    # SAME AgentLoop instance don't cross-deliver events (#79). See
+    # EmitterSlot's docstring for why this needs no additional locking.
+    _emitter_slot: ClassVar[EmitterSlot] = EmitterSlot("genblaze_agent_emitter")
+
     def __init__(
         self,
         pipeline_factory: Callable[[AgentContext], Pipeline],
@@ -115,8 +122,6 @@ class AgentLoop:
         self._max_iterations = max_iterations
         self._tracer = tracer or NoOpTracer()
         self._stop_on_failure = stop_on_pipeline_failure
-        # Emitter installed by stream()/astream() so pipeline events flow out.
-        self._emitter: QueueEmitter | None = None
 
     # ------------------------------------------------------------------
     # Public API — run / arun / stream / astream
@@ -163,18 +168,26 @@ class AgentLoop:
 
         Early break: if the caller abandons iteration, the worker keeps
         running as a daemon thread and its remaining events are discarded.
+        The emitter is closed as soon as we detect the early break, so the
+        abandoned worker's remaining ``put()`` calls become no-ops instead
+        of piling onto a queue nobody will ever drain (mirrors Pipeline's
+        fix for #74).
         """
+        import contextvars
         import threading
 
         from genblaze_core.pipeline.streaming import drain_queue_sync
 
         q: queue.Queue = queue.Queue()
         emitter = QueueEmitter(q)
-        self._emitter = emitter
         exc_box: list[BaseException] = []
         done = threading.Event()
 
         def _worker() -> None:
+            # Installed inside the worker thread so it lands in this
+            # thread's own Context — isolated from a concurrent stream()
+            # call's worker thread on the same AgentLoop instance (#79).
+            self._emitter_slot.set(emitter)
             try:
                 final = self.run(**run_kwargs)
                 emitter.put(self._agent_completed_event(final))
@@ -184,30 +197,44 @@ class AgentLoop:
                 emitter.close()
                 done.set()
 
-        t = threading.Thread(target=_worker, daemon=True, name="genblaze-agent-stream")
+        # Run inside a throwaway Context (mirrors Pipeline.stream()) so the
+        # emitter install can never leak onto the underlying OS thread if a
+        # future caller reuses worker threads via a pooled executor.
+        ctx = contextvars.copy_context()
+        t = threading.Thread(
+            target=ctx.run, args=(_worker,), daemon=True, name="genblaze-agent-stream"
+        )
         t.start()
         try:
             yield from drain_queue_sync(q)
         finally:
-            self._emitter = None
             if done.is_set():
                 t.join()
                 if exc_box:
                     raise exc_box[0]
+            else:
+                # Consumer broke early — close now so the daemon worker
+                # stops enqueuing further events.
+                emitter.close()
 
     async def astream(self, **run_kwargs: Any):
         """Async version of :meth:`stream`.
 
         Early break: cancels the worker task; in-flight awaits propagate
         :class:`asyncio.CancelledError` and the exception is suppressed.
+        The emitter is closed before cancellation so anything racing the
+        cancel becomes a no-op instead of reaching an abandoned queue.
         """
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
         emitter = QueueEmitter(q)
-        self._emitter = emitter
 
         async def _worker() -> None:
+            # Installed inside the task's own (copied) context — isolated
+            # from a concurrent astream() call's task on the same AgentLoop
+            # instance (#79).
+            self._emitter_slot.set(emitter)
             try:
                 final = await self.arun(**run_kwargs)
                 emitter.put(self._agent_completed_event(final))
@@ -219,10 +246,10 @@ class AgentLoop:
             async for ev in drain_queue_async(q):
                 yield ev
         finally:
-            self._emitter = None
             if task.done():
                 await task
             else:
+                emitter.close()
                 task.cancel()
                 try:
                     await task
@@ -246,8 +273,9 @@ class AgentLoop:
         pipeline.tracer(self._tracer)
         if ctx.prior_results:
             pipeline.from_result(ctx.prior_results[-1])
-        if self._emitter is not None:
-            pipeline.attach_emitter(self._emitter)
+        emitter = self._emitter_slot.get()
+        if emitter is not None:
+            pipeline.attach_emitter(emitter)
         return pipeline
 
     def _should_stop(self, result: PipelineResult, evaluation: EvaluationResult) -> bool:
@@ -265,8 +293,9 @@ class AgentLoop:
             message=ctx.last_evaluation.feedback if ctx.last_evaluation else None,
         )
         safe_call(self._tracer, "on_event", event)
-        if self._emitter is not None:
-            self._emitter.put(event)
+        emitter = self._emitter_slot.get()
+        if emitter is not None:
+            emitter.put(event)
 
     def _emit_iteration_evaluated(
         self,
@@ -282,8 +311,9 @@ class AgentLoop:
             result=result,
         )
         safe_call(self._tracer, "on_event", event)
-        if self._emitter is not None:
-            self._emitter.put(event)
+        emitter = self._emitter_slot.get()
+        if emitter is not None:
+            emitter.put(event)
 
     def _agent_completed_event(self, final: AgentResult) -> StreamEvent:
         return AgentCompletedEvent(

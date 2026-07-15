@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
+  `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
+  emitter was a single mutable instance attribute, so a second concurrent
+  call's install silently clobbered the first's, mixing one stream's events
+  into the other's queue. Both classes now install the emitter on an
+  `EmitterSlot` (`contextvars.ContextVar`-backed), which is isolated per
+  thread/task with no additional locking required.
+- **Fixed** `stream()`/`astream()` no longer leak an abandoned worker's
+  remaining events onto an undrained queue after an early break (#74). The
+  worker used to keep running in the background for the rest of the
+  pipeline's duration, enqueuing every subsequent event with nobody to drain
+  it. The emitter now closes as soon as the early break is detected, so
+  further `put()` calls become no-ops instead of buffering unboundedly.
+- **Fixed** `stream()`/`astream()` no longer emit a successful
+  `pipeline.completed` terminal event for a run that aborts before reaching
+  normal finalization — e.g. `pipeline_timeout` expiring before any step
+  starts (#85). `all([])` treated an empty completed-steps list as
+  "succeeded"; aborted runs are now always finalized as `FAILED` and emit
+  `pipeline.failed`, with the abort's exception message attached.
+- **Fixed** concurrent `arun(fail_fast=True)` cancellation now preserves the
+  original `step_id` for cancelled and exception-raising steps, so a
+  `step.failed` event correlates with its own earlier `step.started` instead
+  of minting a brand-new id (#86).
+- **Fixed** `step.completed` / `step.failed` stream events now carry
+  `run_id`, matching every other pipeline-scoped event variant (#87).
 - **Security** `check_ssrf`/`resolve_ssrf` now catch IPv4-mapped IPv6, RFC 6052
   NAT64 (`64:ff9b::/96`), and the unspecified `::/128` address, and add a
   property-based backstop (`is_private`/`is_loopback`/`is_link_local`/

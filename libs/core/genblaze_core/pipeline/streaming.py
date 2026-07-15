@@ -9,6 +9,7 @@ and ``on_step_complete`` callbacks so no provider changes are required.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import queue
 from typing import TYPE_CHECKING
 
@@ -158,12 +159,46 @@ class QueueEmitter:
         # need to backfill from self.run_id here.
         self.put(ev)
 
-    def on_step_complete(self, ev: StepCompleteEvent) -> None:
-        self.put(step_complete_to_stream_event(ev, self.run_id))
+    def on_step_complete(self, ev: StepCompleteEvent, run_id: str | None = None) -> None:
+        # ``run_id`` lets a caller that already knows the run id for this
+        # specific event pass it explicitly, since ``self.run_id`` is only
+        # ever set at construction time (stream()/astream() build the
+        # emitter before the run id exists) — see #87.
+        self.put(step_complete_to_stream_event(ev, run_id if run_id is not None else self.run_id))
 
 
 # Backward-compat alias for existing internal imports
 _QueueEmitter = QueueEmitter
+
+
+class EmitterSlot:
+    """A thread/task-local slot holding the "active" stream emitter.
+
+    ``Pipeline`` and ``AgentLoop`` install their per-run emitter here instead
+    of on a plain instance attribute. A plain attribute is shared by every
+    concurrent ``stream()``/``astream()`` call on the SAME instance, so the
+    second call's install silently clobbers the first and events
+    cross-deliver between consumers (#79, #84). Backed by
+    ``contextvars.ContextVar``, whose value is isolated per OS thread (a new
+    ``threading.Thread`` starts with its own empty top-level ``Context``) and
+    per ``asyncio.Task`` (``create_task`` snapshots the context at creation)
+    — exactly the isolation ``stream()``/``astream()`` already rely on for
+    their one-worker-per-call model, so no additional locking is needed.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._var: contextvars.ContextVar[QueueEmitter | None] = contextvars.ContextVar(
+            name, default=None
+        )
+
+    def get(self) -> QueueEmitter | None:
+        return self._var.get()
+
+    def set(self, emitter: QueueEmitter | None) -> QueueEmitter | None:
+        """Install ``emitter`` for the calling thread/task; return the prior value."""
+        prior = self._var.get()
+        self._var.set(emitter)
+        return prior
 
 
 def drain_queue_sync(q: queue.Queue):

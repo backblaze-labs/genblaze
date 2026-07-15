@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-24 -->
+<!-- last_verified: 2026-07-14 -->
 # Agents — Evaluate & Retry Loops
 
 Generate → evaluate → refine until an output meets a quality bar. Every iteration is linked via `parent_run_id`, so the full reasoning trail is captured in the manifest lineage.

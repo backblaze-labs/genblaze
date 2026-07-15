@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from genblaze_core.exceptions import PipelineTimeoutError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.observability.events import (
@@ -200,19 +201,24 @@ def test_stream_early_break_does_not_block() -> None:
 
     Regression: previously t.join() ran unconditionally in the generator's
     finally, blocking the caller for the remainder of the pipeline runtime.
+
+    Step 2's provider blocks on an Event that this test only releases AFTER
+    the assertion — if early break still waited for the full pipeline (the
+    old bug), the consumer thread below would never return within its
+    bounded join(). This replaces an absolute wall-clock assertion
+    (elapsed < 0.5s against 3 x 0.25s sleeps), which could intermittently
+    fail on a loaded CI runner since scheduler jitter slows the pipeline's
+    own steps too (#48).
     """
-    import time as _time
+    import threading
 
-    provider = _OKProvider()
-    # Multi-step pipeline with a 0.25s synthetic latency per step.
-    # If early-break blocks on join, total wall time would be ≥ 0.75s.
-    # Slow provider via a subclass:
+    release = threading.Event()
 
-    class _SlowProvider(BaseProvider):
-        name = "slow"
+    class _BlockingProvider(BaseProvider):
+        name = "blocking"
 
         def submit(self, step, config=None) -> Any:
-            _time.sleep(0.25)
+            release.wait(timeout=5.0)
             return "pred"
 
         def poll(self, prediction_id, config=None) -> bool:
@@ -226,20 +232,38 @@ def test_stream_early_break_does_not_block() -> None:
 
     pipe = (
         Pipeline("t")
-        .step(_SlowProvider(), model="m", prompt="p1")
-        .step(_SlowProvider(), model="m", prompt="p2")
-        .step(_SlowProvider(), model="m", prompt="p3")
+        .step(_OKProvider(), model="m", prompt="p1")
+        .step(_BlockingProvider(), model="m", prompt="p2")
     )
 
-    t0 = _time.monotonic()
-    for event in pipe.stream():
-        if event.type == "step.completed":
-            break  # bail after the first step
-    elapsed = _time.monotonic() - t0
+    consumer_returned = threading.Event()
 
-    # Must finish well before 3 × 0.25s = 0.75s (first step + some slack)
-    assert elapsed < 0.5, f"stream() blocked on early break ({elapsed:.2f}s)"
-    assert provider is not None  # keep imports used
+    def _consume() -> None:
+        for event in pipe.stream():
+            if event.type == "step.completed":
+                break  # bail after the first step
+        consumer_returned.set()
+
+    # Snapshot before spawning so the abandoned "genblaze-stream" worker
+    # (joined below, after release) can be found by identity rather than by
+    # name — several tests in this module spawn same-named workers.
+    pre_existing = {t.ident for t in threading.enumerate()}
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    consumer.join(timeout=2.0)
+
+    assert consumer_returned.is_set(), (
+        "stream() blocked on early break: consumer did not return while step 2 was in flight"
+    )
+    release.set()  # let the abandoned background worker wind down
+
+    new_workers = [
+        t
+        for t in threading.enumerate()
+        if t.name == "genblaze-stream" and t.ident not in pre_existing
+    ]
+    for worker in new_workers:
+        worker.join(timeout=5.0)
 
 
 @pytest.mark.asyncio
@@ -328,7 +352,13 @@ def test_queue_emitter_put_after_close_is_noop() -> None:
 def test_stream_early_break_drains_without_daemon_error() -> None:
     """After early break, the daemon worker finishes cleanly even if it
     still tries to emit events. Previously, the worker's trailing
-    emitter.put() could AttributeError when the generator had moved on."""
+    emitter.put() could AttributeError when the generator had moved on.
+
+    Asserts a concrete, deterministic outcome (the daemon thread actually
+    winds down) instead of a bare sleep with no assertion — a sleep alone
+    gives false coverage of the "daemon winds down cleanly" claim (#48).
+    """
+    import threading
     import time as _time
 
     class _SlowProvider(BaseProvider):
@@ -353,25 +383,30 @@ def test_stream_early_break_drains_without_daemon_error() -> None:
         .step(_SlowProvider(), model="m", prompt="p2")
     )
 
+    # Snapshot before spawning so we can identify THIS test's own worker by
+    # identity, not by name — a same-named thread lingering from a previous
+    # test (they all share "genblaze-stream") must not be mistaken for ours.
+    pre_existing = {t.ident for t in threading.enumerate()}
     for ev in pipe.stream():
         if ev.type == "step.completed":
             break
 
-    # Give the daemon worker a beat to wind down. If it crashed, a subsequent
-    # stream() call would inherit a poisoned state.
-    _time.sleep(0.25)
+    # Locate the abandoned daemon worker and wait for it to wind down
+    # deterministically instead of guessing with a bare sleep.
+    new_workers = [
+        t
+        for t in threading.enumerate()
+        if t.name == "genblaze-stream" and t.ident not in pre_existing
+    ]
+    assert len(new_workers) == 1, f"expected exactly one new worker thread, found {new_workers}"
+    worker = new_workers[0]
+    worker.join(timeout=5.0)
+    assert not worker.is_alive(), "daemon worker did not wind down after early break"
 
 
 def test_consecutive_streams_after_early_break_terminate_cleanly() -> None:
     """A second stream() after an early break must still terminate normally
     and deliver its own pipeline.completed.
-
-    Scope note: if the first stream's abandoned daemon is still running when
-    the second stream starts, its residual events may appear in the second
-    stream's queue because ``self._event_emitter`` is a single-slot rebind.
-    Full isolation requires routing emitters via contextvars — tracked
-    separately. This test only asserts the second stream terminates with a
-    terminal event and produces no exceptions.
     """
 
     class _FastProvider(BaseProvider):
@@ -783,3 +818,376 @@ def test_step_retried_event_user_callback_still_fires() -> None:
     assert user_events[0].type == "step.retried"
     # And the stream still saw it.
     assert sum(1 for e in events if e.type == "step.retried") == 1
+
+
+# --- Concurrent stream()/astream() isolation (#79, #84) -----------------------
+
+
+def test_concurrent_streams_on_same_pipeline_do_not_cross_deliver() -> None:
+    """Two simultaneous stream() calls on ONE Pipeline instance must not mix
+    events between consumers.
+
+    Regression: self._event_emitter used to be a single mutable instance
+    attribute, so the second stream()'s install silently clobbered the
+    first's, and events cross-delivered between the two consumers.
+    """
+    import threading
+
+    gate = threading.Event()
+
+    class _GatedProvider(BaseProvider):
+        name = "gated"
+
+        def submit(self, step, config=None) -> Any:
+            gate.wait(timeout=5.0)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="c" * 64)
+            )
+            return step
+
+    pipe = Pipeline("t").step(_GatedProvider(), model="m", prompt="p")
+
+    gen_a = pipe.stream()
+    gen_b = pipe.stream()
+
+    # Drive both generators up to pipeline.started before releasing the
+    # gate, so both workers are genuinely in flight at the same time.
+    started_a = next(gen_a)
+    started_b = next(gen_b)
+    assert started_a.type == "pipeline.started"
+    assert started_b.type == "pipeline.started"
+    run_a, run_b = started_a.run_id, started_b.run_id
+    assert run_a != run_b
+
+    gate.set()  # let both submit() calls proceed concurrently
+
+    events_a = [started_a, *list(gen_a)]
+    events_b = [started_b, *list(gen_b)]
+
+    assert all(e.run_id in (None, run_a) for e in events_a), events_a
+    assert all(e.run_id in (None, run_b) for e in events_b), events_b
+    assert events_a[-1].type == "pipeline.completed"
+    assert events_b[-1].type == "pipeline.completed"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_astreams_on_same_pipeline_do_not_cross_deliver() -> None:
+    """Async sibling of the sync cross-delivery regression test."""
+    import asyncio as _asyncio
+
+    class _GatedAsyncProvider(BaseProvider):
+        name = "gated-async"
+
+        def submit(self, step, config=None) -> Any:
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="d" * 64)
+            )
+            return step
+
+    pipe = Pipeline("t").step(_GatedAsyncProvider(), model="m", prompt="p")
+
+    async def _consume() -> list[StreamEvent]:
+        events: list[StreamEvent] = []
+        async for ev in pipe.astream():
+            events.append(ev)
+        return events
+
+    task_a = _asyncio.create_task(_consume())
+    task_b = _asyncio.create_task(_consume())
+    events_a, events_b = await _asyncio.gather(task_a, task_b)
+
+    run_a = events_a[0].run_id
+    run_b = events_b[0].run_id
+    assert run_a != run_b
+    assert all(e.run_id in (None, run_a) for e in events_a), events_a
+    assert all(e.run_id in (None, run_b) for e in events_b), events_b
+    assert events_a[-1].type == "pipeline.completed"
+    assert events_b[-1].type == "pipeline.completed"
+
+
+# --- Abandoned-consumer backpressure (#74) -------------------------------------
+
+
+def test_stream_early_break_stops_terminal_event_after_close() -> None:
+    """Early break must close the emitter so the daemon worker's remaining
+    events — in particular the terminal event, which only fires after the
+    WHOLE pipeline finishes — never land on the abandoned queue.
+
+    Regression: the queue had no maxsize and nothing stopped the abandoned
+    worker from enqueuing events for the full remaining run length. This
+    also guards a fix-interaction: once the emitter moved to a per-thread
+    ContextVar slot (#79/#84), the consumer thread can no longer reach into
+    the worker thread's slot to implicitly cut it off — an explicit
+    ``emitter.close()`` on early break is what stops the worker now.
+    """
+    import queue as _queue
+    import threading
+    import time as _time
+    from unittest.mock import patch
+
+    captured: list[object] = []
+    real_queue_cls = _queue.Queue
+
+    class _SpyQueue(real_queue_cls):
+        def put(self, item, *a, **kw):
+            captured.append(item)
+            return super().put(item, *a, **kw)
+
+    class _SlowProvider(BaseProvider):
+        name = "slow"
+
+        def submit(self, step, config=None) -> Any:
+            _time.sleep(0.1)
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/a.png", media_type="image/png", sha256="e" * 64)
+            )
+            return step
+
+    pipe = (
+        Pipeline("t")
+        .step(_SlowProvider(), model="m", prompt="p1")
+        .step(_SlowProvider(), model="m", prompt="p2")
+        .step(_SlowProvider(), model="m", prompt="p3")
+    )
+
+    with patch("queue.Queue", _SpyQueue):
+        # Snapshot before spawning so we can identify THIS test's own
+        # worker by identity, not by name — a same-named thread lingering
+        # from a previous test (which shares "genblaze-stream") must not be
+        # mistaken for ours.
+        pre_existing = {t.ident for t in threading.enumerate()}
+        for ev in pipe.stream():
+            if ev.type == "step.completed":
+                break
+
+        new_workers = [
+            t
+            for t in threading.enumerate()
+            if t.name == "genblaze-stream" and t.ident not in pre_existing
+        ]
+        assert len(new_workers) == 1, (
+            f"expected exactly one new worker thread, found {new_workers}"
+        )
+        worker = new_workers[0]
+        worker.join(timeout=5.0)
+        assert not worker.is_alive()
+
+    # Guard against the queue.Queue patch silently failing to intercept
+    # (e.g. a future import-style change in stream()) and giving false
+    # confidence that the terminal-event assertion below actually ran.
+    assert captured, "spy did not capture any queue.Queue.put calls"
+
+    types = [getattr(item, "type", "<sentinel>") for item in captured]
+    assert "pipeline.completed" not in types, (
+        f"abandoned worker ran the full pipeline and emitted a terminal "
+        f"event onto a queue nobody drains: {types}"
+    )
+
+
+# --- Aborted-run terminal event correctness (#85) ------------------------------
+
+
+def test_stream_timeout_before_any_step_emits_failed_not_completed() -> None:
+    """A pipeline_timeout=0 exit before any step runs must emit
+    pipeline.failed, never pipeline.completed.
+
+    Regression: the run()/arun() ``finally`` fallback called ``_finalize``
+    with an empty completed_steps list, and ``all([])`` is True, so the
+    aborted run was reported COMPLETED.
+    """
+    events: list[StreamEvent] = []
+    with pytest.raises(PipelineTimeoutError):
+        for ev in (
+            Pipeline("t").step(_OKProvider(), model="m", prompt="p").stream(pipeline_timeout=0)
+        ):
+            events.append(ev)
+    types = _event_types(events)
+    assert "pipeline.completed" not in types
+    assert types[-1] == "pipeline.failed"
+
+
+@pytest.mark.asyncio
+async def test_astream_timeout_before_any_step_emits_failed_not_completed() -> None:
+    """Async sibling of the sync timeout-before-any-step regression test."""
+    events: list[StreamEvent] = []
+    with pytest.raises(PipelineTimeoutError):
+        async for ev in (
+            Pipeline("t").step(_OKProvider(), model="m", prompt="p").astream(pipeline_timeout=0)
+        ):
+            events.append(ev)
+    types = _event_types(events)
+    assert "pipeline.completed" not in types
+    assert types[-1] == "pipeline.failed"
+
+
+@pytest.mark.asyncio
+async def test_astream_concurrent_timeout_fires_before_step_started() -> None:
+    """Concurrent (non-chained) async pipelines must not emit step.started
+    for steps that will never run when pipeline_timeout=0 fires immediately.
+    """
+    events: list[StreamEvent] = []
+    with pytest.raises(PipelineTimeoutError):
+        async for ev in (
+            Pipeline("t")
+            .step(_OKProvider(), model="m", prompt="p1")
+            .step(_OKProvider(), model="m", prompt="p2")
+            .astream(pipeline_timeout=0)
+        ):
+            events.append(ev)
+    types = _event_types(events)
+    assert "step.started" not in types
+    assert "pipeline.completed" not in types
+    assert types[-1] == "pipeline.failed"
+
+
+# --- Fail-fast cancellation preserves step_id (#86) ----------------------------
+
+
+class _FastFailProvider(BaseProvider):
+    """Fails synchronously in submit() — no delay."""
+
+    name = "fast-fail"
+
+    def submit(self, step, config=None) -> Any:
+        raise RuntimeError("boom")
+
+    def poll(self, prediction_id, config=None) -> bool:  # pragma: no cover
+        return True
+
+    def fetch_output(self, prediction_id, step):  # pragma: no cover
+        return step
+
+
+class _SlowVictimProvider(BaseProvider):
+    """Slow enough that fail-fast cancels it before it finishes polling."""
+
+    name = "slow-victim"
+
+    def submit(self, step, config=None) -> Any:
+        return "pred"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        import time as _time
+
+        _time.sleep(0.2)  # gives the sibling time to fail first
+        return True
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(
+            Asset(url="https://x.test/a.png", media_type="image/png", sha256="f" * 64)
+        )
+        return step
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fail_fast_cancellation_preserves_step_id() -> None:
+    """A cancelled sibling step's step.failed event must carry the SAME
+    step_id as its own earlier step.started event.
+
+    Regression: the cancellation placeholder was built via a fresh
+    ``_build_step()`` call with no step_id, minting a brand-new UUID that
+    didn't match the step_id already announced via step.started.
+    """
+    events: list[StreamEvent] = []
+    async for ev in (
+        Pipeline("t")
+        .step(_FastFailProvider(), model="m", prompt="p1")
+        .step(_SlowVictimProvider(), model="m", prompt="p2")
+        .astream()
+    ):
+        events.append(ev)
+
+    started_ids = {e.step_id for e in events if e.type == "step.started"}
+    failed = [e for e in events if e.type == "step.failed"]
+    assert len(failed) == 2  # one raised in submit(), one cancelled mid-poll
+    for f in failed:
+        assert f.step_id in started_ids, (
+            f"step.failed step_id {f.step_id} has no matching step.started ({started_ids})"
+        )
+
+
+class _RaisingAinvokeProvider(BaseProvider):
+    """Raises directly from ainvoke() — exercises the task-exception path
+    in _gather_fail_fast (as opposed to a provider returning a FAILED step)."""
+
+    name = "raising-ainvoke"
+
+    async def ainvoke(self, step, config=None):
+        raise RuntimeError("ainvoke exploded")
+
+    def submit(self, step, config=None) -> Any:  # pragma: no cover
+        return "pred"
+
+    def poll(self, prediction_id, config=None) -> bool:  # pragma: no cover
+        return True
+
+    def fetch_output(self, prediction_id, step):  # pragma: no cover
+        return step
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fail_fast_task_exception_preserves_step_id() -> None:
+    """A task that raises (not just returns a FAILED step) must still emit
+    step.failed under its own already-announced step_id.
+    """
+    events: list[StreamEvent] = []
+    async for ev in (
+        Pipeline("t")
+        .step(_RaisingAinvokeProvider(), model="m", prompt="p1")
+        .step(_SlowVictimProvider(), model="m", prompt="p2")
+        .astream()
+    ):
+        events.append(ev)
+
+    started_ids = {e.step_id for e in events if e.type == "step.started"}
+    failed = [e for e in events if e.type == "step.failed"]
+    assert failed, "expected at least one step.failed event"
+    for f in failed:
+        assert f.step_id in started_ids, (
+            f"step.failed step_id {f.step_id} has no matching step.started ({started_ids})"
+        )
+
+
+# --- step.completed / step.failed carry run_id (#87) ---------------------------
+
+
+def test_step_completed_event_carries_run_id() -> None:
+    events = list(Pipeline("t").step(_OKProvider(), model="m", prompt="p").stream())
+    run_id = events[0].run_id
+    completed = next(e for e in events if e.type == "step.completed")
+    assert completed.run_id == run_id
+
+
+def test_step_failed_event_carries_run_id() -> None:
+    events = list(Pipeline("t").step(_FailProvider(), model="m", prompt="p").stream())
+    run_id = events[0].run_id
+    failed = next(e for e in events if e.type == "step.failed")
+    assert failed.run_id == run_id
+
+
+@pytest.mark.asyncio
+async def test_astream_step_completed_event_carries_run_id() -> None:
+    events: list[StreamEvent] = []
+    async for ev in Pipeline("t").step(_OKProvider(), model="m", prompt="p").astream():
+        events.append(ev)
+    run_id = events[0].run_id
+    completed = next(e for e in events if e.type == "step.completed")
+    assert completed.run_id == run_id

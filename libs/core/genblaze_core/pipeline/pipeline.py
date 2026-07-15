@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from genblaze_core._utils import (
     _SECRET_PATTERNS,
@@ -49,7 +49,7 @@ from genblaze_core.observability.events import (
 from genblaze_core.observability.tracer import LoggingTracer, NoOpTracer, Tracer, safe_call
 from genblaze_core.pipeline.moderation import ModerationHook, ModerationResult
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
-from genblaze_core.pipeline.streaming import QueueEmitter, progress_to_stream_event
+from genblaze_core.pipeline.streaming import EmitterSlot, QueueEmitter, progress_to_stream_event
 from genblaze_core.progress_display import Spinner, should_auto_enable
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.providers.validation import ValidationOutcome, ValidationResult
@@ -315,6 +315,13 @@ class Pipeline(Runnable[None, PipelineResult]):
         structured_log: If True, emit JSON log events via StructuredLogger.
     """
 
+    # Holds the "active" stream emitter for whichever thread/task is
+    # currently inside stream()/astream()'s worker. ContextVar-backed
+    # (not an instance attribute) so concurrent stream()/astream() calls on
+    # the SAME Pipeline instance don't cross-deliver events (#79, #84). See
+    # EmitterSlot's docstring for why this needs no additional locking.
+    _emitter_slot: ClassVar[EmitterSlot] = EmitterSlot("genblaze_pipeline_emitter")
+
     def __init__(
         self,
         name: str | None = None,
@@ -368,7 +375,6 @@ class Pipeline(Runnable[None, PipelineResult]):
             self._tracer = LoggingTracer()
         else:
             self._tracer = NoOpTracer()
-        self._event_emitter: QueueEmitter | None = None
 
     # --- Copy / serialization protocols ---------------------------------
     # The WARN-dedup ``threading.Lock`` added for #56 is neither copyable nor
@@ -1288,8 +1294,17 @@ class Pipeline(Runnable[None, PipelineResult]):
         sink: BaseSink | None,
         run_id: str,
         started_at_ts: float | None = None,
+        *,
+        force_status: RunStatus | None = None,
     ) -> PipelineResult:
-        """Build run, manifest, and write to sink."""
+        """Build run, manifest, and write to sink.
+
+        ``force_status`` overrides the inferred COMPLETED/FAILED status.
+        Used by run()/arun()'s exception fallback so a run that aborted
+        before reaching normal completion is never reported as COMPLETED,
+        regardless of how many of its steps happened to succeed before the
+        abort (#85).
+        """
         builder = RunBuilder(self._name)
         builder.run_id(run_id)
         if self._tenant_id:
@@ -1303,7 +1318,10 @@ class Pipeline(Runnable[None, PipelineResult]):
         for s in completed_steps:
             builder.add_step(s)
 
-        builder.status(RunStatus.COMPLETED if all_succeeded else RunStatus.FAILED)
+        if force_status is not None:
+            builder.status(force_status)
+        else:
+            builder.status(RunStatus.COMPLETED if all_succeeded else RunStatus.FAILED)
         run_obj = builder.build()
 
         if started_at_ts is not None:
@@ -1344,14 +1362,20 @@ class Pipeline(Runnable[None, PipelineResult]):
             logger.warning("%s callback raised", name, exc_info=True)
 
     def attach_emitter(self, emitter: QueueEmitter | None) -> QueueEmitter | None:
-        """Install (or clear) the stream event emitter, returning the prior one.
+        """Install (or clear) the stream event emitter for the calling
+        thread/task, returning the prior one.
 
-        Public so composable runners (e.g. AgentLoop) can pipe pipeline events
-        into their own event stream without poking private state.
+        Storage is ``_emitter_slot`` (contextvars-backed), not an instance
+        attribute — isolating concurrent stream()/astream() calls on the
+        same Pipeline instance from each other (#79, #84). Public so
+        composable runners (e.g. AgentLoop) can pipe pipeline events into
+        their own event stream without poking private state.
         """
-        prior = self._event_emitter
-        self._event_emitter = emitter
-        return prior
+        return self._emitter_slot.set(emitter)
+
+    @property
+    def _event_emitter(self) -> QueueEmitter | None:
+        return self._emitter_slot.get()
 
     def _install_progress_tracer(
         self,
@@ -1456,8 +1480,11 @@ class Pipeline(Runnable[None, PipelineResult]):
     def _emit_step_complete_event(self, step_event: StepCompleteEvent, run_id: str) -> None:
         # Tracer on_step_end is paired in _execute_step, _execute_step_async,
         # and _record_prefailed_step via _emit_tracer_step_end; emitter-only here.
+        # run_id is passed explicitly rather than relying on the emitter's own
+        # (never-set) run_id — stream()/astream() build the emitter before
+        # the run id exists (#87).
         if self._event_emitter is not None:
-            self._event_emitter.on_step_complete(step_event)
+            self._event_emitter.on_step_complete(step_event, run_id)
 
     def _notify_sink_step_complete(
         self,
@@ -1493,7 +1520,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                 exc,
             )
 
-    def _emit_pipeline_end(self, result: PipelineResult, run_id: str) -> None:
+    def _emit_pipeline_end(
+        self, result: PipelineResult, run_id: str, *, message: str | None = None
+    ) -> None:
+        """Emit the terminal pipeline event.
+
+        ``message`` overrides the step-derived ``error_summary()`` — used by
+        run()/arun()'s exception fallback to surface the abort reason (e.g.
+        a timeout) even when no step recorded an error (#85).
+        """
         failed = result.run.status == RunStatus.FAILED
         # Pre-compute wire-safe fields so consumers of to_dict() / JSON Schema
         # still see terminal status + manifest hash when the in-process
@@ -1504,7 +1539,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             event: StreamEvent = PipelineFailedEvent(
                 run_id=run_id,
                 result=result,
-                message=result.error_summary(),
+                message=message if message is not None else result.error_summary(),
                 run_status=run_status,
                 manifest_hash=manifest_hash,
             )
@@ -1544,8 +1579,12 @@ class Pipeline(Runnable[None, PipelineResult]):
         Early break: if the caller breaks out of iteration before the
         terminal event, we return immediately and let the (daemon) worker
         thread finish in the background. Remaining events are discarded
-        and any post-break exception in the pipeline is suppressed.
+        and any post-break exception in the pipeline is suppressed. The
+        emitter is closed as soon as we detect the early break, so the
+        abandoned worker's remaining ``put()`` calls become no-ops instead
+        of piling onto a queue nobody will ever drain (#74).
         """
+        import contextvars
         import queue as _queue
         import threading
 
@@ -1553,12 +1592,15 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         q: _queue.Queue = _queue.Queue()
         emitter = QueueEmitter(q, include_heartbeats=heartbeats)
-        prior = self.attach_emitter(emitter)
 
         exc_box: list[BaseException] = []
         done = threading.Event()
 
         def _worker() -> None:
+            # Installed inside the worker thread so it lands in this
+            # thread's own Context — isolated from a concurrent stream()
+            # call's worker thread on the same Pipeline instance (#84).
+            self.attach_emitter(emitter)
             try:
                 self.run(**run_kwargs)
             except BaseException as exc:  # noqa: BLE001 — propagate via queue
@@ -1567,18 +1609,29 @@ class Pipeline(Runnable[None, PipelineResult]):
                 emitter.close()
                 done.set()
 
-        t = threading.Thread(target=_worker, daemon=True, name="genblaze-stream")
+        # Run the worker inside its own throwaway Context — the same trick
+        # asyncio.create_task() already gets for free — so the attach_emitter
+        # install above can never leak onto the underlying OS thread itself.
+        # Safe today regardless (a fresh Thread's default context is already
+        # empty), but this keeps correctness structural rather than
+        # incidental if a future caller ever reuses worker threads via a
+        # pooled executor instead of spawning one per stream() call.
+        ctx = contextvars.copy_context()
+        t = threading.Thread(target=ctx.run, args=(_worker,), daemon=True, name="genblaze-stream")
         t.start()
         try:
             yield from drain_queue_sync(q)
         finally:
-            self.attach_emitter(prior)
             if done.is_set():
                 t.join()  # fast — worker already returned
                 if exc_box:
                     raise exc_box[0]
-            # else: consumer broke early; worker keeps running as a daemon
-            # thread and exits when the pipeline naturally completes.
+            else:
+                # Consumer broke early; the worker keeps running as a
+                # daemon thread until the pipeline naturally completes, but
+                # close the emitter now so it stops enqueuing further
+                # events (#74).
+                emitter.close()
 
     async def astream(self, *, heartbeats: bool = True, **run_kwargs: Any):
         """Async version of :meth:`stream`.
@@ -1588,15 +1641,20 @@ class Pipeline(Runnable[None, PipelineResult]):
 
         Early break: cancels the worker task so in-flight provider calls
         unwind at their next await point. Any post-break exception from
-        the pipeline is suppressed.
+        the pipeline is suppressed. The emitter is closed before
+        cancellation so any event racing the cancel becomes a no-op instead
+        of reaching an abandoned queue (#74).
         """
         from genblaze_core.pipeline.streaming import drain_queue_async
 
         q: asyncio.Queue = asyncio.Queue()
         emitter = QueueEmitter(q, include_heartbeats=heartbeats)
-        prior = self.attach_emitter(emitter)
 
         async def _worker() -> None:
+            # Installed inside the task's own (copied) context — isolated
+            # from a concurrent astream() call's task on the same Pipeline
+            # instance (#84).
+            self.attach_emitter(emitter)
             try:
                 await self.arun(**run_kwargs)
             finally:
@@ -1607,10 +1665,12 @@ class Pipeline(Runnable[None, PipelineResult]):
             async for ev in drain_queue_async(q):
                 yield ev
         finally:
-            self.attach_emitter(prior)
             if task.done():
                 await task  # re-raises if worker failed
             else:
+                # Consumer broke early — close first so anything racing the
+                # cancellation becomes a no-op (#74), then cancel the worker.
+                emitter.close()
                 task.cancel()
                 try:
                     await task
@@ -1764,6 +1824,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         completed_steps: list[Step] = []
         prev_assets: list[Asset] = []
         pipeline_result: PipelineResult | None = None
+        abort_message: str | None = None
         try:
             for i, ps in enumerate(self._steps, 1):
                 # Check pipeline-level timeout before each step
@@ -1846,13 +1907,27 @@ class Pipeline(Runnable[None, PipelineResult]):
             should_raise = _resolve_raise_on_failure(raise_on_failure)
             _maybe_raise_pipeline_error(pipeline_result, completed_steps, should_raise)
             return pipeline_result
+        except BaseException as exc:
+            # Only stash a synthetic abort message when _finalize never ran
+            # for this run (pipeline_result still None) — e.g. a mid-loop
+            # PipelineTimeoutError. A PipelineError raised by
+            # _maybe_raise_pipeline_error AFTER a normal _finalize already
+            # carries accurate step-level errors via error_summary().
+            if pipeline_result is None:
+                abort_message = sanitize_error(str(exc))
+            raise
         finally:
             # Guarantee on_run_end fires — covers timeouts, KeyboardInterrupt,
-            # and bugs in _finalize. Synthesizes an aborted result if the
-            # normal flow didn't reach _finalize.
+            # and bugs in _finalize. A run that aborted before _finalize is
+            # always reported FAILED here, never inferred as COMPLETED from
+            # an empty or all-succeeded step prefix (#85).
             self._emit_pipeline_end(
-                pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
+                pipeline_result
+                or self._finalize(
+                    completed_steps, None, run_id, started_at_ts, force_status=RunStatus.FAILED
+                ),
                 run_id,
+                message=abort_message,
             )
             if spinner is not None:
                 spinner.stop()
@@ -1978,6 +2053,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._emit_run_start(run_id, total_steps)
         completed_steps: list[Step] = []
         pipeline_result: PipelineResult | None = None
+        abort_message: str | None = None
         try:
             if sequential:
                 # Sequential: each step's outputs feed the next step's inputs.
@@ -2072,13 +2148,11 @@ class Pipeline(Runnable[None, PipelineResult]):
                 steps_and_models = [
                     (ps, self._build_step(ps, ps.external_inputs)) for ps in self._steps
                 ]
-                for idx, (ps, step) in enumerate(steps_and_models):
-                    self._emit_step_start(
-                        _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
-                        step,
-                        ps,
-                    )
 
+                # Check the pipeline timeout BEFORE announcing any step —
+                # otherwise a run that never actually starts a step still
+                # emits step.started, making an aborted run look like it was
+                # underway (#85).
                 if pipeline_timeout is not None:
                     elapsed = time.monotonic() - started_at_mono
                     if elapsed >= pipeline_timeout:
@@ -2087,6 +2161,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                             f" (limit: {pipeline_timeout}s)"
                         )
                         raise PipelineTimeoutError(msg)
+
+                for idx, (ps, step) in enumerate(steps_and_models):
+                    self._emit_step_start(
+                        _StepContext(run_id=run_id, step_index=idx, total_steps=total_steps),
+                        step,
+                        ps,
+                    )
 
                 concurrency = max_concurrency or self._max_concurrency
                 sem = asyncio.Semaphore(concurrency) if concurrency else None
@@ -2180,12 +2261,28 @@ class Pipeline(Runnable[None, PipelineResult]):
             should_raise = _resolve_raise_on_failure(raise_on_failure)
             _maybe_raise_pipeline_error(pipeline_result, completed_steps, should_raise)
             return pipeline_result
+        except BaseException as exc:
+            # Only stash a synthetic abort message when _finalize never ran
+            # for this run (pipeline_result still None) — e.g. a mid-loop
+            # PipelineTimeoutError or fail-fast cancellation. A
+            # PipelineError raised by _maybe_raise_pipeline_error AFTER a
+            # normal _finalize already carries accurate step-level errors
+            # via error_summary().
+            if pipeline_result is None:
+                abort_message = sanitize_error(str(exc))
+            raise
         finally:
             # Guarantee on_run_end fires — covers timeouts, cancellation,
-            # and bugs in _finalize. Synthesizes a result if we didn't reach it.
+            # and bugs in _finalize. A run that aborted before _finalize is
+            # always reported FAILED here, never inferred as COMPLETED from
+            # an empty or all-succeeded step prefix (#85).
             self._emit_pipeline_end(
-                pipeline_result or self._finalize(completed_steps, None, run_id, started_at_ts),
+                pipeline_result
+                or self._finalize(
+                    completed_steps, None, run_id, started_at_ts, force_status=RunStatus.FAILED
+                ),
                 run_id,
+                message=abort_message,
             )
             if spinner is not None:
                 spinner.stop()
@@ -2198,13 +2295,20 @@ class Pipeline(Runnable[None, PipelineResult]):
             if _owns_sink:
                 await asyncio.to_thread(self._close_sink_quietly, sink)
 
-    def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
-        """Create a FAILED step from an unhandled exception."""
+    def _make_failed_step(
+        self, ps: _PipelineStep, exc: Exception, *, step_id: str | None = None
+    ) -> Step:
+        """Create a FAILED step from an unhandled exception.
+
+        ``step_id`` preserves correlation with an already-emitted
+        ``step.started`` event (concurrent fail-fast path, #86); omit to
+        mint a fresh id.
+        """
         from genblaze_core.providers.base import classify_api_error
 
         # Preserve external_inputs on the failed-step record so the manifest
         # shows what the step was supposed to consume.
-        step = self._build_step(ps, ps.external_inputs)
+        step = self._build_step(ps, ps.external_inputs, step_id=step_id)
         step.status = StepStatus.FAILED
         step.error = sanitize_error(str(exc))
         step.error_code = classify_api_error(exc)
@@ -2224,6 +2328,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         tasks: list[asyncio.Task] = []
         task_index: dict[asyncio.Task, int] = {}
         task_ps: dict[asyncio.Task, _PipelineStep] = {}
+        # The already-built Step for each task, carrying the step_id that
+        # was announced via step.started. Cancellation/exception placeholders
+        # must reuse this id rather than minting a new one, or the later
+        # step.failed event won't correlate with its own step.started (#86).
+        task_step: dict[asyncio.Task, Step] = {}
 
         async def _run(ps: _PipelineStep, step: Step) -> Step:
             if semaphore:
@@ -2247,6 +2356,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             tasks.append(t)
             task_index[t] = idx
             task_ps[t] = ps
+            task_step[t] = step
 
         results: dict[int, Step] = {}
         pending: set[asyncio.Task] = set(tasks)
@@ -2261,7 +2371,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 except Exception as exc:
                     # Task raised — create a FAILED step instead of dropping it
                     logger.debug("Task %d raised an exception: %s", idx, exc)
-                    result = self._make_failed_step(task_ps[t], exc)
+                    result = self._make_failed_step(task_ps[t], exc, step_id=task_step[t].step_id)
 
                 results[idx] = result
 
@@ -2283,7 +2393,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                 continue
             if t.cancelled():
                 ps_cancelled = task_ps[t]
-                step = self._build_step(ps_cancelled, ps_cancelled.external_inputs)
+                step = self._build_step(
+                    ps_cancelled, ps_cancelled.external_inputs, step_id=task_step[t].step_id
+                )
                 step.status = StepStatus.FAILED
                 step.error = "Step cancelled due to fail-fast after prior step failure"
                 results[idx] = step
@@ -2292,7 +2404,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                     results[idx] = t.result()
                 except Exception as exc:
                     logger.debug("Task %d failed", idx)
-                    results[idx] = self._make_failed_step(task_ps[t], exc)
+                    results[idx] = self._make_failed_step(
+                        task_ps[t], exc, step_id=task_step[t].step_id
+                    )
 
         # Return in original order
         return [results[i] for i in sorted(results)]
