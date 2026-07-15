@@ -2,12 +2,16 @@
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from genblaze_core.models.enums import PromptVisibility, RunStatus
 
+if TYPE_CHECKING:
+    from genblaze_core.providers.base import BaseProvider
 
-def _load_provider(provider_name: str, allowed: tuple[str, ...] | None):
+
+def _load_provider(provider_name: str, allowed: tuple[str, ...] | None) -> "BaseProvider":
     """Load a provider by name using entry point discovery.
 
     If allowed is set, reject providers not in the allowlist.
@@ -142,9 +146,13 @@ def replay(
 
     # Safety: when no allowlist is provided, confirm each unique provider.
     # A hostile manifest could reference any installed provider and execute
-    # paid API calls on the user's credentials without consent.
+    # paid API calls on the user's credentials without consent. Steps with no
+    # provider (INGEST/IMPORT, see the loop below) don't invoke one, so they're
+    # excluded here rather than flowing `None` into sorted() (issue #43).
     if allowed is None:
-        unique_providers = sorted({step.provider for step in run.steps})
+        unique_providers = sorted(
+            {step.provider for step in run.steps if step.provider is not None}
+        )
         click.echo(
             "No --allow-provider allowlist set. Confirm each provider before execution:",
             err=True,
@@ -165,7 +173,7 @@ def replay(
     # Cache providers by name to avoid re-instantiating
     from genblaze_core.pipeline import Pipeline
 
-    providers: dict[str, object] = {}
+    providers: dict[str, BaseProvider] = {}
     pipe = Pipeline(
         run.name,
         tenant_id=run.tenant_id,
@@ -177,6 +185,17 @@ def replay(
     _reserved = {"model", "prompt", "modality", "step_type", "seed", "negative_prompt"}
 
     for step_idx, step in enumerate(run.steps):
+        # A None provider (only valid for INGEST/IMPORT steps, see Step's
+        # own validator) has no upstream service to re-invoke here — replay
+        # only supports Pipeline.step()-shaped generative steps. Without this
+        # guard, None flowed into a dict[str, ...] key and _load_provider's
+        # str parameter, raising a confusing TypeError instead (issue #43).
+        if step.provider is None:
+            raise click.ClickException(
+                f"Step {step_idx + 1} (step_type={step.step_type}) has no provider; "
+                "replay does not support re-executing provider-less steps "
+                "(e.g. INGEST/IMPORT)."
+            )
         if step.provider not in providers:
             providers[step.provider] = _load_provider(step.provider, allowed)
 

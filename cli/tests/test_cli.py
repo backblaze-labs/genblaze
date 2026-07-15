@@ -13,8 +13,10 @@ from genblaze_core.builders import RunBuilder, StepBuilder
 from genblaze_core.canonical.json import canonical_json
 from genblaze_core.media.png import PngHandler
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
+from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus, StepType
 from genblaze_core.models.manifest import Manifest
+from genblaze_core.models.run import Run
+from genblaze_core.models.step import Step
 from genblaze_core.testing import MockProvider
 from PIL import Image
 
@@ -429,6 +431,30 @@ def test_replay_aborts_when_no_allowlist_and_declined(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["replay", str(manifest_path), "--no-dry-run"], input="n\n")
     assert result.exit_code != 0
     assert "Aborted" in result.output or "Execute with provider" in result.output
+
+
+def test_replay_reports_clear_error_for_providerless_step(tmp_path: Path) -> None:
+    """A provider-less step (INGEST/IMPORT, valid per Step's own model) must
+    produce a clear ClickException on replay --no-dry-run, not a TypeError
+    from None flowing into sorted()/dict keys/_load_provider (issue #43)."""
+    step = Step(
+        provider=None,
+        model="rss",
+        step_type=StepType.INGEST,
+        status=StepStatus.SUCCEEDED,
+        assets=[Asset(url="https://example.com/a.png", media_type="image/png")],
+    )
+    run = Run(name="ingest-test", steps=[step])
+    manifest = Manifest.from_run(run)
+    manifest_path = tmp_path / "ingest.json"
+    manifest_path.write_text(manifest.to_canonical_json(), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["replay", str(manifest_path), "--no-dry-run"])
+
+    assert result.exit_code != 0
+    assert "TypeError" not in result.output
+    assert "no provider" in result.output.lower()
 
 
 def test_replay_no_dry_run_exits_nonzero_when_run_fails(tmp_path: Path, monkeypatch) -> None:

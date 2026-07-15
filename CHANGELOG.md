@@ -136,6 +136,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-cli
 
+- **Fixed** six latent `str | None` flow bugs in `replay.py` (#43). A
+  provider-less step (only valid for `INGEST`/`IMPORT`, per `Step`'s own
+  validator) flowed `None` into `sorted()`, `list.append`, a `dict[str, ...]`
+  key, and `_load_provider(name: str)`, raising a confusing `TypeError`
+  instead of a clean CLI error. The provider-confirmation prompt now skips
+  provider-less steps (they invoke no provider), and the execution loop
+  raises a clear `ClickException` naming the offending step instead of
+  reaching those call sites with `None`. `mypy cli/genblaze_cli/
+  --ignore-missing-imports` is now clean.
 - **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
   to write the manifest JSON to a file, matching the documented usage.
 - **Changed** `--version` now reports `genblaze-cli` rather than `genblaze`,

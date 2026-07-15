@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-06 -->
+<!-- last_verified: 2026-07-14 -->
 # Feature: CLI
 
 ## Purpose
@@ -48,6 +48,8 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
 - Replay dry-run (default) → no API calls made
 - Replay `--no-dry-run` → requires provider package installed (e.g., `genblaze-replicate`)
 - Unknown provider in manifest → error with list of known providers
+- Provider-less step (`INGEST`/`IMPORT`, `provider=None`) → replay
+  `--no-dry-run` raises a clear error naming the step; not yet supported
 
 ## Verification
 - Test files: `cli/tests/test_cli.py`
