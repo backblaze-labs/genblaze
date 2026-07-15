@@ -133,6 +133,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of walking the tree; an existing `runs/` tree without an index
   yet is backfilled once, at the first `ParquetSink` construction, not on
   every write.
+- **Fixed** the #72 idempotency fix still silently dropped a same-partition
+  re-sink whose content changed — e.g. a resume that completes more steps
+  without changing the modality/provider set, so the partition path (and
+  therefore the fast-path check) is unchanged (#152). `write_run()` now
+  compares the existing sentinel's `canonical_hash` against the new
+  manifest's before short-circuiting; only a byte-for-byte repeat is a
+  no-op, and a genuine content change rewrites the `runs`/`steps`/`assets`
+  rows in place.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

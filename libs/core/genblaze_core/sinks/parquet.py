@@ -127,6 +127,18 @@ class ParquetSink(BaseSink):
         """Persist run_id -> partition as its own small file (see _INDEX_DIRNAME)."""
         _atomic_write_bytes(partition.encode("utf-8"), self._run_index_entry_path(run_id))
 
+    def _existing_canonical_hash(self, runs_path: Path) -> str | None:
+        """Return the canonical_hash already sunk at runs_path, or None if
+        unreadable — treated as "unknown" so callers rewrite rather than
+        silently trust a corrupt sentinel."""
+        try:
+            table = pq.read_table(runs_path, columns=["canonical_hash"])
+        except Exception:
+            return None
+        if table.num_rows == 0:
+            return None
+        return table.column("canonical_hash")[0].as_py()
+
     def _remove_partition_files(self, run_id: str, partition: str) -> None:
         """Remove a stale run's steps/assets/runs files under `partition`.
 
@@ -165,29 +177,32 @@ class ParquetSink(BaseSink):
         partition = self._partition_path(run)
 
         # Idempotency: runs table is written last as a completion sentinel.
-        # Fast path first: an exact-path match (unchanged content, including
-        # every ordinary first-time write) is a pure no-op re-write and the
-        # overwhelmingly common case, so check it with a single stat() before
-        # paying for anything more expensive.
+        # Fast path first: an exact-path match at the *current* partition.
         runs_path = self.base_dir / "runs" / partition / f"{run.run_id}.parquet"
         if runs_path.exists():
-            return
-
-        # The partition is derived from run *content* (step modality/provider
-        # set), which can change between sinks of the same run_id — e.g. a
-        # resume that completes more steps, or a CLI replay re-indexing a
-        # richer manifest. The fast-path check above only covers the current
-        # partition, so it misses a sentinel written earlier under a
-        # *different* partition, letting a second `runs` row and duplicate
-        # `steps`/`assets` rows accumulate for one run_id (#72). Only pay for
-        # a lookup once the fast path misses (new run_id or a moved
-        # partition): find any prior sentinel via the persisted run_id ->
-        # partition index instead of globbing the whole tree on every write
-        # (#150) — a genuinely new run_id has no index entry and costs a
-        # single file stat.
-        stale_partition = self._lookup_run_partition(run.run_id)
-        if stale_partition is not None and stale_partition != partition:
-            self._remove_partition_files(run.run_id, stale_partition)
+            # Same partition as the last sink of this run_id. Compare content
+            # via canonical_hash (already stored in the runs row) rather than
+            # assuming unchanged: a resume that completes more steps keeps the
+            # same modality/provider set (same partition) but changes the
+            # run's content, and previously this was a silent no-op that
+            # dropped the new steps/assets (#152). Only a genuine repeat
+            # (identical content) short-circuits here.
+            if self._existing_canonical_hash(runs_path) == manifest.canonical_hash:
+                return
+        else:
+            # New sentinel path for this run_id. The partition is derived
+            # from run *content* (step modality/provider set), which can
+            # change between sinks of the same run_id — e.g. a resume that
+            # adds a new modality, or a CLI replay re-indexing a richer
+            # manifest — so a prior sentinel may exist under a *different*
+            # partition, and leaving it would accumulate a second `runs` row
+            # plus duplicate `steps`/`assets` rows for one run_id (#72).
+            # Look it up in the persisted run_id -> partition index instead
+            # of globbing the whole tree on every write (#150): a genuinely
+            # new run_id has no index entry and costs a single file stat.
+            stale_partition = self._lookup_run_partition(run.run_id)
+            if stale_partition is not None and stale_partition != partition:
+                self._remove_partition_files(run.run_id, stale_partition)
 
         # --- steps table (written before runs) ---
         step_rows = []

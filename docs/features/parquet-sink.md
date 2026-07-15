@@ -35,22 +35,29 @@ Write structured run/step/asset data to partitioned Parquet files for analytics 
 - `write_run()` flattens run/steps/assets into tabular rows
 - When `policy` is set, redacts prompt/params/seed per `EmbedPolicy` rules before writing step rows
 - Writes to partitioned Parquet using pyarrow
-- Idempotent by `run_id`: the partition is derived from run content
-  (step modality/provider set), so it can move between sinks of the same
-  `run_id` (e.g. a resume that completes more steps). A same-partition
-  match is a no-op (checked first, cheaply); otherwise the `run_id ->
-  partition` index (`_run_index/`) is consulted — an O(1) lookup, not a
-  scan of the whole `runs/` tree (#150) — to find and remove a stale
-  partition's `steps`/`assets`/`runs` files (in that order) before writing
-  the fresh ones, so a completed write leaves exactly one row set per
-  `run_id` (#72). This is not a cross-file transaction: a crash between
-  removing the stale sentinel and writing the new one leaves the run
-  temporarily un-sinked until the next `write_run()` call, the same
-  accepted trade-off as the original first-write completion sentinel
+- Idempotent by `run_id`: the partition is derived from run content (step
+  modality/provider set), so it can move between sinks of the same `run_id`
+  (e.g. a resume that completes more steps).
+  - Same partition as the last sink: compares the new manifest's
+    `canonical_hash` against the sentinel already on disk. Identical content
+    is a no-op; changed content (e.g. a resume that added steps without
+    changing modality/provider) rewrites the `runs`/`steps`/`assets` rows in
+    place instead of silently dropping the new data (#152).
+  - Different partition than the last sink: the `run_id -> partition` index
+    (`_run_index/`) is consulted — an O(1) lookup, not a scan of the whole
+    `runs/` tree (#150) — to find and remove the stale partition's
+    `steps`/`assets`/`runs` files (in that order) before writing the fresh
+    ones, so a completed write leaves exactly one row set per `run_id` (#72).
+  - This is not a cross-file transaction: a crash between removing the stale
+    sentinel/index entry and writing the new one leaves the run temporarily
+    un-sinked, or the index entry briefly stale, until the next `write_run()`
+    call for that `run_id` — the same accepted trade-off as the original
+    first-write completion sentinel.
 
 ## Edge Cases
 - Duplicate `run_id`, same content → write skipped (idempotent)
-- Duplicate `run_id`, changed content (moved partition) → stale partition's
+- Duplicate `run_id`, changed content, same partition → rewritten in place (#152)
+- Duplicate `run_id`, changed content, moved partition → stale partition's
   files are replaced by the new write, not duplicated (#72)
 - New `run_id` in a dataset with many existing partitions → resolved via the
   `_run_index/` file for that `run_id`, never a full-tree scan (#150)

@@ -184,6 +184,44 @@ def test_new_run_write_does_not_scan_unrelated_partitions(tmp_path: Path, monkey
     assert glob_calls == []
 
 
+def test_resume_same_partition_content_change_is_written(tmp_path: Path):
+    """A resume that completes more steps within the same modality/provider
+    set (partition unchanged) must not be a silent no-op — the newly
+    completed steps/assets must be persisted, not dropped (#152)."""
+    step1 = Step(provider="replicate", model="m", modality=Modality.IMAGE)
+    step1.assets.append(Asset(url="https://example.com/out1.png", media_type="image/png"))
+    run = Run(steps=[step1])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+
+    sink = ParquetSink(tmp_path / "out")
+    sink.write_run(run, manifest)
+
+    # Resume: same provider/modality, so the content-derived partition is
+    # unchanged, but a second step (and asset) is now complete.
+    step2 = Step(provider="replicate", model="m", modality=Modality.IMAGE)
+    step2.assets.append(Asset(url="https://example.com/out2.png", media_type="image/png"))
+    run.steps.append(step2)
+    manifest2 = Manifest(run=run)
+    manifest2.compute_hash()
+    sink.write_run(run, manifest2)
+
+    runs_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
+    steps_files = list((tmp_path / "out" / "steps").rglob("*.parquet"))
+    assets_files = list((tmp_path / "out" / "assets").rglob("*.parquet"))
+
+    # Same partition throughout — a single sentinel, updated in place.
+    assert len(runs_files) == 1
+    run_table = pq.ParquetFile(runs_files[0]).read()
+    assert run_table.column("step_count")[0].as_py() == 2
+    assert run_table.column("canonical_hash")[0].as_py() == manifest2.canonical_hash
+
+    assert len(steps_files) == 1
+    assert pq.ParquetFile(steps_files[0]).read().num_rows == 2
+    assert len(assets_files) == 1
+    assert pq.ParquetFile(assets_files[0]).read().num_rows == 2
+
+
 def test_write_run_applies_embed_policy_redaction(tmp_path: Path):
     """ParquetSink redacts prompt, params, and seed when policy requires it."""
     step = Step(
