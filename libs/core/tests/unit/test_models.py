@@ -394,6 +394,43 @@ def test_parse_manifest_tolerates_malformed_sha256_but_verify_rejects():
     assert not parsed.verify()
 
 
+def test_parse_manifest_tolerates_impossible_asset_metadata_but_verify_rejects():
+    """#149: an older/foreign manifest with width=0 (a common "unknown
+    dimensions" placeholder) or a nonstandard media_type must still load via
+    parse_manifest() instead of raising ValidationError. verify() is the
+    enforcement boundary — mirroring the sha256 tolerance pattern.
+    """
+    # Build the "foreign" asset via the same tolerant path parse_manifest()
+    # uses (Asset(...) construction still rejects these values by design).
+    asset = Asset.model_validate(
+        {
+            "url": "https://cdn.example.com/output.png",
+            "media_type": "unknown",
+            "sha256": "a" * 64,
+            "width": 0,
+            "height": 0,
+        },
+        context={"tolerant_load": True},
+    )
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="same prompt",
+        status=StepStatus.SUCCEEDED,
+        assets=[asset],
+    )
+    manifest = Manifest(run=Run(name="same", steps=[step]))
+    manifest.compute_hash()
+
+    parsed = parse_manifest(manifest.model_dump(mode="python"))
+
+    assert parsed.run.steps[0].assets[0].width == 0
+    assert parsed.run.steps[0].assets[0].media_type == "unknown"
+    assert parsed.verify_hash()
+    assert parsed.output_asset_ids_with_invalid_metadata() == [asset.asset_id]
+    assert not parsed.verify()
+
+
 @pytest.mark.parametrize("schema_version", ["0", "1.7", "2.0", "1.x"])
 def test_manifest_unsupported_schema_version_is_rejected(schema_version):
     step = Step(provider="mock", model="m", prompt="same prompt")

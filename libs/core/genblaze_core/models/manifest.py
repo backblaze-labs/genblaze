@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from genblaze_core._asset_url import strip_asset_url_credentials
 from genblaze_core.canonical.json import canonical_hash, canonical_json
 from genblaze_core.exceptions import ManifestError, UnsupportedSchemaVersionError
-from genblaze_core.models.asset import Asset, is_valid_sha256
+from genblaze_core.models.asset import Asset, is_valid_asset_metadata, is_valid_sha256
 from genblaze_core.models.enums import PromptVisibility
 from genblaze_core.models.run import Run
 
@@ -168,6 +168,21 @@ def _unhashed_output_asset_ids(run: Run) -> list[str]:
     ]
 
 
+def _invalid_metadata_output_asset_ids(run: Run) -> list[str]:
+    """Return output asset IDs whose numeric/media_type metadata is out of spec.
+
+    parse_manifest() tolerates such values on load (see the Asset NOTE in
+    asset.py, #149) so this is the verification-boundary check that surfaces
+    them — mirroring _unhashed_output_asset_ids() for sha256.
+    """
+    return [
+        asset.asset_id
+        for step in run.steps
+        for asset in step.assets
+        if not is_valid_asset_metadata(asset)
+    ]
+
+
 def _hash_payload(schema_version: str, run: Run) -> dict:
     """Build the hash payload with operational fields stripped.
 
@@ -203,19 +218,22 @@ class ManifestVerification:
     """Structured manifest verification result used by CLI and API callers.
 
     ``unverified_sha256_ids`` contains output asset IDs whose ``sha256`` value
-    is missing or malformed. It is populated from the manifest payload
-    regardless of ``hash_ok``. Callers must still treat ``hash_ok=False`` as a
-    failed integrity check; the unverified-sha list is diagnostic context, not
-    proof that a tampered payload is otherwise trustworthy.
+    is missing or malformed. ``invalid_metadata_ids`` contains output asset
+    IDs whose numeric/``media_type`` fields are out of spec (#149) — e.g.
+    ``width=0`` or a non-MIME-shaped ``media_type``. Both are populated from
+    the manifest payload regardless of ``hash_ok``. Callers must still treat
+    ``hash_ok=False`` as a failed integrity check; these lists are diagnostic
+    context, not proof that a tampered payload is otherwise trustworthy.
     """
 
     hash_ok: bool
     unverified_sha256_ids: tuple[str, ...]
+    invalid_metadata_ids: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        """True when hash verification passes and all outputs have valid sha256."""
-        return self.hash_ok and not self.unverified_sha256_ids
+        """True when the hash verifies and every output has valid sha256 + metadata."""
+        return self.hash_ok and not self.unverified_sha256_ids and not self.invalid_metadata_ids
 
 
 class Manifest(BaseModel):
@@ -289,16 +307,20 @@ class Manifest(BaseModel):
         return canonical_json(self.model_dump(mode="python"))
 
     def verify(self) -> bool:
-        """Verify the manifest hash and declared output asset sha256 coverage.
+        """Verify the manifest hash and declared output asset integrity.
 
         Behavior note for 0.3.4: this exported method is stricter than the
         pre-0.3.4 hash-only contract. Use ``verify_hash()`` for legacy
         hash-only checks, or ``verification_report()`` when callers need to
-        distinguish a hash mismatch from outputs missing ``sha256``.
+        distinguish a hash mismatch from outputs missing ``sha256`` or
+        carrying out-of-spec metadata.
 
         This method verifies that each output declares a 64-character
-        lowercase hex ``sha256``. It does not fetch ``asset.url`` or re-hash
-        remote bytes.
+        lowercase hex ``sha256`` and that numeric/``media_type`` fields
+        (``width``, ``height``, ``duration``, ...) satisfy the same
+        invariants enforced on construction (#149) — values a tolerantly
+        loaded manifest (``parse_manifest()``) may carry but never generates
+        itself. It does not fetch ``asset.url`` or re-hash remote bytes.
         """
         return self.verification_report().ok
 
@@ -311,13 +333,19 @@ class Manifest(BaseModel):
         """Return output asset IDs missing or carrying malformed sha256."""
         return _unhashed_output_asset_ids(self.run)
 
+    def output_asset_ids_with_invalid_metadata(self) -> list[str]:
+        """Return output asset IDs with out-of-spec numeric/media_type metadata (#149)."""
+        return _invalid_metadata_output_asset_ids(self.run)
+
     def verification_report(self) -> ManifestVerification:
-        """Return the shared hash-plus-output-sha256 verification result."""
+        """Return the shared hash-plus-output-integrity verification result."""
         hash_ok = self.verify_hash()
         unverified_sha256_ids = tuple(self.output_asset_ids_missing_sha256())
+        invalid_metadata_ids = tuple(self.output_asset_ids_with_invalid_metadata())
         return ManifestVerification(
             hash_ok=hash_ok,
             unverified_sha256_ids=unverified_sha256_ids,
+            invalid_metadata_ids=invalid_metadata_ids,
         )
 
     def to_embed_json(self, policy: EmbedPolicy) -> str:
@@ -468,7 +496,10 @@ def parse_manifest(data: dict) -> Manifest:
     elif version == "1.4":
         data = _migrate_v1_4_to_v1_5(data)
 
-    manifest = Manifest.model_validate(data)
+    # tolerant_load relaxes Asset numeric/media_type constraints (#149) so an
+    # older/foreign manifest still parses; Manifest.verify() is the
+    # enforcement boundary for values that violate them (see asset.py NOTE).
+    manifest = Manifest.model_validate(data, context={"tolerant_load": True})
 
     # Validate encrypted prompt constraint
     for step in manifest.run.steps:

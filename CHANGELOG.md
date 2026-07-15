@@ -108,6 +108,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the fast path misses, and removes a stale partition's files
   (`steps`/`assets` before `runs`, so an interrupted cleanup is safely
   retryable) before writing the fresh ones.
+- **Fixed** the numeric/`media_type` field constraints added for #78
+  (`width`/`height`/`bitrate`/`sample_rate`/`channels` `gt=0`,
+  `duration`/`frame_rate` finite, `media_type` shape) were enforced on the
+  manifest **load** path too, so an older or foreign-authored manifest
+  carrying a previously-valid value (e.g. `width=0` as an "unknown
+  dimensions" placeholder, or a non-MIME `media_type`) raised
+  `ValidationError` from `parse_manifest()`, breaking `verify`/`index`/
+  `replay` on files that used to load fine (#149). These fields now follow
+  the same tolerant-load pattern already established for `sha256`:
+  constraints still reject impossible values on ordinary construction, but
+  `parse_manifest()` validates with `context={"tolerant_load": True}` so a
+  tolerant load never crashes. `Manifest.verify()` /
+  `output_asset_ids_with_invalid_metadata()` is the new verification
+  boundary that surfaces out-of-spec metadata on loaded data, mirroring
+  `output_asset_ids_missing_sha256()`.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the
