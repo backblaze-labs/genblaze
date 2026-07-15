@@ -60,12 +60,33 @@ _FORMAT_MEDIA_TYPES: dict[str, str] = {
 def _escape_drawtext(text: str) -> str:
     """Escape text for ffmpeg drawtext filter.
 
-    Colons, backslashes, and single quotes need escaping in filter syntax.
+    Colons and backslashes need escaping in filter syntax. ``%`` also needs
+    escaping: drawtext's text-expansion parser is active by default (the
+    ``expansion`` option defaults to ``normal``), so an unescaped ``%{...}``
+    sequence (``%{expr:...}``, ``%{pts}``, etc.) is interpreted rather than
+    rendered literally. ``%%`` is ffmpeg's own literal-percent escape, so
+    doubling every ``%`` neutralizes expansion — including any ``%{`` that
+    would otherwise open one, since the ``{`` that follows is then just
+    ordinary text.
+
+    Single quotes are the trickiest case: the caller wraps this function's
+    output in an outer pair of single quotes (``text='<escaped>'``), and
+    ffmpeg's filtergraph parser gives single quotes no escape mechanism of
+    their own — backslash has no special meaning inside a quoted value, so
+    naively backslash-escaping a quote still ends the quoted string early.
+    Anything after that point (colons, semicolons, filter names) is then
+    live filtergraph syntax until the next quote, which is exactly the
+    injection ffmpeg's own docs warn about. The only correct way to embed a
+    literal quote is to close the quote, add a backslash-escaped quote
+    outside it (backslash is special there), then reopen a new quote —
+    i.e. a single embedded quote becomes four characters: quote,
+    backslash, quote, quote. Verified against real ffmpeg 7.0.1.
     """
-    # Escape backslashes first, then colons and quotes
+    # Escape backslashes first, then colons, quotes, and percent.
     text = text.replace("\\", "\\\\")
     text = text.replace(":", "\\:")
-    text = text.replace("'", "\\'")
+    text = text.replace("'", "'\\''")
+    text = text.replace("%", "%%")
     return text
 
 

@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import socket
 from unittest.mock import patch
 
 import pytest
 from genblaze_core._utils import (
+    _is_blocked_ip,
+    _normalize_ip,
     _run_async,
     check_ssrf,
     compute_sha256,
     probe_audio_duration,
 )
 from genblaze_core.exceptions import StorageError
+from hypothesis import given
+from hypothesis import strategies as st
 
 # Fake DNS results for test control
 _PUBLIC_V4 = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
@@ -114,6 +119,75 @@ class TestCheckSsrf:
         with patch("genblaze_core._utils.socket.getaddrinfo", return_value=mapped_private):
             with pytest.raises(ValueError, match="Private/loopback"):
                 check_ssrf("https://sneaky.example.com/path")
+
+    def test_nat64_imds_rejected(self):
+        """64:ff9b::a9fe:a9fe is the RFC 6052 NAT64 form of the IMDS address
+        169.254.169.254 (169=0xa9, 254=0xfe). ip.ipv4_mapped only recognizes
+        ::ffff:0:0/96, not the NAT64 well-known prefix, so this needs its
+        own extraction path."""
+        nat64_imds = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::a9fe:a9fe", 0, 0, 0))
+        ]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=nat64_imds):
+            with pytest.raises(ValueError, match="Private/loopback"):
+                check_ssrf("https://sneaky.example.com/path")
+
+    def test_nat64_private_rejected(self):
+        """64:ff9b::0a00:0001 is the NAT64 form of 10.0.0.1."""
+        nat64_private = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::0a00:0001", 0, 0, 0))
+        ]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=nat64_private):
+            with pytest.raises(ValueError, match="Private/loopback"):
+                check_ssrf("https://sneaky.example.com/path")
+
+    def test_nat64_public_allowed(self):
+        """NAT64 wrapping a genuinely public IPv4 address must still resolve —
+        the extraction path isn't a blanket rejection of the well-known prefix."""
+        nat64_public = [
+            # 93.184.216.34 = 0x5d.0xb8.0xd8.0x22
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::5db8:d822", 0, 0, 0))
+        ]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=nat64_public):
+            check_ssrf("https://public.example.com/path")
+
+    def test_unspecified_ipv6_rejected(self):
+        """::/128 (the unspecified address) must be blocked."""
+        unspecified = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0))]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=unspecified):
+            with pytest.raises(ValueError, match="Private/loopback"):
+                check_ssrf("https://sneaky.example.com/path")
+
+    def test_reserved_range_rejected_by_property_backstop(self):
+        """192.0.2.0/24 (TEST-NET-1, RFC 5737) isn't in the explicit
+        BLOCKED_NETWORKS list but is IETF-reserved; the is_reserved/is_private
+        property backstop must still catch ranges the explicit list misses."""
+        reserved = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 0))]
+        with patch("genblaze_core._utils.socket.getaddrinfo", return_value=reserved):
+            with pytest.raises(ValueError, match="Private/loopback"):
+                check_ssrf("https://sneaky.example.com/path")
+
+
+class TestIsBlockedIpProperties:
+    """Property-based backstop for #16: no alternate representation of a
+    given IPv4 address (IPv4-mapped IPv6, NAT64) should have a different
+    blocked/allowed verdict than the plain address — that mismatch is
+    exactly the bypass class the issue describes."""
+
+    @given(st.ip_addresses(v=4))
+    def test_mapped_and_nat64_forms_match_plain_v4_verdict(self, v4):
+        plain_blocked = _is_blocked_ip(v4)
+
+        mapped_v6 = ipaddress.IPv6Address(f"::ffff:{v4}")
+        assert _is_blocked_ip(_normalize_ip(mapped_v6)) == plain_blocked
+
+        nat64_base = int(ipaddress.ip_network("64:ff9b::/96").network_address)
+        nat64_v6 = ipaddress.IPv6Address(nat64_base | int(v4))
+        assert _is_blocked_ip(_normalize_ip(nat64_v6)) == plain_blocked
+
+    @given(st.ip_addresses(v=4, network="10.0.0.0/8"))
+    def test_private_v4_range_always_blocked(self, v4):
+        assert _is_blocked_ip(_normalize_ip(v4)) is True
 
 
 class TestComputeSha256:

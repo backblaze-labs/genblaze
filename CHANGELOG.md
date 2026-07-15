@@ -34,6 +34,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of minting a brand-new id (#86).
 - **Fixed** `step.completed` / `step.failed` stream events now carry
   `run_id`, matching every other pipeline-scoped event variant (#87).
+- **Security** `check_ssrf`/`resolve_ssrf` now catch IPv4-mapped IPv6, RFC 6052
+  NAT64 (`64:ff9b::/96`), and the unspecified `::/128` address, and add a
+  property-based backstop (`is_private`/`is_loopback`/`is_link_local`/
+  `is_reserved`/`is_unspecified`) alongside the explicit denylist so ranges
+  neither enumerates are still caught (#16).
+- **Security** ffmpeg `drawtext` overlay text now escapes `%`, neutralizing
+  ffmpeg's text-expansion parser (`%{expr:...}`, `%{pts}`, etc., active by
+  default) so a crafted `text` param can no longer alter the rendered
+  filter (#17). Also fixes a pre-existing single-quote escaping bug found
+  during review: ffmpeg's quoted values have no backslash-escape mechanism
+  of their own, so the previous `\'` still ended the quoted string early —
+  a `text` value like `x';scale=` spliced an attacker-chosen filter name
+  into the graph (confirmed against real ffmpeg 7.0.1). Quotes are now
+  escaped via close-quote/escaped-quote/reopen-quote, ffmpeg's own
+  documented mechanism.
+- **Security** `.gitignore` now matches `credentials*` (previously only the
+  literal `credentials.json`) plus `*.credentials`, `*_rsa`, `*.p12`,
+  `*.pfx`, and `*.keystore` (#18).
+- **Security** ffmpeg's DEBUG command log now redacts the query string of
+  any `http(s)` argument before logging, so a chained step's presigned
+  object-storage URL (a bearer credential until its signature expires) no
+  longer leaks into `genblaze.ffmpeg` DEBUG logs. Execution still uses the
+  untouched command (#75). Also redacts the same signature from a second
+  leak path found during review: ffmpeg's own stderr can echo the input
+  URL verbatim on a fetch failure, and that stderr became the
+  `ProviderError` message logged on step failure.
+- **Security** `pattern_safety.assert_safe()`'s `google-re2` check was
+  silently inert — it imported `google.re2`, but the current `google-re2`
+  distribution ships a top-level `re2` module, so the authoritative
+  linear-time check never activated regardless of installation. Fixed the
+  import, added a `re2` optional extra (also included in `dev`, so CI now
+  runs the authoritative check), closed three heuristic bypasses for
+  environments without `re2` (the `{n,}` brace-quantifier form of `+`,
+  unbounded quantifiers nested inside a sub-group like `([a-z]+(?:x)?)+`,
+  and 2+ adjacent parenthesized groups each carrying an unbounded
+  quantifier like `(a+)(a+)` — confirmed exponential, ~10s to match a
+  100-character adversarial string under stdlib `re`), and added the
+  performance gate (`tests/perf/test_registry_perf.py`) the module
+  docstring already claimed existed (#80).
+- **Security** `canonical_hash`/`canonical_json` no longer crash with an
+  uncaught `RecursionError` on pathologically deep `step.params` nesting
+  (free-form, caller-supplied data hashed into every manifest and cache
+  key). `normalize()` now raises a typed, catchable `ManifestError` past a
+  100-level depth cap (#81).
+- **Added** unit tests for the previously-untested canonical-hash
+  normalization branches (#50): NaN/Inf floats, `Enum.value` extraction, a
+  naive datetime raising `TypeError`, and aware-datetime timezone
+  canonicalization (`+00:00` → `Z`, non-UTC offsets preserved and stable).
+  `genblaze_core/canonical/_normalize.py` coverage rises from 71% to 89%.
+- **Fixed** `parse_manifest()` leaked a raw `AttributeError:
+  'list' object has no attribute 'get'` when given valid JSON whose
+  top-level value isn't an object (e.g. a JSON array) (#64). Both the
+  `index` and `replay` CLI commands call `parse_manifest()`, so both leaked
+  the same internal error; it now raises a `ManifestError` naming the
+  actual type, giving both commands the same clean error message.
+- **Fixed** `Asset` accepted physically impossible provenance metadata —
+  negative `size_bytes`, negative/zero `width`/`height`, negative or
+  non-finite `duration`, malformed `media_type` — which then became
+  canonical hashed data (#78). Construction now rejects these via Pydantic
+  field constraints, plus the equivalent fields on `VideoMetadata`,
+  `AudioMetadata`, and `WordTiming` (`end >= start`, `confidence` in
+  `[0, 1]`). `sha256` stays format-tolerant at construction by design (see
+  #100, which already makes a malformed hash fail `Manifest.verify()`) so
+  `parse_manifest()` keeps loading older/foreign manifests without
+  crashing; `Asset.set_hash()` is unaffected.
+- **Fixed** `ParquetSink` double-counted a `run_id` when its content
+  changed between sinks — e.g. a resume completing more steps (#72). The
+  idempotency sentinel's partition path is content-derived, so a
+  same-partition check alone missed a sentinel written earlier under a
+  different partition, letting duplicate `runs`/`steps`/`assets` rows
+  accumulate. `write_run()` now falls back to probing every partition only
+  when the fast path misses, and removes a stale partition's files
+  (`steps`/`assets` before `runs`, so an interrupted cleanup is safely
+  retryable) before writing the fresh ones.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the
@@ -42,6 +116,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order-preserving manifest canonical hash. Existing cache entries for
   multi-input steps whose inputs weren't already in sorted order miss once
   and recompute (one-time repopulation, no data loss).
+- **Fixed** `JpegHandler.extract()` and `WebpHandler.extract()` no longer buffer
+  an unbounded amount of the source file into memory (#82). Both now read via
+  the bounded `read_media_bytes()` helper (500 MB `MAX_FILE_BYTES` cap) already
+  used by PNG/WAV, so a container over the cap raises `EmbeddingError` instead
+  of being fully materialized in RAM. Since the CLI content-sniffs the handler
+  from magic bytes rather than file extension, an oversized file with JPEG/WebP
+  magic previously bypassed the cap that PNG/WAV/MP4 already enforced.
 - **Fixed** Windows `file://` URL handling across all call sites (#132).
   On Windows, `urlparse("file:///C:/...").path` returns `/C:/...`, and
   `Path("/C:/...").resolve()` produces a drive-relative path that always
@@ -138,6 +219,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-cli
 
+- **Fixed** `extract`, `verify`, `index`, and `replay` accepted a directory
+  argument and failed downstream with a confusing error (e.g. `EmbeddingError:
+  No sidecar file found at <dir>.genblaze.json` or `[Errno 21] Is a
+  directory`) instead of a clear "expected a file" message (#64). All four
+  file arguments now set `dir_okay=False`.
+- **Fixed** six mypy `str | None` errors in `replay.py` (#43), all stemming
+  from `step.provider` not being narrowed after a provider-less step (only
+  valid for `INGEST`/`IMPORT`, per `Step`'s own validator): `sorted()`, the
+  provider-confirmation list, two `dict[str, ...]` key sites, and
+  `_load_provider`'s/`Pipeline.step`'s argument types. A manifest with such
+  a step could reach some of these with an actual `None` and raise a
+  confusing `TypeError` instead of a clean CLI error. The
+  provider-confirmation prompt now skips provider-less steps (they invoke
+  no provider), and the execution loop raises a clear `ClickException`
+  naming the offending step instead of
+  reaching those call sites with `None`. `mypy cli/genblaze_cli/
+  --ignore-missing-imports` is now clean.
 - **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
   to write the manifest JSON to a file, matching the documented usage.
 - **Changed** `--version` now reports `genblaze-cli` rather than `genblaze`,

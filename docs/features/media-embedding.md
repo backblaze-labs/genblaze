@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-20 -->
+<!-- last_verified: 2026-07-14 -->
 # Feature: Media Embedding
 
 ## Purpose
@@ -45,6 +45,7 @@ Embed provenance manifests directly into media files (PNG, JPEG, WebP, MP4, MP3,
 ## Edge Cases
 - Unsupported format → sidecar fallback
 - JPEG/WebP manifest > 60KB → sidecar fallback
+- PNG/JPEG/WebP/WAV container > 500 MB → `EmbeddingError` on `extract()` (bounded in-memory read; applies uniformly since content-sniffed handlers can't rely on file extension)
 - MP4 files 500 MB–2 GB → seek-based streaming embed (avoids loading full file into RAM)
 - MP4 files > 2 GB → `EmbeddingError` (use sidecar fallback)
 - MP3/WAV/AAC/M4A/FLAC without mutagen installed → `EmbeddingError` with install instructions
