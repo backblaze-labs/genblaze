@@ -60,6 +60,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrency — but an explicit value now emits a one-time `UserWarning`
   pointing at `abatch_run()` for genuine concurrency; omitting it (the new
   `None` default) stays silent so existing call sites see no behavior change.
+- **Fixed** `PipelineTemplate.instantiate(variables=...)` rendered `{variable}`
+  substitutions in `StepTemplate.prompt` only; `StepTemplate.params` passed
+  through completely unrendered, so a template with `params={"voice":
+  "{locale}_voice"}` reached the provider with the literal, unsubstituted
+  string (#52). String values inside `params` — top-level or nested in
+  `dict`/`list`/`tuple` — now render through the same `PromptTemplate` engine
+  as `prompt`, so missing-variable behavior and doubled-brace escaping match
+  exactly. **Behavior note:** templates that pass `variables=` AND have a
+  literal identifier-shaped `{...}` string in `params` not meant as a
+  placeholder must now double the braces (`{{...}}`), exactly as `prompt`
+  already required — templates that never pass `variables=` are unaffected.
 - **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
   `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
   emitter was a single mutable instance attribute, so a second concurrent

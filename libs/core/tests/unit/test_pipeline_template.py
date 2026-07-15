@@ -198,6 +198,135 @@ class TestInstantiation:
         # Params should be passed through to the step
         assert provider.received_steps[0].params.get("duration") == 10
 
+    # --- #52 — variables= must render params, not just prompt --------------
+
+    def test_instantiate_renders_top_level_string_param(self):
+        """A template's params={"voice": "{locale}_voice"} must render, not
+        reach the provider as the literal, unsubstituted string (#52)."""
+        template = PipelineTemplate(
+            name="params-var",
+            steps=[
+                StepTemplate(
+                    provider_name="mock",
+                    model="m1",
+                    prompt="hi",
+                    params={"voice": "{locale}_voice"},
+                ),
+            ],
+        )
+        provider = MockProvider()
+        pipeline = template.instantiate({"mock": provider}, variables={"locale": "en"})
+        pipeline.run()
+        assert provider.received_steps[0].params["voice"] == "en_voice"
+
+    def test_instantiate_renders_nested_dict_and_list_params(self):
+        """Variable substitution must walk nested dict/list containers, not
+        just top-level string values (#52)."""
+        template = PipelineTemplate(
+            name="params-nested-var",
+            steps=[
+                StepTemplate(
+                    provider_name="mock",
+                    model="m1",
+                    prompt="hi",
+                    params={
+                        "style": {"name": "{style_name}", "count": 3},
+                        "tags": ["{tag1}", "static", "{tag2}"],
+                    },
+                ),
+            ],
+        )
+        provider = MockProvider()
+        pipeline = template.instantiate(
+            {"mock": provider},
+            variables={"style_name": "oil", "tag1": "a", "tag2": "b"},
+        )
+        pipeline.run()
+        params = provider.received_steps[0].params
+        assert params["style"] == {"name": "oil", "count": 3}
+        assert params["tags"] == ["a", "static", "b"]
+
+    def test_instantiate_leaves_non_string_params_untouched(self):
+        """Non-string param values (int, float, bool, None) must survive
+        rendering unchanged (#52)."""
+        template = PipelineTemplate(
+            name="params-nonstring-var",
+            steps=[
+                StepTemplate(
+                    provider_name="mock",
+                    model="m1",
+                    prompt="hi",
+                    params={"duration": 10, "hd": True, "seed": None},
+                ),
+            ],
+        )
+        provider = MockProvider()
+        pipeline = template.instantiate({"mock": provider}, variables={"unused": "x"})
+        pipeline.run()
+        params = provider.received_steps[0].params
+        assert params["duration"] == 10
+        assert params["hd"] is True
+        # `seed` is popped into Step.seed by _build_step(), not left in params.
+        assert provider.received_steps[0].seed is None
+
+    def test_instantiate_params_missing_variable_raises(self):
+        """A param placeholder with no matching variable must raise, matching
+        prompt rendering's missing-variable behavior exactly (#52)."""
+        template = PipelineTemplate(
+            name="params-missing-var",
+            steps=[
+                StepTemplate(
+                    provider_name="mock",
+                    model="m1",
+                    prompt="hi",
+                    params={"voice": "{locale}_voice"},
+                ),
+            ],
+        )
+        provider = MockProvider()
+        with pytest.raises(ValueError, match="locale"):
+            template.instantiate({"mock": provider}, variables={"other": "x"})
+
+    def test_instantiate_params_doubled_braces_stay_literal(self):
+        """A param value that legitimately contains identifier-shaped braces
+        must survive by doubling them, exactly like prompts already require
+        (#52) — no silent behavior change for escaped literal text."""
+        template = PipelineTemplate(
+            name="params-literal-braces",
+            steps=[
+                StepTemplate(
+                    provider_name="mock",
+                    model="m1",
+                    prompt="hi",
+                    params={"note": "use {{style}} as a literal tag"},
+                ),
+            ],
+        )
+        provider = MockProvider()
+        pipeline = template.instantiate({"mock": provider}, variables={"style": "ignored"})
+        pipeline.run()
+        assert provider.received_steps[0].params["note"] == "use {style} as a literal tag"
+
+    def test_instantiate_without_variables_leaves_params_unrendered(self):
+        """No variables= means no rendering attempt at all — params with
+        `{...}`-shaped strings pass through exactly as before (no behavior
+        change for the common no-variables case)."""
+        template = PipelineTemplate(
+            name="params-no-var",
+            steps=[
+                StepTemplate(
+                    provider_name="mock",
+                    model="m1",
+                    prompt="hi",
+                    params={"note": "{not_a_variable}"},
+                ),
+            ],
+        )
+        provider = MockProvider()
+        pipeline = template.instantiate({"mock": provider})
+        pipeline.run()
+        assert provider.received_steps[0].params["note"] == "{not_a_variable}"
+
 
 # ---------------------------------------------------------------------------
 # Pipeline.to_template() tests

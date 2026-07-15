@@ -113,7 +113,7 @@
 - FFmpeg compositing: `FFmpegCompositor` SyncProvider muxes video + audio into MP4 via ffmpeg subprocess
 - FFmpeg transforms: `FFmpegTransform` SyncProvider for resize, crop, overlay_text, audio_normalize, and format conversion
 - Prompt templates: `PromptTemplate` with top-level format fields for batch workflows, while non-field braces remain literal prompt text and attribute/item traversal is rejected; `batch_run` accepts `list[dict]`
-- Pipeline templates: `PipelineTemplate` serializable pipeline definitions (JSON); `Pipeline.to_template()` for export
+- Pipeline templates: `PipelineTemplate` serializable pipeline definitions (JSON); `Pipeline.to_template()` for export; `instantiate(variables=...)` renders `{placeholder}` substitutions in both `prompt` and string values inside `params` (nested dict/list/tuple included)
 - Moderation hooks: `ModerationHook` ABC with `check_prompt`/`check_output` pre/post-step content screening
 - Webhook notifications: `WebhookNotifier` fire-and-forget HTTP status events via background thread; HTTPS-only URLs validated at construction, DNS-resolved against private IP ranges on first dispatch
 - SSRF protection: shared `check_ssrf()` in `_utils.py` blocks private/loopback IPs; used by both `AssetTransfer` and `WebhookNotifier`

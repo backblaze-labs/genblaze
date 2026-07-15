@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-03-17 -->
+<!-- last_verified: 2026-07-15 -->
 # Pipeline Templates
 
 `PipelineTemplate` enables declarative, serializable pipeline definitions that can be saved to JSON, shared, and instantiated with different providers.
@@ -57,6 +57,24 @@ pipeline = template.instantiate(
     variables={"product": "laptop", "setting": "minimalist studio"},
 )
 ```
+
+`variables=` renders `{placeholder}` substitutions in **both** `prompt` and string values inside `params=` — top-level or nested in `dict`/`list`/`tuple` containers — through the same `PromptTemplate` engine, so missing-variable behavior (raises `ValueError`) and doubled-brace escaping (`{{literal}}`) are identical between the two:
+
+```python
+template = PipelineTemplate(
+    name="tts",
+    steps=[StepTemplate(provider_name="elevenlabs", model="eleven_v3",
+                        prompt="Hello",
+                        params={"voice": "{locale}_voice", "tags": ["{campaign}"]})],
+)
+pipeline = template.instantiate(
+    {"elevenlabs": provider},
+    variables={"locale": "en", "campaign": "launch"},
+)
+# step.params == {"voice": "en_voice", "tags": ["launch"]}
+```
+
+Non-string param values (`int`, `float`, `bool`, `None`) pass through unchanged. Rendering only happens when `variables=` is passed — a template with no `variables=` argument sees its `params` completely unrendered, exactly as before.
 
 ## Serialization
 
