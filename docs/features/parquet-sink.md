@@ -32,10 +32,14 @@ Write structured run/step/asset data to partitioned Parquet files for analytics 
 - Idempotent by `run_id`: the partition is derived from run content
   (step modality/provider set), so it can move between sinks of the same
   `run_id` (e.g. a resume that completes more steps). A same-partition
-  match is a no-op; a match under a *different* partition means content
-  changed since the last sink — the stale partition's `runs`/`steps`/`assets`
-  files are removed before writing the fresh ones, so exactly one row set
-  exists per `run_id` at all times (#72)
+  match is a no-op (checked first, cheaply); otherwise every partition is
+  probed for a stale sentinel, whose `steps`/`assets`/`runs` files are
+  removed (in that order) before writing the fresh ones, so a completed
+  write leaves exactly one row set per `run_id` (#72). This is not a
+  cross-file transaction: a crash between removing the stale sentinel and
+  writing the new one leaves the run temporarily un-sinked until the next
+  `write_run()` call, the same accepted trade-off as the original
+  first-write completion sentinel
 
 ## Edge Cases
 - Duplicate `run_id`, same content → write skipped (idempotent)

@@ -96,24 +96,38 @@ class ParquetSink(BaseSink):
         partition = self._partition_path(run)
 
         # Idempotency: runs table is written last as a completion sentinel.
+        # Fast path first: an exact-path match (unchanged content, including
+        # every ordinary first-time write) is a pure no-op re-write and the
+        # overwhelmingly common case, so check it with a single stat() before
+        # paying for anything more expensive.
+        runs_path = self.base_dir / "runs" / partition / f"{run.run_id}.parquet"
+        if runs_path.exists():
+            return
+
         # The partition is derived from run *content* (step modality/provider
         # set), which can change between sinks of the same run_id — e.g. a
         # resume that completes more steps, or a CLI replay re-indexing a
-        # richer manifest. A same-path check alone would then miss the prior
-        # sentinel (it now lives under a different partition), letting a
-        # second `runs` row and duplicate `steps`/`assets` rows accumulate
-        # for one run_id (#72). Probe every partition for an existing
-        # sentinel instead: an exact-path match is a pure no-op re-write;
-        # a match elsewhere means content changed since the last sink, so
-        # remove the stale partition's files first — the run_id, not the
-        # partition, is the identity, and the freshest write should win.
-        runs_path = self.base_dir / "runs" / partition / f"{run.run_id}.parquet"
-        existing_sentinels = list((self.base_dir / "runs").glob(f"**/{run.run_id}.parquet"))
-        if runs_path in existing_sentinels:
-            return
-        for stale_runs_path in existing_sentinels:
+        # richer manifest. The fast-path check above only covers the current
+        # partition, so it misses a sentinel written earlier under a
+        # *different* partition, letting a second `runs` row and duplicate
+        # `steps`/`assets` rows accumulate for one run_id (#72). Only pay for
+        # a full-tree probe once the fast path misses (new run_id or a moved
+        # partition): find any prior sentinel and remove its partition's
+        # files first — the run_id, not the partition, is the identity, and
+        # the freshest write should win.
+        # Materialize before deleting — mutating the tree mid-walk while a
+        # generator is still traversing it is unsafe.
+        stale_sentinels = list((self.base_dir / "runs").glob(f"**/{run.run_id}.parquet"))
+        for stale_runs_path in stale_sentinels:
             stale_partition = stale_runs_path.relative_to(self.base_dir / "runs").parent
-            for table in ("runs", "steps", "assets"):
+            # Delete steps/assets before the runs sentinel itself (mirroring
+            # "runs is written last" on the write side) so an interrupted
+            # cleanup is safely retryable: if a crash lands mid-cleanup, the
+            # stale runs sentinel is still present, a retry's probe finds it
+            # again, and the whole stale partition is cleaned from scratch —
+            # never leaving orphaned steps/assets with no sentinel pointing
+            # at them.
+            for table in ("steps", "assets", "runs"):
                 (self.base_dir / table / stale_partition / f"{run.run_id}.parquet").unlink(
                     missing_ok=True
                 )

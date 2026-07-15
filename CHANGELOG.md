@@ -22,27 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actual type, giving both commands the same clean error message.
 - **Fixed** `Asset` accepted physically impossible provenance metadata —
   negative `size_bytes`, negative/zero `width`/`height`, negative or
-  non-finite `duration`, and malformed `media_type` — which then became
+  non-finite `duration`, malformed `media_type` — which then became
   canonical hashed data (#78). Construction now rejects these via Pydantic
-  field constraints, along with the equivalent fields on `VideoMetadata`
-  (`frame_rate`, `bitrate`), `AudioMetadata` (`sample_rate`, `channels`,
-  `bitrate`), and `WordTiming` (non-negative `start`/`end` with `end >=
-  start`, `confidence` in `[0, 1]`). `sha256` is intentionally left
-  format-tolerant at construction — see #100, which already made a
-  malformed `sha256` fail `Manifest.verify()`; enforcing hash *shape* there
-  instead of at construction keeps `parse_manifest()` from crashing on
-  older or foreign-authored manifests. `Asset.set_hash()` is unaffected —
-  it only ever produces valid hashes and non-negative sizes.
-- **Fixed** `ParquetSink` double-counted a `run_id` when its content changed
-  between sinks — e.g. a resume that completes more steps (#72). The
-  idempotency sentinel path (`runs/{partition}/{run_id}.parquet`) is derived
-  from run content (step modality/provider set), so a same-partition
-  existence check missed a sentinel written earlier under a *different*
-  partition, letting a second `runs` row and duplicate `steps`/`assets` rows
-  accumulate for one `run_id`. `write_run()` now probes every partition for
-  an existing sentinel: an exact-path match stays a no-op, and a match
-  elsewhere removes the stale partition's files first so the freshest write
-  wins and the run collapses to exactly one location.
+  field constraints, plus the equivalent fields on `VideoMetadata`,
+  `AudioMetadata`, and `WordTiming` (`end >= start`, `confidence` in
+  `[0, 1]`). `sha256` stays format-tolerant at construction by design (see
+  #100, which already makes a malformed hash fail `Manifest.verify()`) so
+  `parse_manifest()` keeps loading older/foreign manifests without
+  crashing; `Asset.set_hash()` is unaffected.
+- **Fixed** `ParquetSink` double-counted a `run_id` when its content
+  changed between sinks — e.g. a resume completing more steps (#72). The
+  idempotency sentinel's partition path is content-derived, so a
+  same-partition check alone missed a sentinel written earlier under a
+  different partition, letting duplicate `runs`/`steps`/`assets` rows
+  accumulate. `write_run()` now falls back to probing every partition only
+  when the fast path misses, and removes a stale partition's files
+  (`steps`/`assets` before `runs`, so an interrupted cleanup is safely
+  retryable) before writing the fresh ones.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the
@@ -152,13 +148,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   No sidecar file found at <dir>.genblaze.json` or `[Errno 21] Is a
   directory`) instead of a clear "expected a file" message (#64). All four
   file arguments now set `dir_okay=False`.
-- **Fixed** six latent `str | None` flow bugs in `replay.py` (#43). A
-  provider-less step (only valid for `INGEST`/`IMPORT`, per `Step`'s own
-  validator) flowed `None` into `sorted()`, `list.append`, a `dict[str, ...]`
-  key, and `_load_provider(name: str)`, raising a confusing `TypeError`
-  instead of a clean CLI error. The provider-confirmation prompt now skips
-  provider-less steps (they invoke no provider), and the execution loop
-  raises a clear `ClickException` naming the offending step instead of
+- **Fixed** six mypy `str | None` errors in `replay.py` (#43), all stemming
+  from `step.provider` not being narrowed after a provider-less step (only
+  valid for `INGEST`/`IMPORT`, per `Step`'s own validator): `sorted()`, the
+  provider-confirmation list, two `dict[str, ...]` key sites, and
+  `_load_provider`'s/`Pipeline.step`'s argument types. A manifest with such
+  a step could reach some of these with an actual `None` and raise a
+  confusing `TypeError` instead of a clean CLI error. The
+  provider-confirmation prompt now skips provider-less steps (they invoke
+  no provider), and the execution loop raises a clear `ClickException`
+  naming the offending step instead of
   reaching those call sites with `None`. `mypy cli/genblaze_cli/
   --ignore-missing-imports` is now clean.
 - **Fixed** 0.3.2 → 0.3.3: `extract` now supports the `-o/--output` option
