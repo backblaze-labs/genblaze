@@ -9,7 +9,12 @@ from pathlib import Path
 from PIL import Image
 
 from genblaze_core.exceptions import EmbeddingError
-from genblaze_core.media.base import BaseMediaHandler, MediaCapability, atomic_write
+from genblaze_core.media.base import (
+    BaseMediaHandler,
+    MediaCapability,
+    atomic_write,
+    read_media_bytes,
+)
 from genblaze_core.media.jpeg import MAX_XMP_BYTES, _build_xmp, _scan_xmp_for_manifest
 from genblaze_core.models.manifest import Manifest, parse_manifest
 
@@ -86,8 +91,7 @@ class WebpHandler(BaseMediaHandler):
 
     def extract(self, source: Path) -> Manifest:
         try:
-            with open(source, "rb") as f:
-                data = f.read()
+            data = read_media_bytes(source)
             manifest_json = _scan_xmp_for_manifest(data, source)
             return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
