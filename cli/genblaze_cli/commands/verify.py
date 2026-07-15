@@ -8,7 +8,7 @@ from genblaze_cli.manifest_io import extract_manifest
 
 
 @click.command()
-@click.argument("file", type=click.Path(exists=True, path_type=Path))
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--hash-only",
     is_flag=True,

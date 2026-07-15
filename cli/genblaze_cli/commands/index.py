@@ -7,7 +7,7 @@ import click
 
 
 @click.command()
-@click.argument("manifest_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("manifest_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--output",
     "-o",

@@ -20,7 +20,7 @@ def _manifest_json_for_display(manifest: Manifest) -> str:
 
 
 @click.command()
-@click.argument("file", type=click.Path(exists=True, path_type=Path))
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--format", "fmt", type=click.Choice(["json", "summary"]), default="json")
 @click.option(
     "-o",

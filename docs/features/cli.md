@@ -50,6 +50,10 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
 - Unknown provider in manifest → error with list of known providers
 - Provider-less step (`INGEST`/`IMPORT`, `provider=None`) → replay
   `--no-dry-run` raises a clear error naming the step; not yet supported
+- Directory passed where a file is expected (`extract`/`verify`/`index`/`replay`)
+  → clear "is a directory" error, not a downstream crash
+- Manifest JSON whose top-level value isn't an object (e.g. a JSON array)
+  → same clean `ManifestError` from `index` and `replay`
 
 ## Verification
 - Test files: `cli/tests/test_cli.py`

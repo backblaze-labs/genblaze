@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** `parse_manifest()` leaked a raw `AttributeError:
+  'list' object has no attribute 'get'` when given valid JSON whose
+  top-level value isn't an object (e.g. a JSON array) (#64). Both the
+  `index` and `replay` CLI commands call `parse_manifest()`, so both leaked
+  the same internal error; it now raises a `ManifestError` naming the
+  actual type, giving both commands the same clean error message.
 - **Fixed** `Asset` accepted physically impossible provenance metadata —
   negative `size_bytes`, negative/zero `width`/`height`, negative or
   non-finite `duration`, and malformed `media_type` — which then became
@@ -136,6 +142,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-cli
 
+- **Fixed** `extract`, `verify`, `index`, and `replay` accepted a directory
+  argument and failed downstream with a confusing error (e.g. `EmbeddingError:
+  No sidecar file found at <dir>.genblaze.json` or `[Errno 21] Is a
+  directory`) instead of a clear "expected a file" message (#64). All four
+  file arguments now set `dir_okay=False`.
 - **Fixed** six latent `str | None` flow bugs in `replay.py` (#43). A
   provider-less step (only valid for `INGEST`/`IMPORT`, per `Step`'s own
   validator) flowed `None` into `sorted()`, `list.append`, a `dict[str, ...]`

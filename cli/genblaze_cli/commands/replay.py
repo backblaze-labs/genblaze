@@ -81,7 +81,7 @@ _UNREPLAYABLE_FIELDS = [
 
 
 @click.command()
-@click.argument("manifest_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("manifest_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--dry-run/--no-dry-run", default=True, help="Preview without executing.")
 @click.option(
     "--allow-provider",

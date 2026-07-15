@@ -6,6 +6,7 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 from genblaze_cli.main import cli
 from genblaze_core._utils import MAX_MANIFEST_BYTES
@@ -497,6 +498,40 @@ def test_index(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["index", str(manifest_path), "-o", str(out_dir)])
     assert result.exit_code == 0
     assert "Indexed" in result.output
+
+
+# --- Issue #64: directories rejected with a clear error; non-object JSON is
+# handled consistently across index/replay ---
+
+
+@pytest.mark.parametrize("command", ["extract", "verify", "index", "replay"])
+def test_commands_reject_directory_with_clear_error(tmp_path: Path, command: str) -> None:
+    """A directory argument must fail with click's own actionable error
+    instead of leaking a confusing downstream error (e.g. EmbeddingError or
+    [Errno 21] Is a directory)."""
+    runner = CliRunner()
+    result = runner.invoke(cli, [command, str(tmp_path)])
+    assert result.exit_code != 0
+    assert "is a directory" in result.output.lower()
+
+
+@pytest.mark.parametrize("command", ["index", "replay"])
+def test_non_object_manifest_json_gives_consistent_clean_error(
+    tmp_path: Path, command: str
+) -> None:
+    """A top-level JSON array (valid JSON, invalid manifest shape) must fail
+    with the same clean error for both index and replay, not an internal
+    AttributeError leaked from parse_manifest's dict-only .get() call."""
+    array_path = tmp_path / "not-a-manifest.json"
+    array_path.write_text("[1, 2, 3]", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [command, str(array_path)])
+
+    assert result.exit_code != 0
+    assert "must be a JSON object" in result.output
+    assert "AttributeError" not in result.output
+    assert "'list' object has no attribute 'get'" not in result.output
 
 
 # --- Fix B: extract -o / --output ---
