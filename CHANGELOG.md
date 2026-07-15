@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object-storage URL (a bearer credential until its signature expires) no
   longer leaks into `genblaze.ffmpeg` DEBUG logs. Execution still uses the
   untouched command (#75).
+- **Security** `canonical_hash`/`canonical_json` no longer crash with an
+  uncaught `RecursionError` on pathologically deep `step.params` nesting
+  (free-form, caller-supplied data hashed into every manifest and cache
+  key). `normalize()` now raises a typed, catchable `ManifestError` past a
+  100-level depth cap (#81).
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

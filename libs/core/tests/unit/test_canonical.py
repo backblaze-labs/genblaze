@@ -2,8 +2,10 @@
 
 import math
 
+import pytest
 from genblaze_core.canonical._normalize import normalize
 from genblaze_core.canonical.json import canonical_hash, canonical_json
+from genblaze_core.exceptions import ManifestError
 
 
 def test_sorted_keys():
@@ -65,3 +67,47 @@ def test_v1_4_manifest_deterministic_across_runs():
     m1 = Manifest.from_run(Run(steps=[Step(provider="p", model="m", prompt="x")]))
     m2 = Manifest.from_run(Run(steps=[Step(provider="p", model="m", prompt="x")]))
     assert m1.canonical_hash == m2.canonical_hash
+
+
+def _deeply_nested_dict(depth: int) -> dict:
+    nested: dict = {}
+    cursor = nested
+    for _ in range(depth):
+        cursor["a"] = {}
+        cursor = cursor["a"]
+    return nested
+
+
+class TestNormalizeDepthGuard:
+    """Regression for #81: step.params is free-form user input hashed into
+    every manifest and cache key; pathological nesting must fail with a
+    typed, catchable error rather than an uncaught RecursionError."""
+
+    def test_deeply_nested_dict_raises_manifest_error(self):
+        with pytest.raises(ManifestError, match="max depth"):
+            canonical_hash(_deeply_nested_dict(1000))
+
+    def test_deeply_nested_list_raises_manifest_error(self):
+        nested: list = []
+        cursor = nested
+        for _ in range(1000):
+            child: list = []
+            cursor.append(child)
+            cursor = child
+        with pytest.raises(ManifestError, match="max depth"):
+            canonical_hash(nested)
+
+    def test_shallow_nesting_still_normalizes_fine(self):
+        """The depth guard must not reject realistic, shallow-nested params."""
+        data = {"a": {"b": {"c": [1, 2, {"d": "e"}]}}}
+        assert normalize(data) == data
+
+    def test_deeply_nested_step_params_raises_manifest_error(self):
+        """End-to-end: hashing a manifest or cache key built from a
+        pathologically nested step.params must not crash the run/request."""
+        from genblaze_core.models.step import Step
+        from genblaze_core.pipeline.cache import step_cache_key
+
+        step = Step(provider="p", model="m", params=_deeply_nested_dict(1000))
+        with pytest.raises(ManifestError, match="max depth"):
+            step_cache_key(step)
