@@ -17,6 +17,17 @@ occurrence. Literal `\n`/`\t` (two-char sequences typed by a caller) are
 already neutralized by the existing backslash-doubling — added a regression
 test to make that explicit instead of just asserting it in prose.
 
+**Found in review (P0, fixed in the same commit):** the pre-existing quote
+escaping (`'` → `\'`) was itself broken. ffmpeg's quoted values have no
+backslash-escape mechanism of their own — a naive `\'` still ends the quoted
+string early, so a `;` immediately after an embedded quote becomes live
+filtergraph syntax (e.g. `text='x\';scale='` splices in an attacker-named
+`scale` filter). Reproduced against real ffmpeg 7.0.1
+(`Error applying option 'fontsize' to filter 'scale'`). Fixed by using
+ffmpeg's own documented mechanism: close the quote, add a backslash-escaped
+quote outside it, reopen a new quote (`'` → `'\''`) — re-verified the same
+attack payload now succeeds cleanly.
+
 ### #75 — presigned URL leaked in ffmpeg DEBUG log
 `run_ffmpeg` (`providers/_ffmpeg_utils.py`) logs `" ".join(cmd)` verbatim at
 DEBUG. A chained step's `https://` input can be a presigned object-storage URL

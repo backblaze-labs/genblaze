@@ -17,7 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security** ffmpeg `drawtext` overlay text now escapes `%`, neutralizing
   ffmpeg's text-expansion parser (`%{expr:...}`, `%{pts}`, etc., active by
   default) so a crafted `text` param can no longer alter the rendered
-  filter (#17).
+  filter (#17). Also fixes a pre-existing single-quote escaping bug found
+  during review: ffmpeg's quoted values have no backslash-escape mechanism
+  of their own, so the previous `\'` still ended the quoted string early —
+  a `text` value like `x';scale=` spliced an attacker-chosen filter name
+  into the graph (confirmed against real ffmpeg 7.0.1). Quotes are now
+  escaped via close-quote/escaped-quote/reopen-quote, ffmpeg's own
+  documented mechanism.
 - **Security** `.gitignore` now matches `credentials*` (previously only the
   literal `credentials.json`) plus `*.credentials`, `*_rsa`, `*.p12`,
   `*.pfx`, and `*.keystore` (#18).

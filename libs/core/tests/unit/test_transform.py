@@ -280,7 +280,29 @@ def test_escape_drawtext_colons():
 
 
 def test_escape_drawtext_quotes():
-    assert _escape_drawtext("it's") == "it\\'s"
+    # ffmpeg's single-quoted values have no backslash-escape mechanism of
+    # their own — the only correct way to embed a literal quote is to close
+    # the quote, add a backslash-escaped quote outside it, then reopen a new
+    # quote. Verified against real ffmpeg (7.0.1): `\'` alone (the previous
+    # behavior) ends the quoted string early instead of escaping it.
+    assert _escape_drawtext("it's") == "it'\\''s"
+
+
+def test_escape_drawtext_quote_then_semicolon_cannot_break_out_of_filtergraph():
+    """Regression for #17 (filtergraph-injection variant found in review):
+    a naive `\\'` quote escape ends the quoted string early, so a `;`
+    immediately after an embedded quote becomes filtergraph-syntax-
+    significant — ffmpeg then parses the remainder as a new filter chain
+    (e.g. splicing in an attacker-named `scale` filter). Confirmed
+    reproducible against real ffmpeg 7.0.1 with the old escaping
+    (`Error applying option 'fontsize' to filter 'scale'`). The corrected
+    quote escaping keeps the whole payload inside one quoted string."""
+    escaped = _escape_drawtext("x';scale=")
+    assert escaped == "x'\\'';scale="
+    # No bare, unescaped quote is ever followed by unquoted content that a
+    # filtergraph parser could reinterpret — every quote is part of the
+    # close-escape-reopen sequence.
+    assert "\\';" not in escaped
 
 
 def test_escape_drawtext_percent_expansion():
