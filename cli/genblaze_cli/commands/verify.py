@@ -12,7 +12,7 @@ from genblaze_cli.manifest_io import extract_manifest
 @click.option(
     "--hash-only",
     is_flag=True,
-    help="Only verify canonical_hash; do not require output sha256 declarations.",
+    help="Only verify canonical_hash; skip output sha256 and asset-metadata checks.",
 )
 def verify(file: Path, hash_only: bool) -> None:
     """Verify an embedded, sidecar, or standalone genblaze manifest."""
@@ -32,9 +32,21 @@ def verify(file: Path, hash_only: bool) -> None:
                 err=True,
             )
             raise click.exceptions.Exit(1)
+        # Out-of-spec numeric/media_type metadata (e.g. width=0) is tolerated on
+        # load by parse_manifest() but fails verify() (#149); surface it here so
+        # the CLI verdict matches Manifest.verify()/report.ok instead of a stale
+        # "OK" that only checked sha256.
+        if report.invalid_metadata_ids:
+            click.echo(
+                f"FAIL: {len(report.invalid_metadata_ids)} output asset(s) "
+                "carry out-of-spec numeric/media_type metadata "
+                "(e.g. width=0, or a malformed media_type).",
+                err=True,
+            )
+            raise click.exceptions.Exit(1)
         click.echo(
-            "OK: manifest hash verified; all output assets declare sha256. "
-            "Asset bytes were not fetched or compared."
+            "OK: manifest hash verified; all output assets declare sha256 and "
+            "carry in-spec metadata. Asset bytes were not fetched or compared."
         )
     except click.exceptions.Exit:
         raise

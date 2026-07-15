@@ -46,6 +46,9 @@ def extract(file: Path, fmt: str, output: Path | None) -> None:
             click.echo(f"Hash:      {manifest.canonical_hash}")
             click.echo(f"Hash OK:   {report.hash_ok}")
             click.echo(f"Output sha256: {len(report.unverified_sha256_ids)} missing or malformed")
+            # Itemize metadata too, so a False `Verified:` line always has a
+            # visible reason (report.ok folds in invalid_metadata_ids, #149).
+            click.echo(f"Output metadata: {len(report.invalid_metadata_ids)} out of spec")
             click.echo(f"Verified:  {report.ok} (asset bytes were not fetched or compared)")
     except Exception as exc:
         raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc

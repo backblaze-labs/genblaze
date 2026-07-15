@@ -278,6 +278,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to write the manifest JSON to a file, matching the documented usage.
 - **Changed** `--version` now reports `genblaze-cli` rather than `genblaze`,
   so the CLI's version is no longer mistaken for the umbrella package version.
+- **Fixed** `verify` reported `OK` (exit 0) for a manifest whose asset
+  metadata is out of spec (e.g. a `width=0` value a tolerant load accepts)
+  even though `Manifest.verify()` rejects it — the command checked only
+  `hash_ok` and sha256, never the new `invalid_metadata_ids` boundary (#149).
+  `verify` now fails such a manifest with a clear message, and `extract
+  --format summary` gains an `Output metadata:` line so a `Verified: False`
+  verdict always shows its reason.
 
 ### genblaze (umbrella)
 
