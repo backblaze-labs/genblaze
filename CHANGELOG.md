@@ -217,6 +217,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hash or "official, no version" — seeded from `validate_model()`'s existing
   probe, so a normal `Pipeline.run()` costs no extra round-trip.
 
+### genblaze-gmicloud
+
+- **Fixed** package now ships the `py.typed` marker its `Typing :: Typed`
+  classifier already promised (#44). The marker file was never added, so
+  downstream mypy/pyright silently treated every `genblaze_gmicloud` symbol
+  as `Any` despite the package being fully annotated. It ships the same way
+  as every other connector's marker — no `pyproject.toml` change needed,
+  since hatchling already includes all files under the declared
+  `[tool.hatch.build.targets.wheel] packages` directory.
+
 ### genblaze-cli
 
 - **Fixed** `extract`, `verify`, `index`, and `replay` accepted a directory
