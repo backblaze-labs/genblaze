@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Security** `check_ssrf`/`resolve_ssrf` now catch IPv4-mapped IPv6, RFC 6052
+  NAT64 (`64:ff9b::/96`), and the unspecified `::/128` address, and add a
+  property-based backstop (`is_private`/`is_loopback`/`is_link_local`/
+  `is_reserved`/`is_unspecified`) alongside the explicit denylist so ranges
+  neither enumerates are still caught (#16).
 - **Security** `.gitignore` now matches `credentials*` (previously only the
   literal `credentials.json`) plus `*.credentials`, `*_rsa`, `*.p12`,
   `*.pfx`, and `*.keystore` (#18).
