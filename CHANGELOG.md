@@ -31,6 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EmitterSlot` per instance in `__init__`; `Pipeline.__copy__`/`__getstate__`/
   `__setstate__` always give a clone (including `batch_run()`/`abatch_run()`
   clones) a fresh, independent slot, never a shared one.
+- **Fixed** `Pipeline.step(metadata=..., prompt_visibility=...)` now route to
+  the corresponding `Step` fields instead of being silently absorbed into
+  provider `params` (#53). `prompt_visibility` is privacy-sensitive — it
+  controls whether the prompt is persisted/cached in cleartext — so silently
+  defaulting every step to `PUBLIC` regardless of what the caller passed was
+  a data-exposure footgun. The reserved-name guard now also rejects
+  `metadata=`/`prompt_visibility=` smuggled through `params={}`, and rejects
+  caller `metadata=` keys that collide with the internal `_fallback_models`/
+  `_input_from` graph-bookkeeping keys. A model-fallback retry no longer wipes
+  caller metadata (previously reassigned `Step.metadata` wholesale instead of
+  merging). `batch_run(items=[...])` routes `metadata`/`prompt_visibility`
+  item keys the same way and rejects the same reserved-key collisions,
+  closing the same two gaps via the batch entry point. A step pre-failed by
+  an invalid `input_from` reference now preserves `prompt_visibility` too
+  (it previously defaulted back to `PUBLIC` on that path, even though the
+  failed `Step` still carries the cleartext prompt). Added
+  `Pipeline.metadata(**kwargs)` for run-scoped metadata (additive, merged
+  into `Run.metadata` via `RunBuilder.meta()`).
 - **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
   `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
   emitter was a single mutable instance attribute, so a second concurrent

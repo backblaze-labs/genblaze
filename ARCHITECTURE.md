@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-08 -->
+<!-- last_verified: 2026-07-15 -->
 # Architecture
 
 ## Components
@@ -99,6 +99,7 @@
 - `on_submit` callback: fires after `submit()` with `(step_id, prediction_id)` for crash-recovery checkpointing
 - Parameter normalization: `provider.normalize_params()` maps standard names (duration, resolution) to native ones
 - Model fallback chains: `fallback_models` in `.step()` auto-retries with alternate models on `MODEL_ERROR`
+- Step provenance fields: `.step(metadata=..., prompt_visibility=...)` route to dedicated `Step` fields, not provider `params` — reserved-name guard raises if either is smuggled through `params={}` or collides with internal `_fallback_models`/`_input_from` graph metadata. `Pipeline.metadata(**kwargs)` attaches run-scoped metadata additively
 - Cost tracking: pricing is **user-registered** as of 0.3.0 — connectors ship zero hardcoded prices; users register a `PricingStrategy` per slug (or per family) and the base class populates `step.cost_usd` after `fetch_output()`. Per-provider rate sheets live in `docs/reference/pricing-recipes.md`
 - Catalog routing: connectors ship pattern-keyed `ModelFamily` rules instead of slug lists. Each family declares a regex, a `spec_template`, and optionally a `FamilyProbe`. The registry's `validate_model()` returns a typed `ValidationResult` (`OK_AUTHORITATIVE` / `OK_PROVISIONAL` / `NOT_FOUND` / `KNOWN_UNSTABLE`); `Pipeline.preflight()` gates against it. Provider classes declare a `DiscoverySupport` tier (`NATIVE` / `PARTIAL` / `NONE`) so the SDK is honest about what it can verify
 - Capability validation: `ProviderCapabilities.accepts_chain_input` flag; pipeline validates modality + chain compatibility at `run()` time before executing any steps

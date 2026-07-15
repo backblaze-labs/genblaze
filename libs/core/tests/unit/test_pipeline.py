@@ -8,7 +8,12 @@ import pytest
 from genblaze_core._utils import MAX_ERROR_LENGTH, TRUNCATION_MARKER
 from genblaze_core.exceptions import GenblazeError
 from genblaze_core.models.asset import Asset
-from genblaze_core.models.enums import ProviderErrorCode, RunStatus, StepStatus
+from genblaze_core.models.enums import (
+    PromptVisibility,
+    ProviderErrorCode,
+    RunStatus,
+    StepStatus,
+)
 from genblaze_core.models.step import Step
 from genblaze_core.pipeline import Pipeline, StepCache
 from genblaze_core.pipeline.result import PipelineResult
@@ -2104,6 +2109,219 @@ def test_step_params_kwargs_win_over_params_dict_on_collision() -> None:
     )
     step = result.run.steps[0]
     assert step.params == {"quality": "hd", "size": "512x512"}
+
+
+# -----------------------------------------------------------------------------
+# #53 — Pipeline.step(metadata=, prompt_visibility=) land on Step fields, not params.
+# -----------------------------------------------------------------------------
+
+
+def test_step_prompt_visibility_lands_on_step_field() -> None:
+    """prompt_visibility=PRIVATE must produce a Step with that field set —
+    not silently default to PUBLIC while the value leaks into params (#53)."""
+    p = MockProvider()
+    result = (
+        Pipeline("visibility-test")
+        .step(
+            p,
+            model="m",
+            prompt="secret",
+            prompt_visibility=PromptVisibility.PRIVATE,
+        )
+        .run()
+    )
+    step = result.run.steps[0]
+    assert step.prompt_visibility == PromptVisibility.PRIVATE
+    assert "prompt_visibility" not in step.params
+
+
+def test_step_metadata_merges_into_step_field_not_params() -> None:
+    """metadata={...} must merge into Step.metadata, not Step.params (#53)."""
+    p = MockProvider()
+    result = (
+        Pipeline("metadata-test").step(p, model="m", prompt="p", metadata={"campaign": "c1"}).run()
+    )
+    step = result.run.steps[0]
+    assert step.metadata["campaign"] == "c1"
+    assert "metadata" not in step.params
+
+
+def test_step_metadata_preserved_alongside_graph_bookkeeping() -> None:
+    """Caller metadata must survive alongside internal _input_from graph
+    metadata — merging must not clobber either side (#53)."""
+    p = MockProvider()
+    result = (
+        Pipeline("metadata-fanin-test", chain=True)
+        .step(p, model="m1", prompt="p1")
+        .step(p, model="m2", prompt="p2", input_from=[0], metadata={"campaign": "c1"})
+        .run()
+    )
+    step = result.run.steps[1]
+    assert step.metadata["campaign"] == "c1"
+    assert step.metadata["_input_from"] == [0]
+
+
+def test_step_rejects_metadata_smuggled_through_params_dict() -> None:
+    """metadata= is a dedicated Step field — sneaking it in via params={} must
+    raise instead of silently persisting it as an opaque provider param (#53)."""
+    p = MockProvider()
+    with pytest.raises(GenblazeError, match="metadata"):
+        Pipeline("t").step(p, model="m", prompt="p", params={"metadata": {"x": 1}})
+
+
+def test_step_rejects_prompt_visibility_smuggled_through_params_dict() -> None:
+    p = MockProvider()
+    with pytest.raises(GenblazeError, match="prompt_visibility"):
+        Pipeline("t").step(p, model="m", prompt="p", params={"prompt_visibility": "private"})
+
+
+def test_step_rejects_metadata_colliding_with_reserved_graph_keys() -> None:
+    """Caller metadata must not silently clobber (or be clobbered by) the
+    internal _fallback_models/_input_from graph-bookkeeping keys (#53)."""
+    p = MockProvider()
+    with pytest.raises(GenblazeError, match="_fallback_models"):
+        Pipeline("t").step(
+            p,
+            model="m",
+            prompt="p",
+            fallback_models=["m2"],
+            metadata={"_fallback_models": ["not-mine"]},
+        )
+
+
+def test_fallback_retry_preserves_caller_metadata() -> None:
+    """A model-fallback retry must not wipe caller metadata / _input_from —
+    _try_fallback_models() used to reassign fb_step.metadata wholesale (#53)."""
+    provider = ModelErrorProvider(failing_models={"bad-model"})
+    result = (
+        Pipeline("fallback-metadata-test")
+        .step(
+            provider,
+            model="bad-model",
+            prompt="p",
+            fallback_models=["good-model"],
+            metadata={"campaign": "c1"},
+        )
+        .run()
+    )
+    step = result.run.steps[0]
+    assert step.status == StepStatus.SUCCEEDED
+    assert step.metadata["campaign"] == "c1"
+    assert step.metadata["fallback_from"] == "bad-model"
+    assert step.metadata["fallback_model"] == "good-model"
+
+
+@pytest.mark.asyncio
+async def test_fallback_retry_preserves_caller_metadata_async() -> None:
+    """Async sibling of the sync fallback-metadata regression above.
+
+    _execute_step_async() inlines its own fallback loop (ainvoke requires
+    await) — a fix applied only to the sync path would leave this copy
+    silently reassigning fb_step.metadata wholesale (#53)."""
+    provider = ModelErrorProvider(failing_models={"bad-model"})
+    result = (
+        await Pipeline("fallback-metadata-test-async")
+        .step(
+            provider,
+            model="bad-model",
+            prompt="p",
+            fallback_models=["good-model"],
+            metadata={"campaign": "c1"},
+        )
+        .arun()
+    )
+    step = result.run.steps[0]
+    assert step.status == StepStatus.SUCCEEDED
+    assert step.metadata["campaign"] == "c1"
+    assert step.metadata["fallback_from"] == "bad-model"
+    assert step.metadata["fallback_model"] == "good-model"
+
+
+def test_input_from_failure_preserves_prompt_visibility() -> None:
+    """A step pre-failed by invalid input_from must still carry the caller's
+    prompt_visibility — _build_input_resolution_failure_step() used to build
+    the failed Step with the PromptVisibility default (PUBLIC), silently
+    dropping a PRIVATE prompt's redaction intent even though the failed Step
+    still carries the cleartext prompt (#53)."""
+    p0 = ChainableProvider()
+    p1 = ChainableProvider()
+
+    result = (
+        Pipeline("fan-in-visibility")
+        .step(p0, model="m0", prompt="zero")
+        .step(
+            p1,
+            model="m1",
+            prompt="one",
+            input_from=[5],
+            prompt_visibility=PromptVisibility.PRIVATE,
+        )
+        .run(fail_fast=False, raise_on_failure=False)
+    )
+
+    failed_step = result.run.steps[1]
+    assert failed_step.status == StepStatus.FAILED
+    assert failed_step.error_code == ProviderErrorCode.INVALID_INPUT
+    assert failed_step.prompt_visibility == PromptVisibility.PRIVATE
+
+
+def test_pipeline_metadata_merges_into_run_metadata() -> None:
+    """Pipeline.metadata(**kwargs) is additive across calls and lands on Run.metadata (#53)."""
+    p = MockProvider()
+    result = (
+        Pipeline("run-metadata-test")
+        .metadata(job="nightly")
+        .metadata(locale="en-US")
+        .step(p, model="m", prompt="p")
+        .run()
+    )
+    assert result.run.metadata == {"job": "nightly", "locale": "en-US"}
+
+
+def test_batch_run_items_routes_metadata_and_visibility_to_step_fields() -> None:
+    """batch_run(items=[{"metadata": ..., "prompt_visibility": ...}]) is a
+    second entry point into Step.params — it must route both to their
+    dedicated Step fields too, not just Pipeline.step() (#53)."""
+    p = MockProvider()
+    pipe = Pipeline("batch-metadata-test").step(p, model="m", prompt="base")
+    results = pipe.batch_run(
+        items=[
+            {
+                "prompt": "override",
+                "metadata": {"tag": "x"},
+                "prompt_visibility": PromptVisibility.PRIVATE,
+            }
+        ],
+        raise_on_failure=False,
+    )
+    step = results[0].run.steps[0]
+    assert step.metadata["tag"] == "x"
+    assert step.prompt_visibility == PromptVisibility.PRIVATE
+    assert "metadata" not in step.params
+    assert "prompt_visibility" not in step.params
+
+
+def test_batch_run_items_rejects_input_key() -> None:
+    """batch_run(items=...) must reject the same 'inputs'/'input' reserved
+    names as step() — it is a second, unguarded route into Step.params (#53)."""
+    p = MockProvider()
+    pipe = Pipeline("batch-input-guard").step(p, model="m", prompt="base")
+    with pytest.raises(GenblazeError, match="external_inputs"):
+        pipe.batch_run(items=[{"inputs": []}], raise_on_failure=False)
+
+
+def test_batch_run_items_rejects_metadata_colliding_with_reserved_graph_keys() -> None:
+    """batch_run(items=[{"metadata": {"_fallback_models": ...}}]) must raise,
+    not silently forge internal replay-data keys into Step.metadata (#53)."""
+    p = MockProvider()
+    pipe = Pipeline("batch-metadata-guard").step(
+        p, model="m", prompt="base", fallback_models=["m2"]
+    )
+    with pytest.raises(GenblazeError, match="_fallback_models"):
+        pipe.batch_run(
+            items=[{"metadata": {"_fallback_models": ["forged"]}}],
+            raise_on_failure=False,
+        )
 
 
 # -----------------------------------------------------------------------------

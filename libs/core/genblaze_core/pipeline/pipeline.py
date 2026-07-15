@@ -30,6 +30,7 @@ from genblaze_core.exceptions import (
 )
 from genblaze_core.models.enums import (
     Modality,
+    PromptVisibility,
     ProviderErrorCode,
     RunStatus,
     StepStatus,
@@ -82,6 +83,18 @@ _RAISE_ON_FAILURE_DEFAULT_FLIP_VERSION = "0.4.0"
 _TEXT_METADATA_KEY = "text"
 _MODERATION_SEGMENT_MAX_BYTES = 8 * 1024
 _MODERATION_TOTAL_MAX_BYTES = 32 * 1024
+# `inputs=`/`input=` is the natural-but-wrong name a caller trying to seed
+# Step.inputs would reach for — reserved across BOTH step()'s params={}/
+# **extra_params merge and batch_run(items=...)'s per-item dict, so it can't
+# be silently normalized as a model param on either entry point.
+_RESERVED_INPUT_PARAM_NAMES = ("inputs", "input")
+# Step-field kwargs that must never be smuggled through step()'s params={}
+# dict (see #53) — each has a dedicated top-level step() kwarg instead.
+_RESERVED_STEP_FIELD_PARAMS = ("metadata", "prompt_visibility")
+# Internal graph-bookkeeping keys _build_step_metadata() writes into
+# Step.metadata (fallback replay, fan-in routing). Caller-supplied
+# metadata= must not collide with these — see #53.
+_RESERVED_GRAPH_METADATA_KEYS = frozenset({"_fallback_models", "_input_from"})
 
 
 def _coerce_str(value: str | bytes | bytearray) -> str:
@@ -284,6 +297,12 @@ class _PipelineStep:
     # Caller-supplied ETA hint surfaced on StepStartedEvent so consumers can
     # render meaningful progress UIs without hard-coding per-model duration.
     expected_duration_sec: float | None = None
+    # Caller-supplied Step.metadata / Step.prompt_visibility (see #53). Kept
+    # as first-class fields rather than swallowed into params — the latter
+    # silently defaulted every step's prompt_visibility to PUBLIC regardless
+    # of what the caller passed, a privacy footgun.
+    metadata: dict[str, Any] | None = None
+    prompt_visibility: PromptVisibility = PromptVisibility.PUBLIC
 
 
 @dataclass(frozen=True)
@@ -494,6 +513,21 @@ class Pipeline(Runnable[None, PipelineResult]):
         self._parent_run_id = result.run.run_id
         return self
 
+    def metadata(self, **kwargs: Any) -> Pipeline:
+        """Attach arbitrary metadata to the resulting ``Run`` (issue #53).
+
+        Additive across calls (``dict.update()`` semantics, matching
+        ``RunBuilder.meta()``) — call multiple times to layer on more keys
+        rather than replacing what's already set. Merged into ``Run.metadata``
+        at ``.run()``/``.arun()`` time via ``RunBuilder.meta()``.
+
+        For per-step metadata (campaign, SKU, reviewer, ...), use
+        ``Pipeline.step(..., metadata={...})`` instead — this method is
+        run-scoped, not step-scoped.
+        """
+        self._run_metadata.update(kwargs)
+        return self
+
     @classmethod
     def ingest(
         cls,
@@ -572,6 +606,8 @@ class Pipeline(Runnable[None, PipelineResult]):
         input_from: list[int] | int | None = None,
         external_inputs: list[Asset] | None = None,
         expected_duration_sec: float | None = None,
+        metadata: dict[str, Any] | None = None,
+        prompt_visibility: PromptVisibility = PromptVisibility.PUBLIC,
         params: dict[str, Any] | None = None,
         **extra_params: Any,
     ) -> Pipeline:
@@ -591,6 +627,15 @@ class Pipeline(Runnable[None, PipelineResult]):
                 UIs. The SDK does not synthesize this — supply your own median
                 from observed runs. Stale values produce worse UX than
                 omitting the field; treat as informational.
+            metadata: Arbitrary caller metadata (campaign, SKU, locale,
+                reviewer, correlation id, ...) merged into ``Step.metadata``
+                alongside internal pipeline-graph bookkeeping (fallback/
+                input-routing replay data). Raises if a key collides with a
+                reserved internal key (issue #53).
+            prompt_visibility: Prompt redaction level persisted on the built
+                ``Step`` (default ``PUBLIC``). Controls whether the prompt is
+                cached/embedded in cleartext — set ``PRIVATE`` for
+                privacy-sensitive prompts (issue #53).
             params: Provider-specific parameters as a dict. Equivalent to
                 passing the same keys as top-level kwargs — use whichever
                 reads better at the call site. If a key appears in both,
@@ -610,12 +655,35 @@ class Pipeline(Runnable[None, PipelineResult]):
         # swallowed into params, normalized as a model param, and either
         # rejected by the upstream provider or — worse — embedded in the
         # manifest as part of Step.params, drifting the canonical hash.
-        for reserved in ("inputs", "input"):
+        for reserved in _RESERVED_INPUT_PARAM_NAMES:
             if reserved in merged_params:
                 raise GenblazeError(
                     f"'{reserved}=' is not a valid step() kwarg — did you mean "
                     f"'external_inputs=' (a list of caller-held Assets)? See "
                     f"docs/features/pipelines.md for the three input mechanisms."
+                )
+        # `metadata=`/`prompt_visibility=` are dedicated top-level kwargs above
+        # (they never land in **extra_params), but a caller could still smuggle
+        # them through params={...} — reject that too instead of silently
+        # persisting them as opaque provider params (#53).
+        for reserved in _RESERVED_STEP_FIELD_PARAMS:
+            if reserved in merged_params:
+                raise GenblazeError(
+                    f"'{reserved}=' inside params={{}} is not supported — it's a "
+                    f"dedicated Step field. Pass Pipeline.step({reserved}=...) as a "
+                    f"top-level kwarg instead."
+                )
+        # Caller metadata must not collide with the internal graph-bookkeeping
+        # keys _build_step_metadata() writes (fallback/input-routing replay
+        # data) — silently letting either side clobber the other would either
+        # corrupt replay data or swallow the caller's metadata (#53).
+        if metadata:
+            collision = _RESERVED_GRAPH_METADATA_KEYS & metadata.keys()
+            if collision:
+                raise GenblazeError(
+                    f"metadata key(s) {sorted(collision)} are reserved for internal "
+                    "pipeline bookkeeping (fallback/input-routing replay data). "
+                    "Rename your metadata key(s)."
                 )
         # Normalize scalar index to list for uniform handling
         normalized_from: list[int] | None = None
@@ -661,6 +729,8 @@ class Pipeline(Runnable[None, PipelineResult]):
                 input_from=normalized_from,
                 external_inputs=normalized_external,
                 expected_duration_sec=expected_duration_sec,
+                metadata=metadata,
+                prompt_visibility=prompt_visibility,
             )
         )
         return self
@@ -970,6 +1040,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             started_at=now,
             completed_at=now,
             metadata=metadata,
+            prompt_visibility=ps.prompt_visibility,
         )
         if step_id is not None:
             step_kwargs["step_id"] = step_id
@@ -1020,8 +1091,16 @@ class Pipeline(Runnable[None, PipelineResult]):
         return step
 
     def _build_step_metadata(self, ps: _PipelineStep) -> dict[str, Any]:
-        """Build persisted pipeline graph metadata for a deferred step."""
-        metadata: dict[str, Any] = {}
+        """Build persisted Step metadata: caller-supplied ``metadata=`` (#53)
+        merged with internal pipeline graph bookkeeping (fallback replay,
+        fan-in routing).
+
+        Graph keys are applied last so they always win on a collision that
+        somehow bypassed ``step()``'s reserved-key guard (e.g. a directly
+        constructed ``_PipelineStep``) — fallback/input-routing replay
+        correctness must never be silently corrupted by caller data.
+        """
+        metadata: dict[str, Any] = dict(ps.metadata) if ps.metadata else {}
         if ps.fallback_models:
             metadata["_fallback_models"] = ps.fallback_models
         if ps.input_from is not None:
@@ -1080,6 +1159,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             status=StepStatus.PENDING,
             inputs=inputs or [],
             metadata=metadata,
+            prompt_visibility=ps.prompt_visibility,
         )
         if step_id is not None:
             step_kwargs["step_id"] = step_id
@@ -1127,10 +1207,16 @@ class Pipeline(Runnable[None, PipelineResult]):
                 logger.info("Falling back from %s to %s", step.model, fb_model)
                 fb_step = self._build_step(ps, step.inputs or None)
                 fb_step.model = fb_model
-                fb_step.metadata = {
-                    "fallback_from": original_model,
-                    "fallback_model": fb_model,
-                }
+                # .update(), not reassignment — fb_step.metadata already
+                # carries caller metadata= and the _input_from graph key from
+                # _build_step(); replacing it wholesale would silently drop
+                # both on a fallback retry (#53).
+                fb_step.metadata.update(
+                    {
+                        "fallback_from": original_model,
+                        "fallback_model": fb_model,
+                    }
+                )
                 result = invoke_fn(fb_step, config)
                 if result.status == StepStatus.SUCCEEDED:
                     cache_key_step = fb_step
@@ -1280,10 +1366,14 @@ class Pipeline(Runnable[None, PipelineResult]):
                     logger.info("Falling back from %s to %s", step.model, fb_model)
                     fb_step = self._build_step(ps, step.inputs or None)
                     fb_step.model = fb_model
-                    fb_step.metadata = {
-                        "fallback_from": original_model,
-                        "fallback_model": fb_model,
-                    }
+                    # .update(), not reassignment — see the sync fallback
+                    # path (_try_fallback_models) for why (#53).
+                    fb_step.metadata.update(
+                        {
+                            "fallback_from": original_model,
+                            "fallback_model": fb_model,
+                        }
+                    )
                     result = await ps.provider.ainvoke(fb_step, config)
                     if result.status == StepStatus.SUCCEEDED:
                         cache_key_step = fb_step
@@ -1348,6 +1438,8 @@ class Pipeline(Runnable[None, PipelineResult]):
             builder.project(self._project_id)
         if self._parent_run_id:
             builder.parent(self._parent_run_id)
+        if self._run_metadata:
+            builder.meta(**self._run_metadata)
 
         all_succeeded = all(s.status == StepStatus.SUCCEEDED for s in completed_steps)
         for s in completed_steps:
@@ -2469,9 +2561,13 @@ class Pipeline(Runnable[None, PipelineResult]):
     ) -> list[_PipelineStep]:
         """Build a per-item step list by merging ``item`` into step 0.
 
-        Convention: ``item["prompt"]`` overrides step 0's prompt; every other
-        key merges into step 0's ``params`` (per-item values win). Steps after
-        index 0 are unchanged.
+        Convention: ``item["prompt"]`` overrides step 0's prompt;
+        ``item["metadata"]`` merges into step 0's ``Step.metadata`` and
+        ``item["prompt_visibility"]`` overrides step 0's prompt-redaction
+        level (both routed to their dedicated ``Step`` fields, not
+        ``params={}`` — same reserved-name contract as ``step()``, see
+        #53). Every remaining key merges into step 0's ``params`` (per-item
+        values win). Steps after index 0 are unchanged.
 
         Multi-step per-item params are intentionally out-of-scope here — the
         single-step batch case covers ~95% of asset-pack / aspect-ratio /
@@ -2483,9 +2579,42 @@ class Pipeline(Runnable[None, PipelineResult]):
             return steps
         head = steps[0]
         item_copy = dict(item)
+        for reserved in _RESERVED_INPUT_PARAM_NAMES:
+            if reserved in item_copy:
+                raise GenblazeError(
+                    f"'{reserved}' is not a valid batch_run(items=...) key — did you "
+                    f"mean 'external_inputs=' on step()? See docs/features/pipeline.md "
+                    f"for the three input mechanisms."
+                )
         new_prompt = item_copy.pop("prompt", head.prompt)
+        item_metadata = item_copy.pop("metadata", None)
+        item_visibility = item_copy.pop("prompt_visibility", None)
+        if item_metadata:
+            # Same collision guard as step() (#53) — without it, a batch item
+            # could forge _fallback_models/_input_from values directly into
+            # Step.metadata even on a step with no configured fallback_models/
+            # input_from, corrupting the internal replay-data invariant those
+            # keys exist to protect.
+            collision = _RESERVED_GRAPH_METADATA_KEYS & item_metadata.keys()
+            if collision:
+                raise GenblazeError(
+                    f"batch_run(items=...) metadata key(s) {sorted(collision)} are "
+                    "reserved for internal pipeline bookkeeping (fallback/"
+                    "input-routing replay data). Rename your metadata key(s)."
+                )
         merged_params = {**head.params, **item_copy}
-        new_head = replace(head, prompt=new_prompt, params=merged_params)
+        merged_metadata = (
+            {**(head.metadata or {}), **item_metadata} if item_metadata else head.metadata
+        )
+        new_head = replace(
+            head,
+            prompt=new_prompt,
+            params=merged_params,
+            metadata=merged_metadata,
+            prompt_visibility=item_visibility
+            if item_visibility is not None
+            else head.prompt_visibility,
+        )
         return [new_head, *steps[1:]]
 
     @staticmethod
