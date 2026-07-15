@@ -201,19 +201,24 @@ def test_stream_early_break_does_not_block() -> None:
 
     Regression: previously t.join() ran unconditionally in the generator's
     finally, blocking the caller for the remainder of the pipeline runtime.
+
+    Step 2's provider blocks on an Event that this test only releases AFTER
+    the assertion — if early break still waited for the full pipeline (the
+    old bug), the consumer thread below would never return within its
+    bounded join(). This replaces an absolute wall-clock assertion
+    (elapsed < 0.5s against 3 x 0.25s sleeps), which could intermittently
+    fail on a loaded CI runner since scheduler jitter slows the pipeline's
+    own steps too (#48).
     """
-    import time as _time
+    import threading
 
-    provider = _OKProvider()
-    # Multi-step pipeline with a 0.25s synthetic latency per step.
-    # If early-break blocks on join, total wall time would be ≥ 0.75s.
-    # Slow provider via a subclass:
+    release = threading.Event()
 
-    class _SlowProvider(BaseProvider):
-        name = "slow"
+    class _BlockingProvider(BaseProvider):
+        name = "blocking"
 
         def submit(self, step, config=None) -> Any:
-            _time.sleep(0.25)
+            release.wait(timeout=5.0)
             return "pred"
 
         def poll(self, prediction_id, config=None) -> bool:
@@ -227,20 +232,38 @@ def test_stream_early_break_does_not_block() -> None:
 
     pipe = (
         Pipeline("t")
-        .step(_SlowProvider(), model="m", prompt="p1")
-        .step(_SlowProvider(), model="m", prompt="p2")
-        .step(_SlowProvider(), model="m", prompt="p3")
+        .step(_OKProvider(), model="m", prompt="p1")
+        .step(_BlockingProvider(), model="m", prompt="p2")
     )
 
-    t0 = _time.monotonic()
-    for event in pipe.stream():
-        if event.type == "step.completed":
-            break  # bail after the first step
-    elapsed = _time.monotonic() - t0
+    consumer_returned = threading.Event()
 
-    # Must finish well before 3 × 0.25s = 0.75s (first step + some slack)
-    assert elapsed < 0.5, f"stream() blocked on early break ({elapsed:.2f}s)"
-    assert provider is not None  # keep imports used
+    def _consume() -> None:
+        for event in pipe.stream():
+            if event.type == "step.completed":
+                break  # bail after the first step
+        consumer_returned.set()
+
+    # Snapshot before spawning so the abandoned "genblaze-stream" worker
+    # (joined below, after release) can be found by identity rather than by
+    # name — several tests in this module spawn same-named workers.
+    pre_existing = {t.ident for t in threading.enumerate()}
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    consumer.join(timeout=2.0)
+
+    assert consumer_returned.is_set(), (
+        "stream() blocked on early break: consumer did not return while step 2 was in flight"
+    )
+    release.set()  # let the abandoned background worker wind down
+
+    new_workers = [
+        t
+        for t in threading.enumerate()
+        if t.name == "genblaze-stream" and t.ident not in pre_existing
+    ]
+    for worker in new_workers:
+        worker.join(timeout=5.0)
 
 
 @pytest.mark.asyncio
@@ -329,7 +352,13 @@ def test_queue_emitter_put_after_close_is_noop() -> None:
 def test_stream_early_break_drains_without_daemon_error() -> None:
     """After early break, the daemon worker finishes cleanly even if it
     still tries to emit events. Previously, the worker's trailing
-    emitter.put() could AttributeError when the generator had moved on."""
+    emitter.put() could AttributeError when the generator had moved on.
+
+    Asserts a concrete, deterministic outcome (the daemon thread actually
+    winds down) instead of a bare sleep with no assertion — a sleep alone
+    gives false coverage of the "daemon winds down cleanly" claim (#48).
+    """
+    import threading
     import time as _time
 
     class _SlowProvider(BaseProvider):
@@ -354,25 +383,30 @@ def test_stream_early_break_drains_without_daemon_error() -> None:
         .step(_SlowProvider(), model="m", prompt="p2")
     )
 
+    # Snapshot before spawning so we can identify THIS test's own worker by
+    # identity, not by name — a same-named thread lingering from a previous
+    # test (they all share "genblaze-stream") must not be mistaken for ours.
+    pre_existing = {t.ident for t in threading.enumerate()}
     for ev in pipe.stream():
         if ev.type == "step.completed":
             break
 
-    # Give the daemon worker a beat to wind down. If it crashed, a subsequent
-    # stream() call would inherit a poisoned state.
-    _time.sleep(0.25)
+    # Locate the abandoned daemon worker and wait for it to wind down
+    # deterministically instead of guessing with a bare sleep.
+    new_workers = [
+        t
+        for t in threading.enumerate()
+        if t.name == "genblaze-stream" and t.ident not in pre_existing
+    ]
+    assert len(new_workers) == 1, f"expected exactly one new worker thread, found {new_workers}"
+    worker = new_workers[0]
+    worker.join(timeout=5.0)
+    assert not worker.is_alive(), "daemon worker did not wind down after early break"
 
 
 def test_consecutive_streams_after_early_break_terminate_cleanly() -> None:
     """A second stream() after an early break must still terminate normally
     and deliver its own pipeline.completed.
-
-    Scope note: if the first stream's abandoned daemon is still running when
-    the second stream starts, its residual events may appear in the second
-    stream's queue because ``self._event_emitter`` is a single-slot rebind.
-    Full isolation requires routing emitters via contextvars — tracked
-    separately. This test only asserts the second stream terminates with a
-    terminal event and produces no exceptions.
     """
 
     class _FastProvider(BaseProvider):
