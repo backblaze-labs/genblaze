@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order-preserving manifest canonical hash. Existing cache entries for
   multi-input steps whose inputs weren't already in sorted order miss once
   and recompute (one-time repopulation, no data loss).
+- **Fixed** `JpegHandler.extract()` and `WebpHandler.extract()` no longer buffer
+  an unbounded amount of the source file into memory (#82). Both now read via
+  the bounded `read_media_bytes()` helper (500 MB `MAX_FILE_BYTES` cap) already
+  used by PNG/WAV, so a container over the cap raises `EmbeddingError` instead
+  of being fully materialized in RAM. Since the CLI content-sniffs the handler
+  from magic bytes rather than file extension, an oversized file with JPEG/WebP
+  magic previously bypassed the cap that PNG/WAV/MP4 already enforced.
 - **Fixed** Windows `file://` URL handling across all call sites (#132).
   On Windows, `urlparse("file:///C:/...").path` returns `/C:/...`, and
   `Path("/C:/...").resolve()` produces a drive-relative path that always

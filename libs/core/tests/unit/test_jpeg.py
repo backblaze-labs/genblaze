@@ -45,6 +45,26 @@ def test_jpeg_capabilities() -> None:
     assert JpegHandler.capabilities() == ["image/jpeg"]
 
 
+def test_jpeg_extract_rejects_oversized_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """extract() must refuse a container over MAX_FILE_BYTES via read_media_bytes,
+    not buffer it with a raw read() — the CLI content-sniffs handlers from magic
+    bytes, so an oversized JPEG-magic file must be capped like PNG/WAV are.
+
+    Patches the cap low so the test file stays a few bytes (no 500MB+ alloc).
+    """
+    from genblaze_core.media import base as media_base
+
+    monkeypatch.setattr(media_base, "MAX_FILE_BYTES", 10)
+
+    src = tmp_path / "oversized.jpg"
+    src.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 64)  # JPEG magic, > patched cap
+
+    with pytest.raises(EmbeddingError, match="too large"):
+        JpegHandler().extract(src)
+
+
 def test_jpeg_extract_walks_past_foreign_xmp(tmp_path: Path, sample_manifest: Manifest) -> None:
     """A JPEG carrying a leading non-genblaze XMP packet (e.g. Photoshop)
     must still surface the genblaze manifest from a later packet."""

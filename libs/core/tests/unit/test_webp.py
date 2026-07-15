@@ -45,6 +45,26 @@ def test_webp_capabilities() -> None:
     assert WebpHandler.capabilities() == ["image/webp"]
 
 
+def test_webp_extract_rejects_oversized_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """extract() must refuse a container over MAX_FILE_BYTES via read_media_bytes,
+    not buffer it with a raw read() — the CLI content-sniffs handlers from magic
+    bytes, so an oversized WebP-magic file must be capped like PNG/WAV are.
+
+    Patches the cap low so the test file stays a few bytes (no 500MB+ alloc).
+    """
+    from genblaze_core.media import base as media_base
+
+    monkeypatch.setattr(media_base, "MAX_FILE_BYTES", 10)
+
+    src = tmp_path / "oversized.webp"
+    src.write_bytes(b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 64)  # WebP magic, > patched cap
+
+    with pytest.raises(EmbeddingError, match="too large"):
+        WebpHandler().extract(src)
+
+
 def test_webp_embed_preserves_pixels(tmp_path: Path, sample_manifest: Manifest) -> None:
     """Embedding with lossless=True should preserve exact pixel data."""
     np = pytest.importorskip("numpy")
