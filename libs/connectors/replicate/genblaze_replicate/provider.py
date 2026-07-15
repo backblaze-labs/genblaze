@@ -72,6 +72,12 @@ _FALLBACK_SPEC = ModelSpec(
     input_mapping=route_by_media_type({"image": "image", "video": "video", "audio": "audio"}),
 )
 
+# Sentinel distinguishing "slug not yet resolved" from "slug resolved to no
+# version" in ``_version_cache``. The latter caches ``None`` — a real result
+# meaning "official model, submit via the ``model=`` path" — so a plain
+# ``dict.get(slug)`` can't tell a miss from a cached official model.
+_VERSION_UNRESOLVED: Any = object()
+
 
 class ReplicateProvider(BaseProvider):
     """Provider adapter for Replicate (replicate.com)."""
@@ -131,6 +137,19 @@ class ReplicateProvider(BaseProvider):
         self._validation_cache: dict[str, tuple[float, ValidationResult]] = {}
         self._validation_lock = threading.RLock()
         self._validation_ttl: float = DEFAULT_TTL_SECONDS
+        # Per-slug submit-time resolution cache: ``owner/name`` → version
+        # hash, or ``None`` for official/versionless models that run via the
+        # ``model=`` path (see ``_resolve_version``). Deliberately *not*
+        # TTL-bounded like ``_validation_cache``: genblaze runs a process per
+        # pipeline, so pinning the slug→version resolved at first sight gives
+        # version consistency across a run (call ``validate_model(refresh=
+        # True)`` to re-resolve a newly-published *latest* version). Kept as a
+        # small purpose-built dict rather than reusing the base ``_probe_cache``
+        # machinery — the value is a bare hash, not a ``LiveProbeResult``,
+        # resolution is a cheap idempotent token-free GET, and it is seeded for
+        # free from ``validate_model``'s probe. Guarded by the same lock as the
+        # validation cache since both are populated from one ``models.get()``.
+        self._version_cache: dict[str, str | None] = {}
         # Wire a discovery cache for the first-page snapshot. The fetcher
         # closes over ``self`` so it picks up the (possibly-late-bound)
         # ``self._client``.
@@ -207,8 +226,14 @@ class ReplicateProvider(BaseProvider):
             return base_result
 
         if refresh:
+            slug, _ = self._split_model_id(model_id)
             with self._validation_lock:
                 self._validation_cache.pop(model_id, None)
+                # Keep the version cache in lockstep — a caller explicitly
+                # asking to refresh a slug's validation almost always wants
+                # a fresh "latest_version" too (e.g. the model owner just
+                # published a new version).
+                self._version_cache.pop(slug, None)
         else:
             cached = self._lookup_validation_cache(model_id)
             if cached is not None:
@@ -242,9 +267,13 @@ class ReplicateProvider(BaseProvider):
         * Other errors → ``UNKNOWN_PERMISSIVE`` (we couldn't verify; let
           the upstream call surface the real error if there is one).
         """
+        # Strip any inline ``:version`` — Replicate's model-existence GET
+        # (/v1/models/{owner}/{name}) only accepts the bare slug; a compound
+        # ``owner/name:hash`` key 404s even when the model exists.
+        slug, _ = self._split_model_id(model_id)
         try:
             client = self._get_client()
-            client.models.get(model_id)
+            model = client.models.get(slug)
         except Exception as exc:
             err_code = map_replicate_error(exc)
             if err_code is ProviderErrorCode.MODEL_ERROR:
@@ -258,10 +287,77 @@ class ReplicateProvider(BaseProvider):
                 exc,
             )
             return ValidationResult.unknown_permissive(detail=f"probe inconclusive: {exc}")
+        # This probe already fetched the model object that ``submit()`` needs
+        # to resolve a version — seed the version cache so a Pipeline run
+        # (preflight validate_model, then submit) never fetches it twice.
+        self._cache_model_version(slug, model)
         return ValidationResult.ok_authoritative(
             ValidationSource.PROBE,
             detail="confirmed via /v1/models/{owner}/{name}",
         )
+
+    @staticmethod
+    def _split_model_id(model_id: str) -> tuple[str, str | None]:
+        """Split ``owner/name[:version-hash]`` into ``(slug, inline_version)``.
+
+        Replicate slugs never contain a bare ``:`` themselves, so the first
+        colon (if any) unambiguously separates an inline-pinned version hash.
+        Shared by every call site that talks to ``/v1/models/{owner}/{name}``
+        (which rejects the compound form) or that needs a version hash.
+        """
+        slug, _, inline_version = model_id.partition(":")
+        return slug, (inline_version or None)
+
+    def _cache_model_version(self, slug: str, model: Any) -> str | None:
+        """Extract and cache ``model.latest_version.id`` for ``slug``.
+
+        Shared by ``_authoritative_lookup`` (validate_model's per-slug probe)
+        and ``_resolve_version`` (submit-time resolution) so a single
+        ``models.get()`` round-trip seeds both caches. ``slug`` must already
+        be stripped of any inline version (see ``_split_model_id``). Returns —
+        and caches — the version hash, or ``None`` for official/versionless
+        models. Caching the ``None`` result too means a fan-out of submits over
+        an official model probes once rather than re-resolving per prediction.
+        """
+        latest_version = getattr(model, "latest_version", None)
+        version_id = getattr(latest_version, "id", None) or None
+        with self._validation_lock:
+            self._version_cache[slug] = version_id
+        return version_id
+
+    def _resolve_version(self, model_id: str) -> str | None:
+        """Resolve ``model_id`` to a version hash for prediction submission.
+
+        Replicate has two kinds of runnable models submitted via two different
+        endpoints, so resolution returns either a hash or ``None`` (#109):
+
+        * **Community models** carry published versions and 404 on the
+          ``predictions.create(model=<slug>)`` path — they must be run via
+          ``predictions.create(version=<hash>)``. Returns their hash.
+        * **Official models** (e.g. ``black-forest-labs/flux-schnell``) expose
+          *no* version and can only be run via the ``model=<slug>`` path.
+          Returns ``None`` to tell ``submit()`` to take that fallback.
+
+        Resolution order:
+
+        1. Inline version (``owner/name:hash``) — already a hash; no network.
+        2. Cached resolution from a prior ``submit()``/``validate_model()`` for
+           this slug (``None`` is a valid cached "official model" result, hence
+           the ``_VERSION_UNRESOLVED`` sentinel to detect a genuine miss).
+        3. Otherwise ``client.models.get(slug)`` — one round-trip, cached
+           per-slug (hash or ``None``) thereafter.
+        """
+        slug, inline_version = self._split_model_id(model_id)
+        if inline_version:
+            return inline_version
+
+        cached = self._version_cache.get(slug, _VERSION_UNRESOLVED)
+        if cached is not _VERSION_UNRESOLVED:
+            return cached
+
+        client = self._get_client()
+        model = client.models.get(slug)
+        return self._cache_model_version(slug, model)
 
     def _get_client(self):
         if self._client is None:
@@ -287,11 +383,25 @@ class ReplicateProvider(BaseProvider):
         client = self._get_client()
         try:
             input_params = self.prepare_payload(step)
-            prediction = client.predictions.create(
-                model=step.model,
-                input=input_params,
-            )
+            version = self._resolve_version(step.model)
+            if version is not None:
+                # Community model — run the resolved version via /v1/predictions.
+                prediction = client.predictions.create(
+                    version=version,
+                    input=input_params,
+                )
+            else:
+                # Official/versionless model — only runnable via the model=
+                # path (/v1/models/{owner}/{name}/predictions). Pass the bare
+                # slug; that endpoint rejects a compound ``owner/name:hash``.
+                slug, _ = self._split_model_id(step.model)
+                prediction = client.predictions.create(
+                    model=slug,
+                    input=input_params,
+                )
             return prediction.id
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(
                 f"Replicate submit failed: {exc}",

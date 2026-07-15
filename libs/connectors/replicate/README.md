@@ -21,7 +21,11 @@ Supports any model hosted on Replicate — including:
 - **Video** — text-to-video and image-to-video models on Replicate
 - **Audio** — music and speech models on Replicate
 
-Use the full `owner/model` slug from https://replicate.com/explore.
+Use the full `owner/model` slug from https://replicate.com/explore — official
+and community models alike. `submit()` runs each via the right Replicate
+endpoint: community models resolve to their latest published version (cached
+per-slug), official models run version-less. Pin an exact community version
+with `owner/model:<version-hash>`.
 
 ## Install
 

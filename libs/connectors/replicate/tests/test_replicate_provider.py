@@ -34,6 +34,16 @@ def _make_step(**kwargs) -> Step:
     return Step(**defaults)
 
 
+def _make_model_with_version(version_id: str | None):
+    """A fake ``replicate.model.Model`` exposing a concrete ``latest_version``."""
+    model = MagicMock()
+    if version_id is None:
+        model.latest_version = None
+    else:
+        model.latest_version = MagicMock(id=version_id)
+    return model
+
+
 # --- map_replicate_error tests ---
 
 
@@ -76,6 +86,7 @@ def test_map_error_accepts_exception():
 def test_submit_sends_prompt_and_params():
     provider = ReplicateProvider(api_token="test-token")
     mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("v-resolved")
     mock_client.predictions.create.return_value = FakePrediction()
     provider._client = mock_client
 
@@ -83,7 +94,7 @@ def test_submit_sends_prompt_and_params():
     result = provider.submit(step)
 
     mock_client.predictions.create.assert_called_once_with(
-        model="test/model",
+        version="v-resolved",
         input={"width": 1024, "prompt": "a cat"},
     )
     assert result == "pred-abc123"
@@ -92,6 +103,7 @@ def test_submit_sends_prompt_and_params():
 def test_submit_includes_negative_prompt():
     provider = ReplicateProvider(api_token="test-token")
     mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("v-resolved")
     mock_client.predictions.create.return_value = FakePrediction()
     provider._client = mock_client
 
@@ -100,6 +112,168 @@ def test_submit_includes_negative_prompt():
 
     call_input = mock_client.predictions.create.call_args.kwargs["input"]
     assert call_input["negative_prompt"] == "blurry"
+
+
+# --- version resolution (community-model 404 fix, #109) ---
+
+
+def test_submit_resolves_community_model_slug_to_version():
+    """A bare ``owner/name`` slug (the common case — community models) must
+    resolve to a version hash and submit via ``version=``, not ``model=``.
+    ``predictions.create(model=...)`` only resolves official models and 404s
+    for the vast majority of Replicate's public catalog (#109)."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("abc123hash")
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    step = _make_step(model="sczhou/codeformer")
+    provider.submit(step)
+
+    mock_client.models.get.assert_called_once_with("sczhou/codeformer")
+    mock_client.predictions.create.assert_called_once_with(
+        version="abc123hash",
+        input={"prompt": "a cat"},
+    )
+
+
+def test_submit_uses_inline_version_without_network_call():
+    """``owner/name:hash`` carries the version inline — no ``models.get()``
+    round-trip needed to resolve it."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    step = _make_step(model="sczhou/codeformer:deadbeef1234")
+    provider.submit(step)
+
+    mock_client.models.get.assert_not_called()
+    mock_client.predictions.create.assert_called_once_with(
+        version="deadbeef1234",
+        input={"prompt": "a cat"},
+    )
+
+
+def test_submit_caches_resolved_version_across_calls():
+    """The version resolution is cached per-slug so repeated submits (e.g.
+    across a batch run) don't re-issue ``models.get()`` per prediction."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("cached-version")
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    provider.submit(_make_step(model="sczhou/codeformer"))
+    provider.submit(_make_step(model="sczhou/codeformer"))
+
+    assert mock_client.models.get.call_count == 1
+    assert mock_client.predictions.create.call_count == 2
+
+
+def test_submit_falls_back_to_model_path_for_official_versionless_model():
+    """Official Replicate models (e.g. ``black-forest-labs/flux-schnell``)
+    expose no version and are only runnable via ``predictions.create(model=…)``
+    (POST /v1/models/{owner}/{name}/predictions). When ``models.get`` reports
+    no ``latest_version``, submit() must fall back to the ``model=`` path with
+    the bare slug rather than raise — raising would break every official model,
+    including several this connector documents as supported (#109)."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version(None)
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    result = provider.submit(_make_step(model="black-forest-labs/flux-schnell"))
+
+    mock_client.predictions.create.assert_called_once_with(
+        model="black-forest-labs/flux-schnell",
+        input={"prompt": "a cat"},
+    )
+    # A versionless official model must NOT be submitted with a version= kwarg.
+    assert "version" not in mock_client.predictions.create.call_args.kwargs
+    assert result == "pred-abc123"
+
+
+def test_submit_caches_versionless_resolution_across_calls():
+    """The "official / no version" decision is cached per-slug just like a
+    resolved hash — a fan-out of submits over an official model issues one
+    ``models.get`` probe, not one per prediction."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version(None)
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    provider.submit(_make_step(model="black-forest-labs/flux-schnell"))
+    provider.submit(_make_step(model="black-forest-labs/flux-schnell"))
+
+    assert mock_client.models.get.call_count == 1
+    assert mock_client.predictions.create.call_count == 2
+
+
+def test_validate_model_seeds_version_cache_for_submit():
+    """``validate_model``'s per-slug probe and ``submit``'s version resolution
+    share one ``models.get()`` round-trip per slug — the pipeline preflight
+    phase already fetches the model, so submit() shouldn't fetch it again."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("seeded-version")
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    provider.validate_model("sczhou/codeformer")
+    provider.submit(_make_step(model="sczhou/codeformer"))
+
+    assert mock_client.models.get.call_count == 1
+    mock_client.predictions.create.assert_called_once_with(
+        version="seeded-version",
+        input={"prompt": "a cat"},
+    )
+
+
+def test_validate_model_strips_inline_version_before_probe():
+    """A ``Pipeline.run()`` preflight validates ``step.model`` verbatim,
+    including any inline ``:version`` suffix. Replicate's model-existence
+    GET (``/v1/models/{owner}/{name}``) only accepts the bare slug — a
+    compound ``owner/name:hash`` key 404s even when the model exists, which
+    would otherwise abort the run with a false "model not found" before
+    ``submit()`` ever runs. ``validate_model`` must probe the bare slug."""
+    from genblaze_core.providers import ValidationOutcome
+
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("resolved-hash")
+    provider._client = mock_client
+
+    result = provider.validate_model("sczhou/codeformer:deadbeef1234")
+
+    mock_client.models.get.assert_called_once_with("sczhou/codeformer")
+    assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+
+
+def test_validate_model_refresh_also_evicts_version_cache():
+    """``refresh=True`` is a request to re-check everything about a slug —
+    it must also drop any cached version resolution, not just the
+    validation-outcome cache, so a subsequent ``submit()`` re-resolves
+    ``latest_version`` instead of silently reusing a stale hash."""
+    provider = ReplicateProvider(api_token="test-token")
+    mock_client = MagicMock()
+    mock_client.models.get.return_value = _make_model_with_version("v1")
+    mock_client.predictions.create.return_value = FakePrediction()
+    provider._client = mock_client
+
+    provider.validate_model("sczhou/codeformer")
+    provider.submit(_make_step(model="sczhou/codeformer"))
+    assert mock_client.predictions.create.call_args.kwargs["version"] == "v1"
+
+    # Model owner publishes a new version; caller refreshes.
+    mock_client.models.get.return_value = _make_model_with_version("v2")
+    provider.validate_model("sczhou/codeformer", refresh=True)
+    provider.submit(_make_step(model="sczhou/codeformer"))
+
+    assert mock_client.predictions.create.call_args.kwargs["version"] == "v2"
 
 
 # --- poll tests ---
@@ -563,6 +737,10 @@ class TestReplicateCompliance(ProviderComplianceTests):
     def make_provider(self):
         provider = ReplicateProvider(api_token="test-token")
         mock_client = MagicMock()
+        # submit() resolves a version via models.get().latest_version.id
+        # before creating a prediction — stub it explicitly rather than
+        # relying on MagicMock's auto-vivified (but opaque) attribute chain.
+        mock_client.models.get.return_value = _make_model_with_version("compliance-version")
         mock_client.predictions.create.return_value = FakePrediction()
         mock_client.predictions.get.return_value = FakePrediction()
         provider._client = mock_client
