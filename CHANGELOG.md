@@ -130,9 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   maintains a persisted `run_id -> partition` index (one small file per
   `run_id`, so concurrent writers sinking different `run_id`s never race on
   a shared file) and only touches the file for that specific `run_id`
-  instead of walking the tree; an existing `runs/` tree without an index
-  yet is backfilled once, at the first `ParquetSink` construction, not on
-  every write.
+  instead of walking the tree. An existing `runs/` tree without an index
+  yet is backfilled once, atomically (built in a temp directory and
+  `os.replace`d into place so a crash mid-backfill can never leave a
+  partially-populated index that a later `ParquetSink` mistakes for
+  complete), at the first `ParquetSink` construction, not on every write.
 - **Fixed** the #72 idempotency fix still silently dropped a same-partition
   re-sink whose content changed — e.g. a resume that completes more steps
   without changing the modality/provider set, so the partition path (and
@@ -140,7 +142,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compares the existing sentinel's `canonical_hash` against the new
   manifest's before short-circuiting; only a byte-for-byte repeat is a
   no-op, and a genuine content change rewrites the `runs`/`steps`/`assets`
-  rows in place.
+  rows in place. The no-op path also refreshes the run's index entry, so a
+  prior write that crashed between writing its sentinel and persisting its
+  index entry self-heals on the next call for that `run_id` instead of
+  only on a future rewrite.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

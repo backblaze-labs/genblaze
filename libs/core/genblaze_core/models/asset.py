@@ -179,6 +179,11 @@ class Asset(BaseModel):
     )
     media_type: str = Field(description="MIME type (e.g. 'image/png').")
     sha256: str | None = Field(default=None, description="SHA-256 hash of asset content.")
+    # NOTE: size_bytes keeps its plain Field(ge=0) — unlike width/height/duration
+    # below, it was not part of #149's reported failure scenarios (foreign
+    # manifests carrying it negative is not a known real-world case), so it
+    # stays strict on load too rather than adding tolerant-load plumbing with
+    # no reported need. Revisit if a real load-time failure surfaces.
     size_bytes: int | None = Field(default=None, ge=0, description="File size in bytes.")
     width: int | None = Field(default=None, description="Image/video width in pixels.")
     height: int | None = Field(default=None, description="Image/video height in pixels.")

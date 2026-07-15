@@ -6,6 +6,7 @@ Requires the ``parquet`` extra: ``pip install "genblaze-core[parquet]"``
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import threading
 from pathlib import Path
@@ -103,15 +104,37 @@ class ParquetSink(BaseSink):
         #150). The index directory's mere existence marks this done, so a
         brand-new or already-bootstrapped ``base_dir`` costs a single
         directory stat and never pays for a full-tree glob again.
+
+        Built in a temp directory and atomically renamed into place only
+        once fully populated: writing entries directly into
+        ``self._index_dir`` would create that directory as a side effect of
+        the *first* entry, before the backfill loop finishes, so a crash
+        mid-backfill would leave a partially-populated directory that a
+        later ``ParquetSink`` would mistake for "already bootstrapped" and
+        trust as complete — silently losing index entries for pre-existing
+        run_ids and reintroducing #72 for them.
         """
         if self._index_dir.exists():
             return
         runs_dir = self.base_dir / "runs"
-        if runs_dir.exists():
-            for sentinel in runs_dir.glob("**/*.parquet"):
-                partition = sentinel.relative_to(runs_dir).parent.as_posix()
-                self._write_run_index_entry(sentinel.stem, partition)
-        self._index_dir.mkdir(parents=True, exist_ok=True)
+        if not runs_dir.exists():
+            # No data to backfill — nothing can be partially done, so no
+            # atomicity concern; just mark bootstrap complete.
+            self._index_dir.mkdir(parents=True, exist_ok=True)
+            return
+        tmp_dir = Path(tempfile.mkdtemp(dir=self.base_dir, prefix=f"{_INDEX_DIRNAME}.tmp-"))
+        for sentinel in runs_dir.glob("**/*.parquet"):
+            partition = sentinel.relative_to(runs_dir).parent.as_posix()
+            _atomic_write_bytes(partition.encode("utf-8"), tmp_dir / f"{sentinel.stem}.partition")
+        try:
+            os.replace(tmp_dir, self._index_dir)
+        except OSError:
+            # Lost a race with another ParquetSink instance that finished
+            # bootstrapping first (self._index_dir now exists and is
+            # non-empty, which os.replace refuses to clobber) — its result
+            # is equally valid since both are derived from the same runs/
+            # tree, so just discard our redundant copy.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _run_index_entry_path(self, run_id: str) -> Path:
         return self._index_dir / f"{run_id}.partition"
@@ -188,6 +211,12 @@ class ParquetSink(BaseSink):
             # dropped the new steps/assets (#152). Only a genuine repeat
             # (identical content) short-circuits here.
             if self._existing_canonical_hash(runs_path) == manifest.canonical_hash:
+                # Refresh (not just trust) the index entry before returning:
+                # if an earlier write crashed between writing this sentinel
+                # and persisting its index entry, this confirmed-correct
+                # no-op is the first opportunity to self-heal it, rather than
+                # only a future full rewrite doing so.
+                self._write_run_index_entry(run.run_id, partition)
                 return
         else:
             # New sentinel path for this run_id. The partition is derived
@@ -297,12 +326,17 @@ class ParquetSink(BaseSink):
 
         # Record the partition this run_id now lives at *after* the sentinel
         # write succeeds, so the index only ever reflects confirmed on-disk
-        # state. As with the stale-partition cleanup above, this is not a
-        # cross-file transaction: a crash between the sentinel write and this
-        # persist leaves this run_id's index entry stale (pointing at the
-        # *previous* partition) — the same accepted trade-off already
-        # documented for the sentinel-cleanup step, and just as narrow: the
-        # run's own data is fully and correctly sunk either way.
+        # state. This is not a cross-file transaction: a crash right here
+        # leaves this run_id's index entry stale (pointing at the *previous*
+        # partition) — the run's own data is fully and correctly sunk either
+        # way, and the very next write_run() call for this run_id self-heals
+        # the entry (the no-op branch above refreshes it too, not just this
+        # one). The one residual gap — this crash immediately followed by a
+        # *second* partition move before any intervening call — could still
+        # leave the first move's files un-cleaned; narrow enough, and in the
+        # same spirit as the accepted first-write-completion-sentinel
+        # trade-off, that we accept it rather than adding cross-file
+        # transactions here.
         self._write_run_index_entry(run.run_id, partition)
 
     def close(self) -> None:

@@ -1,5 +1,6 @@
 """Tests for Parquet sink."""
 
+import shutil
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -99,6 +100,31 @@ def test_idempotent_write(tmp_path: Path):
 
     parquet_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
     assert len(parquet_files) == 1
+
+
+def test_no_op_write_repairs_missing_index_entry(tmp_path: Path):
+    """If an earlier write crashed after writing the runs sentinel but
+    before persisting its run_id -> partition index entry, the entry is
+    missing even though the sentinel is correct. The next write_run() call
+    for that run_id -- even an identical-content no-op -- must repair it,
+    not just wait for a future full rewrite; otherwise a later moved-
+    partition write could look up the stale/missing entry and fail to clean
+    up the true prior partition, silently reintroducing #72."""
+    step = Step(provider="test", model="m")
+    run = Run(steps=[step])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+
+    sink = ParquetSink(tmp_path / "out")
+    sink.write_run(run, manifest)
+
+    index_entry = tmp_path / "out" / "_run_index" / f"{run.run_id}.partition"
+    assert index_entry.exists()
+    index_entry.unlink()  # simulate the crash window: sentinel written, index entry lost
+
+    sink.write_run(run, manifest)  # identical content -- a no-op for the tables
+
+    assert index_entry.exists()
 
 
 def test_idempotent_write_when_content_changes_moves_partition(tmp_path: Path):
@@ -220,6 +246,42 @@ def test_resume_same_partition_content_change_is_written(tmp_path: Path):
     assert pq.ParquetFile(steps_files[0]).read().num_rows == 2
     assert len(assets_files) == 1
     assert pq.ParquetFile(assets_files[0]).read().num_rows == 2
+
+
+def test_fresh_sink_backfills_index_from_existing_runs_tree(tmp_path: Path):
+    """A runs/ tree that predates the run_id -> partition index (e.g. one
+    written by an older build, or with the index directory lost) is
+    backfilled once at construction, so a brand-new ParquetSink instance
+    (the CLI's `index` command creates one per invocation) can still detect
+    and clean up a moved partition without a full-tree glob (#150)."""
+    step1 = Step(provider="replicate", model="m", modality=Modality.IMAGE)
+    step1.assets.append(Asset(url="https://example.com/out.png", media_type="image/png"))
+    run = Run(steps=[step1])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+
+    sink1 = ParquetSink(tmp_path / "out")
+    sink1.write_run(run, manifest)
+    # Simulate a runs/ tree that predates the index entirely.
+    shutil.rmtree(tmp_path / "out" / "_run_index")
+
+    # A brand-new instance must backfill the index from runs/ at construction.
+    sink2 = ParquetSink(tmp_path / "out")
+    assert (tmp_path / "out" / "_run_index" / f"{run.run_id}.partition").exists()
+
+    # Resume with a new modality/provider -> the partition moves. sink2 must
+    # find and remove the stale partition via the backfilled index.
+    step2 = Step(provider="elevenlabs", model="m2", modality=Modality.AUDIO)
+    step2.assets.append(Asset(url="https://example.com/out.mp3", media_type="audio/mp3"))
+    run.steps.append(step2)
+    manifest2 = Manifest(run=run)
+    manifest2.compute_hash()
+    sink2.write_run(run, manifest2)
+
+    runs_files = list((tmp_path / "out" / "runs").rglob("*.parquet"))
+    assert len(runs_files) == 1
+    run_table = pq.ParquetFile(runs_files[0]).read()
+    assert run_table.column("step_count")[0].as_py() == 2
 
 
 def test_write_run_applies_embed_policy_redaction(tmp_path: Path):
