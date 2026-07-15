@@ -81,7 +81,9 @@ class TestConstruction:
                 description="invalid",
             )
 
-    @pytest.mark.skipif(not has_re2(), reason="exercises the re2-authoritative construction path")
+    @pytest.mark.skipif(
+        not has_re2(), reason="exercises the additional re2-gate construction path"
+    )
     def test_re2_incompatible_pattern_rejected_at_construction(self) -> None:
         # Backreferences aren't supported by RE2's linear-time engine, so
         # this is unsafe-under-re2 the same way `(a+)+` is unsafe-under-the-

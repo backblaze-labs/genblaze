@@ -32,6 +32,8 @@ Files touched:
   `(v\d+)+.*`) that monkeypatches `_HAS_RE2` (and a fake `_re2.compile`) to
   exercise both branches deterministically, independent of whether re2
   happens to be installed in the running environment.
+- `libs/core/tests/unit/test_model_family.py` — same `skipif(has_re2())`
+  bug baked into a construction-level smoke test; remove it the same way.
 
 No change needed in `family.py` — its matching code and docstring already
 describe the guard's intent correctly; the bug was entirely in
