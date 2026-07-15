@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starts (#85). `all([])` treated an empty completed-steps list as
   "succeeded"; aborted runs are now always finalized as `FAILED` and emit
   `pipeline.failed`, with the abort's exception message attached.
+- **Fixed** concurrent `arun(fail_fast=True)` cancellation now preserves the
+  original `step_id` for cancelled and exception-raising steps, so a
+  `step.failed` event correlates with its own earlier `step.started` instead
+  of minting a brand-new id (#86).
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

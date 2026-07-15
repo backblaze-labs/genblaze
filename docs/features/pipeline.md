@@ -89,7 +89,7 @@ chain-input compatibility) run inline. `run()` behavior is unchanged (sync
 - Sink write failure → does not affect manifest/run creation
 - Cache hit → provider not called, cached step returned directly
 - Cache stores only successful steps — failed steps are not cached
-- Exception-raising tasks in `_gather_fail_fast` → captured as FAILED steps (not dropped)
+- Exception-raising tasks in `_gather_fail_fast` → captured as FAILED steps (not dropped), preserving the `step_id` already announced via that step's `step.started` event so cancelled/errored steps correlate correctly with their own stream events
 - Model fallback: on `MODEL_ERROR`, tries each `fallback_models` entry; records `fallback_from`/`fallback_model` in step metadata. Cache stores successful fallback results under the fallback model's key (not the original), so a later run with the fallback model as primary gets a cache hit
 - `batch_run` / `abatch_run`: each prompt gets independent pipeline execution; `max_concurrency` limits parallel runs
 - `pipeline_timeout` raises `PipelineTimeoutError` when wall-clock time exceeds limit (checked before each step, not mid-step)

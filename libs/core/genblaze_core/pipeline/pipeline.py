@@ -2292,13 +2292,20 @@ class Pipeline(Runnable[None, PipelineResult]):
             if _owns_sink:
                 await asyncio.to_thread(self._close_sink_quietly, sink)
 
-    def _make_failed_step(self, ps: _PipelineStep, exc: Exception) -> Step:
-        """Create a FAILED step from an unhandled exception."""
+    def _make_failed_step(
+        self, ps: _PipelineStep, exc: Exception, *, step_id: str | None = None
+    ) -> Step:
+        """Create a FAILED step from an unhandled exception.
+
+        ``step_id`` preserves correlation with an already-emitted
+        ``step.started`` event (concurrent fail-fast path, #86); omit to
+        mint a fresh id.
+        """
         from genblaze_core.providers.base import classify_api_error
 
         # Preserve external_inputs on the failed-step record so the manifest
         # shows what the step was supposed to consume.
-        step = self._build_step(ps, ps.external_inputs)
+        step = self._build_step(ps, ps.external_inputs, step_id=step_id)
         step.status = StepStatus.FAILED
         step.error = sanitize_error(str(exc))
         step.error_code = classify_api_error(exc)
@@ -2318,6 +2325,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         tasks: list[asyncio.Task] = []
         task_index: dict[asyncio.Task, int] = {}
         task_ps: dict[asyncio.Task, _PipelineStep] = {}
+        # The already-built Step for each task, carrying the step_id that
+        # was announced via step.started. Cancellation/exception placeholders
+        # must reuse this id rather than minting a new one, or the later
+        # step.failed event won't correlate with its own step.started (#86).
+        task_step: dict[asyncio.Task, Step] = {}
 
         async def _run(ps: _PipelineStep, step: Step) -> Step:
             if semaphore:
@@ -2341,6 +2353,7 @@ class Pipeline(Runnable[None, PipelineResult]):
             tasks.append(t)
             task_index[t] = idx
             task_ps[t] = ps
+            task_step[t] = step
 
         results: dict[int, Step] = {}
         pending: set[asyncio.Task] = set(tasks)
@@ -2355,7 +2368,7 @@ class Pipeline(Runnable[None, PipelineResult]):
                 except Exception as exc:
                     # Task raised — create a FAILED step instead of dropping it
                     logger.debug("Task %d raised an exception: %s", idx, exc)
-                    result = self._make_failed_step(task_ps[t], exc)
+                    result = self._make_failed_step(task_ps[t], exc, step_id=task_step[t].step_id)
 
                 results[idx] = result
 
@@ -2377,7 +2390,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                 continue
             if t.cancelled():
                 ps_cancelled = task_ps[t]
-                step = self._build_step(ps_cancelled, ps_cancelled.external_inputs)
+                step = self._build_step(
+                    ps_cancelled, ps_cancelled.external_inputs, step_id=task_step[t].step_id
+                )
                 step.status = StepStatus.FAILED
                 step.error = "Step cancelled due to fail-fast after prior step failure"
                 results[idx] = step
@@ -2386,7 +2401,9 @@ class Pipeline(Runnable[None, PipelineResult]):
                     results[idx] = t.result()
                 except Exception as exc:
                     logger.debug("Task %d failed", idx)
-                    results[idx] = self._make_failed_step(task_ps[t], exc)
+                    results[idx] = self._make_failed_step(
+                        task_ps[t], exc, step_id=task_step[t].step_id
+                    )
 
         # Return in original order
         return [results[i] for i in sorted(results)]

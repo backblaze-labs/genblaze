@@ -1021,3 +1021,111 @@ async def test_astream_concurrent_timeout_fires_before_step_started() -> None:
     assert "step.started" not in types
     assert "pipeline.completed" not in types
     assert types[-1] == "pipeline.failed"
+
+
+# --- Fail-fast cancellation preserves step_id (#86) ----------------------------
+
+
+class _FastFailProvider(BaseProvider):
+    """Fails synchronously in submit() — no delay."""
+
+    name = "fast-fail"
+
+    def submit(self, step, config=None) -> Any:
+        raise RuntimeError("boom")
+
+    def poll(self, prediction_id, config=None) -> bool:  # pragma: no cover
+        return True
+
+    def fetch_output(self, prediction_id, step):  # pragma: no cover
+        return step
+
+
+class _SlowVictimProvider(BaseProvider):
+    """Slow enough that fail-fast cancels it before it finishes polling."""
+
+    name = "slow-victim"
+
+    def submit(self, step, config=None) -> Any:
+        return "pred"
+
+    def poll(self, prediction_id, config=None) -> bool:
+        import time as _time
+
+        _time.sleep(0.2)  # gives the sibling time to fail first
+        return True
+
+    def fetch_output(self, prediction_id, step):
+        step.assets.append(
+            Asset(url="https://x.test/a.png", media_type="image/png", sha256="f" * 64)
+        )
+        return step
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fail_fast_cancellation_preserves_step_id() -> None:
+    """A cancelled sibling step's step.failed event must carry the SAME
+    step_id as its own earlier step.started event.
+
+    Regression: the cancellation placeholder was built via a fresh
+    ``_build_step()`` call with no step_id, minting a brand-new UUID that
+    didn't match the step_id already announced via step.started.
+    """
+    events: list[StreamEvent] = []
+    async for ev in (
+        Pipeline("t")
+        .step(_FastFailProvider(), model="m", prompt="p1")
+        .step(_SlowVictimProvider(), model="m", prompt="p2")
+        .astream()
+    ):
+        events.append(ev)
+
+    started_ids = {e.step_id for e in events if e.type == "step.started"}
+    failed = [e for e in events if e.type == "step.failed"]
+    assert len(failed) == 2  # one raised in submit(), one cancelled mid-poll
+    for f in failed:
+        assert f.step_id in started_ids, (
+            f"step.failed step_id {f.step_id} has no matching step.started ({started_ids})"
+        )
+
+
+class _RaisingAinvokeProvider(BaseProvider):
+    """Raises directly from ainvoke() — exercises the task-exception path
+    in _gather_fail_fast (as opposed to a provider returning a FAILED step)."""
+
+    name = "raising-ainvoke"
+
+    async def ainvoke(self, step, config=None):
+        raise RuntimeError("ainvoke exploded")
+
+    def submit(self, step, config=None) -> Any:  # pragma: no cover
+        return "pred"
+
+    def poll(self, prediction_id, config=None) -> bool:  # pragma: no cover
+        return True
+
+    def fetch_output(self, prediction_id, step):  # pragma: no cover
+        return step
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fail_fast_task_exception_preserves_step_id() -> None:
+    """A task that raises (not just returns a FAILED step) must still emit
+    step.failed under its own already-announced step_id.
+    """
+    events: list[StreamEvent] = []
+    async for ev in (
+        Pipeline("t")
+        .step(_RaisingAinvokeProvider(), model="m", prompt="p1")
+        .step(_SlowVictimProvider(), model="m", prompt="p2")
+        .astream()
+    ):
+        events.append(ev)
+
+    started_ids = {e.step_id for e in events if e.type == "step.started"}
+    failed = [e for e in events if e.type == "step.failed"]
+    assert failed, "expected at least one step.failed event"
+    for f in failed:
+        assert f.step_id in started_ids, (
+            f"step.failed step_id {f.step_id} has no matching step.started ({started_ids})"
+        )
