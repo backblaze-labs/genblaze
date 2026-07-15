@@ -79,6 +79,8 @@ class TestHeuristicUnsafe:
             r"([a-z]+(?:x)?)+",  # #80: unbounded quantifier nested inside a sub-group
             r"a+a+a+a+a+a+a+a+a+",  # #80: adjacent quantified atoms
             f"({'x+' * 2})+y",
+            r"(a+)(a+)",  # #80: adjacent parenthesized unbounded groups (min case)
+            r"([a-z]+)([a-z]+)([a-z]+)([a-z]+)([a-z]+)([a-z]+)",  # confirmed ~10s @ 100 chars
         ],
         ids=[
             "nested-plus",
@@ -89,6 +91,8 @@ class TestHeuristicUnsafe:
             "optional-suffix-nested",
             "adjacent-quantified-atoms",
             "realistic-evil-xx",
+            "adjacent-groups-minimal",
+            "adjacent-groups-six",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
@@ -104,6 +108,8 @@ class TestHeuristicUnsafe:
             r"",
             r"^wan\d+\.\d+-r2v$",
             r"^kling-(?:text2video|image2video)-v2\.1-master$",
+            r"(a+)b(a+)",  # separated by a literal — not adjacent, not the ReDoS shape
+            r"(a+)(b)",  # adjacent, but only one group is unbounded
         ],
     )
     def test_passes_known_good_shapes(self, src: str) -> None:

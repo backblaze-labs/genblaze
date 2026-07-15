@@ -85,6 +85,22 @@ Three separate root causes, all closed:
    min-of-N timing (stable under CI scheduler noise; percentile-of-samples on
    a shared runner is not) as the practical implementation of that claim.
 
+**Found in review (P1, fixed in the same commit):** a fourth heuristic
+bypass — 2+ *adjacent* parenthesized groups, each individually carrying an
+unbounded quantifier (`(a+)(a+)(a+)`), with no outer quantifier at all. This
+is a distinct shape from `(a+)+`: the ambiguity comes from every possible
+split point between the groups being a valid match, which is combinatorial
+in the group count rather than requiring an outer repeat. Confirmed
+empirically (6 adjacent `([a-z]+)` groups: ~10.4s to match a 100-character
+adversarial string under stdlib `re`). Neither `_has_nested_unbounded_quantifier`
+(no group is itself followed by a quantifier) nor `_ADJACENT_QUANTIFIED_ATOM`
+(a parenthesized group isn't a single regex-matchable "atom") caught it.
+Added `_has_adjacent_unbounded_groups()`, reusing a new shared
+`_iter_group_spans()` helper (factored out of the nested-quantifier scanner
+for DRY) to find top-level groups and flag 2+ adjacent ones that are each
+unbounded. Verified against the real connector pattern set: no false
+positives.
+
 Additionally: added `google-re2` as a new `re2` optional extra (guarded
 import, same pattern as the existing `otel`/`http` extras) and included it in
 `dev`, so CI's `libs/core[dev]` install actually activates the authoritative
@@ -103,6 +119,24 @@ even without a dedicated CI job.
 Broadened to `credentials*` plus `*.credentials`, `*_rsa`, `*.p12`, `*.pfx`,
 `*.keystore` per the issue's suggested fix. Preventative; no tracked secret
 files existed before or after.
+
+## Pre-push triangulated review
+
+Three independent reviewers examined the full branch diff before push, each
+with no knowledge of the others' findings:
+
+- **Correctness/issue-coverage** — no blocking findings; all six issues
+  confirmed genuinely fixed with root-cause remediation and non-tautological
+  regression tests.
+- **Engineering quality** (DRY, architectural fit, doc-claim accuracy) — no
+  blocking findings; confirmed no duplication, no dead code, doc/CHANGELOG
+  claims match the code, and `assert_safe` still runs only at
+  `ModelFamily` construction time (not a hot path).
+- **Adversarial security** — found the #17 quote-escaping P0 and the #75/#80
+  P1s documented above by actively trying to defeat each fix (with real
+  ffmpeg and real timing measurements, not just static reading). All three
+  were fixed and re-verified in place before push; no reviewer found any
+  other bypass across all six issues.
 
 ## Cross-batch note
 
