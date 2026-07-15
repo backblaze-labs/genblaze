@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** `Asset` accepted physically impossible provenance metadata —
+  negative `size_bytes`, negative/zero `width`/`height`, negative or
+  non-finite `duration`, and malformed `media_type` — which then became
+  canonical hashed data (#78). Construction now rejects these via Pydantic
+  field constraints, along with the equivalent fields on `VideoMetadata`
+  (`frame_rate`, `bitrate`), `AudioMetadata` (`sample_rate`, `channels`,
+  `bitrate`), and `WordTiming` (non-negative `start`/`end` with `end >=
+  start`, `confidence` in `[0, 1]`). `sha256` is intentionally left
+  format-tolerant at construction — see #100, which already made a
+  malformed `sha256` fail `Manifest.verify()`; enforcing hash *shape* there
+  instead of at construction keeps `parse_manifest()` from crashing on
+  older or foreign-authored manifests. `Asset.set_hash()` is unaffected —
+  it only ever produces valid hashes and non-negative sizes.
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

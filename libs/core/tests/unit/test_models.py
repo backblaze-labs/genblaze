@@ -57,6 +57,117 @@ def test_asset_tolerates_malformed_sha256_assignment():
     assert asset.sha256 == "not-a-sha"
 
 
+# --- Issue #78: reject impossible numeric/media-type metadata on construction ---
+# NOTE: sha256 is intentionally excluded (see test_asset_tolerates_malformed_sha256_*
+# above and the comment on Asset in asset.py) — that field stays tolerant at
+# construction by design; verify() is the enforcement boundary.
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"size_bytes": -1},
+        {"width": -640},
+        {"width": 0},
+        {"height": 0},
+        {"height": -480},
+        {"duration": -3.5},
+        {"duration": float("nan")},
+        {"duration": float("inf")},
+    ],
+)
+def test_asset_rejects_impossible_numeric_fields(kwargs):
+    with pytest.raises(ValidationError):
+        Asset(url="https://example.com/a.png", media_type="image/png", **kwargs)
+
+
+def test_asset_accepts_valid_numeric_fields():
+    asset = Asset(
+        url="https://example.com/a.png",
+        media_type="image/png",
+        size_bytes=1024,
+        width=640,
+        height=480,
+        duration=3.5,
+    )
+    assert asset.size_bytes == 1024
+    assert asset.width == 640
+    assert asset.height == 480
+    assert asset.duration == 3.5
+
+
+@pytest.mark.parametrize("media_type", ["not-a-mime", "image", "/png", "image/", ""])
+def test_asset_rejects_malformed_media_type(media_type):
+    with pytest.raises(ValidationError, match="media_type"):
+        Asset(url="https://example.com/a.png", media_type=media_type)
+
+
+def test_asset_set_hash_still_works_without_caller_changes():
+    """Asset.set_hash() must keep working — it always produces valid sha256/size_bytes."""
+    asset = Asset(url="https://example.com/a.png", media_type="image/png")
+    asset.set_hash(b"some bytes")
+    assert asset.sha256 is not None
+    from genblaze_core.models.asset import is_valid_sha256
+
+    assert is_valid_sha256(asset.sha256)
+    assert asset.size_bytes == len(b"some bytes")
+
+
+def test_word_timing_rejects_end_before_start():
+    with pytest.raises(ValidationError, match="end"):
+        WordTiming(word="hi", start=2.0, end=1.0)
+
+
+def test_word_timing_rejects_negative_start():
+    with pytest.raises(ValidationError):
+        WordTiming(word="hi", start=-1.0, end=1.0)
+
+
+def test_word_timing_rejects_out_of_range_confidence():
+    with pytest.raises(ValidationError):
+        WordTiming(word="hi", start=0.0, end=1.0, confidence=1.5)
+
+
+def test_word_timing_accepts_valid_bounds():
+    wt = WordTiming(word="hi", start=0.0, end=1.0, confidence=0.9)
+    assert wt.start == 0.0
+    assert wt.end == 1.0
+
+
+def test_video_metadata_rejects_impossible_values():
+    from genblaze_core.models.asset import VideoMetadata
+
+    with pytest.raises(ValidationError):
+        VideoMetadata(frame_rate=-30.0)
+    with pytest.raises(ValidationError):
+        VideoMetadata(bitrate=0)
+
+
+def test_audio_metadata_rejects_impossible_values():
+    from genblaze_core.models.asset import AudioMetadata
+
+    with pytest.raises(ValidationError):
+        AudioMetadata(sample_rate=0)
+    with pytest.raises(ValidationError):
+        AudioMetadata(channels=-1)
+    with pytest.raises(ValidationError):
+        AudioMetadata(bitrate=-128000)
+
+
+def test_asset_with_impossible_metadata_no_longer_reaches_manifest():
+    """Regression test for the issue #78 repro — construction now fails fast
+    instead of letting impossible metadata become canonical provenance data."""
+    with pytest.raises(ValidationError):
+        Asset(
+            url="https://example.com/a.png",
+            media_type="image/png",
+            size_bytes=-1,
+            width=-640,
+            height=0,
+            duration=-3.5,
+        )
+
+
 def test_step_defaults():
     s = Step(provider="replicate", model="flux-schnell")
     assert s.step_id
