@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   property-based backstop (`is_private`/`is_loopback`/`is_link_local`/
   `is_reserved`/`is_unspecified`) alongside the explicit denylist so ranges
   neither enumerates are still caught (#16).
+- **Security** ffmpeg `drawtext` overlay text now escapes `%`, neutralizing
+  ffmpeg's text-expansion parser (`%{expr:...}`, `%{pts}`, etc., active by
+  default) so a crafted `text` param can no longer alter the rendered
+  filter (#17).
 - **Security** `.gitignore` now matches `credentials*` (previously only the
   literal `credentials.json`) plus `*.credentials`, `*_rsa`, `*.p12`,
   `*.pfx`, and `*.keystore` (#18).

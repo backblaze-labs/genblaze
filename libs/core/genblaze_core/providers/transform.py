@@ -61,11 +61,19 @@ def _escape_drawtext(text: str) -> str:
     """Escape text for ffmpeg drawtext filter.
 
     Colons, backslashes, and single quotes need escaping in filter syntax.
+    ``%`` also needs escaping: drawtext's text-expansion parser is active by
+    default (the ``expansion`` option defaults to ``normal``), so an
+    unescaped ``%{...}`` sequence (``%{expr:...}``, ``%{pts}``, etc.) is
+    interpreted rather than rendered literally. ``%%`` is ffmpeg's own
+    literal-percent escape, so doubling every ``%`` neutralizes expansion —
+    including any ``%{`` that would otherwise open one, since the ``{`` that
+    follows is then just ordinary text.
     """
-    # Escape backslashes first, then colons and quotes
+    # Escape backslashes first, then colons, quotes, and percent.
     text = text.replace("\\", "\\\\")
     text = text.replace(":", "\\:")
     text = text.replace("'", "\\'")
+    text = text.replace("%", "%%")
     return text
 
 
