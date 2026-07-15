@@ -11,6 +11,7 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.providers._ffmpeg_utils import (
     _redact_cmd_for_log,
     _redact_url_query,
+    _redact_urls_in_text,
     get_output_path,
     resolve_ffmpeg,
     resolve_input_path,
@@ -129,6 +130,30 @@ class TestRunFfmpeg:
             with pytest.raises(ProviderError, match="Failed to run ffmpeg"):
                 run_ffmpeg(["ffmpeg", "-version"])
 
+    def test_nonzero_exit_redacts_presigned_url_from_stderr(self):
+        """Regression for #75 (secondary leak path found in review): ffmpeg's
+        own stderr can echo a presigned input URL verbatim on a fetch
+        failure (e.g. an expired-signature 403), and that stderr becomes the
+        ProviderError message. The signature must not survive into it."""
+        stderr = (
+            b"[https @ 0x0] HTTP error 403 Forbidden\n"
+            b"https://s3.us-west-004.backblazeb2.com/bucket/obj?"
+            b"X-Amz-Signature=deadbeefcafef00d: Server returned 403 Forbidden"
+        )
+        fake_result = subprocess.CompletedProcess(
+            args=["ffmpeg"], returncode=1, stdout=b"", stderr=stderr
+        )
+        with patch(
+            "genblaze_core.providers._ffmpeg_utils.subprocess.run",
+            return_value=fake_result,
+        ):
+            with pytest.raises(ProviderError) as exc_info:
+                run_ffmpeg(
+                    ["ffmpeg", "-i", "https://s3.example.com/obj?X-Amz-Signature=deadbeefcafef00d"]
+                )
+        assert "X-Amz-Signature=deadbeefcafef00d" not in str(exc_info.value)
+        assert "REDACTED" in str(exc_info.value)
+
 
 class TestRedactCmdForLog:
     """Regression for #75: presigned URL signatures must not reach logs."""
@@ -164,6 +189,25 @@ class TestRedactCmdForLog:
             "ffmpeg -i https://s3.example.com/bucket/obj?REDACTED -c copy -y /media/out.mp4"
             == rendered
         )
+
+    def test_redact_urls_in_text_redacts_embedded_url(self):
+        """`_redact_urls_in_text` (unlike `_redact_url_query`) scans free-form
+        text for an embedded URL rather than requiring the whole string to
+        be one — needed for ffmpeg stderr, which surrounds the URL with
+        other diagnostic text."""
+        text = (
+            "[https @ 0x0] HTTP error 403 Forbidden\n"
+            "https://s3.example.com/bucket/obj?X-Amz-Signature=deadbeef: "
+            "Server returned 403 Forbidden"
+        )
+        redacted = _redact_urls_in_text(text)
+        assert "X-Amz-Signature=deadbeef" not in redacted
+        assert "REDACTED" in redacted
+        assert "HTTP error 403 Forbidden" in redacted  # surrounding text preserved
+
+    def test_redact_urls_in_text_leaves_plain_text_unchanged(self):
+        text = "Error: invalid input, no such filter 'scale'"
+        assert _redact_urls_in_text(text) == text
 
     def test_run_ffmpeg_redacts_presigned_url_from_debug_log(self, caplog):
         cmd = [

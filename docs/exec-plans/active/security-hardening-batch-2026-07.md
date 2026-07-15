@@ -35,6 +35,14 @@ whose query string is a bearer credential until expiry. Fix: redact the query
 string of any `http(s)` argument before logging (execution still uses the
 untouched `cmd`).
 
+**Found in review (P1, fixed in the same commit):** a second leak path —
+ffmpeg's own stderr can echo the input URL verbatim on a fetch failure (e.g.
+an expired-signature 403), and that stderr became the `ProviderError` message
+logged on step failure. Added `_redact_urls_in_text()` (regex-based, for
+free-form text where the URL isn't a standalone token) and apply it to
+`stderr` before truncation, so a signature straddling the 500-char cutoff
+can't leak its surviving half either.
+
 ### #81 — `RecursionError` on deeply nested `step.params`
 `canonical/_normalize.py:normalize()` recurses with no depth cap; `step.params`
 is free-form user input hashed into every manifest and cache key. Fix: thread

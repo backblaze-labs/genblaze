@@ -31,7 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any `http(s)` argument before logging, so a chained step's presigned
   object-storage URL (a bearer credential until its signature expires) no
   longer leaks into `genblaze.ffmpeg` DEBUG logs. Execution still uses the
-  untouched command (#75).
+  untouched command (#75). Also redacts the same signature from a second
+  leak path found during review: ffmpeg's own stderr can echo the input
+  URL verbatim on a fetch failure, and that stderr became the
+  `ProviderError` message logged on step failure.
 - **Security** `pattern_safety.assert_safe()`'s `google-re2` check was
   silently inert — it imported `google.re2`, but the current `google-re2`
   distribution ships a top-level `re2` module, so the authoritative
