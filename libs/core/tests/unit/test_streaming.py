@@ -917,6 +917,150 @@ async def test_concurrent_astreams_on_same_pipeline_do_not_cross_deliver() -> No
     assert events_b[-1].type == "pipeline.completed"
 
 
+# --- Nested distinct-instance isolation (#151) ---------------------------------
+
+
+def test_nested_distinct_pipeline_inside_outer_stream_does_not_leak() -> None:
+    """A DIFFERENT Pipeline instance run synchronously inside outer.stream()'s
+    worker thread must not have its events cross-delivered into outer's queue.
+
+    Regression: ``_emitter_slot`` used to be a class-level ``EmitterSlot`` — a
+    single ``contextvars.ContextVar`` shared by every ``Pipeline`` instance in
+    the process. That correctly isolates concurrent stream() calls on the SAME
+    instance (#147), but a step provider (or hook/callback) that constructs and
+    runs a distinct ``inner_pipeline.run()`` synchronously inside the worker
+    thread reads the SAME ContextVar via ``inner._event_emitter`` — so inner's
+    own pipeline.started/step.*/pipeline.completed events landed on outer's
+    queue instead of staying silent (#151).
+    """
+
+    class _NestingProvider(BaseProvider):
+        name = "nesting"
+
+        def submit(self, step, config=None) -> Any:
+            # A distinct Pipeline instance, run synchronously in THIS worker
+            # thread's context — simulates a provider/hook that drives its
+            # own sub-pipeline internally.
+            inner = Pipeline("inner").step(_OKProvider(), model="m", prompt="inner-p")
+            inner.run()
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/outer.png", media_type="image/png", sha256="f" * 64)
+            )
+            return step
+
+    outer = Pipeline("outer").step(_NestingProvider(), model="m", prompt="outer-p")
+    events = list(outer.stream())
+
+    run_ids = {e.run_id for e in events if e.run_id is not None}
+    assert len(run_ids) == 1, f"inner's run_id leaked into outer's stream: {run_ids}"
+    assert events[0].type == "pipeline.started"
+    assert events[-1].type == "pipeline.completed"
+    assert _event_types(events).count("step.started") == 1
+    assert _event_types(events).count("step.completed") == 1
+
+
+@pytest.mark.asyncio
+async def test_nested_distinct_pipeline_inside_outer_astream_does_not_leak() -> None:
+    """Async sibling of the sync nested-instance regression above.
+
+    ``asyncio.to_thread`` (used internally by the default async submit path)
+    propagates the calling task's context into the worker thread, so a
+    distinct Pipeline instance's synchronous ``.run()`` inside ``submit()``
+    exercises the same leak surface as the sync test, reached via astream().
+    """
+
+    class _NestingProvider(BaseProvider):
+        name = "nesting-async"
+
+        def submit(self, step, config=None) -> Any:
+            inner = Pipeline("inner").step(_OKProvider(), model="m", prompt="inner-p")
+            inner.run()
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/outer.png", media_type="image/png", sha256="a" * 64)
+            )
+            return step
+
+    outer = Pipeline("outer").step(_NestingProvider(), model="m", prompt="outer-p")
+    events = [ev async for ev in outer.astream()]
+
+    run_ids = {e.run_id for e in events if e.run_id is not None}
+    assert len(run_ids) == 1, f"inner's run_id leaked into outer's stream: {run_ids}"
+    assert events[0].type == "pipeline.started"
+    assert events[-1].type == "pipeline.completed"
+    assert _event_types(events).count("step.started") == 1
+    assert _event_types(events).count("step.completed") == 1
+
+
+def test_batch_run_clone_inside_outer_stream_does_not_leak() -> None:
+    """A batch_run() clone (copy.copy(self)) executed inside outer.stream()'s
+    worker must not leak its per-item events into outer's queue, even though
+    the clone shares this pipeline's WARN-dedup lock/set by design.
+
+    Regression: an earlier draft of the #151 fix made ``__copy__`` share the
+    (now instance-level) ``_emitter_slot`` across clones, mirroring how the
+    WARN-dedup lock is shared. That reintroduces the same leak in a narrower
+    shape: a clone running in the SAME thread/task Context as the pipeline
+    that spawned it (e.g. batch_run() invoked from a hook inside this
+    pipeline's own stream() worker) would read this instance's emitter
+    through the shared ContextVar. ``__copy__`` now always builds the clone a
+    fresh, independent ``EmitterSlot``.
+    """
+
+    class _SelfBatchingProvider(BaseProvider):
+        name = "self-batching"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._nested = False
+
+        def submit(self, step, config=None) -> Any:
+            if not self._nested:
+                # Guard re-entrancy: the batch_run() clone below shares this
+                # exact provider instance, so its own submit() call must not
+                # recurse into another nested batch_run().
+                self._nested = True
+                try:
+                    outer_pipe["pipe"].batch_run(["x", "y"], max_concurrency=1)
+                finally:
+                    self._nested = False
+            return "pred"
+
+        def poll(self, prediction_id, config=None) -> bool:
+            return True
+
+        def fetch_output(self, prediction_id, step):
+            step.assets.append(
+                Asset(url="https://x.test/o.png", media_type="image/png", sha256="b" * 64)
+            )
+            return step
+
+    outer_pipe: dict[str, Pipeline] = {}
+    provider = _SelfBatchingProvider()
+    outer = Pipeline("outer").step(provider, model="m", prompt="outer-p")
+    outer_pipe["pipe"] = outer
+
+    events = list(outer.stream())
+
+    run_ids = {e.run_id for e in events if e.run_id is not None}
+    assert len(run_ids) == 1, f"batch clone events leaked into outer's stream: {run_ids}"
+    assert events[0].type == "pipeline.started"
+    assert events[-1].type == "pipeline.completed"
+    assert _event_types(events).count("step.started") == 1
+    assert _event_types(events).count("step.completed") == 1
+
+
 # --- Abandoned-consumer backpressure (#74) -------------------------------------
 
 

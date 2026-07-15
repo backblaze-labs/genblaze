@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from genblaze_core._utils import (
     _SECRET_PATTERNS,
@@ -315,13 +315,6 @@ class Pipeline(Runnable[None, PipelineResult]):
         structured_log: If True, emit JSON log events via StructuredLogger.
     """
 
-    # Holds the "active" stream emitter for whichever thread/task is
-    # currently inside stream()/astream()'s worker. ContextVar-backed
-    # (not an instance attribute) so concurrent stream()/astream() calls on
-    # the SAME Pipeline instance don't cross-deliver events (#79, #84). See
-    # EmitterSlot's docstring for why this needs no additional locking.
-    _emitter_slot: ClassVar[EmitterSlot] = EmitterSlot("genblaze_pipeline_emitter")
-
     def __init__(
         self,
         name: str | None = None,
@@ -367,6 +360,25 @@ class Pipeline(Runnable[None, PipelineResult]):
         # mutate it concurrently from different worker threads.
         self._warned_preflight: set[tuple[str, str]] = set()
         self._warned_preflight_lock = threading.Lock()
+        # Arbitrary caller metadata merged into Run.metadata at _finalize()
+        # time via Pipeline.metadata(**kwargs) (see #53). Additive across
+        # calls, mirroring RunBuilder.meta()'s dict.update() semantics.
+        self._run_metadata: dict[str, Any] = {}
+        # Holds the "active" stream emitter for whichever thread/task is
+        # currently inside stream()/astream()'s worker. ContextVar-backed
+        # (not a plain mutable instance attribute) so concurrent
+        # stream()/astream() calls on the SAME Pipeline instance don't
+        # cross-deliver events (#79, #84). See EmitterSlot's docstring for
+        # why this needs no additional locking.
+        #
+        # Built fresh per instance (NOT a class-level singleton) so a
+        # DIFFERENT Pipeline instance run synchronously inside this one's
+        # stream()/astream() worker (e.g. from a step provider, moderation
+        # hook, or callback) never observes this instance's emitter — a
+        # single shared ContextVar isolates concurrent calls on one instance
+        # but does nothing to isolate distinct instances sharing the same
+        # thread/task Context (#151).
+        self._emitter_slot = EmitterSlot("genblaze_pipeline_emitter")
         # Tracer resolution: explicit arg wins; legacy structured_log=True maps
         # to LoggingTracer so existing callers keep their JSON event stream.
         if tracer is not None:
@@ -385,22 +397,45 @@ class Pipeline(Runnable[None, PipelineResult]):
     #     independent clone with a freshly built lock.
     # Defining __copy__ is required: without it, __getstate__/__setstate__
     # would also drive copy.copy and silently break the shared-lock contract.
+    #
+    # ``_emitter_slot`` is handled differently from the lock/dedup-set: EVERY
+    # protocol gives the clone a brand-new ``EmitterSlot``, never a shared one
+    # (also unpicklable, like the lock, but unlike the lock there's no known
+    # use case for sharing it). A shallow ``copy.copy`` clone that shared the
+    # slot would reintroduce #151's leak in a narrower shape — a
+    # batch_run()/abatch_run() clone executing .run()/.arun() inside the same
+    # thread/task Context as the pipeline that spawned it (e.g. batch_run()
+    # invoked from a hook running inside this instance's own stream() worker)
+    # would read this instance's emitter through the shared ContextVar and
+    # leak its events into the same queue.
 
     def __copy__(self) -> Pipeline:
-        """Shallow copy that shares the WARN-dedup lock and set across clones."""
+        """Shallow copy that shares the WARN-dedup lock and set across clones.
+
+        The stream emitter slot is deliberately NOT shared — see the comment
+        above the copy/serialization protocols block. ``_run_metadata`` also
+        gets an independent dict (not the shared-by-reference default a plain
+        ``__dict__.update()`` would give it) so a batch_run()/abatch_run()
+        clone calling ``.metadata(...)`` on itself can never mutate the
+        metadata the pipeline that spawned it will see.
+        """
         clone = self.__class__.__new__(self.__class__)
         clone.__dict__.update(self.__dict__)
+        clone._emitter_slot = EmitterSlot("genblaze_pipeline_emitter")
+        clone._run_metadata = dict(self._run_metadata)
         return clone
 
     def __getstate__(self) -> dict:
-        """Omit the unpicklable lock for pickle/deepcopy; rebuilt in setstate."""
+        """Omit the unpicklable lock/emitter slot for pickle/deepcopy; rebuilt in setstate."""
         state = self.__dict__.copy()
         state.pop("_warned_preflight_lock", None)
+        state.pop("_emitter_slot", None)
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
         self._warned_preflight_lock = threading.Lock()
+        self._emitter_slot = EmitterSlot("genblaze_pipeline_emitter")
 
     @staticmethod
     def _reject_config_tenant(cfg: RunnableConfig | None) -> None:

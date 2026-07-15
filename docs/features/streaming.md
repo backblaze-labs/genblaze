@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-14 -->
+<!-- last_verified: 2026-07-15 -->
 # Streaming
 
 Push-style event iterators over pipeline execution. Use for progress UIs, dashboards, or feeding an agent loop.
@@ -217,6 +217,10 @@ Event queues have no `maxsize`, but growth is bounded to the in-flight window: o
 
 Calling `stream()`/`astream()` more than once on the **same** `Pipeline` or `AgentLoop` instance — e.g., two concurrent web requests reusing a shared, preconfigured object — is supported and isolated. Each call installs its emitter on a thread/task-local slot (`contextvars.ContextVar`-backed), so events from one call's worker never cross-deliver into another call's queue, and each stream's terminal event always reflects its own run. There is no shared mutable state to lock around.
 
+## Nested / composed pipelines inside a stream() worker
+
+The emitter slot is built fresh **per `Pipeline`/`AgentLoop` instance** (in `__init__`), not shared across instances. A DIFFERENT pipeline instance run synchronously inside `outer.stream()`'s worker — e.g. a step provider, moderation hook, or callback that constructs and runs its own `inner_pipeline.run()`, or a nested `batch_run()`/`abatch_run()` — never observes `outer`'s emitter and stays silent on `outer`'s queue (#151). This is distinct from `AgentLoop`'s intentional composition: `AgentLoop._build_pipeline()` explicitly calls `pipeline.attach_emitter(...)` to pipe each iteration's pipeline events into the loop's own stream — that's an opt-in wiring, not implicit sharing. `batch_run()`/`abatch_run()` clones (`copy.copy(self)`) likewise never share the emitter slot with the pipeline that spawned them, even though they DO share the WARN-dedup preflight lock/set.
+
 ## Narrowing with `isinstance`
 
 Each variant is importable from `genblaze_core.observability`. `isinstance(ev, StepFailedEvent)` narrows to that class with its required fields; type checkers catch invalid access at lint time.
@@ -266,6 +270,6 @@ The authoritative JSON Schemas live at `libs/spec/schemas/events/v1/` (one per v
 
 - `stream()` runs `run()` in a worker thread, yielding from `queue.Queue`.
 - `astream()` runs `arun()` as an `asyncio.Task`, yielding from `asyncio.Queue`.
-- The active emitter is held in an `EmitterSlot` (`libs/core/genblaze_core/pipeline/streaming.py`) — a `contextvars.ContextVar`-backed slot, not a plain instance attribute. Each `Pipeline`/`AgentLoop` worker thread/task installs its own emitter there. The sync `stream()` worker runs via `contextvars.copy_context().run(...)` inside its `threading.Thread` (mirroring the isolation `asyncio.create_task()` already gets for free), so the install is scoped to that one throwaway `Context` rather than the OS thread itself — correct even if a future caller reuses worker threads via a pooled executor instead of spawning one per call.
+- The active emitter is held in an `EmitterSlot` (`libs/core/genblaze_core/pipeline/streaming.py`) — a `contextvars.ContextVar`-backed slot, not a plain instance attribute. Each `Pipeline`/`AgentLoop` **instance** builds its own `EmitterSlot` in `__init__` (not a class-level singleton — see #151), and each worker thread/task installs its own emitter there. The sync `stream()` worker runs via `contextvars.copy_context().run(...)` inside its `threading.Thread` (mirroring the isolation `asyncio.create_task()` already gets for free), so the install is scoped to that one throwaway `Context` rather than the OS thread itself — correct even if a future caller reuses worker threads via a pooled executor instead of spawning one per call. `Pipeline.__copy__`/`__getstate__`/`__setstate__` always give a clone a brand-new `EmitterSlot`, never a shared one — unlike the WARN-dedup preflight lock/set, which `batch_run()`/`abatch_run()` clones intentionally share.
 - Event variants + `AnyStreamEvent` + `StreamEventAdapter`: `libs/core/genblaze_core/observability/events.py`.
 - Construction sites: `libs/core/genblaze_core/pipeline/streaming.py`, `pipeline/pipeline.py`, `agents/loop.py`.

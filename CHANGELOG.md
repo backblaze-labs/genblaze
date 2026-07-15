@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was therefore strictly weaker than the pre-#146 heuristic-only guard for
   exactly the shapes it targets. `re2` is now an additional gate rather
   than a replacement; the heuristic always runs.
+- **Fixed** a distinct `Pipeline`/`AgentLoop` instance run synchronously inside
+  another instance's `stream()`/`astream()` worker (e.g. a step provider,
+  moderation hook, or callback that drives its own sub-pipeline, or a nested
+  `batch_run()`/`abatch_run()`) no longer cross-delivers its events into the
+  outer consumer's queue (#151). `_emitter_slot` was a `ClassVar[EmitterSlot]`
+  — one `contextvars.ContextVar` shared by every instance in the process —
+  which correctly isolated concurrent `stream()`/`astream()` calls on the
+  *same* instance (#147) but did nothing to isolate *different* instances
+  sharing the same thread/task Context. Both classes now build their own
+  `EmitterSlot` per instance in `__init__`; `Pipeline.__copy__`/`__getstate__`/
+  `__setstate__` always give a clone (including `batch_run()`/`abatch_run()`
+  clones) a fresh, independent slot, never a shared one.
 - **Fixed** concurrent `stream()`/`astream()` calls on the same `Pipeline` or
   `AgentLoop` instance no longer cross-deliver events (#79, #84). The active
   emitter was a single mutable instance attribute, so a second concurrent
