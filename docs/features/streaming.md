@@ -56,7 +56,7 @@ Notes:
 - **`step` / `result` are in-process only** — present on the Python object, excluded from JSON serialization. Wire consumers read the derived `step_status` / `manifest_hash` / `run_status` / `error` fields.
 - **`step.failed` carries `error`, not `message`.** The legacy dataclass emitted both keys with the same string for failure events; the discriminated union keeps only `error`. Webhook / SSE / log consumers that key on `message` for failures should switch.
 - **Agent events expose flat fields.** `event.iteration` / `event.score` / `event.passed`, not `event.data["iteration"]` etc.
-- Not every variant has `run_id` — agent-loop events don't (they're pipeline-independent).
+- Not every variant has `run_id` — agent-loop events don't (they're pipeline-independent). Every pipeline-scoped variant, including `step.completed` / `step.failed`, carries the enclosing run's `run_id`.
 
 ## ETA hint (`expected_duration_sec`)
 

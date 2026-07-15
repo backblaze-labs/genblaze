@@ -1480,8 +1480,11 @@ class Pipeline(Runnable[None, PipelineResult]):
     def _emit_step_complete_event(self, step_event: StepCompleteEvent, run_id: str) -> None:
         # Tracer on_step_end is paired in _execute_step, _execute_step_async,
         # and _record_prefailed_step via _emit_tracer_step_end; emitter-only here.
+        # run_id is passed explicitly rather than relying on the emitter's own
+        # (never-set) run_id — stream()/astream() build the emitter before
+        # the run id exists (#87).
         if self._event_emitter is not None:
-            self._event_emitter.on_step_complete(step_event)
+            self._event_emitter.on_step_complete(step_event, run_id)
 
     def _notify_sink_step_complete(
         self,

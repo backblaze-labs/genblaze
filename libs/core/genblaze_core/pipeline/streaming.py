@@ -159,8 +159,12 @@ class QueueEmitter:
         # need to backfill from self.run_id here.
         self.put(ev)
 
-    def on_step_complete(self, ev: StepCompleteEvent) -> None:
-        self.put(step_complete_to_stream_event(ev, self.run_id))
+    def on_step_complete(self, ev: StepCompleteEvent, run_id: str | None = None) -> None:
+        # ``run_id`` lets a caller that already knows the run id for this
+        # specific event pass it explicitly, since ``self.run_id`` is only
+        # ever set at construction time (stream()/astream() build the
+        # emitter before the run id exists) — see #87.
+        self.put(step_complete_to_stream_event(ev, run_id if run_id is not None else self.run_id))
 
 
 # Backward-compat alias for existing internal imports

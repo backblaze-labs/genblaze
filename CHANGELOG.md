@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original `step_id` for cancelled and exception-raising steps, so a
   `step.failed` event correlates with its own earlier `step.started` instead
   of minting a brand-new id (#86).
+- **Fixed** `step.completed` / `step.failed` stream events now carry
+  `run_id`, matching every other pipeline-scoped event variant (#87).
 - **Fixed** `step_cache_key` no longer sorts `step.inputs` before hashing (#71).
   Providers that consume inputs positionally (multi-image edit/compose,
   multimodal chat) produce different output when input order changes, but the

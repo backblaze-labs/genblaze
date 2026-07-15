@@ -1130,3 +1130,30 @@ async def test_concurrent_fail_fast_task_exception_preserves_step_id() -> None:
         assert f.step_id in started_ids, (
             f"step.failed step_id {f.step_id} has no matching step.started ({started_ids})"
         )
+
+
+# --- step.completed / step.failed carry run_id (#87) ---------------------------
+
+
+def test_step_completed_event_carries_run_id() -> None:
+    events = list(Pipeline("t").step(_OKProvider(), model="m", prompt="p").stream())
+    run_id = events[0].run_id
+    completed = next(e for e in events if e.type == "step.completed")
+    assert completed.run_id == run_id
+
+
+def test_step_failed_event_carries_run_id() -> None:
+    events = list(Pipeline("t").step(_FailProvider(), model="m", prompt="p").stream())
+    run_id = events[0].run_id
+    failed = next(e for e in events if e.type == "step.failed")
+    assert failed.run_id == run_id
+
+
+@pytest.mark.asyncio
+async def test_astream_step_completed_event_carries_run_id() -> None:
+    events: list[StreamEvent] = []
+    async for ev in Pipeline("t").step(_OKProvider(), model="m", prompt="p").astream():
+        events.append(ev)
+    run_id = events[0].run_id
+    completed = next(e for e in events if e.type == "step.completed")
+    assert completed.run_id == run_id
