@@ -88,12 +88,10 @@ def make_fixture_repo(
     meta_version: str = "0.1.0",
     spec_version: str = "0.1.0",
     connectors: dict[str, str] | None = None,
-    connector_extras: dict[str, list[str]] | None = None,
     reserved_version: str = "0.9.0",
-    baseline_tag: str = "v0.1.0",
 ) -> Path:
     """Build a real git repo mirroring the genblaze layout, commit it, and tag
-    it ``baseline_tag`` (the "last release"). Returns the repo root; callers
+    it ``v0.1.0`` (the "last release"). Returns the repo root; callers
     make further commits to simulate a wave in progress.
 
     Every git identity/signing setting is pinned per-repo (not ambient global
@@ -134,8 +132,6 @@ def make_fixture_repo(
             [f"genblaze-core>={core_version},<0.4"],
         )
         default_extras[name] = [f"{pkg_name}>={version},<0.4"]
-    if connector_extras is not None:
-        default_extras = connector_extras
 
     _write_pyproject(
         repo / "libs/meta/pyproject.toml",
@@ -152,7 +148,7 @@ def make_fixture_repo(
     )
 
     _commit(repo, "initial commit")
-    _git(repo, "tag", "-a", baseline_tag, "-m", f"Release {baseline_tag}")
+    _git(repo, "tag", "-a", "v0.1.0", "-m", "Release v0.1.0")
     return repo
 
 
