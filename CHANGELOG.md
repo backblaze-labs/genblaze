@@ -7,22 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `tools/prepare_release.py`: deterministic wave-level release-prep engine.
-  Discovers every package dynamically (no hardcoded version literals or
-  connector list), bumps versions for what changed since the last tag, and
-  — independent of whether the affected package itself changed — resyncs
-  `cli`'s and the `genblaze` umbrella's `genblaze-core`/`genblaze-s3`/
-  connector-extra dependency floors to match, forcing a republish when a
-  pin-only change would otherwise ship without a version bump (the drift
-  class `tools/check_pin_parity.py` guards against). Refuses to bump core
-  onto the reserved `raise_on_failure` default-flip version. `--check`/
-  `--apply` modes, `--set`/`--bump` overrides. New `.claude/skills/
-  prepare-release/SKILL.md` drives it end-to-end through `make pre-release`
-  and a release PR — it cannot tag or publish (see the skill's safety
-  boundary).
-
 ## [0.5.0] - 2026-07-16
 
 Correctness and security hardening across the pipeline, provenance, streaming,
@@ -428,6 +412,20 @@ stream emitters are per-instance, and a batch of connector patch-republishes.
   `genblaze-s3` floor to 0.3.5 (and the gmicloud/google/openai/replicate extra
   floors to their new versions) so `pip install genblaze` resolves this wave's
   fixes.
+
+### Internal
+
+- `tools/prepare_release.py` + `.claude/skills/prepare-release/SKILL.md`: a
+  deterministic wave-level release-prep engine and the `/prepare-release`
+  skill that drives it. Discovers every package dynamically (no hardcoded
+  version list), bumps versions for what changed since the last tag, and
+  resyncs `cli`'s and the umbrella's `genblaze-core`/`genblaze-s3`/connector
+  floors to match — independent of whether those packages changed — so a
+  pin-only change can't ship without a version bump (the drift class
+  `tools/check_pin_parity.py` guards against). Refuses to bump core onto the
+  reserved `raise_on_failure` default-flip version. The skill cannot tag or
+  publish; it stops at a release PR. Repo tooling only — no packaged code
+  changed.
 
 ## [0.4.0] - 2026-06-25
 
