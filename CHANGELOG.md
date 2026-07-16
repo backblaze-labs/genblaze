@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-16
+
+Correctness and security hardening across the pipeline, provenance, streaming,
+and media layers, plus connector fixes (Replicate community models, OpenAI Sora
+on the openai SDK 2.x, Google Veo on Vertex AI). Highlights: the ReDoS guard's
+heuristic now always runs, manifests load tolerantly while `verify()` stays the
+enforcement boundary, `ParquetSink` writes are index-backed and resink-correct,
+stream emitters are per-instance, and a batch of connector patch-republishes.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.1 → **0.4.3** — raises the `genblaze-core` floor to
+  0.3.6 and `genblaze-s3` to 0.3.5 (plus the gmicloud/google/openai/replicate
+  extra floors) so `pip install genblaze` resolves this wave's fixes.
+- `genblaze-core` 0.3.4 → **0.3.6** (ReDoS heuristic always runs; per-instance
+  stream emitters; `metadata`/`prompt_visibility` routed to `Step` fields;
+  `max_concurrency` validation; `PipelineTemplate` param rendering; tolerant
+  manifest load with `verify()` enforcement; `ParquetSink` run-index + resink
+  correctness; SSRF/ffmpeg/`canonical_hash` hardening; stable ingest hash;
+  order-preserving cache key; JPEG/WebP read cap; Windows `file://` fixes;
+  pytest-free mocks)
+- `genblaze-cli` 0.3.2 → **0.3.4** (rejects directory arguments; `replay.py`
+  Optional fixes; `verify` surfaces invalid output metadata; `extract -o`)
+- `genblaze-s3` 0.3.4 → **0.3.5** (widens the `aioboto3` pin to `<16`)
+- `genblaze-google` 0.3.1 → **0.3.2** (`VeoProvider` Vertex AI poll/fetch fix)
+- `genblaze-replicate` 0.3.2 → **0.3.3** (`submit()` endpoint routing for
+  community models)
+- `genblaze-openai` 0.3.1 → **0.3.2** (Sora SDK 2.x submit/download; Windows
+  `file://` in `dalle.py`)
+- `genblaze-gmicloud` 0.3.2 → **0.3.3** (ships the `py.typed` marker; video
+  `duration` validation)
+- All other connectors unchanged — their existing `genblaze-core>=0.3.4,<0.4`
+  floor already admits 0.3.6.
+
 ### genblaze-core
 
 - **Security** `pattern_safety.assert_safe()` no longer skips its
@@ -267,6 +301,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every fresh batch starts with and falls back to caller input order. The
   determinism contract now holds for fresh asset batches and sink-populated
   hashes, not just permuted reuses of already-hashed objects.
+- **Security** `PromptTemplate` now rejects attribute and item traversal such
+  as `{user.api_key}` and `{settings[voice]}`. Pass explicit top-level values
+  instead, for example `{api_key}` or `{voice}`. Top-level format specs and
+  conversions such as `{price:.2f}` and `{name!r}` remain supported (#88).
 
 ### genblaze-openai
 
@@ -326,6 +364,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as every other connector's marker — no `pyproject.toml` change needed,
   since hatchling already includes all files under the declared
   `[tool.hatch.build.targets.wheel] packages` directory.
+- **Changed** video `duration` now requires whole-second integer values from
+  1 to 60 seconds; fractional, zero/negative, and oversized inputs fail
+  invalid-input validation instead of being silently truncated or forwarded
+  (#90).
+
+### genblaze-s3
+
+- **Changed** widened the `aioboto3` pin in the `async` extra from `>=12,<13`
+  to `>=12,<16`, so `genblaze-s3` installs alongside newer `aioboto3` releases
+  (#128).
 
 ### genblaze-cli
 
@@ -360,22 +408,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze (umbrella)
 
-- **Changed** 0.4.1 → 0.4.2: raises its `genblaze-core` floor to 0.3.5
-  so `pip install genblaze` resolves the mock-import fix above.
-
-### Security
-
-- `genblaze-core`: `PromptTemplate` now rejects attribute and item traversal
-  such as `{user.api_key}` and `{settings[voice]}`. Pass explicit top-level
-  values instead, for example `{api_key}` or `{voice}`. Top-level format specs
-  and conversions such as `{price:.2f}` and `{name!r}` remain supported (#88).
-
-### Changed
-
-- `genblaze-gmicloud`: video `duration` now requires whole-second integer
-  values from 1 to 60 seconds; fractional, zero/negative, and oversized
-  inputs fail invalid-input validation instead of being silently truncated
-  or forwarded (#90).
+- **Changed** 0.4.1 → 0.4.3: raises its `genblaze-core` floor to 0.3.6 and
+  `genblaze-s3` floor to 0.3.5 (and the gmicloud/google/openai/replicate extra
+  floors to their new versions) so `pip install genblaze` resolves this wave's
+  fixes.
 
 ## [0.4.0] - 2026-06-25
 
