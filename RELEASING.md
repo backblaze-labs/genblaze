@@ -42,10 +42,15 @@ Before cutting a release, verify on `main`:
 
 1. **Versions are bumped.** Every package whose code changed since the
    last release has its `pyproject.toml` `version` updated. The umbrella
-   `libs/meta/pyproject.toml` is bumped to reflect this release.
+   `libs/meta/pyproject.toml` is bumped to reflect this release, along with
+   its (and `cli`'s) `genblaze-core`/`genblaze-s3`/connector-extra floors.
+   `python3 tools/prepare_release.py --check`/`--apply` automates this
+   step deterministically — see `.claude/skills/prepare-release/SKILL.md`
+   for the end-to-end driver.
 2. **CHANGELOG is cut.** The `[Unreleased]` section is empty; a new
    `## [X.Y.Z] - YYYY-MM-DD` section lists every package version change
-   under "Released package versions".
+   under "Released package versions" (the exact text `prepare_release.py`
+   emits).
 3. **TS types are current.** `make ts-types` produces no diff. (CI's
    `ts-types-check` job already enforces this on every push, but the
    release workflow re-runs it as a defense in depth.)

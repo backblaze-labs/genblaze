@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tools/prepare_release.py`: deterministic wave-level release-prep engine.
+  Discovers every package dynamically (no hardcoded version literals or
+  connector list), bumps versions for what changed since the last tag, and
+  — independent of whether the affected package itself changed — resyncs
+  `cli`'s and the `genblaze` umbrella's `genblaze-core`/`genblaze-s3`/
+  connector-extra dependency floors to match, forcing a republish when a
+  pin-only change would otherwise ship without a version bump (the drift
+  class `tools/check_pin_parity.py` guards against). Refuses to bump core
+  onto the reserved `raise_on_failure` default-flip version. `--check`/
+  `--apply` modes, `--set`/`--bump` overrides. New `.claude/skills/
+  prepare-release/SKILL.md` drives it end-to-end through `make pre-release`
+  and a release PR — it cannot tag or publish (see the skill's safety
+  boundary).
+
 ## [0.5.0] - 2026-07-16
 
 Correctness and security hardening across the pipeline, provenance, streaming,
