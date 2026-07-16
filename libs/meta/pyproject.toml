@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze"
-version = "0.4.2"
+version = "0.4.3"
 description = "Umbrella package for genblaze — installs genblaze-core + genblaze-s3 and re-exports the core API; use extras for provider bundles"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -23,8 +23,8 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "umbrella"]
 
 dependencies = [
-    "genblaze-core>=0.3.5,<0.4",
-    "genblaze-s3>=0.3.4,<0.4",
+    "genblaze-core>=0.3.6,<0.4",
+    "genblaze-s3>=0.3.5,<0.4",
 ]
 
 [project.urls]
@@ -36,10 +36,10 @@ Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 # Individual connectors
-gmicloud = ["genblaze-gmicloud>=0.3.2,<0.4"]
-openai = ["genblaze-openai>=0.3.1,<0.4"]
-google = ["genblaze-google>=0.3.1,<0.4"]
-replicate = ["genblaze-replicate>=0.3.2,<0.4"]
+gmicloud = ["genblaze-gmicloud>=0.3.3,<0.4"]
+openai = ["genblaze-openai>=0.3.2,<0.4"]
+google = ["genblaze-google>=0.3.2,<0.4"]
+replicate = ["genblaze-replicate>=0.3.3,<0.4"]
 runway = ["genblaze-runway>=0.3.1,<0.4"]
 luma = ["genblaze-luma>=0.3.1,<0.4"]
 decart = ["genblaze-decart>=0.3.1,<0.4"]
@@ -53,17 +53,17 @@ nvidia = ["genblaze-nvidia>=0.3.1,<0.4"]
 
 # Curated bundles
 video = [
-    "genblaze-gmicloud>=0.3.2,<0.4",
-    "genblaze-google>=0.3.1,<0.4",
+    "genblaze-gmicloud>=0.3.3,<0.4",
+    "genblaze-google>=0.3.2,<0.4",
     "genblaze-runway>=0.3.1,<0.4",
     "genblaze-luma>=0.3.1,<0.4",
     "genblaze-decart>=0.3.1,<0.4",
     "genblaze-nvidia>=0.3.1,<0.4",
 ]
 image = [
-    "genblaze-gmicloud>=0.3.2,<0.4",
-    "genblaze-openai>=0.3.1,<0.4",
-    "genblaze-google>=0.3.1,<0.4",
+    "genblaze-gmicloud>=0.3.3,<0.4",
+    "genblaze-openai>=0.3.2,<0.4",
+    "genblaze-google>=0.3.2,<0.4",
     "genblaze-nvidia>=0.3.1,<0.4",
 ]
 audio = [
@@ -71,14 +71,14 @@ audio = [
     "genblaze-lmnt>=0.3.1,<0.4",
     "genblaze-hume>=0.3.1,<0.4",
     "genblaze-stability-audio>=0.3.1,<0.4",
-    "genblaze-gmicloud>=0.3.2,<0.4",
+    "genblaze-gmicloud>=0.3.3,<0.4",
     "genblaze-nvidia>=0.3.1,<0.4",
 ]
 all = [
-    "genblaze-gmicloud>=0.3.2,<0.4",
-    "genblaze-openai>=0.3.1,<0.4",
-    "genblaze-google>=0.3.1,<0.4",
-    "genblaze-replicate>=0.3.2,<0.4",
+    "genblaze-gmicloud>=0.3.3,<0.4",
+    "genblaze-openai>=0.3.2,<0.4",
+    "genblaze-google>=0.3.2,<0.4",
+    "genblaze-replicate>=0.3.3,<0.4",
     "genblaze-runway>=0.3.1,<0.4",
     "genblaze-luma>=0.3.1,<0.4",
     "genblaze-decart>=0.3.1,<0.4",
