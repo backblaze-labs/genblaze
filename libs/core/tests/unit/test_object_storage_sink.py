@@ -1961,3 +1961,86 @@ class TestBaseSinkPutAssetDefaults:
             sink.put_assets([asset])
         with pytest.raises(NotImplementedError, match="read_manifest_for_asset"):
             sink.read_manifest_for_asset("11111111-1111-4111-8111-111111111111", tenant_id="t")
+
+
+class _HeadForbiddenBackend(_AssetIndexBackend):
+    """Backend whose ``exists()`` always reports False, mimicking a B2
+    HeadObject 403.
+
+    Backblaze returns 403/AccessDenied for HEAD once a daily Class B
+    transaction cap is hit or when an app key can't HEAD, which
+    ``S3StorageBackend.exists()`` folds into "does not exist". This double
+    reports every ``exists()`` probe as a miss while still storing bytes,
+    so a sink that trusts ``exists()`` to detect an already-transferred
+    asset will re-schedule the transfer. Regression harness for #162.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.exists_calls = 0
+
+    def exists(self, key):
+        self.exists_calls += 1
+        return False
+
+
+class TestHeadObject403DoubleTransfer:
+    """#162: a HeadObject 403 must not trigger a destructive re-transfer.
+
+    Under B2 daily caps / restricted keys, ``exists()`` cannot tell absent
+    from forbidden. An asset whose ``url`` already points into the backend
+    has, by definition, been stored there (``transfer()`` only rewrites the
+    url after a successful put), so ``key_from_url`` resolving must be
+    trusted directly — re-downloading the now-private durable URL over an
+    unauthenticated GET can only 401 and fail the whole run.
+    """
+
+    def test_asset_already_transferred_trusts_backend_url_without_head(self):
+        """A backend-owned URL short-circuits to True, never probing exists()."""
+        backend = _HeadForbiddenBackend()
+        sink = ObjectStorageSink(backend, prefix="genmedia")
+        asset = Asset(
+            url="https://mem/genmedia/runs/r1/clip.mp4",
+            media_type="video/mp4",
+            sha256="a" * 64,
+            size_bytes=123,
+        )
+
+        assert sink._asset_already_transferred(asset) is True
+        assert backend.exists_calls == 0
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_ingest_flow_transfers_once_under_head_403(self, mock_get, _mock_dns):
+        """put_asset then write_run (the ingest order) transfers exactly once.
+
+        Pre-fix, write_run's ``exists()``-based re-derivation misses the
+        403-lying backend and re-downloads the rewritten durable URL — the
+        second ``_http_get_stream`` call. Post-fix there is only one."""
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"clip-bytes", b""]
+        mock_resp.headers = {"Content-Type": "video/mp4"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_get.return_value = mock_resp
+
+        backend = _HeadForbiddenBackend()
+        sink = ObjectStorageSink(backend, prefix="genmedia")
+        asset = Asset(url="https://cdn.example.com/clip.mp4", media_type="video/mp4")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[asset],
+        )
+        run = Run(name="repro", status=RunStatus.COMPLETED, steps=[step])
+
+        # Mirror ingest_assets: bytes are written first, then the manifest.
+        sink.put_asset(asset)
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+        sink.write_run(run, manifest)  # must not raise / re-download
+
+        assert mock_get.call_count == 1
+        assert asset.url.startswith("https://mem/")
+        assert sink.manifest_key_for(run) in backend.store
