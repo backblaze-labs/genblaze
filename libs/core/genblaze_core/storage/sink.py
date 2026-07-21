@@ -527,7 +527,15 @@ class ObjectStorageSink(BaseSink):
             return False
         if key is None:
             return False
-        return self._backend.exists(key)
+        # asset.url already points into this backend, so the bytes were
+        # stored here: transfer() only rewrites url to the durable URL after
+        # a successful put. Trust that directly instead of probing exists() —
+        # a B2 HeadObject 403 (daily Class B caps / restricted keys) makes
+        # exists() report "not-exist", which would re-schedule a transfer of
+        # the now-private durable URL over an unauthenticated GET (401) and
+        # fail an otherwise-complete run. There is also no source left to
+        # re-download from, so a re-transfer could never succeed. See #162.
+        return True
 
     def _effective_allow_unverified_assets(self, allow_unverified_assets: bool) -> bool:
         if (
