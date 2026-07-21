@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Fixed** `hasattr(genblaze_core, "ParquetSink")` (and
+  `getattr(module, name, default)`, `inspect`/IDE attribute probing) raised
+  `OptionalDependencyError` instead of returning `False`/the default when the
+  `parquet` extra isn't installed (#165). The umbrella package's lazy
+  `__getattr__` propagated `OptionalDependencyError` from the failed
+  `pyarrow` import, but that error is an `ImportError`, not an
+  `AttributeError` — the only exception type `hasattr` swallows — so
+  capability probing crashed instead of reporting the symbol as absent.
+  `genblaze_core.__getattr__` now catches `OptionalDependencyError` at the
+  lazy-import call site and re-raises `AttributeError` with the original
+  install-hint message preserved (chained via `__cause__`); direct usage
+  (e.g. `genblaze_core.ParquetSink(...)`) still gets the actionable
+  `pip install "genblaze[parquet]"` hint. `OptionalDependencyError` itself is
+  unchanged (still `ImportError`-catchable) for non-attribute import paths.
+
 ### genblaze-cli
 
 - `genblaze verify --fetch` downloads each output asset and compares its bytes
