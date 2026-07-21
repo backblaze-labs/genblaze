@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-20 -->
+<!-- last_verified: 2026-07-21 -->
 # Feature: Trust Modes
 
 ## Purpose
@@ -87,11 +87,15 @@ legacy schema versions too, so an attacker cannot set `schema_version="1.5"` to
 bypass output sha256 coverage. Use `verify_hash()` for historical hash-only
 CI gates or audits where URL-only outputs are expected.
 
-`Manifest.verify()` and `genblaze verify` do not fetch `asset.url` and re-hash
-remote bytes. They verify the canonical manifest hash and require every output
-asset to declare a syntactically valid lowercase sha256 digest. Consumers that
-dereference asset URLs must independently hash the fetched bytes and compare
-them to `asset.sha256` before trusting those bytes.
+`Manifest.verify()` and a bare `genblaze verify` do not fetch `asset.url` and
+re-hash remote bytes. They verify the canonical manifest hash and require every
+output asset to declare a syntactically valid lowercase sha256 digest.
+`genblaze verify --fetch` performs that byte-level check as an opt-in CLI mode;
+it streams each output asset through the SSRF-hardened transfer path and
+compares fetched bytes to `asset.sha256` (path 1 below). It does not change
+what `Manifest.verify()` or a bare `genblaze verify` accepts. Programmatic
+consumers that dereference asset URLs should do the same independently before
+trusting those bytes.
 
 Use `Manifest.verify_hash()` when a caller only needs to check that
 `canonical_hash` matches the manifest payload. This distinction matters for
@@ -113,7 +117,7 @@ verification.
 
 `asset.sha256` in the manifest is computed against the asset bytes at the moment the manifest is built — i.e., **before** embedding. After `SmartEmbedder.embed()` modifies the file to insert the manifest, the on-disk file's sha256 will not match `asset.sha256`. Two paths to verify the asset:
 
-1. **Verify against the upstream artifact** — keep the original asset (e.g., in B2 storage) and recompute sha256 from those bytes. Recommended for any sink that already uploads the asset.
+1. **Verify against the upstream artifact** — keep the original asset (e.g., in B2 storage) and recompute sha256 from those bytes. `genblaze verify --fetch` performs this check from the CLI. Recommended for any sink that already uploads the asset.
 2. **Strip-then-hash** — extract the manifest, remove the embed region per format, re-hash the remaining bytes. Format-specific; not currently shipped as a helper. C2PA's hard-binding algorithm in Mode 3 solves this for free.
 
 ## Choosing a mode

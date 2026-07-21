@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-07-21 -->
 # genblaze-cli
 
 **Command-line toolkit for inspecting, verifying, and indexing genblaze AI-generated-media provenance manifests.**
@@ -30,6 +30,7 @@ genblaze extract video.mp4                # Extract embedded manifest → stdout
 genblaze extract video.mp4 -o m.json      # …or to a file
 
 genblaze verify video.mp4                 # Verify manifest hash + output sha256 declarations
+genblaze verify video.mp4 --fetch         # …and re-hash the actual asset bytes
 genblaze verify manifest.json             # Or verify a standalone manifest file
 
 genblaze replay manifest.json             # Show what a replay would do (dry run)
@@ -37,7 +38,7 @@ genblaze replay manifest.json             # Show what a replay would do (dry run
 genblaze index manifest.json -o data/     # Index into partitioned Parquet tables
 ```
 
-Exit codes are non-zero on verification failure — safe to drop into CI pipelines, release checks, or content-moderation workflows. The command does not fetch remote asset URLs; consumers that dereference `asset.url` must hash those bytes separately and compare them with the manifest's `asset.sha256`.
+Exit codes are non-zero on verification failure; safe to drop into CI pipelines, release checks, or content-moderation workflows. By default verify checks the manifest only; `--fetch` also downloads each output asset (through the same SSRF-hardened transfer path the pipeline uses) and compares its bytes against the declared sha256. Local pipelines that wrote assets outside the system temp directories (e.g. `output_dir=./out`) can admit them with `--allowed-root <dir>`.
 
 ## Typical flow
 
