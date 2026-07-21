@@ -18,6 +18,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--allowed-root <dir>`. `--fetch` and `--hash-only` are mutually exclusive.
   Default `verify` behavior and `Manifest.verify()` semantics are unchanged.
 
+### genblaze-elevenlabs
+
+- **Fixed** `with_timestamps=True` TTS steps failed against elevenlabs 2.x
+  (#163). `convert_with_timestamps` returns an `AudioWithTimestampsResponse`
+  pydantic model, not a dict — `response.get("audio_base64", ...)` raised
+  `'AudioWithTimestampsResponse' object has no attribute 'get'`, and even a
+  dict-shaped stand-in would have missed the field, which is `audio_base_64`
+  (underscores) on the parsed object. `provider.py` now reads
+  `response.audio_base_64` and `response.alignment.characters` /
+  `character_start_times_seconds` / `character_end_times_seconds` directly,
+  and tolerates `alignment` being `None` (it's `Optional` on the real model).
+  Verified against the installed `elevenlabs` 2.38.1 SDK's response types;
+  the object-response surface has been present since 2.0.0, so no floor bump
+  was needed — pinned to `elevenlabs>=2.0,<3` (previously unbounded) so a
+  fresh install can't resolve an incompatible future major version.
+- **Fixed** `fallback_models` could never fire on ElevenLabs steps (#167).
+  `_errors.py`'s mapper had no `MODEL_ERROR` branch, so an unknown/retired
+  `model_id` surfaced as `INVALID_INPUT` or `UNKNOWN` and the pipeline's
+  fallback retry (which only triggers on `MODEL_ERROR`) never engaged. A 404
+  status code (elevenlabs.errors.NotFoundError — raised for any missing
+  resource, most commonly an unknown model_id or voice_id) now maps to
+  `MODEL_ERROR`; the message-based fallback delegates to the shared
+  `classify_api_error` classifier instead of duplicating its "model" +
+  "not found" pattern.
+
 ### genblaze-lmnt
 
 - **Fixed** a fresh `pip install genblaze-lmnt` couldn't run at all (#166).

@@ -24,7 +24,7 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.4,<0.4",
-    "elevenlabs>=2.0",
+    "elevenlabs>=2.0,<3",
 ]
 
 [project.urls]

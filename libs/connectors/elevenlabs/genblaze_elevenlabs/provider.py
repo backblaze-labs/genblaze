@@ -282,13 +282,20 @@ class ElevenLabsTTSProvider(SyncProvider):
                 response = client.text_to_speech.convert_with_timestamps(**kwargs)
                 import base64
 
-                audio_bytes = base64.b64decode(response.get("audio_base64", ""))
-                alignment = response.get("alignment", {})
-                al_chars = alignment.get("characters", [])
-                starts = alignment.get("character_start_times_seconds", [])
-                ends = alignment.get("character_end_times_seconds", [])
-                if al_chars and starts and ends:
-                    word_timings = _parse_elevenlabs_alignment(al_chars, starts, ends)
+                # elevenlabs 2.x returns AudioWithTimestampsResponse, a
+                # pydantic model — not a dict. The audio field is
+                # `audio_base_64` (underscores); the wire alias
+                # `audio_base64` only applies to raw JSON, not the parsed
+                # object. `alignment` is itself a model (Optional — the API
+                # may omit it), not a dict of lists.
+                audio_bytes = base64.b64decode(response.audio_base_64)
+                alignment = response.alignment
+                if alignment is not None:
+                    al_chars = alignment.characters
+                    starts = alignment.character_start_times_seconds
+                    ends = alignment.character_end_times_seconds
+                    if al_chars and starts and ends:
+                        word_timings = _parse_elevenlabs_alignment(al_chars, starts, ends)
             else:
                 # convert() returns an iterator of audio bytes
                 audio_iter = client.text_to_speech.convert(**kwargs)
