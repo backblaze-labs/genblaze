@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-14 -->
+<!-- last_verified: 2026-07-21 -->
 # Feature: Media Embedding
 
 ## Purpose
@@ -67,7 +67,12 @@ Manifest verification checks the canonical manifest payload and output asset
 sha256 coverage. `manifest.verify()` and `genblaze verify <file>` reject
 URL-only output assets and malformed sha256 declarations regardless of schema
 version; hash-only callers can use `manifest.verify_hash()`. None of these
-paths fetch asset URLs or hash the post-embed container file. See
+default paths fetch asset URLs or hash the post-embed container file.
+The opt-in `genblaze verify --fetch` fetches each `asset.url` and re-hashes
+those bytes against `asset.sha256`. One caveat: on a locally embedded file
+whose `asset.url` still points at that same file, `--fetch` compares post-embed
+bytes against a pre-embed hash and fails by design. Verify against the upstream
+artifact instead (option 1 above). See
 [trust-modes.md](trust-modes.md#asset-binding-caveat).
 
 ## WebP lossless preservation

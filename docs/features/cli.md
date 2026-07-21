@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-14 -->
+<!-- last_verified: 2026-07-21 -->
 # Feature: CLI
 
 ## Purpose
@@ -9,7 +9,7 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
 
 ## Core Functions
 - `extract` — Extract and display manifest from any supported media file (auto-detects format)
-- `verify` — Verify manifest hash integrity and output `sha256` coverage from media, sidecar JSON, or standalone manifest JSON (exit code 0=OK, 1=failed verification)
+- `verify` — Verify manifest hash integrity and output `sha256` coverage from media, sidecar JSON, or standalone manifest JSON (exit code 0=OK, 1=failed verification); the opt-in `--fetch` mode also downloads each output asset and re-hashes its bytes against the declared digest, and `--allowed-root <dir>` (repeatable) admits `file://` assets outside the temp-dir allowlist, which you need when your pipeline wrote assets via `output_dir=` to a non-default location
 - `replay` — Preview (`--dry-run`) or re-execute (`--no-dry-run`) a pipeline from manifest JSON
 - `index` — Write manifest data to a Parquet sink
 
@@ -44,7 +44,7 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
 - Missing, uppercase, or malformed output `sha256` → verify exits with code 1
 - Standalone JSON manifests enforce `MAX_MANIFEST_BYTES` before reading
 - Pointer-mode sidecars passed directly produce an actionable pointer-sidecar error
-- `verify` does not fetch `asset.url` or re-hash remote bytes; callers that dereference URLs must compare fetched bytes to `asset.sha256`
+- A bare `verify` does not fetch `asset.url`; the opt-in `--fetch` mode closes that gap by streaming bytes through the SSRF-pinned transfer path and comparing them to `asset.sha256`. Fetched bytes prove integrity at fetch time, not forever after; a mutable URL can serve different bytes tomorrow
 - Replay dry-run (default) → no API calls made
 - Replay `--no-dry-run` → requires provider package installed (e.g., `genblaze-replicate`)
 - Unknown provider in manifest → error with list of known providers
@@ -56,8 +56,8 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
   → same clean `ManifestError` from `index` and `replay`
 
 ## Verification
-- Test files: `cli/tests/test_cli.py`
-- Required cases: extract from PNG, verify pass/fail, direct JSON and sidecar JSON inputs, oversized standalone JSON rejection, missing or malformed output `sha256`, replay dry-run
-- Quick verify: `cd cli && pytest tests/test_cli.py -v`
+- Test files: `cli/tests/test_cli.py`, `cli/tests/test_verify_fetch.py`
+- Required cases: extract from PNG, verify pass/fail, direct JSON and sidecar JSON inputs, oversized standalone JSON rejection, missing or malformed output `sha256`, replay dry-run, `--fetch` byte match/mismatch, `--allowed-root` admission
+- Quick verify: `cd cli && pytest tests/ -v`
 - Full verify: `make test`
 - Pass criteria: all CLI commands handle happy path and error cases

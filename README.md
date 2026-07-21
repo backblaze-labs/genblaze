@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-17 -->
+<!-- last_verified: 2026-07-21 -->
 <h1 align="center" style="border-bottom: none">
     Genblaze
 </h1>
@@ -18,7 +18,7 @@
 
 **Genblaze** is an AI pipeline SDK by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for building and orchestrating generative media workflows across video, image, and audio.
 
-A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, ElevenLabs, and Stability Audio, plus models served through platforms such as GMI Cloud and NVIDIA NIM (`build.nvidia.com`) — so you swap providers without rewriting orchestration. Every run produces a canonical provenance manifest you can embed directly into media files (`.mp4`, `.png`, `.mp3`, …) and persist to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) or any S3-compatible store. `Manifest.verify()` checks the manifest hash and requires every output asset to declare a valid `sha256`; callers that fetch `asset.url` should re-hash those bytes separately.
+A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, ElevenLabs, and Stability Audio, plus models served through platforms such as GMI Cloud and NVIDIA NIM (`build.nvidia.com`) — so you swap providers without rewriting orchestration. Every run produces a canonical provenance manifest you can embed directly into media files (`.mp4`, `.png`, `.mp3`, …) and persist to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) or any S3-compatible store. `Manifest.verify()` checks the manifest hash and requires every output asset to declare a valid `sha256`; callers that fetch `asset.url` should re-hash those bytes separately, and the CLI's opt-in `genblaze verify --fetch` mode does exactly that.
 
 ## Why Genblaze
 
