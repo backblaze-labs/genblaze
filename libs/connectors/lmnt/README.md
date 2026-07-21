@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-07-21 -->
 # genblaze-lmnt
 
 **[LMNT](https://www.lmnt.com) ultra-low-latency text-to-speech provider adapter for [genblaze](https://github.com/backblaze-labs/genblaze) — real-time AI voice pipelines with SHA-256 provenance manifests on every clip.**

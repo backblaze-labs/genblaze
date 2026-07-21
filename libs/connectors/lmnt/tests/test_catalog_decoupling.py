@@ -12,23 +12,15 @@ edit can't silently regress the post-decoupling shape.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
 from genblaze_core.providers import (
     DiscoverySupport,
     ValidationOutcome,
 )
 
-
-@pytest.fixture(autouse=True)
-def _patch_lmnt_sdk():
-    """Avoid importing the real lmnt SDK in tests."""
-    fake_lmnt = MagicMock()
-    fake_speech = MagicMock()
-    fake_lmnt.api = MagicMock(Speech=fake_speech)
-    with patch.dict("sys.modules", {"lmnt": fake_lmnt, "lmnt.api": fake_lmnt.api}):
-        yield
+# Note: these tests construct ``LMNTProvider`` directly without generating
+# speech, so they don't need to touch the ``lmnt`` SDK at all — ``lmnt`` is
+# a real installed dependency of this package (see test_lmnt_provider.py's
+# ``test_make_client_matches_installed_sdk`` for the SDK-surface check).
 
 
 # --- DiscoverySupport declaration -----------------------------------------

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-lmnt
+
+- **Fixed** a fresh `pip install genblaze-lmnt` couldn't run at all (#166).
+  `provider.py` imported `from lmnt.api import Speech`, the pre-2.0 SDK
+  layout; the unbounded `lmnt>=1.0` dependency pin let `pip` resolve the
+  current `lmnt` 2.x release, which has no `lmnt.api` module, so every
+  `generate()` call failed with `ModuleNotFoundError`. Ported the connector
+  to the 2.x surface: the synchronous `lmnt.Lmnt` client and
+  `client.speech.generate_detailed(..., return_durations=True)` (the JSON
+  counterpart to `generate()` that also returns word-level durations,
+  matching the old 1.x `synthesize()` response shape). The 1.x `speed`
+  parameter has no 2.x equivalent (replaced by `temperature`/`top_p`, which
+  control expressiveness rather than pacing) — a `speed` step param is now
+  dropped with a `logging.warning` instead of being forwarded and raising
+  `TypeError`. Pin tightened to `lmnt>=2.0,<3`.
+
 ## [0.5.0] - 2026-07-16
 
 Correctness and security hardening across the pipeline, provenance, streaming,
