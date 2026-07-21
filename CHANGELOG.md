@@ -17,11 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the 2.x surface: the synchronous `lmnt.Lmnt` client and
   `client.speech.generate_detailed(..., return_durations=True)` (the JSON
   counterpart to `generate()` that also returns word-level durations,
-  matching the old 1.x `synthesize()` response shape). The 1.x `speed`
-  parameter has no 2.x equivalent (replaced by `temperature`/`top_p`, which
-  control expressiveness rather than pacing) — a `speed` step param is now
-  dropped with a `logging.warning` instead of being forwarded and raising
-  `TypeError`. Pin tightened to `lmnt>=2.0,<3`.
+  matching the old 1.x `synthesize()` response shape). Pin tightened to
+  `lmnt>=2.0,<3`.
+- **Behavior change**: the 1.x `speed` step param has no 2.x equivalent
+  (LMNT replaced it with `temperature`/`top_p`, which control
+  expressiveness, not pacing). A step that previously set `speed` was
+  forwarded straight to the 1.x API; it's now dropped before the call —
+  callers get default-pace audio plus a `logging.warning` naming
+  `temperature`/`top_p` as the closest replacement knobs, instead of the
+  `TypeError` that forwarding an unsupported kwarg to the real 2.x SDK
+  would raise.
 
 ## [0.5.0] - 2026-07-16
 

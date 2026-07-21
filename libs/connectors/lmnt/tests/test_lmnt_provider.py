@@ -87,7 +87,12 @@ def test_speed_param_dropped_with_warning(mock_lmnt, caplog):
         provider.generate(step)
     call_kwargs = client.speech.generate_detailed.call_args[1]
     assert "speed" not in call_kwargs
-    assert any("speed" in rec.message for rec in caplog.records)
+    # Warning must name the 2.x replacement knobs so it's actionable, not
+    # just an announcement that something got dropped.
+    assert any(
+        "speed" in rec.message and "temperature" in rec.message and "top_p" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_durations_stored_in_payload(mock_lmnt):

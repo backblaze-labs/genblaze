@@ -29,10 +29,12 @@ generated via ``client.speech.generate_detailed(..., return_durations=True)``,
 which returns base64-encoded audio + optional word-level durations in one
 JSON response (the closest 2.x equivalent of the old 1.x
 ``Speech.synthesize()`` dict). The 1.x SDK's ``speed`` parameter has no
-2.x equivalent (LMNT replaced it with ``temperature``/``top_p`` on the
-"blizzard" model, which control expressiveness rather than pacing) — a
-``speed`` step param is dropped with a warning rather than silently
-forwarded. See https://github.com/backblaze-labs/genblaze/issues/166.
+2.x equivalent — LMNT replaced it with ``temperature``/``top_p`` on the
+"blizzard" model, which control expressiveness rather than pacing, so
+there's no direct pacing knob to forward it to. A ``speed`` step param is
+dropped with a warning (naming ``temperature``/``top_p`` as the closest
+2.x knobs) rather than silently forwarded.
+See https://github.com/backblaze-labs/genblaze/issues/166.
 
 Docs: https://docs.lmnt.com/
 """
@@ -176,8 +178,10 @@ class LMNTProvider(SyncProvider):
                 # control expressiveness rather than pacing — there's no
                 # equivalent to forward, so warn instead of silently dropping.
                 logger.warning(
-                    "LMNT provider: 'speed' param is not supported by lmnt "
-                    "SDK 2.x and will be ignored (see issue #166)."
+                    "LMNT provider: 'speed' is not supported by lmnt SDK 2.x "
+                    "and will be ignored; 2.x exposes 'temperature'/'top_p' "
+                    "for expressiveness (no direct pacing equivalent). "
+                    "See issue #166."
                 )
             if "language" in payload:
                 generate_kwargs["language"] = payload["language"]
