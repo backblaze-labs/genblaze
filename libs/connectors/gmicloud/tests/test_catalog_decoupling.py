@@ -156,12 +156,11 @@ class TestVideoFamilyResolution:
 
     def test_other_video_slugs_fall_through_to_fallback(self) -> None:
         """Slugs that don't match a specialized family (Pixverse, Wan-r2v,
-        Veo, Kling V2.1) fall through to the permissive fallback. The base
-        video surface (``cfg_scale`` alias, ``duration`` coercion) lives
-        on the fallback spec, not on a catch-all family."""
+        Veo, Kling V2.1, Seedance) fall through to the permissive fallback.
+        The base video surface (``cfg_scale`` alias, ``duration`` coercion)
+        lives on the fallback spec, not on a catch-all family."""
         provider = GMICloudVideoProvider(api_key="test")
         for slug in (
-            "seedance-1-0-pro-250528",
             "wan2.6-t2v",
             "luma-ray-2",
             # Newer Kling V2.5/V3 series uses lowercase; no dedicated
@@ -175,6 +174,23 @@ class TestVideoFamilyResolution:
             assert "cfg_scale" in spec.param_aliases.values()
             assert "duration" in spec.param_coercers
             assert "duration" in spec.param_schemas
+
+    def test_seedance_routes_to_seedance_family(self) -> None:
+        """Seedance (FLF2V + single-image I2V) gets its own family so
+        first/last-frame inputs map to GMI's documented ``first_frame`` /
+        ``last_frame`` slots instead of falling through to the fallback's
+        single ``image`` slot, which silently dropped the second frame
+        (#175)."""
+        provider = GMICloudVideoProvider(api_key="test")
+        for slug in ("seedance-2-0-260128", "seedance-1-0-pro-fast-251015"):
+            match = provider._models.match_family(slug)
+            assert match is not None, slug
+            assert match.family.name == "gmi-video-seedance", slug
+            allowlist = match.spec.param_allowlist or set()
+            assert "first_frame" in allowlist, slug
+            assert "last_frame" in allowlist, slug
+            # Same envelope convention as every other video family.
+            assert match.spec.extras.get("envelope_key") == "payload", slug
 
     def test_kling_v21_routes_to_dedicated_family(self) -> None:
         """Kling V2.1 (text2video + image2video) gets its own family
@@ -218,8 +234,8 @@ class TestUnstableExamples:
         """A slug that's neither in a family's ``unstable_examples`` nor
         in ``unstable_slugs`` should NOT carry the known_unstable detail."""
         provider = GMICloudVideoProvider(api_key="test")
-        # seedance — no family match, not in unstable_slugs
-        result = provider._models.validate("seedance-1-0-pro-250528")
+        # wan t2v — no family match, not in unstable_slugs
+        result = provider._models.validate("wan2.6-t2v")
         assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
         assert "known_unstable" not in (result.detail or "")
         # Veo3 — matches Veo family (canonical PascalCase form)

@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `classify_api_error` classifier instead of duplicating its "model" +
   "not found" pattern.
 
+### genblaze-gmicloud
+
+- **Fixed** data loss on Seedance first/last-frame (FLF2V) video steps
+  (#175). Seedance slugs (e.g. `seedance-2-0-260128`,
+  `seedance-1-0-pro-fast-251015`) matched no dedicated family, so they fell
+  through to the permissive fallback's `route_images(slots=("image",))`
+  mapping — the second frame was silently dropped and the first landed in
+  an `image` key that Seedance's API doesn't document. A new
+  `gmi-video-seedance` family routes both frames to GMI's documented
+  `first_frame`/`last_frame` slots (a single-image call still maps to
+  `first_frame` for I2V). Every other video family is unaffected.
+
 ### genblaze-lmnt
 
 - **Fixed** a fresh `pip install genblaze-lmnt` couldn't run at all (#166).
