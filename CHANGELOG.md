@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-cli
+
+- `genblaze verify --fetch` downloads each output asset and compares its bytes
+  against the manifest's committed `sha256` (with a `size_bytes` cross-check),
+  closing the gap where verification stopped at declared digests. Remote fetches
+  stream through the transfer layer's SSRF-validated, DNS-pinned path; presigned
+  query strings are redacted from output; `file://` assets resolve against the
+  same allowlist as the storage and ffmpeg paths, extensible via repeatable
+  `--allowed-root <dir>`. `--fetch` and `--hash-only` are mutually exclusive.
+  Default `verify` behavior and `Manifest.verify()` semantics are unchanged.
+
 ### genblaze-lmnt
 
 - **Fixed** a fresh `pip install genblaze-lmnt` couldn't run at all (#166).

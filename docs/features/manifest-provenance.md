@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-15 -->
+<!-- last_verified: 2026-07-21 -->
 # Feature: Manifest Provenance
 
 ## Purpose
@@ -73,7 +73,7 @@ authoritative reference.
 1. Read the embedded / sidecar manifest JSON (full canonical form).
 2. Parse with `parse_manifest(json.loads(text))` so schema migrations and manifest invariants are enforced.
 3. Call `manifest.verify_hash()` to check only canonical payload integrity, or `manifest.verify()` to also reject URL-only output assets, malformed sha256 declarations, and out-of-spec asset metadata.
-4. If you will fetch asset URLs, hash those fetched bytes separately and compare them with `asset.sha256`; manifest verification does not perform network reads.
+4. If you will fetch asset URLs, hash those fetched bytes separately and compare them with `asset.sha256`; manifest verification does not perform network reads (the CLI's `genblaze verify --fetch` does exactly this for you).
 
 ### Trust modes
 The hash provides **integrity**, not **authentication**. See
