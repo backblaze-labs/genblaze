@@ -1,6 +1,6 @@
 """GMICloud video-model families.
 
-Three families, ordered most-specific-first:
+Families, ordered most-specific-first:
 
 1. ``gmi-video-pixverse`` — Pixverse v5.6 t2v / i2v / transition. Adds
    ``quality`` to the allowlist (required by the upstream API but
@@ -12,6 +12,13 @@ Three families, ordered most-specific-first:
    = True`` so ``fetch_output`` knows to attach audio metadata to the
    asset alongside the video track. Carries ``veo3-fast`` as a known
    unstable example.
+4. ``gmi-video-kling-v21`` — Kling V2.1 (Text2Video / Image2Video),
+   PascalCase wire form via ``canonical_slug``.
+5. ``gmi-video-seedance`` — Seedance first/last-frame (FLF2V) and
+   single-image I2V. Adds ``first_frame`` / ``last_frame`` — GMI's
+   documented native slot names — so both frames of an FLF2V pair reach
+   the wire instead of silently degrading to the fallback's single
+   ``image`` slot (#175).
 
 Slugs that don't match any family fall through to the permissive
 fallback. Registry-level ``unstable_slugs`` carries the remaining
@@ -112,6 +119,10 @@ _PIXVERSE = _VIDEO_BASE.extend("quality")
 
 # Wan transition / r2v variants accept multiple keyframes via image_url.
 _WAN_REF = _VIDEO_BASE.extend("image_url", "tail_image_url")
+
+# Seedance first/last-frame (FLF2V) and single-image I2V both take GMI's
+# documented ``first_frame`` / ``last_frame`` native slots.
+_SEEDANCE = _VIDEO_BASE.extend("first_frame", "last_frame")
 
 
 _COMMON_INPUT = route_images(slots=("image",))
@@ -242,6 +253,28 @@ _GMI_VIDEO_KLING_V21_FAMILY = ModelFamily(
 )
 
 
+# Seedance FLF2V (first/last-frame) and single-image I2V — GMI documents
+# ``first_frame``/``last_frame`` as the native slot names. Without this
+# family, seedance slugs fell through to the permissive fallback's
+# ``route_images(slots=("image",))`` mapping, which both mis-named the
+# first frame and silently dropped the second (#175 — no warning, no
+# error, just a smaller-than-requested payload on the wire).
+_GMI_VIDEO_SEEDANCE_FAMILY = ModelFamily(
+    name="gmi-video-seedance",
+    pattern=re.compile(r"^seedance-"),
+    spec_template=ModelSpec(
+        model_id="*",
+        modality=Modality.VIDEO,
+        input_mapping=route_images(slots=("first_frame", "last_frame")),
+        extras=_ENVELOPE,
+        **_video_surface_fields(_SEEDANCE),
+    ),
+    description="Seedance first/last-frame (FLF2V) and single-image I2V.",
+    example_slugs=("seedance-2-0-260128", "seedance-1-0-pro-fast-251015"),
+    probe=empty_payload_request_probe,
+)
+
+
 _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
@@ -279,6 +312,7 @@ def build_video_registry() -> ModelRegistry:
             _GMI_VIDEO_WAN_R2V_FAMILY,
             _GMI_VIDEO_VEO_FAMILY,
             _GMI_VIDEO_KLING_V21_FAMILY,
+            _GMI_VIDEO_SEEDANCE_FAMILY,
         ),
         fallback=_FALLBACK,
         unstable_slugs=_UNSTABLE_SLUGS,

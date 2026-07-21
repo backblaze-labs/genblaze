@@ -486,6 +486,65 @@ def test_prepare_payload_is_idempotent_for_normalized_params(provider):
     assert provider.prepare_payload(step2) == once
 
 
+# --- Seedance FLF2V / I2V (#175) ---
+
+
+def test_seedance_flf2v_maps_both_frames(provider):
+    """Both frames of a Seedance first/last-frame step must reach the wire
+    under GMI's documented ``first_frame``/``last_frame`` names — the
+    permissive fallback silently dropped the second frame (#175)."""
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud",
+        model="seedance-2-0-260128",
+        prompt="bridge",
+        inputs=[
+            Asset(url="https://example.com/first.png", media_type="image/png"),
+            Asset(url="https://example.com/last.png", media_type="image/png"),
+        ],
+    )
+    result = provider.prepare_payload(step)
+    assert result == {
+        "prompt": "bridge",
+        "first_frame": "https://example.com/first.png",
+        "last_frame": "https://example.com/last.png",
+    }
+
+
+def test_seedance_single_image_maps_to_first_frame(provider):
+    """A single-image Seedance call (I2V, no last frame) still maps to
+    ``first_frame`` — GMI's documented I2V parameter for Seedance."""
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud",
+        model="seedance-1-0-pro-fast-251015",
+        prompt="animate this",
+        inputs=[Asset(url="https://example.com/first.png", media_type="image/png")],
+    )
+    result = provider.prepare_payload(step)
+    assert result == {
+        "prompt": "animate this",
+        "first_frame": "https://example.com/first.png",
+    }
+
+
+def test_unknown_video_model_still_hits_fallback(provider):
+    """A genuinely-unknown video slug still routes through the permissive
+    fallback's single ``image`` slot — only Seedance was pulled out of it."""
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud",
+        model="totally-unknown-video-slug-v9",
+        prompt="t",
+        inputs=[Asset(url="https://example.com/first.png", media_type="image/png")],
+    )
+    result = provider.prepare_payload(step)
+    assert result["image"] == "https://example.com/first.png"
+
+
 # --- Passthrough ---
 
 
