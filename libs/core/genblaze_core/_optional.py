@@ -35,6 +35,16 @@ class OptionalDependencyError(ImportError):
     lets new callers be more specific (``except
     OptionalDependencyError:``).
 
+    Note (issue #165): this is deliberately *not* also a subclass of
+    :class:`AttributeError` — CPython forbids multiple inheritance from
+    both (``TypeError: multiple bases have instance lay-out conflict``,
+    since both gained C-level slots in 3.10+). ``genblaze_core``'s
+    umbrella ``__getattr__`` catches this error at the lazy-import call
+    site and re-raises it as ``AttributeError`` (message preserved) so
+    ``hasattr``/``getattr(obj, name, default)`` probing works; direct
+    ``import genblaze_core.sinks.parquet`` (or any other non-attribute
+    import path) still sees this typed, ``ImportError``-catchable class.
+
     The error message embeds the install incantation —
     ``pip install "genblaze[parquet]"`` for ``ParquetSink``, etc. —
     so the failure mode points users at the fix rather than at a bare

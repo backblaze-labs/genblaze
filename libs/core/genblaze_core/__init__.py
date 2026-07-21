@@ -139,7 +139,21 @@ def __getattr__(name: str):
         module_path, attr = _LAZY_IMPORTS[name]
         import importlib
 
-        mod = importlib.import_module(module_path)
+        from genblaze_core._optional import OptionalDependencyError
+
+        try:
+            mod = importlib.import_module(module_path)
+        except OptionalDependencyError as exc:
+            # Issue #165: OptionalDependencyError is an ImportError, not an
+            # AttributeError, so hasattr()/getattr(obj, name, default) and
+            # introspection tooling (which only swallow AttributeError) would
+            # otherwise crash instead of treating the symbol as absent. Since
+            # this exact except clause *is* the __getattr__ path a consumer
+            # also hits on real usage (e.g. genblaze_core.ParquetSink(...)),
+            # re-raise as AttributeError with the original install-hint
+            # message preserved (chained via `from` so the typed error is
+            # still reachable through __cause__).
+            raise AttributeError(str(exc)) from exc
         val = getattr(mod, attr)
         globals()[name] = val
         return val
