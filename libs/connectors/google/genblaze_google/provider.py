@@ -21,8 +21,8 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
+from genblaze_core._utils import local_file_url
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, Track, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
@@ -307,7 +307,7 @@ class VeoProvider(BaseProvider):
                         os.close(fd)
                         out_path = Path(tmp)
                     out_path.write_bytes(video_bytes)
-                    video_uri = f"file://{quote(str(out_path.resolve()))}"
+                    video_uri = local_file_url(out_path.resolve())
                 else:
                     # Gemini Developer API mode: the Files API download
                     # populates video_bytes as a side effect; the response's

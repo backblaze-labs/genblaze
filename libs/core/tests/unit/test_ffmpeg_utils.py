@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from pathlib import PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -70,12 +71,23 @@ class TestResolveInputPath:
             resolve_input_path("http://example.com/file.mp4")
 
     def test_windows_drive_letter_file_url(self, tmp_path, monkeypatch):
-        """Regression for #132: url2pathname() strips the leading slash before a
-        Windows drive letter so Path.resolve() produces an absolute path that
-        passes the allowlist check. Simulates Windows url2pathname behavior."""
+        """Regression for #132/#164: url2pathname() strips the leading slash
+        before a Windows drive letter so Path.resolve() produces an absolute
+        path that passes the allowlist check.
+
+        The input URL is built with PureWindowsPath.as_uri() — the exact
+        form local_file_url() (the shared connector helper) produces for a
+        Windows path — so ffmpeg-chained providers accept what connectors
+        now emit. url2pathname is monkeypatched to return the pre-computed
+        real_path since a genuine Windows path string can't round-trip
+        through POSIX pathlib on this host; nturl2path.url2pathname is
+        exercised unmocked in test_utils.py::TestLocalFileUrl.
+        """
         f = tmp_path / "clip.mp4"
         f.write_bytes(b"fake")
         real_path = str(f.resolve())
+        win_url = PureWindowsPath(r"C:\tmp\clip.mp4").as_uri()
+        assert win_url == "file:///C:/tmp/clip.mp4"
         monkeypatch.setattr(
             "genblaze_core.providers._ffmpeg_utils.url2pathname",
             lambda _: real_path,
@@ -84,7 +96,7 @@ class TestResolveInputPath:
             "genblaze_core.providers._ffmpeg_utils._ALLOWED_FILE_ROOTS",
             (tmp_path.resolve(),),
         )
-        result = resolve_input_path("file:///C:/tmp/clip.mp4")
+        result = resolve_input_path(win_url)
         assert result == real_path
 
 

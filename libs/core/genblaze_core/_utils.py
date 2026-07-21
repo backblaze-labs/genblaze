@@ -33,6 +33,39 @@ def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def local_file_url(path: Path) -> str:
+    """Build a ``file://`` URL for an absolute local path.
+
+    Uses ``Path.as_uri()`` (RFC 8089), which yields the empty-netloc form —
+    ``file:///C:/Users/...`` on Windows, ``file:///tmp/...`` on POSIX — that
+    the rest of the pipeline already expects: ``_read_local_file``,
+    ``validate_chain_input_url``, and the assemblyai connector all parse
+    ``file://`` URLs via ``url2pathname``, which handles this form correctly
+    on every platform.
+
+    The previous per-connector pattern, ``f"file://{quote(str(path))}"``,
+    percent-encoded Windows drive colons and backslashes
+    (``C:\\Users\\...`` -> ``C%3A%5CUsers%5C...``). ``urlparse`` then read
+    the entire percent-encoded string as ``netloc`` with an empty ``path``,
+    so every connector-produced asset silently failed to upload on Windows
+    (#164). Single chokepoint for all connectors + core ffmpeg providers
+    that write a local output and expose it as a ``file://`` asset.
+
+    Windows UNC paths (``\\\\server\\share\\...``) are not supported:
+    ``as_uri()`` renders them with the server in the ``netloc``, which the
+    empty-netloc-only parsers reject. Call sites write to ``tempfile``
+    output on a local drive, so this does not arise in practice.
+
+    Args:
+        path: An absolute filesystem path — callers should ``.resolve()``
+            first.
+
+    Raises:
+        ValueError: If ``path`` is not absolute (raised by ``as_uri()``).
+    """
+    return path.as_uri()
+
+
 def normalize_tenant_id(tenant_id: str | None) -> str | None:
     """Normalize a tenant identifier: strip surrounding whitespace, "" -> None.
 

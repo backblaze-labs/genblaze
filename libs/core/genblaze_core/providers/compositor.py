@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from urllib.parse import quote
 
+from genblaze_core._utils import local_file_url
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, Track, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepType
@@ -111,7 +111,7 @@ class FFmpegCompositor(SyncProvider):
 
         run_ffmpeg(cmd, timeout=self._timeout)
 
-        file_url = f"file://{quote(str(out_path.resolve()))}"
+        file_url = local_file_url(out_path.resolve())
         asset = Asset(url=file_url, media_type="video/mp4")
 
         video_meta = VideoMetadata(has_audio=True)

@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from urllib.parse import quote
 
+from genblaze_core._utils import local_file_url
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepType
@@ -320,7 +320,7 @@ class FFmpegTransform(SyncProvider):
 
         run_ffmpeg(cmd, timeout=self._timeout)
 
-        file_url = f"file://{quote(str(out_path.resolve()))}"
+        file_url = local_file_url(out_path.resolve())
         if operation == "convert_format":
             media_type = _FORMAT_MEDIA_TYPES.get(ext, input_asset.media_type)
         else:

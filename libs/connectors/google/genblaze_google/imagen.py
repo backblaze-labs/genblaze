@@ -21,8 +21,8 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
+from genblaze_core._utils import local_file_url
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
@@ -188,7 +188,7 @@ class ImagenProvider(SyncProvider):
                     out_path = Path(tmp)
 
                 img.image.save(str(out_path))
-                file_url = f"file://{quote(str(out_path.resolve()))}"
+                file_url = local_file_url(out_path.resolve())
                 step.assets.append(Asset(url=file_url, media_type=mime_type))
 
             self._apply_registry_pricing(step)

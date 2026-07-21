@@ -112,8 +112,9 @@ def _audio_ref_for_sdk(audio_url: str) -> str:
 
     The AssemblyAI SDK treats any non-HTTP string as a *local file path* and
     opens it with ``open(ref, "rb")``. A ``file://`` URI — the form chained
-    SyncProvider outputs take, percent-encoded via ``quote()`` — would be
-    opened literally as the filename ``file:///tmp/a.wav`` and fail. Convert
+    SyncProvider outputs take, built via ``Path.as_uri()``
+    (``genblaze_core._utils.local_file_url``) — would be opened literally as
+    the filename ``file:///tmp/a.wav`` and fail. Convert
     validated ``file://`` URIs to a real filesystem path (``url2pathname``
     handles percent-decoding and platform path conversion); pass ``https://``
     URLs through untouched so the SDK fetches them remotely.

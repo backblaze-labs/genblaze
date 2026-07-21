@@ -29,9 +29,8 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-from genblaze_core._utils import _run_async
+from genblaze_core._utils import _run_async, local_file_url
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, VideoMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode
@@ -256,7 +255,7 @@ class DecartVideoProvider(BaseProvider):
                 out_path = Path(tmp)
 
             out_path.write_bytes(result.data)
-            file_url = f"file://{quote(str(out_path.resolve()))}"
+            file_url = local_file_url(out_path.resolve())
             asset = Asset(url=file_url, media_type="video/mp4")
             # Populate video metadata with resolution if provided
             vm_kwargs: dict[str, Any] = {"has_audio": False}
