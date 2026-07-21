@@ -25,11 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout; the unbounded `lmnt>=1.0` dependency pin let `pip` resolve the
   current `lmnt` 2.x release, which has no `lmnt.api` module, so every
   `generate()` call failed with `ModuleNotFoundError`. Ported the connector
-  to the 2.x surface: the synchronous `lmnt.Lmnt` client and
-  `client.speech.generate_detailed(..., return_durations=True)` (the JSON
-  counterpart to `generate()` that also returns word-level durations,
-  matching the old 1.x `synthesize()` response shape). Pin tightened to
-  `lmnt>=2.0,<3`.
+  to the 2.6+ surface: the synchronous `lmnt.Lmnt` client and
+  `client.speech.generate_detailed(..., return_timestamps=True)` (the JSON
+  counterpart to `generate()` that also returns word-level timestamps,
+  matching the old 1.x `synthesize()` response shape). Pinned to
+  `lmnt>=2.6,<3`: 2.6.0 renamed this endpoint's `return_durations`/`durations`
+  (item type `Duration`) to `return_timestamps`/`timestamps` (`Timestamp`),
+  so the floor guarantees a single, consistent response shape across the
+  supported range (verified against the PyPI-latest `lmnt` 2.13.0).
 - **Behavior change**: the 1.x `speed` step param has no 2.x equivalent
   (LMNT replaced it with `temperature`/`top_p`, which control
   expressiveness, not pacing). A step that previously set `speed` was

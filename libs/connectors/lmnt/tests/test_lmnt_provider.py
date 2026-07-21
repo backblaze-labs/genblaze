@@ -11,20 +11,21 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
-from lmnt.types.speech_generate_detailed_response import Duration, SpeechGenerateDetailedResponse
+from lmnt.types.speech_generate_detailed_response import SpeechGenerateDetailedResponse, Timestamp
 
 
-def _detailed_response(audio: bytes = b"fake-audio-data", durations=None):
-    """Build a real ``lmnt`` 2.x ``generate_detailed()`` response.
+def _detailed_response(audio: bytes = b"fake-audio-data", timestamps=None):
+    """Build a real ``lmnt`` 2.6+ ``generate_detailed()`` response.
 
     Using the actual pydantic response type (rather than a dict or
     MagicMock) keeps these tests honest about the real SDK's response
-    shape — see issue #166.
+    shape — see issue #166. lmnt 2.6.0 renamed the ``durations`` field
+    (item type ``Duration``) to ``timestamps`` (``Timestamp``); the pin
+    floor is ``lmnt>=2.6``, so these tests build against the modern shape.
     """
     return SpeechGenerateDetailedResponse(
         audio=base64.b64encode(audio).decode(),
-        seed=0,
-        durations=durations,
+        timestamps=timestamps,
     )
 
 
@@ -99,12 +100,12 @@ def test_durations_stored_in_payload(mock_lmnt):
     provider, client = mock_lmnt
     client.speech.generate_detailed = MagicMock(
         return_value=_detailed_response(
-            durations=[Duration(text="Hello", start=0, duration=0.5)],
+            timestamps=[Timestamp(text="Hello", start=0, duration=0.5)],
         )
     )
     step = Step(provider="lmnt", model="lmnt-1", prompt="Hello")
     result = provider.generate(step)
-    assert result.provider_payload["lmnt"]["durations"] is not None
+    assert result.provider_payload["lmnt"]["timestamps"] is not None
     # Word timings stored as typed WordTiming objects on asset.audio
     assert result.assets[0].audio is not None
     assert result.assets[0].audio.word_timings is not None
@@ -125,10 +126,10 @@ def test_multi_word_duration(mock_lmnt):
     provider, client = mock_lmnt
     client.speech.generate_detailed = MagicMock(
         return_value=_detailed_response(
-            durations=[
-                Duration(text="Hello", start=0, duration=0.4),
-                Duration(text="beautiful", start=0.4, duration=0.5),
-                Duration(text="world", start=0.9, duration=0.4),
+            timestamps=[
+                Timestamp(text="Hello", start=0, duration=0.4),
+                Timestamp(text="beautiful", start=0.4, duration=0.5),
+                Timestamp(text="world", start=0.9, duration=0.4),
             ],
         )
     )

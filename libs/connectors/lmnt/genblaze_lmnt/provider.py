@@ -24,11 +24,14 @@ Register it explicitly if you want cost tracking::
         "lmnt-1", per_input_chars(0.00015, per=1)
     )
 
-**lmnt SDK 2.x**: the client is synchronous (``lmnt.Lmnt``) and speech is
-generated via ``client.speech.generate_detailed(..., return_durations=True)``,
-which returns base64-encoded audio + optional word-level durations in one
+**lmnt SDK 2.6+**: the client is synchronous (``lmnt.Lmnt``) and speech is
+generated via ``client.speech.generate_detailed(..., return_timestamps=True)``,
+which returns base64-encoded audio + optional word-level timestamps in one
 JSON response (the closest 2.x equivalent of the old 1.x
-``Speech.synthesize()`` dict). The 1.x SDK's ``speed`` parameter has no
+``Speech.synthesize()`` dict). lmnt 2.6.0 renamed this endpoint's
+``return_durations``/``durations`` surface to ``return_timestamps``/
+``timestamps`` (item type ``Duration`` → ``Timestamp``), so the pin floor is
+``lmnt>=2.6``. The 1.x SDK's ``speed`` parameter has no
 2.x equivalent — LMNT replaced it with ``temperature``/``top_p`` on the
 "blizzard" model, which control expressiveness rather than pacing, so
 there's no direct pacing knob to forward it to. A ``speed`` step param is
@@ -168,7 +171,7 @@ class LMNTProvider(SyncProvider):
             generate_kwargs: dict = {
                 "voice": voice_id,
                 "text": payload.get("prompt", step.prompt or ""),
-                "return_durations": True,
+                "return_timestamps": True,
             }
 
             if "format" in payload:
@@ -190,7 +193,7 @@ class LMNTProvider(SyncProvider):
 
             # generate_detailed() is the JSON-response counterpart to the
             # raw-bytes speech.generate() — it's the only endpoint that can
-            # also return word-level durations (return_durations=True),
+            # also return word-level timestamps (return_timestamps=True),
             # matching the shape the old 1.x synthesize() call returned.
             result = client.speech.generate_detailed(**generate_kwargs)
             audio_bytes = base64.b64decode(result.audio)
@@ -210,20 +213,20 @@ class LMNTProvider(SyncProvider):
 
             audio_meta_kwargs: dict[str, Any] = {"channels": 1, "codec": output_format}
 
-            # Convert LMNT durations (list of ``lmnt.types.Duration`` pydantic
+            # Convert LMNT timestamps (list of ``lmnt.types.Timestamp`` pydantic
             # models) into typed WordTiming objects.
-            durations = result.durations
-            if durations:
+            timestamps = result.timestamps
+            if timestamps:
                 word_timings = [
-                    WordTiming(word=d.text, start=d.start, end=d.start + d.duration)
-                    for d in durations
+                    WordTiming(word=t.text, start=t.start, end=t.start + t.duration)
+                    for t in timestamps
                 ]
                 audio_meta_kwargs["word_timings"] = word_timings
                 # Compute duration from word timings
                 if word_timings:
                     asset.duration = max(wt.end for wt in word_timings)
                 step.provider_payload = {
-                    "lmnt": {"durations": [d.model_dump() for d in durations]}
+                    "lmnt": {"timestamps": [t.model_dump() for t in timestamps]}
                 }
 
             asset.audio = AudioMetadata(**audio_meta_kwargs)
