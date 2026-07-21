@@ -2,31 +2,45 @@
 
 from __future__ import annotations
 
+import base64
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
+from lmnt.types.speech_generate_detailed_response import SpeechGenerateDetailedResponse, Timestamp
+
+
+def _detailed_response(audio: bytes = b"fake-audio-data", timestamps=None):
+    """Build a real ``lmnt`` 2.6+ ``generate_detailed()`` response.
+
+    Using the actual pydantic response type (rather than a dict or
+    MagicMock) keeps these tests honest about the real SDK's response
+    shape — see issue #166. lmnt 2.6.0 renamed the ``durations`` field
+    (item type ``Duration``) to ``timestamps`` (``Timestamp``); the pin
+    floor is ``lmnt>=2.6``, so these tests build against the modern shape.
+    """
+    return SpeechGenerateDetailedResponse(
+        audio=base64.b64encode(audio).decode(),
+        timestamps=timestamps,
+    )
 
 
 @pytest.fixture
 def mock_lmnt(tmp_path):
-    """Patch lmnt with a mock client."""
+    """Patch ``LMNTProvider`` with a mock lmnt 2.x ``Lmnt`` client."""
     mock_client = MagicMock()
-    mock_client.synthesize = AsyncMock(return_value={"audio": b"fake-audio-data", "durations": []})
-    mock_client.close = AsyncMock()
+    mock_client.speech.generate_detailed = MagicMock(return_value=_detailed_response())
+    mock_client.close = MagicMock()
 
-    mock_lmnt_mod = MagicMock()
+    from genblaze_lmnt import LMNTProvider
 
-    with patch.dict("sys.modules", {"lmnt": mock_lmnt_mod, "lmnt.api": MagicMock()}):
-        from genblaze_lmnt import LMNTProvider
-
-        provider = LMNTProvider(api_key="test-key", output_dir=str(tmp_path))
-        provider._speech_client = mock_client
-        yield provider, mock_client
+    provider = LMNTProvider(api_key="test-key", output_dir=str(tmp_path))
+    provider._speech_client = mock_client
+    yield provider, mock_client
 
 
 def test_generate_returns_audio_asset(mock_lmnt):
@@ -52,25 +66,46 @@ def test_voice_param_passed(mock_lmnt):
         provider="lmnt",
         model="lmnt-1",
         prompt="test",
-        params={"voice": "custom-voice-id", "speed": "1.2"},
+        params={"voice": "custom-voice-id"},
     )
     provider.generate(step)
-    call_kwargs = client.synthesize.call_args[1]
+    call_kwargs = client.speech.generate_detailed.call_args[1]
     assert call_kwargs["voice"] == "custom-voice-id"
-    assert call_kwargs["speed"] == 1.2
+
+
+def test_speed_param_dropped_with_warning(mock_lmnt, caplog):
+    """``speed`` has no lmnt 2.x equivalent — it must not be forwarded
+    (the real SDK would raise TypeError on an unknown kwarg), and the
+    user should be warned rather than have it silently vanish."""
+    provider, client = mock_lmnt
+    step = Step(
+        provider="lmnt",
+        model="lmnt-1",
+        prompt="test",
+        params={"speed": "1.2"},
+    )
+    with caplog.at_level("WARNING", logger="genblaze.lmnt"):
+        provider.generate(step)
+    call_kwargs = client.speech.generate_detailed.call_args[1]
+    assert "speed" not in call_kwargs
+    # Warning must name the 2.x replacement knobs so it's actionable, not
+    # just an announcement that something got dropped.
+    assert any(
+        "speed" in rec.message and "temperature" in rec.message and "top_p" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_durations_stored_in_payload(mock_lmnt):
     provider, client = mock_lmnt
-    client.synthesize = AsyncMock(
-        return_value={
-            "audio": b"fake-audio",
-            "durations": [{"text": "Hello", "start": 0, "end": 0.5}],
-        }
+    client.speech.generate_detailed = MagicMock(
+        return_value=_detailed_response(
+            timestamps=[Timestamp(text="Hello", start=0, duration=0.5)],
+        )
     )
     step = Step(provider="lmnt", model="lmnt-1", prompt="Hello")
     result = provider.generate(step)
-    assert result.provider_payload["lmnt"]["durations"] is not None
+    assert result.provider_payload["lmnt"]["timestamps"] is not None
     # Word timings stored as typed WordTiming objects on asset.audio
     assert result.assets[0].audio is not None
     assert result.assets[0].audio.word_timings is not None
@@ -89,19 +124,18 @@ def test_audio_type_metadata(mock_lmnt):
 def test_multi_word_duration(mock_lmnt):
     """Duration is max of all word end times."""
     provider, client = mock_lmnt
-    client.synthesize = AsyncMock(
-        return_value={
-            "audio": b"fake-audio",
-            "durations": [
-                {"text": "Hello", "start": 0, "end": 0.4},
-                {"text": "beautiful", "start": 0.4, "end": 0.9},
-                {"text": "world", "start": 0.9, "end": 1.3},
+    client.speech.generate_detailed = MagicMock(
+        return_value=_detailed_response(
+            timestamps=[
+                Timestamp(text="Hello", start=0, duration=0.4),
+                Timestamp(text="beautiful", start=0.4, duration=0.5),
+                Timestamp(text="world", start=0.9, duration=0.4),
             ],
-        }
+        )
     )
     step = Step(provider="lmnt", model="lmnt-1", prompt="Hello beautiful world")
     result = provider.generate(step)
-    assert result.assets[0].duration == 1.3
+    assert result.assets[0].duration == pytest.approx(1.3)
     assert result.assets[0].audio is not None
     assert len(result.assets[0].audio.word_timings) == 3
     assert result.assets[0].audio.word_timings[2].word == "world"
@@ -145,10 +179,33 @@ def test_cost_none_empty_prompt(mock_lmnt):
 
 def test_api_error_raises(mock_lmnt):
     provider, client = mock_lmnt
-    client.synthesize = AsyncMock(side_effect=RuntimeError("401 unauthorized"))
+    client.speech.generate_detailed = MagicMock(side_effect=RuntimeError("401 unauthorized"))
     step = Step(provider="lmnt", model="lmnt-1", prompt="test")
     with pytest.raises(ProviderError, match="LMNT TTS failed"):
         provider.generate(step)
+
+
+# --- Real SDK import surface (issue #166 regression) -----------------------
+#
+# The fixtures above inject a mock client directly onto ``_speech_client``,
+# so they'd happily pass even if ``_make_client()`` imported a module/class
+# that doesn't exist in the real, installed ``lmnt`` package. This test
+# deliberately exercises ``_make_client()`` against whatever version of
+# ``lmnt`` is actually installed (a real dependency of this package), so a
+# future import-path drift (like #166: ``lmnt.api.Speech`` removed in lmnt
+# 2.x) fails here instead of shipping silently.
+
+
+def test_make_client_matches_installed_sdk():
+    """``_make_client()`` must import successfully against the real,
+    installed ``lmnt`` package — not a mocked stand-in."""
+    from genblaze_lmnt import LMNTProvider
+    from lmnt import Lmnt
+
+    provider = LMNTProvider(api_key="test-key")
+    client = provider._make_client()
+    assert isinstance(client, Lmnt)
+    client.close()
 
 
 # --- Catalog-decoupling proof-point ---
@@ -199,19 +256,12 @@ class TestLMNTCompliance(ProviderComplianceTests):
     # see ``docs/reference/pricing-recipes.md``.
     expects_cost = False
 
-    @pytest.fixture(autouse=True)
-    def _patch_sdk(self):
-        with patch.dict("sys.modules", {"lmnt": MagicMock(), "lmnt.api": MagicMock()}):
-            yield
-
     def make_provider(self):
         from genblaze_lmnt import LMNTProvider
 
         mock_client = MagicMock()
-        mock_client.synthesize = AsyncMock(
-            return_value={"audio": b"fake-audio-data", "durations": []}
-        )
-        mock_client.close = AsyncMock()
+        mock_client.speech.generate_detailed = MagicMock(return_value=_detailed_response())
+        mock_client.close = MagicMock()
         provider = LMNTProvider(api_key="test-key", output_dir=tempfile.mkdtemp())
         provider._speech_client = mock_client
         return provider

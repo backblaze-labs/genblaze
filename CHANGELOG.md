@@ -18,6 +18,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--allowed-root <dir>`. `--fetch` and `--hash-only` are mutually exclusive.
   Default `verify` behavior and `Manifest.verify()` semantics are unchanged.
 
+### genblaze-lmnt
+
+- **Fixed** a fresh `pip install genblaze-lmnt` couldn't run at all (#166).
+  `provider.py` imported `from lmnt.api import Speech`, the pre-2.0 SDK
+  layout; the unbounded `lmnt>=1.0` dependency pin let `pip` resolve the
+  current `lmnt` 2.x release, which has no `lmnt.api` module, so every
+  `generate()` call failed with `ModuleNotFoundError`. Ported the connector
+  to the 2.6+ surface: the synchronous `lmnt.Lmnt` client and
+  `client.speech.generate_detailed(..., return_timestamps=True)` (the JSON
+  counterpart to `generate()` that also returns word-level timestamps,
+  matching the old 1.x `synthesize()` response shape). Pinned to
+  `lmnt>=2.6,<3`: 2.6.0 renamed this endpoint's `return_durations`/`durations`
+  (item type `Duration`) to `return_timestamps`/`timestamps` (`Timestamp`),
+  so the floor guarantees a single, consistent response shape across the
+  supported range (verified against the PyPI-latest `lmnt` 2.13.0).
+- **Behavior change**: the 1.x `speed` step param has no 2.x equivalent
+  (LMNT replaced it with `temperature`/`top_p`, which control
+  expressiveness, not pacing). A step that previously set `speed` was
+  forwarded straight to the 1.x API; it's now dropped before the call —
+  callers get default-pace audio plus a `logging.warning` naming
+  `temperature`/`top_p` as the closest replacement knobs, instead of the
+  `TypeError` that forwarding an unsupported kwarg to the real 2.x SDK
+  would raise.
+
 ## [0.5.0] - 2026-07-16
 
 Correctness and security hardening across the pipeline, provenance, streaming,
