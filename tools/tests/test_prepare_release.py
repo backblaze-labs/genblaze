@@ -260,6 +260,16 @@ def test_rewrite_floors_rewrites_multiple_deps_on_one_line():
     assert len(changes) == 2
 
 
+def test_rewrite_floors_leaves_untracked_dep_on_a_mixed_line():
+    """The token regex matches any quoted `"name>=…"`; the name_to_key gate is
+    the only thing keeping third-party deps untouched. Prove it holds when a
+    tracked and an untracked dep share one inline line."""
+    text = 'all = ["genblaze-core>=0.3.6,<0.4", "click>=8.0,<9"]\n'
+    new_text, changes = pr.rewrite_floors(text, {"genblaze-core": "core"}, {"core": "0.3.7"})
+    assert new_text == 'all = ["genblaze-core>=0.3.7,<0.4", "click>=8.0,<9"]\n'
+    assert changes == [("genblaze-core", "genblaze-core>=0.3.6,<0.4", "genblaze-core>=0.3.7,<0.4")]
+
+
 def test_map_changed_files_prefix_matching_does_not_false_positive():
     """`openai` and a hypothetical `openai-realtime` connector must not
     cross-match on a bare prefix (no trailing-slash boundary bug)."""
