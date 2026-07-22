@@ -171,6 +171,12 @@ class TestHeuristicUnsafe:
             r"(a+)\s*(a+)$",  # #157: whitespace-class nullable delimiter
             r"(a\|b|a\|b)+",  # #157: escaped literal pipe inside a branch must not
             # be mistaken for a branch delimiter by the top-level splitter
+            r"([a]|aa)+$",  # #157 review: class vs. literal, same char — semantic,
+            # not textual, overlap
+            r"(\x61|aa)+$",  # #157 review: hex escape vs. literal, same char
+            r"(?:[a-c]|[a-z]{2})+",  # #157 review: overlapping character-class
+            # ranges at different match lengths — the confirmed live bypass
+            # from the security review of this fix
         ],
         ids=[
             "nested-plus",
@@ -190,6 +196,9 @@ class TestHeuristicUnsafe:
             "delimiter-separated-groups-issue-repro",
             "delimiter-separated-groups-whitespace-class",
             "alternation-escaped-pipe-duplicate",
+            "overlapping-alternation-class-vs-literal",
+            "overlapping-alternation-hex-escape",
+            "overlapping-alternation-class-range-different-lengths",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
@@ -219,6 +228,17 @@ class TestHeuristicUnsafe:
             # #157: a quantified lookahead is zero-width and out of scope
             # for the ambiguous-alternation check (skipped, not analyzed).
             r"(?=a|aa)+",
+            # #157 review: disjoint character classes — no character can be
+            # attributed to either branch, so no partition ambiguity.
+            r"(?:[a-z]|[0-9])+",
+            r"(?:[a-z]|-)+",
+            # #157 review: documented residual gap, not a regression — a
+            # branch containing a nested group isn't reduced to a charset
+            # (see _branch_charset's docstring), so this specific semantic
+            # overlap ([a(?:b)?] vs "aa", both able to match "a") still
+            # isn't caught. Asserted here so a future attempt to close this
+            # gap updates this test rather than silently changing behavior.
+            r"(a(?:b)?|aa)+$",
         ],
     )
     def test_passes_known_good_shapes(self, src: str) -> None:
