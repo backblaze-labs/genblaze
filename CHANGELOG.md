@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fixed** `install-verify`'s "Wait for PyPI to index the umbrella" pre-check
   only polled for the `genblaze` umbrella itself, but `genblaze[all]` also
-  resolves ~18 connector packages that propagate across PyPI's CDN
+  resolves the ~14 connector packages that propagate across PyPI's CDN
   independently — so the pre-check could pass while a connector's simple-index
   page was still stale, and the very next `pip install "genblaze[all]==$version"`
   false-red the job on a genuinely-healthy release (hit twice during the

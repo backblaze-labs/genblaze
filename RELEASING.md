@@ -286,7 +286,7 @@ production releases (recommended once the project graduates from alpha).
 * **install-verify is best-effort.** PyPI's CDN sometimes lags. The
   umbrella pre-check retries for 2 minutes before failing, and the
   `genblaze[all]` install itself retries up to 5 times (30s apart) since
-  any of its ~18 connector packages can propagate independently of the
+  any of its ~14 connector packages can propagate independently of the
   umbrella (#189). A red `install-verify` after a green publish graph
   usually means a package is fine and the index is just behind — verify
   manually with `pip install "genblaze[all]==X.Y.Z"` in a fresh venv
