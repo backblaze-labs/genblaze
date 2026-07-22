@@ -29,11 +29,13 @@ regardless of whether ``re2`` is installed. Two gates are applied:
 * The static heuristic always runs and flags the most common
   catastrophic-backtracking shapes: nested unbounded quantifiers (bare
   ``+``/``*`` or an open-ended ``{n,}`` brace quantifier, at any nesting
-  depth), alternations of identical branches, runs of the same atom
-  quantified back-to-back (``a+a+a+``), and 2+ adjacent parenthesized
-  groups each carrying an unbounded quantifier (``(a+)(a+)``) — the
-  ambiguous-partitioning shape, distinct from ``(a+)+``'s outer-quantifier
-  shape.
+  depth), a quantified alternation with overlapping branches — not just
+  byte-identical ones, e.g. ``(a|aa)+`` (issue #157) — runs of the same
+  atom quantified back-to-back (``a+a+a+``), and 2+ adjacent parenthesized
+  groups each carrying an unbounded quantifier, optionally separated by a
+  nullable delimiter such as ``-?`` or ``\\s*`` (``(a+)(a+)``,
+  ``(a+)-?(a+)`` — issue #157) — the ambiguous-partitioning shape, distinct
+  from ``(a+)+``'s outer-quantifier shape.
 
 The heuristic is conservative on purpose. It rejects clearly-bad patterns;
 it does not pretend to detect every pathological case. Connector authors
@@ -41,6 +43,18 @@ who hit a false positive can rewrite the pattern (typically by anchoring
 or making quantifiers possessive). Authors who write subtly-bad patterns
 that slip past the heuristic are caught by the perf gate in
 ``tests/perf/test_registry_perf.py`` (P99 < 100 µs on adversarial inputs).
+
+Known residual gaps (not detected): overlapping alternation branches where
+neither is a prefix of the other (e.g. shared suffix or interior overlap,
+as opposed to ``a``/``aa``'s prefix relationship); a mandatory (non-
+nullable) delimiter whose own characters overlap with a flanking group's
+quantified content (e.g. ``(a+)a(a+)`` — the separator "a" isn't nullable,
+so ``_is_nullable_separator`` doesn't flag it, but it can still coincide
+with the groups' own matched text). Both are true ReDoS shapes in
+principle; they're narrower and rarer than the patterns above, and are left
+as future hardening rather than blocking this heuristic on a full
+regex-language-equivalence analysis, which is out of scope for a
+lightweight static check.
 """
 
 from __future__ import annotations
@@ -86,12 +100,15 @@ _UNBOUNDED_QUANT: Final[str] = r"(?:[+*]|\{\d*,\})"
 _NESTED_QUANTIFIER: Final[re.Pattern[str]] = re.compile(
     rf"\([^)]*{_UNBOUNDED_QUANT}[^)]*\)\s*{_UNBOUNDED_QUANT}"
 )
-_DUPLICATE_ALTERNATION: Final[re.Pattern[str]] = re.compile(
-    rf"\(([^)|]+)\|\1\)\s*{_UNBOUNDED_QUANT}"
-)
 _ADJACENT_QUANTIFIED_ATOM: Final[re.Pattern[str]] = re.compile(
     rf"(\\.|\[[^\]]*\]|.){_UNBOUNDED_QUANT}(?:\1{_UNBOUNDED_QUANT}){{2,}}"
 )
+
+# A leading capturing-group marker to strip before splitting an alternation's
+# branches: non-capturing (`?:`) or named (`?P<name>`). Lookaround markers
+# (`?=`, `?!`, `?<=`, `?<!`) intentionally don't match here — see
+# ``_has_ambiguous_quantified_alternation``.
+_GROUP_MARKER: Final[re.Pattern[str]] = re.compile(r"^\?(?::|P<[^>]*>)")
 
 
 def _iter_group_spans(src: str) -> list[tuple[int, int]]:
@@ -151,10 +168,40 @@ def _has_nested_unbounded_quantifier(src: str) -> bool:
     return False
 
 
+def _is_nullable_separator(fragment: str) -> bool:
+    """True if ``fragment`` — the raw text sitting between two top-level
+    groups — can itself match the empty string, e.g. ``-?``, ``\\s*``,
+    ``(?:foo)?``, or the empty string itself.
+
+    A separator that can vanish doesn't break adjacency: on the adversarial
+    input that makes the two flanking groups ambiguous, the regex engine
+    also tries the zero-length match for the separator, so the groups are
+    effectively adjacent on that backtracking path too (issue #157 — the
+    original adjacency check required the separator to be literally empty,
+    which a bare ``-?`` between ``(a+)`` groups evades while preserving the
+    exponential blowup). Checked by actually compiling the fragment and
+    matching it against ``""`` rather than pattern-matching its syntax,
+    since that generalizes to any nullable construct without needing to
+    enumerate them.
+    """
+    if fragment == "":
+        return True
+    try:
+        return re.fullmatch(fragment, "") is not None
+    except re.error:
+        # The fragment isn't valid as a standalone pattern (e.g. it contains
+        # a backreference to a group defined outside it). Can't prove it's
+        # nullable, but per this module's conservative bias (false positives
+        # over false negatives — see module docstring), don't rule it out
+        # either: treat it as a nullable/unsafe separator.
+        return True
+
+
 def _has_adjacent_unbounded_groups(src: str) -> bool:
     """True if 2+ top-level ``(...)`` groups, each containing an unbounded
-    quantifier, appear back-to-back with nothing between them — the
-    ``(a+)(a+)(a+)`` shape.
+    quantifier, appear back-to-back — separated by nothing, or only by text
+    that can match the empty string — the ``(a+)(a+)(a+)`` /
+    ``(a+)-?(a+)-?(a+)`` shape.
 
     Unlike ``(a+)+`` (an outer quantifier repeating one ambiguous group),
     this has *no* outer quantifier at all — the ambiguity comes purely from
@@ -164,7 +211,10 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     100-character adversarial string under stdlib ``re``) — a real bypass
     of both ``_has_nested_unbounded_quantifier`` (no group is *itself*
     followed by a quantifier) and ``_ADJACENT_QUANTIFIED_ATOM`` (a
-    parenthesized group isn't a single "atom" that regex matches).
+    parenthesized group isn't a single "atom" that regex matches). A
+    *mandatory* (non-nullable) separator between the groups — a literal
+    character the group's own quantifier can't also match away — remains a
+    real anchor and isn't flagged (see ``_is_nullable_separator``).
     """
     spans = _iter_group_spans(src)
     # Only top-level groups matter for this shape — a group nested inside
@@ -177,11 +227,96 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     prev_end: int | None = None
     for start, end in top_level:
         unbounded = bool(re.search(_UNBOUNDED_QUANT, src[start + 1 : end]))
-        adjacent = prev_end is not None and start == prev_end + 1
+        adjacent = prev_end is not None and _is_nullable_separator(src[prev_end + 1 : start])
         run = run + 1 if (adjacent and unbounded and run) else int(unbounded)
         if run >= 2:
             return True
         prev_end = end
+    return False
+
+
+def _split_top_level_alternatives(body: str) -> list[str]:
+    """Split ``body`` on ``|`` characters at nesting depth 0, treating
+    nested ``(...)`` groups and ``[...]`` classes as opaque so a branch
+    boundary inside a nested alternation (``(?:a|(?:b|c))``) isn't mistaken
+    for one of ``body``'s own top-level branches.
+    """
+    branches: list[str] = []
+    depth = 0
+    in_class = False
+    start = 0
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            branches.append(body[start:i])
+            start = i + 1
+        i += 1
+    branches.append(body[start:])
+    return branches
+
+
+def _has_ambiguous_quantified_alternation(src: str) -> bool:
+    """True if some ``(...)`` group is a 2+-branch alternation where one
+    branch is a prefix of another (including byte-identical branches), and
+    the group itself is immediately followed by an unbounded quantifier —
+    the ``(a|aa)+`` shape.
+
+    A quantified group doesn't need byte-identical branches to be
+    ambiguous under repetition: a strict prefix relationship (``a`` /
+    ``aa``) is just as dangerous, since a run of the shared prefix
+    character(s) can always be re-partitioned as one long branch match or
+    several short ones, giving the backtracker exponentially many
+    equivalent splits (issue #157 — the previous check matched only
+    literally-identical branches). Supersedes the old ``_DUPLICATE_ALTERNATION``
+    regex (2-branch, no-nesting-in-branch only): walking ``_iter_group_spans``
+    also covers 3+ branches and alternations containing nested groups.
+
+    Scoped to plain and non-capturing groups. Lookaround groups (``(?=...)``,
+    ``(?!...)``, ``(?<=...)``, ``(?<!...)``) are zero-width and quantifying
+    one is unusual; skipped rather than risk misreading unfamiliar syntax.
+    An empty branch (``(a|)+``) is also skipped — Python's ``re`` special-
+    cases zero-width alternatives in a loop to avoid infinite looping, so it
+    isn't the same exponential-backtracking shape as a genuine prefix
+    overlap.
+    """
+    for start, end in _iter_group_spans(src):
+        if not re.match(_UNBOUNDED_QUANT, src[end + 1 :]):
+            continue
+        body = src[start + 1 : end]
+        marker = _GROUP_MARKER.match(body)
+        if body.startswith("?") and not marker:
+            continue
+        if marker:
+            body = body[marker.end() :]
+        if "|" not in body:
+            continue
+        branches = _split_top_level_alternatives(body)
+        for i, branch_a in enumerate(branches):
+            for branch_b in branches[i + 1 :]:
+                if not branch_a or not branch_b:
+                    continue
+                if (
+                    branch_a == branch_b
+                    or branch_a.startswith(branch_b)
+                    or branch_b.startswith(branch_a)
+                ):
+                    return True
     return False
 
 
@@ -198,10 +333,10 @@ def _heuristic_unsafe(src: str) -> bool:
     """
     return bool(
         _NESTED_QUANTIFIER.search(src)
-        or _DUPLICATE_ALTERNATION.search(src)
         or _ADJACENT_QUANTIFIED_ATOM.search(src)
         or _has_nested_unbounded_quantifier(src)
         or _has_adjacent_unbounded_groups(src)
+        or _has_ambiguous_quantified_alternation(src)
     )
 
 
@@ -230,14 +365,15 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
 
     if _heuristic_unsafe(src):
         raise ValueError(
-            f"Pattern {src!r} has nested unbounded quantifiers, duplicate "
-            f"alternation branches, adjacent unbounded-quantified atoms, or "
-            f"adjacent unbounded-quantified groups, and is rejected to "
-            f"prevent catastrophic backtracking on adversarial input. "
-            f"Rewrite the pattern (anchor it, use non-capturing groups, or "
-            f"make quantifiers possessive) — installing google-re2 does not "
-            f"bypass this check, since runtime matching always uses stdlib "
-            f"re, which this heuristic protects."
+            f"Pattern {src!r} has nested unbounded quantifiers, an ambiguous "
+            f"(overlapping or duplicate) alternation under a quantifier, "
+            f"adjacent unbounded-quantified atoms, or adjacent (optionally "
+            f"delimiter-separated) unbounded-quantified groups, and is "
+            f"rejected to prevent catastrophic backtracking on adversarial "
+            f"input. Rewrite the pattern (anchor it, use non-capturing "
+            f"groups, or make quantifiers possessive) — installing "
+            f"google-re2 does not bypass this check, since runtime matching "
+            f"always uses stdlib re, which this heuristic protects."
         )
 
 

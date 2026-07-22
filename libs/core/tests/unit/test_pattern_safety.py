@@ -59,6 +59,20 @@ class TestAssertSafe:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(r"(a|a)*"))
 
+    def test_overlapping_alternation_rejected(self) -> None:
+        # #157: branches need not be byte-identical to be ambiguous under a
+        # quantifier — "a" is a prefix of "aa", so repeated matching can
+        # always re-partition a run of "a"s combinatorially.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(a|aa)+$"))
+
+    def test_delimiter_separated_adjacent_groups_rejected(self) -> None:
+        # #157: an optional/nullable delimiter between adjacent
+        # unbounded-quantified groups doesn't break the ambiguous-
+        # partitioning shape — it just makes the adjacency conditional.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(a+)-?(a+)-?(a+)-?(a+)$"))
+
     def test_realistic_evil_pattern_rejected(self) -> None:
         # The classic "(x+x+)+y" shape. Heuristic flags the nested quantifier;
         # that's enough to fail closed. Assembled at runtime (this fixture is only
@@ -96,8 +110,20 @@ class TestRedosGuardAlwaysRunsHeuristic:
 
     @pytest.mark.parametrize(
         "src",
-        [r"(a+)+$", r"([a-z]+)+$", r"(v\d+)+.*"],
-        ids=["nested-plus-anchored", "nested-charclass-anchored", "version-prefix-catastrophic"],
+        [
+            r"(a+)+$",
+            r"([a-z]+)+$",
+            r"(v\d+)+.*",
+            r"(a|aa)+$",  # #157: overlapping (non-identical) alternation
+            r"(a+)-?(a+)-?(a+)-?(a+)$",  # #157: nullable-delimiter adjacent groups
+        ],
+        ids=[
+            "nested-plus-anchored",
+            "nested-charclass-anchored",
+            "version-prefix-catastrophic",
+            "overlapping-alternation",
+            "delimiter-separated-adjacent-groups",
+        ],
     )
     @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
     def test_rejected_regardless_of_has_re2(
@@ -137,6 +163,14 @@ class TestHeuristicUnsafe:
             f"({'x+' * 2})+y",
             r"(a+)(a+)",  # #80: adjacent parenthesized unbounded groups (min case)
             r"([a-z]+)([a-z]+)([a-z]+)([a-z]+)([a-z]+)([a-z]+)",  # confirmed ~10s @ 100 chars
+            r"(a|aa)+$",  # #157: overlapping (non-identical) alternation branches
+            r"(a|aa|aaa)*",  # #157: 3+ overlapping branches, not just a pair
+            r"(?:cat|category)+",  # #157: prefix overlap inside a non-capturing group
+            r"(a+)-?(a+)$",  # #157: minimal delimiter-separated adjacent groups
+            r"(a+)-?(a+)-?(a+)-?(a+)$",  # #157: issue's exact repro
+            r"(a+)\s*(a+)$",  # #157: whitespace-class nullable delimiter
+            r"(a\|b|a\|b)+",  # #157: escaped literal pipe inside a branch must not
+            # be mistaken for a branch delimiter by the top-level splitter
         ],
         ids=[
             "nested-plus",
@@ -149,6 +183,13 @@ class TestHeuristicUnsafe:
             "realistic-evil-xx",
             "adjacent-groups-minimal",
             "adjacent-groups-six",
+            "overlapping-alternation-pair",
+            "overlapping-alternation-triple",
+            "overlapping-alternation-noncapturing",
+            "delimiter-separated-groups-minimal",
+            "delimiter-separated-groups-issue-repro",
+            "delimiter-separated-groups-whitespace-class",
+            "alternation-escaped-pipe-duplicate",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
@@ -166,6 +207,18 @@ class TestHeuristicUnsafe:
             r"^kling-(?:text2video|image2video)-v2\.1-master$",
             r"(a+)b(a+)",  # separated by a literal — not adjacent, not the ReDoS shape
             r"(a+)(b)",  # adjacent, but only one group is unbounded
+            # #157: prefix-overlapping branches are only dangerous when the
+            # group itself is quantified — an unquantified alternation, no
+            # matter how the branches overlap, is matched at most once.
+            r"^(?:dev|development)$",
+            r"^(?:cat|category)$",
+            # #157: a mandatory (non-nullable) delimiter between adjacent
+            # unbounded groups is a real anchor — it isn't the ambiguous-
+            # partitioning shape, same rationale as "(a+)b(a+)" above.
+            r"(a+)-(a+)$",
+            # #157: a quantified lookahead is zero-width and out of scope
+            # for the ambiguous-alternation check (skipped, not analyzed).
+            r"(?=a|aa)+",
         ],
     )
     def test_passes_known_good_shapes(self, src: str) -> None:
