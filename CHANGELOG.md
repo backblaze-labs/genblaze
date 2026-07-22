@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **Fixed** `install-verify`'s "Wait for PyPI to index the umbrella" pre-check
+  only polled for the `genblaze` umbrella itself, but `genblaze[all]` also
+  resolves ~18 connector packages that propagate across PyPI's CDN
+  independently — so the pre-check could pass while a connector's simple-index
+  page was still stale, and the very next `pip install "genblaze[all]==$version"`
+  false-red the job on a genuinely-healthy release (hit twice during the
+  v0.6.0 release, #189). The fresh install step itself now retries up to 5
+  times (30s apart) so transient propagation of any package is tolerated; a
+  truly missing/unresolvable package still fails the job after retries are
+  exhausted. The umbrella pre-check and the import-smoke invocation are
+  unchanged. Release tooling only — no packaged code changed.
+
 ## [0.6.0] - 2026-07-22
 
 Bug-fix and compatibility wave with one new opt-in feature. Fixes cross-platform
