@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Security** the ReDoS pattern-safety heuristic (`pattern_safety.py`) missed
+  two catastrophic-backtracking shapes: a quantified alternation with
+  overlapping (not just byte-identical or textually-prefixed) branches, e.g.
+  `(a|aa)+` or the character-class overlap `(?:[a-c]|[a-z]{2})+`; and adjacent
+  unbounded-quantified groups separated by a nullable delimiter like `-?` or
+  `\s*` (`(a+)-?(a+)`) (#157). Both are now rejected by `assert_safe()` — the
+  alternation check adds a character-set overlap test (on top of the existing
+  textual-prefix check) for branches that reduce to a flat sequence of simple
+  atoms. This is hardening, not a fix for an active exploit — the shipped
+  connector catalog contains no pattern of either shape; the exposure was a
+  future/third-party connector pattern letting an attacker-influenced value
+  reach `ModelFamily.matches()` and hang the worker. Residual gaps (documented
+  in the module docstring): a branch containing a nested group isn't reduced
+  to a character set, so overlap there still relies on the textual-prefix
+  check only (e.g. `a(?:b)?` vs `aa`); a mandatory delimiter whose own
+  characters coincide with a flanking group's quantified content (e.g.
+  `(a+)a(a+)`); a nullable *group* between unbounded groups
+  (`(a+)(?:x)?(a+)`); and backreferences, which the static heuristic doesn't
+  model at all (pre-existing, masked by `google-re2` when installed). The
+  alternation character-set check is a deliberate conservative
+  over-approximation — two branches sharing any character are flagged, so a
+  few non-ambiguous alternations (`(?:v1|v2)+`) are rejected too. On rejection,
+  `assert_safe()` now names the specific shape and gives remediation that
+  actually clears the check (rather than a generic list including fixes, like
+  possessive quantifiers, that don't apply to every shape). A top-level
+  alternation of two unbounded groups (`(a+)|(b+)`) is correctly treated as
+  safe — the groups are in different branches, not adjacent.
 - **Fixed** `CONTENT_ADDRESSABLE` storage keys did not normalize the source
   extension's case, so byte-identical content fetched via a differently-cased
   extension (e.g. `IMG.PNG` vs `img.png`) hashed to the same sha256 but landed

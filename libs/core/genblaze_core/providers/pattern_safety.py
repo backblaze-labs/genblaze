@@ -29,11 +29,13 @@ regardless of whether ``re2`` is installed. Two gates are applied:
 * The static heuristic always runs and flags the most common
   catastrophic-backtracking shapes: nested unbounded quantifiers (bare
   ``+``/``*`` or an open-ended ``{n,}`` brace quantifier, at any nesting
-  depth), alternations of identical branches, runs of the same atom
-  quantified back-to-back (``a+a+a+``), and 2+ adjacent parenthesized
-  groups each carrying an unbounded quantifier (``(a+)(a+)``) — the
-  ambiguous-partitioning shape, distinct from ``(a+)+``'s outer-quantifier
-  shape.
+  depth), a quantified alternation with overlapping branches — not just
+  byte-identical ones, e.g. ``(a|aa)+`` (issue #157) — runs of the same
+  atom quantified back-to-back (``a+a+a+``), and 2+ adjacent parenthesized
+  groups each carrying an unbounded quantifier, optionally separated by a
+  nullable delimiter such as ``-?`` or ``\\s*`` (``(a+)(a+)``,
+  ``(a+)-?(a+)`` — issue #157) — the ambiguous-partitioning shape, distinct
+  from ``(a+)+``'s outer-quantifier shape.
 
 The heuristic is conservative on purpose. It rejects clearly-bad patterns;
 it does not pretend to detect every pathological case. Connector authors
@@ -41,6 +43,49 @@ who hit a false positive can rewrite the pattern (typically by anchoring
 or making quantifiers possessive). Authors who write subtly-bad patterns
 that slip past the heuristic are caught by the perf gate in
 ``tests/perf/test_registry_perf.py`` (P99 < 100 µs on adversarial inputs).
+
+Known residual gaps (not detected):
+
+* An alternation branch containing a nested group (``a(?:b)?`` vs. ``aa``)
+  isn't reduced to a character set — ``_branch_charset`` bails out on any
+  ``(``/``)``/``|`` inside a branch, so overlap between two such branches
+  falls back to the plain textual-prefix check, which won't catch this
+  case. Closing this fully means recursing into sub-groups (and their own
+  possible alternation) to compute a charset, i.e. re-implementing
+  regex-language equivalence — disproportionate for a lightweight static
+  check, so it's left as a documented gap rather than chased.
+* A mandatory (non-nullable) delimiter whose own characters overlap with a
+  flanking group's quantified content (e.g. ``(a+)a(a+)`` — the separator
+  "a" isn't nullable, so ``_is_nullable_separator`` doesn't flag it, but it
+  can still coincide with the groups' own matched text).
+* Backreferences (``(a+)\1+``) aren't modeled by the static heuristic at
+  all — no check here looks past a backreference to the group it repeats.
+  Today this is masked whenever ``google-re2`` is installed, since re2
+  rejects backreferences outright as an unsupported construct (a different
+  gate than this heuristic — see above); without the ``re2``/``dev``
+  extra, a backreference-shaped pattern has no heuristic coverage. Not
+  introduced by this change; pre-existing and out of scope for #157.
+* A nullable *group* between two unbounded groups (``(a+)(?:x)?(a+)`` or
+  ``(a+)(x?)(a+)``) evades the adjacency check: ``_has_adjacent_unbounded_groups``
+  treats a nullable *separator* (``-?``) as adjacency-preserving, but the
+  optional element here is itself a top-level group, so it resets the
+  run counter rather than being read as a separator. Same nullable-adjacency
+  shape ``_is_nullable_separator`` was added to catch, just wrapped in
+  parens.
+
+These are all true ReDoS shapes — the same exponential class this module
+detects elsewhere, differing only in that *detecting* them requires
+reasoning the lightweight static check deliberately doesn't attempt (full
+regex-language equivalence). They're left as documented future hardening
+rather than blocking on that analysis.
+
+Deliberate over-rejection (conservative false positives): the alternation
+check treats *any* shared character between two branches as ambiguity, so
+some non-ambiguous quantified alternations are rejected too (``(?:v1|v2)+``,
+``(?:ab|bc)+`` — the differing character actually disambiguates them). This
+is intentional per the false-positive-over-false-negative bias above; do not
+"fix" it by weakening the check. Authors hitting it can split the alternation
+out of the quantifier.
 """
 
 from __future__ import annotations
@@ -86,12 +131,15 @@ _UNBOUNDED_QUANT: Final[str] = r"(?:[+*]|\{\d*,\})"
 _NESTED_QUANTIFIER: Final[re.Pattern[str]] = re.compile(
     rf"\([^)]*{_UNBOUNDED_QUANT}[^)]*\)\s*{_UNBOUNDED_QUANT}"
 )
-_DUPLICATE_ALTERNATION: Final[re.Pattern[str]] = re.compile(
-    rf"\(([^)|]+)\|\1\)\s*{_UNBOUNDED_QUANT}"
-)
 _ADJACENT_QUANTIFIED_ATOM: Final[re.Pattern[str]] = re.compile(
     rf"(\\.|\[[^\]]*\]|.){_UNBOUNDED_QUANT}(?:\1{_UNBOUNDED_QUANT}){{2,}}"
 )
+
+# A leading capturing-group marker to strip before splitting an alternation's
+# branches: non-capturing (`?:`) or named (`?P<name>`). Lookaround markers
+# (`?=`, `?!`, `?<=`, `?<!`) intentionally don't match here — see
+# ``_has_ambiguous_quantified_alternation``.
+_GROUP_MARKER: Final[re.Pattern[str]] = re.compile(r"^\?(?::|P<[^>]*>)")
 
 
 def _iter_group_spans(src: str) -> list[tuple[int, int]]:
@@ -151,10 +199,44 @@ def _has_nested_unbounded_quantifier(src: str) -> bool:
     return False
 
 
+def _is_nullable_separator(fragment: str) -> bool:
+    """True if ``fragment`` — the raw text sitting between two top-level
+    groups — can itself match the empty string, e.g. ``-?``, ``\\s*``,
+    ``(?:foo)?``, or the empty string itself.
+
+    A separator that can vanish doesn't break adjacency: on the adversarial
+    input that makes the two flanking groups ambiguous, the regex engine
+    also tries the zero-length match for the separator, so the groups are
+    effectively adjacent on that backtracking path too (issue #157 — the
+    original adjacency check required the separator to be literally empty,
+    which a bare ``-?`` between ``(a+)`` groups evades while preserving the
+    exponential blowup). Checked by actually compiling the fragment and
+    matching it against ``""`` rather than pattern-matching its syntax,
+    since that generalizes to any nullable construct without needing to
+    enumerate them.
+    """
+    if fragment == "":
+        return True
+    try:
+        return re.fullmatch(fragment, "") is not None
+    except (re.error, OverflowError, RecursionError):
+        # re.error: the fragment isn't valid as a standalone pattern (e.g.
+        # it contains a backreference to a group defined outside it).
+        # OverflowError: an absurdly large `{n,m}` repeat count (e.g.
+        # `{0,4294967296}`) raises this instead of re.error. RecursionError:
+        # extremely deep nesting can exceed the interpreter's recursion
+        # limit during compilation. None of these prove the fragment is
+        # nullable, but per this module's conservative bias (false
+        # positives over false negatives — see module docstring), don't
+        # rule it out either: treat it as a nullable/unsafe separator.
+        return True
+
+
 def _has_adjacent_unbounded_groups(src: str) -> bool:
     """True if 2+ top-level ``(...)`` groups, each containing an unbounded
-    quantifier, appear back-to-back with nothing between them — the
-    ``(a+)(a+)(a+)`` shape.
+    quantifier, appear back-to-back — separated by nothing, or only by text
+    that can match the empty string — the ``(a+)(a+)(a+)`` /
+    ``(a+)-?(a+)-?(a+)`` shape.
 
     Unlike ``(a+)+`` (an outer quantifier repeating one ambiguous group),
     this has *no* outer quantifier at all — the ambiguity comes purely from
@@ -164,7 +246,10 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     100-character adversarial string under stdlib ``re``) — a real bypass
     of both ``_has_nested_unbounded_quantifier`` (no group is *itself*
     followed by a quantifier) and ``_ADJACENT_QUANTIFIED_ATOM`` (a
-    parenthesized group isn't a single "atom" that regex matches).
+    parenthesized group isn't a single "atom" that regex matches). A
+    *mandatory* (non-nullable) separator between the groups — a literal
+    character the group's own quantifier can't also match away — remains a
+    real anchor and isn't flagged (see ``_is_nullable_separator``).
     """
     spans = _iter_group_spans(src)
     # Only top-level groups matter for this shape — a group nested inside
@@ -177,12 +262,348 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     prev_end: int | None = None
     for start, end in top_level:
         unbounded = bool(re.search(_UNBOUNDED_QUANT, src[start + 1 : end]))
-        adjacent = prev_end is not None and start == prev_end + 1
+        # Two groups are "adjacent" only if the text between them can vanish
+        # (a nullable separator — see _is_nullable_separator). A top-level `|`
+        # in that gap is the exception: it puts the groups in DIFFERENT
+        # alternation branches (`(a+)|(b+)`), so they're never matched on the
+        # same path and can't partition a shared run — not this shape, and a
+        # linear-time pattern that must not be rejected (issue #157 follow-up).
+        adjacent = False
+        if prev_end is not None:
+            sep = src[prev_end + 1 : start]
+            adjacent = len(_split_top_level_alternatives(sep)) == 1 and _is_nullable_separator(sep)
         run = run + 1 if (adjacent and unbounded and run) else int(unbounded)
         if run >= 2:
             return True
         prev_end = end
     return False
+
+
+def _split_top_level_alternatives(body: str) -> list[str]:
+    """Split ``body`` on ``|`` characters at nesting depth 0, treating
+    nested ``(...)`` groups and ``[...]`` classes as opaque so a branch
+    boundary inside a nested alternation (``(?:a|(?:b|c))``) isn't mistaken
+    for one of ``body``'s own top-level branches.
+    """
+    branches: list[str] = []
+    depth = 0
+    in_class = False
+    start = 0
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            branches.append(body[start:i])
+            start = i + 1
+        i += 1
+    branches.append(body[start:])
+    return branches
+
+
+#: Character sets for the shorthand escape classes that expand to a concrete,
+#: bounded alphabet. The negated forms (``\D``, ``\W``, ``\S``) are each
+#: "everything except a known set" — rather than compute the true (effectively
+#: unbounded, non-ASCII-aware) complement, ``_escape_charset`` treats them as
+#: unknown/full (see its docstring).
+_ESCAPE_CLASS_CHARS: Final[dict[str, str]] = {
+    "d": "0123456789",
+    "w": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    "s": " \t\n\r\f\v",
+}
+
+
+def _escape_charset(escape_body: str) -> frozenset[str] | None:
+    """Return the set of characters an escape sequence matches, given the
+    text right after its backslash (``"d"`` for ``\\d``, ``"x61"`` for
+    ``\\x61``, ``"."`` for ``\\.``, etc.), or ``None`` (unknown/full,
+    meaning "treat as potentially overlapping with anything") when it can't
+    be resolved to a concrete bounded set.
+    """
+    if len(escape_body) == 1 and escape_body.lower() in _ESCAPE_CLASS_CHARS:
+        # Uppercase (\D, \W, \S) is the negated class — unknown/full.
+        return None if escape_body.isupper() else frozenset(_ESCAPE_CLASS_CHARS[escape_body])
+    if len(escape_body) == 3 and escape_body[0] == "x":
+        try:
+            return frozenset([chr(int(escape_body[1:], 16))])
+        except ValueError:
+            return None
+    if len(escape_body) == 1:
+        return frozenset([escape_body])  # a literal char escaped for safety, e.g. \., \-, \(
+    return None
+
+
+def _consume_escape(src: str, i: int) -> tuple[frozenset[str] | None, int]:
+    """Parse the escape sequence at ``src[i] == "\\\\"``. Returns its
+    charset (see :func:`_escape_charset`) and the index just past it.
+    """
+    if i + 1 >= len(src):
+        return None, i + 1
+    if src[i + 1] == "x" and i + 3 < len(src):
+        return _escape_charset(src[i + 1 : i + 4]), i + 4
+    return _escape_charset(src[i + 1]), i + 2
+
+
+def _find_bracket_class_end(src: str, open_idx: int) -> int:
+    """Return the index of the closing ``]`` for a ``[...]`` class starting
+    at ``src[open_idx] == "["``, or ``-1`` if unterminated.
+
+    Mirrors real ``re`` semantics for the two cases a naive
+    ``src.find("]", open_idx + 1)`` gets wrong: a ``]`` immediately after
+    ``[`` (or after ``[^``) is a *literal* member of the class, not the
+    closer (``[]a-y]`` matches ``]`` or ``a``-``y``); and a ``\\]`` inside
+    the class is an escaped literal, not the closer either. Getting this
+    wrong silently truncates the class and drops characters from the
+    computed charset — a confirmed false-negative bypass during review of
+    this fix (a truncated ``[]a-y]`` lost most of the ``a``-``y`` range).
+    """
+    i = open_idx + 1
+    n = len(src)
+    if i < n and src[i] == "^":
+        i += 1
+    if i < n and src[i] == "]":
+        i += 1  # leading `]` (post-negation, if any) is a literal member
+    while i < n:
+        if src[i] == "\\":
+            i += 2
+            continue
+        if src[i] == "]":
+            return i
+        i += 1
+    return -1
+
+
+def _bracket_charset(body: str) -> frozenset[str] | None:
+    """Return the set of characters a ``[...]`` class body (the text
+    between the brackets, as located by :func:`_find_bracket_class_end`)
+    matches, or ``None`` (unknown/full) for a negated class (``[^...]``)
+    or a range too unusual to expand confidently.
+    """
+    if body.startswith("^"):
+        return None
+    chars: set[str] = set()
+    i = 0
+    n = len(body)
+    while i < n:
+        if body[i] == "\\":
+            escaped, i = _consume_escape(body, i)
+            if escaped is None:
+                return None
+            chars.update(escaped)
+            continue
+        # A range like `a-z`: literal `-` not at the start/end of the class
+        # and not immediately after an escape (already consumed above).
+        if i + 2 < n and body[i + 1] == "-" and body[i + 2] != "]":
+            lo, hi = body[i], body[i + 2]
+            if ord(lo) > ord(hi) or ord(hi) - ord(lo) > 256:
+                return None  # malformed or suspiciously large — don't expand
+            chars.update(chr(c) for c in range(ord(lo), ord(hi) + 1))
+            i += 3
+            continue
+        chars.add(body[i])
+        i += 1
+    return frozenset(chars)
+
+
+def _branch_charset(branch: str) -> tuple[bool, frozenset[str] | None]:
+    """Return ``(reducible, charset)`` for ``branch``.
+
+    ``reducible`` is ``False`` if ``branch`` contains a nested group or an
+    atom with a genuinely unbounded quantifier — i.e. it isn't a flat
+    sequence of simple atoms (literal chars, escapes, bracket classes,
+    each with at most a *bounded* quantifier: ``?``, ``{n}``, ``{n,m}``)
+    this function can characterize. :func:`_has_ambiguous_quantified_alternation`
+    skips the semantic overlap check for such branches and relies on its
+    plain textual prefix check instead — catching byte-identical/prefix
+    overlaps for that shape, but not semantic ones. Recursing into nested
+    groups to close that gap fully would mean re-implementing regex-language
+    equivalence, disproportionate for this lightweight heuristic (see the
+    module's "Known residual gaps").
+
+    When ``reducible`` is ``True``, ``charset`` is the set of characters
+    the branch can match anywhere in its length, or ``None`` (unknown/full
+    — treated as overlapping with anything) when some atom couldn't be
+    resolved to a concrete set (e.g. a negated class like ``\\D``).
+    """
+    charset: set[str] = set()
+    unknown = False
+    i = 0
+    n = len(branch)
+    while i < n:
+        ch = branch[i]
+        if ch in "(|)":
+            return False, None
+        if ch == "\\":
+            atom_charset, i = _consume_escape(branch, i)
+        elif ch == "[":
+            close = _find_bracket_class_end(branch, i)
+            if close == -1:
+                return False, None
+            atom_charset = _bracket_charset(branch[i + 1 : close])
+            i = close + 1
+        else:
+            atom_charset = frozenset(ch)
+            i += 1
+        if atom_charset is None:
+            unknown = True
+        else:
+            charset.update(atom_charset)
+
+        # A bare +/* (including lazy/possessive `+?`, `*+`) makes the atom
+        # unbounded, so the branch isn't the flat bounded shape this function
+        # characterizes — bail, matching the docstring. Without this, `+`/`*`
+        # fall through and get consumed as literal `+`/`*` characters, wrongly
+        # reporting the branch reducible; today that's masked only because the
+        # nested-quantifier check runs first, which is fragile to rely on.
+        if i < n and branch[i] in "+*":
+            return False, None
+
+        # Skip a bounded quantifier on the atom just consumed — its exact
+        # repeat count doesn't matter for a character-overlap check, only
+        # that it IS bounded (an unbounded one still bails out below, since
+        # that shape is already handled by the other heuristic checks and
+        # complicates length reasoning this function doesn't attempt).
+        quant = re.match(r"\?|\{(\d*),?(\d*)\}", branch[i:])
+        if quant:
+            if quant.group() != "?" and (
+                not quant.group(1) or ("," in quant.group() and not quant.group(2))
+            ):
+                return False, None  # `{,m}` / `{n,}` — unbounded
+            i += quant.end()
+
+    return True, (None if unknown else frozenset(charset))
+
+
+def _charsets_overlap(a: frozenset[str] | None, b: frozenset[str] | None) -> bool:
+    """True if two atom charsets could match the same character. ``None``
+    (unknown/full — see :func:`_escape_charset`/:func:`_bracket_charset`) is
+    treated as overlapping with anything, per this module's bias toward
+    false positives over false negatives.
+
+    Note this is a deliberate over-approximation of true ambiguity — a single
+    shared character is enough to report overlap, so some non-ambiguous
+    alternations (``(?:v1|v2)+``) are rejected. That's intentional; see the
+    "Deliberate over-rejection" note in the module docstring before tightening
+    it.
+    """
+    return a is None or b is None or bool(a & b)
+
+
+def _has_ambiguous_quantified_alternation(src: str) -> bool:
+    """True if some ``(...)`` group is a 2+-branch alternation where two
+    branches can match overlapping text, and the group itself is
+    immediately followed by an unbounded quantifier — the ``(a|aa)+`` shape.
+
+    A quantified group doesn't need byte-identical branches to be ambiguous
+    under repetition — any two branches that can match some of the same
+    characters give the backtracker multiple equivalent ways to attribute a
+    run of those characters to one branch or the other (issue #157 — the
+    previous check matched only literally-identical branches). Two
+    complementary checks catch this:
+
+    * A textual prefix relationship (``a`` / ``aa``) — cheap and catches
+      the byte-identical case plus any branch that's literally a prefix of
+      another, regardless of internal structure (nested groups included).
+    * For branches reducible to a flat sequence of simple atoms (no nested
+      groups — see :func:`_branch_charset`), a *semantic* check: their
+      matched-character sets overlap at all (:func:`_charsets_overlap`).
+      This catches shapes the textual check misses because the overlap
+      isn't a literal prefix, e.g. ``[a-c]`` vs. ``[a-z]{2}`` (overlapping
+      character ranges, different-length matches) or ``[a]`` vs. ``aa``
+      (a class and a literal expressing the same character differently).
+
+    Supersedes the old ``_DUPLICATE_ALTERNATION`` regex (2-branch,
+    byte-identical, no-nesting-in-branch only): walking
+    ``_iter_group_spans`` covers 3+ branches and alternations containing
+    nested groups for the textual check, and ``_branch_charset`` adds
+    semantic overlap for branches without nested groups.
+
+    Scoped to plain and non-capturing groups. Lookaround groups (``(?=...)``,
+    ``(?!...)``, ``(?<=...)``, ``(?<!...)``) are zero-width and quantifying
+    one is unusual; skipped rather than risk misreading unfamiliar syntax.
+    An empty branch (``(a|)+``) is also skipped — Python's ``re`` special-
+    cases zero-width alternatives in a loop to avoid infinite looping, so it
+    isn't the same exponential-backtracking shape as a genuine overlap.
+    """
+    for start, end in _iter_group_spans(src):
+        if not re.match(_UNBOUNDED_QUANT, src[end + 1 :]):
+            continue
+        body = src[start + 1 : end]
+        marker = _GROUP_MARKER.match(body)
+        if body.startswith("?") and not marker:
+            continue
+        if marker:
+            body = body[marker.end() :]
+        if "|" not in body:
+            continue
+        branches = _split_top_level_alternatives(body)
+        for i, branch_a in enumerate(branches):
+            for branch_b in branches[i + 1 :]:
+                if not branch_a or not branch_b:
+                    continue
+                if (
+                    branch_a == branch_b
+                    or branch_a.startswith(branch_b)
+                    or branch_b.startswith(branch_a)
+                ):
+                    return True
+                reducible_a, charset_a = _branch_charset(branch_a)
+                reducible_b, charset_b = _branch_charset(branch_b)
+                if reducible_a and reducible_b and _charsets_overlap(charset_a, charset_b):
+                    return True
+    return False
+
+
+def _unsafe_reason(src: str) -> str | None:
+    """Return a short, shape-specific description of the first
+    catastrophic-backtracking construct found in ``src``, or ``None`` if the
+    heuristic considers it safe.
+
+    Drives both the boolean gate (:func:`_heuristic_unsafe`) and the rejection
+    message in :func:`assert_safe`, so the message can name *which* shape fired
+    and give remediation that actually clears the check — rather than a generic
+    list of every possible reason plus fixes that may not apply (issue #157).
+    """
+    if _NESTED_QUANTIFIER.search(src) or _has_nested_unbounded_quantifier(src):
+        return (
+            "nested unbounded quantifiers such as `(a+)+` (an unbounded "
+            "quantifier repeated by another) — rewrite so no unbounded "
+            "quantifier is itself repeated, e.g. `(a+)+` -> `a+`"
+        )
+    if _has_ambiguous_quantified_alternation(src):
+        return (
+            "a quantified alternation whose branches can match overlapping "
+            "text, such as `(a|aa)+` — remove the overlap so each run of input "
+            "matches exactly one branch (e.g. `(a|aa)+` -> `a+`); note that "
+            "making the quantifier possessive does not clear this"
+        )
+    if _ADJACENT_QUANTIFIED_ATOM.search(src):
+        return (
+            "the same atom quantified back-to-back, such as `a+a+a+` — collapse "
+            "the repeats into a single quantifier, e.g. `a+a+` -> `a+`"
+        )
+    if _has_adjacent_unbounded_groups(src):
+        return (
+            "two or more adjacent unbounded-quantified groups, optionally "
+            "separated by a nullable delimiter, such as `(a+)(a+)` or "
+            "`(a+)-?(a+)` — separate them with a mandatory delimiter the groups "
+            "cannot themselves match"
+        )
+    return None
 
 
 def _heuristic_unsafe(src: str) -> bool:
@@ -194,15 +615,10 @@ def _heuristic_unsafe(src: str) -> bool:
     about that pattern's safety under the engine actually used at match
     time (#148). Factored out of :func:`assert_safe` so it can be
     unit-tested directly regardless of whether ``re2`` happens to be
-    importable in the current environment.
+    importable in the current environment. Thin boolean wrapper over
+    :func:`_unsafe_reason`.
     """
-    return bool(
-        _NESTED_QUANTIFIER.search(src)
-        or _DUPLICATE_ALTERNATION.search(src)
-        or _ADJACENT_QUANTIFIED_ATOM.search(src)
-        or _has_nested_unbounded_quantifier(src)
-        or _has_adjacent_unbounded_groups(src)
-    )
+    return _unsafe_reason(src) is not None
 
 
 def assert_safe(pattern: re.Pattern[str]) -> None:
@@ -228,16 +644,13 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
                 f"(linear-time guarantee unavailable): {exc}"
             ) from exc
 
-    if _heuristic_unsafe(src):
+    reason = _unsafe_reason(src)
+    if reason is not None:
         raise ValueError(
-            f"Pattern {src!r} has nested unbounded quantifiers, duplicate "
-            f"alternation branches, adjacent unbounded-quantified atoms, or "
-            f"adjacent unbounded-quantified groups, and is rejected to "
-            f"prevent catastrophic backtracking on adversarial input. "
-            f"Rewrite the pattern (anchor it, use non-capturing groups, or "
-            f"make quantifiers possessive) — installing google-re2 does not "
-            f"bypass this check, since runtime matching always uses stdlib "
-            f"re, which this heuristic protects."
+            f"Pattern {src!r} is rejected to prevent catastrophic backtracking "
+            f"on adversarial input: it contains {reason}. Installing "
+            f"google-re2 does not bypass this check, since runtime matching "
+            f"always uses stdlib re, which this heuristic protects."
         )
 
 

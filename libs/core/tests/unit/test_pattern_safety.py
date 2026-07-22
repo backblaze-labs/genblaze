@@ -6,7 +6,16 @@ import re
 
 import pytest
 from genblaze_core.providers import pattern_safety
-from genblaze_core.providers.pattern_safety import _heuristic_unsafe, assert_safe, has_re2
+from genblaze_core.providers.pattern_safety import (
+    _bracket_charset,
+    _branch_charset,
+    _escape_charset,
+    _heuristic_unsafe,
+    _is_nullable_separator,
+    _unsafe_reason,
+    assert_safe,
+    has_re2,
+)
 
 
 class _FakeRe2:
@@ -59,6 +68,24 @@ class TestAssertSafe:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(r"(a|a)*"))
 
+    def test_overlapping_alternation_rejected(self) -> None:
+        # #157: branches need not be byte-identical to be ambiguous under a
+        # quantifier — "a" is a prefix of "aa", so repeated matching can
+        # always re-partition a run of "a"s combinatorially. Assembled at
+        # runtime (only analyzed by assert_safe, never matched) so the
+        # catastrophic literal isn't itself flagged by CodeQL's ReDoS scan.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(f"(a|{'a' * 2})+$"))
+
+    def test_delimiter_separated_adjacent_groups_rejected(self) -> None:
+        # #157: an optional/nullable delimiter between adjacent
+        # unbounded-quantified groups doesn't break the ambiguous-
+        # partitioning shape — it just makes the adjacency conditional.
+        # Assembled at runtime so the fixture isn't flagged as a static
+        # ReDoS literal by code scanning (see test_realistic_evil_pattern).
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(f"{'(a+)-?' * 3}(a+)$"))
+
     def test_realistic_evil_pattern_rejected(self) -> None:
         # The classic "(x+x+)+y" shape. Heuristic flags the nested quantifier;
         # that's enough to fail closed. Assembled at runtime (this fixture is only
@@ -96,8 +123,20 @@ class TestRedosGuardAlwaysRunsHeuristic:
 
     @pytest.mark.parametrize(
         "src",
-        [r"(a+)+$", r"([a-z]+)+$", r"(v\d+)+.*"],
-        ids=["nested-plus-anchored", "nested-charclass-anchored", "version-prefix-catastrophic"],
+        [
+            r"(a+)+$",
+            r"([a-z]+)+$",
+            r"(v\d+)+.*",
+            r"(a|aa)+$",  # #157: overlapping (non-identical) alternation
+            r"(a+)-?(a+)-?(a+)-?(a+)$",  # #157: nullable-delimiter adjacent groups
+        ],
+        ids=[
+            "nested-plus-anchored",
+            "nested-charclass-anchored",
+            "version-prefix-catastrophic",
+            "overlapping-alternation",
+            "delimiter-separated-adjacent-groups",
+        ],
     )
     @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
     def test_rejected_regardless_of_has_re2(
@@ -137,6 +176,25 @@ class TestHeuristicUnsafe:
             f"({'x+' * 2})+y",
             r"(a+)(a+)",  # #80: adjacent parenthesized unbounded groups (min case)
             r"([a-z]+)([a-z]+)([a-z]+)([a-z]+)([a-z]+)([a-z]+)",  # confirmed ~10s @ 100 chars
+            r"(a|aa)+$",  # #157: overlapping (non-identical) alternation branches
+            r"(a|aa|aaa)*",  # #157: 3+ overlapping branches, not just a pair
+            r"(?:cat|category)+",  # #157: prefix overlap inside a non-capturing group
+            r"(a+)-?(a+)$",  # #157: minimal delimiter-separated adjacent groups
+            r"(a+)-?(a+)-?(a+)-?(a+)$",  # #157: issue's exact repro
+            r"(a+)\s*(a+)$",  # #157: whitespace-class nullable delimiter
+            r"(a\|b|a\|b)+",  # #157: escaped literal pipe inside a branch must not
+            # be mistaken for a branch delimiter by the top-level splitter
+            r"([a]|aa)+$",  # #157 review: class vs. literal, same char — semantic,
+            # not textual, overlap
+            r"(\x61|aa)+$",  # #157 review: hex escape vs. literal, same char
+            r"(?:[a-c]|[a-z]{2})+",  # #157 review: overlapping character-class
+            # ranges at different match lengths — the confirmed live bypass
+            # from the security review of this fix
+            r"(?:[]a-y]|qq)+$",  # #157 review round 2: a literal `]` as the
+            # first char of a bracket class (real re semantics: `[]a-y]`
+            # matches `]` or a-y) was mis-parsed as an empty class, silently
+            # dropping the whole a-y range (including `q`) from the computed
+            # charset — a confirmed false-negative bypass caught in re-review
         ],
         ids=[
             "nested-plus",
@@ -149,6 +207,17 @@ class TestHeuristicUnsafe:
             "realistic-evil-xx",
             "adjacent-groups-minimal",
             "adjacent-groups-six",
+            "overlapping-alternation-pair",
+            "overlapping-alternation-triple",
+            "overlapping-alternation-noncapturing",
+            "delimiter-separated-groups-minimal",
+            "delimiter-separated-groups-issue-repro",
+            "delimiter-separated-groups-whitespace-class",
+            "alternation-escaped-pipe-duplicate",
+            "overlapping-alternation-class-vs-literal",
+            "overlapping-alternation-hex-escape",
+            "overlapping-alternation-class-range-different-lengths",
+            "overlapping-alternation-leading-bracket-literal",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
@@ -166,10 +235,159 @@ class TestHeuristicUnsafe:
             r"^kling-(?:text2video|image2video)-v2\.1-master$",
             r"(a+)b(a+)",  # separated by a literal — not adjacent, not the ReDoS shape
             r"(a+)(b)",  # adjacent, but only one group is unbounded
+            # #157: prefix-overlapping branches are only dangerous when the
+            # group itself is quantified — an unquantified alternation, no
+            # matter how the branches overlap, is matched at most once.
+            r"^(?:dev|development)$",
+            r"^(?:cat|category)$",
+            # #157: a mandatory (non-nullable) delimiter between adjacent
+            # unbounded groups is a real anchor — it isn't the ambiguous-
+            # partitioning shape, same rationale as "(a+)b(a+)" above.
+            r"(a+)-(a+)$",
+            # #157: a quantified lookahead is zero-width and out of scope
+            # for the ambiguous-alternation check (skipped, not analyzed).
+            r"(?=a|aa)+",
+            # #157 review: disjoint character classes — no character can be
+            # attributed to either branch, so no partition ambiguity.
+            r"(?:[a-z]|[0-9])+",
+            r"(?:[a-z]|-)+",
+            # #157 follow-up: two unbounded groups on opposite sides of a
+            # TOP-LEVEL `|` are in different alternation branches — never
+            # matched on the same path, so no adjacent-partitioning ambiguity.
+            # A regression here (treating `|` as a nullable separator) rejected
+            # these linear-time patterns.
+            r"(a+)|(b+)",
+            r"(?:a+)|(?:b+)",
+            r"^(openai/gpt-4\d*)|(anthropic/claude-\d+)$",
+            # #157 review: documented residual gap, not a regression — a
+            # branch containing a nested group isn't reduced to a charset
+            # (see _branch_charset's docstring), so this specific semantic
+            # overlap ([a(?:b)?] vs "aa", both able to match "a") still
+            # isn't caught. Asserted here so a future attempt to close this
+            # gap updates this test rather than silently changing behavior.
+            r"(a(?:b)?|aa)+$",
         ],
     )
     def test_passes_known_good_shapes(self, src: str) -> None:
         assert _heuristic_unsafe(src) is False
+
+    @pytest.mark.parametrize("src", [r"(?:v1|v2)+", r"(?:ab|bc)+", r"(?:foo|far)+"])
+    def test_conservative_over_rejection_is_intentional(self, src: str) -> None:
+        """The charset-overlap check is a deliberate over-approximation: two
+        branches sharing ANY character are flagged, so some non-ambiguous
+        alternations (the differing char actually disambiguates them) are
+        rejected too. This is intentional per the module's false-positive-over-
+        false-negative bias — pinned here so a future attempt to tighten the
+        check updates this test and the module docstring's "Deliberate
+        over-rejection" note deliberately, not silently."""
+        assert _heuristic_unsafe(src) is True
+
+
+class TestUnsafeReason:
+    """The rejection message names the specific shape and gives remediation
+    that actually clears the heuristic (#157) — not a generic list including
+    fixes that don't apply (e.g. making the quantifier possessive)."""
+
+    def test_reason_none_for_safe_pattern(self) -> None:
+        assert _unsafe_reason(r"^gpt-4o(?:-mini)?$") is None
+
+    @pytest.mark.parametrize(
+        ("src", "needle"),
+        [
+            (r"(a+)+", "nested unbounded"),
+            (r"(a|aa)+", "overlapping"),
+            (r"a+a+a+", "back-to-back"),
+            (r"(a+)(a+)", "adjacent unbounded-quantified groups"),
+        ],
+    )
+    def test_reason_names_the_specific_shape(self, src: str, needle: str) -> None:
+        reason = _unsafe_reason(src)
+        assert reason is not None and needle in reason
+
+    def test_possessive_alternation_message_does_not_advise_possessive(self) -> None:
+        """`(a|aa)++` is still (correctly) flagged — the possessive quantifier
+        doesn't remove the branch overlap. The reason must point at the overlap,
+        not send the author in a circle by advising possessive quantifiers.
+        Checked via _unsafe_reason directly: assert_safe's re2 gate would reject
+        the possessive `++` first in a re2-present env, for a different reason."""
+        reason = _unsafe_reason(r"(a|aa)++")
+        assert reason is not None
+        assert "remove the overlap" in reason
+        assert "possessive does not clear" in reason
+
+    def test_assert_safe_message_names_the_shape(self) -> None:
+        """End-to-end: `(a|aa)+` is accepted by re2 (linear-time) but flagged by
+        the always-on heuristic, so assert_safe raises the shape-specific
+        message rather than a generic catch-all."""
+        with pytest.raises(ValueError, match="overlapping text") as exc:
+            # assembled at runtime so the catastrophic literal isn't flagged
+            # by CodeQL's ReDoS scan (see test_realistic_evil_pattern_rejected)
+            assert_safe(re.compile(f"(a|{'a' * 2})+"))
+        msg = str(exc.value)
+        assert "remove the overlap" in msg
+        # The old generic message listed every reason + fixes that don't apply.
+        assert "nested unbounded quantifiers such as" not in msg
+
+
+class TestParserHelpers:
+    """Direct unit tests for the hand-rolled sub-parsers, which otherwise are
+    only exercised end-to-end through the heuristic — a regression in one would
+    surface as a subtle false positive/negative that's hard to localize."""
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("abc", frozenset("abc")),
+            ("a-c", frozenset("abc")),
+            (r"\d", frozenset("0123456789")),
+            ("]a-c", frozenset("]abc")),  # leading ] is a literal member
+        ],
+    )
+    def test_bracket_charset_concrete(self, body: str, expected: frozenset[str]) -> None:
+        assert _bracket_charset(body) == expected
+
+    def test_bracket_charset_negated_is_unknown(self) -> None:
+        assert _bracket_charset("^a") is None  # negated class -> unknown/full
+
+    @pytest.mark.parametrize(
+        ("escape_body", "expected"),
+        [("d", frozenset("0123456789")), ("x61", frozenset("a")), (".", frozenset("."))],
+    )
+    def test_escape_charset_concrete(self, escape_body: str, expected: frozenset[str]) -> None:
+        assert _escape_charset(escape_body) == expected
+
+    def test_escape_charset_negated_is_unknown(self) -> None:
+        assert _escape_charset("D") is None  # \D is "everything except digits"
+
+    @pytest.mark.parametrize(
+        ("branch", "reducible", "charset"),
+        [
+            ("abc", True, frozenset("abc")),
+            ("a?b", True, frozenset("ab")),  # bounded quantifier is fine
+            ("a+", False, None),  # unbounded -> not reducible (regression guard)
+            ("a*", False, None),
+            ("(?:x)", False, None),  # nested group -> not reducible
+            (r"\D", True, None),  # reducible but charset unknown/full
+        ],
+    )
+    def test_branch_charset(
+        self, branch: str, reducible: bool, charset: frozenset[str] | None
+    ) -> None:
+        assert _branch_charset(branch) == (reducible, charset)
+
+    @pytest.mark.parametrize("frag", ["", "-?", r"\s*", "(?:foo)?", "x*"])
+    def test_nullable_separator_true(self, frag: str) -> None:
+        assert _is_nullable_separator(frag) is True
+
+    @pytest.mark.parametrize("frag", ["-", "x", r"\s", "ab"])
+    def test_nullable_separator_false(self, frag: str) -> None:
+        assert _is_nullable_separator(frag) is False
+
+    def test_nullable_separator_uncompilable_fragment_biases_unsafe(self) -> None:
+        r"""A fragment that isn't a valid standalone pattern (e.g. a lone
+        backreference `\1`) can't be proven non-nullable, so the conservative
+        bias treats it as a nullable/unsafe separator."""
+        assert _is_nullable_separator(r"\1") is True
 
 
 class TestHasRe2:
