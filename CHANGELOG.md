@@ -172,10 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a next-minor rule, so pre-1.0 and post-1.0 SDKs follow one rule. Where a
   connector's documented floor was already several majors behind the version
   it resolves to today (`runwayml` floor 0.6 vs. resolved 4.x, `replicate`
-  floor 0.25 vs. resolved 1.x, `openai` floor 1.0 vs. resolved 2.x), the cap
-  was set one major past the currently-resolving version instead of the
-  floor's next major, so this fix doesn't reject the version already in use;
-  the stale floors themselves are unchanged (out of scope here). Dev/test
+  floor 0.25 vs. resolved 1.x, `openai` floor 1.0 vs. resolved 2.x,
+  `genblaze-core`'s `parquet` extra's `pyarrow` floor 14.0 vs. resolved 22.x),
+  the cap was set one major past the currently-resolving version instead of
+  the floor's next major, so this fix doesn't reject the version already in
+  use; the stale floors themselves are unchanged (out of scope here). Dev/test
   tooling extras (`pytest`, `ruff`, `mypy`, `deptry`, `hypothesis`,
   `jsonschema`, etc.) are unaffected — this policy applies to dependencies
   actually shipped to and resolved by consumers (#61).
