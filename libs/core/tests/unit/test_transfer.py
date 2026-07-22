@@ -276,6 +276,47 @@ class TestAssetTransfer:
         transfer.transfer(asset2)
         assert len(put_called) == 0  # Should have skipped
 
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_content_addressable_dedup_ignores_extension_case(self, mock_urlopen, _mock_dns):
+        """End-to-end regression test for #20: byte-identical content fetched
+        via a differently-cased source extension (.PNG vs .png) must dedup —
+        the second transfer skips the upload rather than storing a duplicate.
+        """
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"data", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = FakeBackend()
+        transfer = AssetTransfer(backend, prefix="assets")
+
+        # First transfer via an upper-case extension.
+        asset = Asset(url="https://cdn.example.com/IMG.PNG", media_type="image/png")
+        key = transfer.transfer(asset)
+        assert key in backend.store
+
+        # Second transfer, same bytes, lower-case extension — must resolve to
+        # the same CAS key and skip the upload (dedup hit).
+        mock_resp.read.side_effect = [b"data", b""]
+        mock_urlopen.return_value = mock_resp
+        asset2 = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+
+        original_put = backend.put
+        put_called = []
+
+        def tracking_put(*args, **kwargs):
+            put_called.append(True)
+            return original_put(*args, **kwargs)
+
+        backend.put = tracking_put
+
+        key2 = transfer.transfer(asset2)
+        assert key2 == key
+        assert len(put_called) == 0  # Should have skipped — dedup hit
+
     def test_http_url_rejected(self):
         transfer, _ = self._make_transfer()
         asset = Asset(url="http://insecure.example.com/img.png", media_type="image/png")
