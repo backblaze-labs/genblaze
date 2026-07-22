@@ -86,6 +86,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `char_count` (e.g. images). Returns `None` only when neither a prompt nor
   any usable `char_count` exists; a genuinely-present `char_count` of `0`
   still yields a real `0.0` cost rather than an "unknown" one.
+- **Fixed** an otherwise-complete run could fail when re-checking an asset
+  already stored in the sink's backend under a B2 daily Class-B cap or a
+  restricted key (#162). `ObjectStorageSink._asset_already_transferred`
+  probed `backend.exists(key)`, but a B2 `HeadObject` `403` reports the key
+  as absent, which re-scheduled a transfer of the now-durable (private) URL
+  over an unauthenticated `GET` (`401`) — and with no source left to
+  re-download from, that re-transfer could never succeed. The sink now
+  trusts a backend-owned asset URL directly (valid `sha256` + non-null
+  `size_bytes` + a resolvable backend key), since `transfer()` only rewrites
+  `url` to the durable URL *after* a successful put. **Tradeoff:** object
+  existence is no longer independently probed for backend-owned URLs within a
+  run; a byte-level `genblaze verify --fetch` (below) remains available for
+  callers that want post-hoc confirmation.
 
 ### genblaze-cli
 

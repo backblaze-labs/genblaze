@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 """
-Plan-document writer and drift-proof validator for the batch maintainer.
+Plan-document writer and drift-guarding validator for the batch maintainer.
 
 Why this exists
 ---------------
 The batch maintainer is split into two workflows with a human approval gate
 between them: ``batch-plan`` produces a plan document and stops; the human
 reads it and approves; ``batch-execute`` then opens PRs. That gate is only
-meaningful if execution *cannot* run against a stale or hand-edited plan.
-Convention ("please don't") is not enforcement. This module is the
-enforcement:
+meaningful if execution doesn't silently run against a stale or accidentally
+edited plan. Convention ("please don't") catches nothing. This module adds
+mechanical drift checks on top of the human gate:
 
 * ``write`` embeds, in a machine-readable block inside the plan doc, the
   ``origin/main`` SHA the plan was computed against and a **content token** —
   ``sha256(base_sha + canonical(clusters))``. The token binds the approval to
   the exact cluster set; edit the clusters by hand and the token no longer
-  matches.
+  matches. Note this is an *unkeyed* digest, so it detects accidental edits
+  and drift, not a motivated editor who recomputes it — the human approval
+  gate, not this token, is the trust boundary.
 
 * ``validate`` refuses to let execution proceed unless ALL hold:
-    1. the embedded token recomputes from the doc's own contents (no tampering),
+    1. the embedded token recomputes from the doc's own contents (catches
+       accidental edits to the plan block),
     2. the embedded base SHA still equals live ``origin/main`` (main hasn't
        advanced under the plan),
-    3. the executable issue set still matches the live open-issue set (no issue
-       was closed, merged, or newly opened since planning).
+    3. every planned executable issue is still open (an issue closed or merged
+       since planning aborts the run). Issues opened *after* planning are not a
+       drift trigger — they simply wait for the next ``batch-plan`` rather than
+       being pulled into an already-approved batch.
 
 Git and GitHub live *outside* this module — the calling workflow supplies the
 live SHA and open-issue list — so the logic here is pure and unit-testable.
@@ -187,8 +192,9 @@ def validate(meta: dict, live_sha: str, live_open_issues: list[int]) -> list[int
             f"(plan {meta.get('base_sha')} != live {live_sha}); re-run batch-plan."
         )
 
-    # 3. Issue-set drift: every executable issue must still be open, and no new
-    #    open issue should be silently ignored by a stale plan.
+    # 3. Issue-set drift: every planned executable issue must still be open.
+    #    Issues opened after planning are intentionally NOT a drift trigger —
+    #    they wait for the next batch-plan rather than joining an approved batch.
     planned = set(_executable_issues(clusters))
     live = set(live_open_issues)
     closed = planned - live

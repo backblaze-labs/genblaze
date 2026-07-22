@@ -141,6 +141,11 @@ class LMNTProvider(SyncProvider):
         self._api_key = api_key
         self._output_dir = Path(output_dir) if output_dir else None
         self._speech_client: Any = None
+        # Warn once per provider, not once per clip: a batch of steps all
+        # carrying the removed `speed` param would otherwise log the same
+        # notice on every generate() call. Mirrors model_registry's
+        # `_warned_deprecated` dedup pattern.
+        self._warned_speed = False
 
     def _make_client(self):
         """Create a fresh LMNT client for a single generate() call."""
@@ -176,10 +181,12 @@ class LMNTProvider(SyncProvider):
 
             if "format" in payload:
                 generate_kwargs["format"] = payload["format"]
-            if "speed" in payload:
+            if "speed" in payload and not self._warned_speed:
                 # lmnt 2.x dropped `speed` in favor of temperature/top_p, which
                 # control expressiveness rather than pacing — there's no
                 # equivalent to forward, so warn instead of silently dropping.
+                # Emitted once per provider to avoid per-clip log spam.
+                self._warned_speed = True
                 logger.warning(
                     "LMNT provider: 'speed' is not supported by lmnt SDK 2.x "
                     "and will be ignored; 2.x exposes 'temperature'/'top_p' "
