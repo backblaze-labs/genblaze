@@ -164,6 +164,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see the `genblaze-core` entry above for the root cause. `provider.py` now
   builds its `file://` asset URL via `genblaze_core._utils.local_file_url()`.
 
+### genblaze-s3
+
+- **Fixed** `key_from_url` forced a network `HeadBucket` (via
+  `_ensure_region_verified()`) before comparing the URL's host to this
+  backend's endpoint, and raised `StorageError` instead of returning `None`
+  for a foreign URL on an unverified backend with bad credentials (#19) —
+  breaking the documented "`None` = not mine" contract that cross-backend
+  manifest routing (`read_manifest_for_asset`) relies on. `key_from_url` now
+  compares the URL's host against the already-resolved endpoint first (a
+  local attribute read, no network call) and returns `None` immediately for
+  a clear mismatch; region verification never runs on this path. A B2
+  bucket that migrated to a different region after this backend was last
+  verified is still recognized without a `HeadBucket`, since B2 bucket names
+  are globally unique — a B2-shaped host plus an exact bucket-name match is
+  sufficient proof of ownership on its own.
+
 ## [0.5.0] - 2026-07-16
 
 Correctness and security hardening across the pipeline, provenance, streaming,
