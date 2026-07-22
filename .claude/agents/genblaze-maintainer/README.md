@@ -1,14 +1,18 @@
 # Genblaze Maintainer
 
 The **Genblaze Maintainer** is an autonomous Claude Code sub-agent that serves as the
-dedicated guardian of the Genblaze repository. It runs in one of two modes:
+dedicated guardian of the Genblaze repository. It runs in one of these modes:
 
-- **Issue Resolution** — takes a GitHub issue from triage to a **merge-ready PR**:
-  branches off `origin/main`, fixes it with TDD, verifies, runs a triangulated
-  three-reviewer check, opens the PR, then **stops for human review**.
+- **Issue Resolution** — takes a GitHub issue (or a **cluster** of related
+  issues) from triage to a **merge-ready PR**: branches off `origin/main`, fixes
+  it with TDD, verifies, runs a triangulated three-reviewer check, opens the PR,
+  then **stops for human review**.
 - **Maintenance Audit** — audits the codebase across six domains (functional
   integrity, security, code quality, documentation, AI agent standards, and
   dependency health) and produces a structured report with prioritized findings.
+- **Batch** — reviews **all** open issues at once, clusters and dependency-orders
+  them, and (after human approval) resolves each cluster into a PR. Driven by two
+  workflows with a hard approval gate between them; see **Batch mode** below.
 
 ## Quick Start
 
@@ -55,6 +59,45 @@ The agent follows a four-phase execution protocol:
 3. **Remediation** — Fixes issues (if authorized), one commit per fix, tests after each
 4. **Reporting** — Writes a structured report to `docs/exec-plans/active/`
 
+### Batch mode
+
+Batch mode puts the maintainer in charge of the **whole open-issue list** while
+keeping a human firmly in control. It is deliberately split into two workflows
+with a hard approval gate between them, because a workflow cannot pause for human
+input mid-run — so the gate becomes an explicit, auditable boundary.
+
+```
+# 1. Plan — review all issues, cluster + order them, write an approval-gated doc, STOP.
+/batch-plan                       # (or: Workflow tool, name: "batch-plan")
+
+# → review docs/exec-plans/active/batch-plan-<date>.md, then:
+
+# 2. Execute — validate the approved plan against live state, open one PR per cluster.
+/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md", "dryRun": true}
+/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md"}
+```
+
+**Safety model:**
+
+- **Deterministic core, tested.** Clustering, plan-doc integrity, and all git
+  hygiene live in `tools/batch_*.py` under `make test` — not in prose. Agents
+  only do the one fuzzy step (estimating which files an issue touches) and act as
+  pipes to those CLIs.
+- **Preflight never touches your checkout.** It fails fast on a dirty tree, and
+  fast-forwards local `main` only when `main` is not checked out and strictly
+  behind — never switching, stashing, or committing.
+- **The gate is enforced, not assumed.** The plan doc embeds the `origin/main`
+  SHA and a content token; `batch-execute` re-validates against live state and
+  aborts if main advanced, the doc was hand-edited, or a planned issue closed.
+- **Conflict-aware, capped clusters.** Issues sharing real (non-"hot") files
+  cluster into one PR up to a size cap; oversized or dependent work is deferred to
+  a re-plan rather than stacked (stacked branches break when a prerequisite is
+  squash-merged). Each cluster still goes through the full per-PR bar and opens a
+  **draft** PR if it hits a real conflict.
+- **Conservative cleanup.** `gc` prunes only merged, pushed leftover branches
+  with `git branch -d` (never `-D`), skips dirty worktrees, and reports anything
+  it retains. Nothing you haven't shipped is ever destroyed.
+
 ## Domains
 
 | Domain | Priority | What It Checks |
@@ -73,7 +116,7 @@ The agent follows a four-phase execution protocol:
   genblaze-maintainer.md        # Agent definition (frontmatter + prompt)
   genblaze-maintainer/
     README.md                   # This file
-    run.sh                      # CLI launcher script
+    run.sh                      # CLI launcher script (single-issue / audit)
     config.json                 # Agent configuration
     checklists/
       issue-resolution.md       # Issue → merge-ready PR playbook (with triangulated review)
@@ -83,6 +126,13 @@ The agent follows a four-phase execution protocol:
       documentation.md          # Doc accuracy and completeness
       agent-standards.md        # AI agent optimization
       dependencies.md           # Supply chain health
+.claude/workflows/
+  batch-plan.js                 # Batch mode: review all issues → approval-gated plan doc
+  batch-execute.js              # Batch mode: validate plan → one PR per cluster
+tools/
+  batch_cluster.py              # Deterministic clustering (tested)
+  batch_plandoc.py              # Plan-doc write + drift-proof validation (tested)
+  batch_gitsteward.py           # Safe preflight + conservative gc (tested)
 ```
 
 ## Permissions
