@@ -36,7 +36,6 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
     "Topic :: Multimedia",
 ]
@@ -270,6 +269,31 @@ def test_check_package_reports_unreadable_readme(tmp_path: Path):
 
     assert len(issues) == 1
     assert issues[0].startswith("genblaze-example: readme file cannot be read: README.md: ")
+
+
+def test_check_package_rejects_redundant_license_classifier(tmp_path: Path):
+    """PEP 639: a `License ::` classifier alongside `license = "MIT"` is
+    redundant and setuptools >= 77 errors on the combination (#60)."""
+    pyproject = _write_package(tmp_path, "See [docs](https://example.com/docs).\n")
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            '"Development Status :: 3 - Alpha",',
+            '"Development Status :: 3 - Alpha",\n    "License :: OSI Approved :: MIT License",',
+        ),
+        encoding="utf-8",
+    )
+
+    assert cpm._check_package(pyproject) == [
+        "genblaze-example: redundant `License ::` classifier alongside "
+        "`license` SPDX expression (PEP 639)"
+    ]
+
+
+def test_check_package_allows_no_license_classifier(tmp_path: Path):
+    """Baseline: `license = "MIT"` with no classifier is the desired state."""
+    pyproject = _write_package(tmp_path, "See [docs](https://example.com/docs).\n")
+
+    assert cpm._check_package(pyproject) == []
 
 
 def test_check_package_rejects_readme_swapped_after_validation(

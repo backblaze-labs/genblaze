@@ -152,6 +152,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see the `genblaze-core` entry above for the root cause. `provider.py` now
   builds its `file://` asset URL via `genblaze_core._utils.local_file_url()`.
 
+### Packaging
+
+- **Fixed** every package's `pyproject.toml` declared both the PEP 639
+  `license = "MIT"` SPDX expression and the legacy
+  `License :: OSI Approved :: MIT License` trove classifier; PEP 639 says the
+  classifier SHOULD NOT be used alongside a license expression, and
+  setuptools >= 77 errors on the combination. Removed the redundant
+  classifier from all 18 `pyproject.toml` files; `license = "MIT"` is
+  unchanged (#60).
+- Applied a consistent upper-bound policy to third-party runtime
+  dependencies: every dependency in `[project.dependencies]` (and
+  non-dev-tooling `optional-dependencies` extras) across `libs/core`, every
+  connector, `cli`, and the umbrella now caps below its next major version,
+  matching the bounded-major convention the repo already used for
+  `pydantic<3`, `urllib3<3`, `lmnt<3`, and `elevenlabs<3`. Packages still on
+  a pre-1.0 line (`decart`, `langsmith`, `httpx`) cap at their next major
+  (`<1`), matching the existing `assemblyai<1`/`hume<1` precedent rather than
+  a next-minor rule, so pre-1.0 and post-1.0 SDKs follow one rule. Where a
+  connector's documented floor was already several majors behind the version
+  it resolves to today (`runwayml` floor 0.6 vs. resolved 4.x, `replicate`
+  floor 0.25 vs. resolved 1.x, `openai` floor 1.0 vs. resolved 2.x), the cap
+  was set one major past the currently-resolving version instead of the
+  floor's next major, so this fix doesn't reject the version already in use;
+  the stale floors themselves are unchanged (out of scope here). Dev/test
+  tooling extras (`pytest`, `ruff`, `mypy`, `deptry`, `hypothesis`,
+  `jsonschema`, etc.) are unaffected — this policy applies to dependencies
+  actually shipped to and resolved by consumers (#61).
+
 ## [0.5.0] - 2026-07-16
 
 Correctness and security hardening across the pipeline, provenance, streaming,

@@ -8,10 +8,13 @@ see on PyPI:
 * ``description`` — single sentence, ≤ 200 chars
 * ``readme`` — set (safe per-package README file path, not just root link)
 * ``authors`` — populated
-* ``license`` — set
+* ``license`` — set (PEP 639 SPDX expression, e.g. ``license = "MIT"``); no
+  redundant ``License ::`` classifier alongside it (PEP 639 says classifiers
+  SHOULD NOT be used when a license expression is present, and
+  setuptools >= 77 errors on the combination — see CHANGELOG #60)
 * ``requires-python`` — ``>=3.11`` (matches AGENTS.md invariant)
-* ``classifiers`` — License (MIT), Python versions (3.11/3.12/3.13),
-  Topic, Development Status
+* ``classifiers`` — Python versions (3.11/3.12/3.13), Topic, Development
+  Status
 * ``project.urls`` — Homepage, Documentation, Repository, Issues
 * ``keywords`` — non-empty
 * ``readme`` Markdown links — absolute URLs only for files rendered on PyPI
@@ -37,13 +40,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # Required classifier prefixes — at least one classifier in each group
-# must be present.
+# must be present. License is intentionally excluded: PEP 639's
+# `license = "MIT"` SPDX expression is the single source of truth (see the
+# `_LICENSE_CLASSIFIER_PREFIX` check below, which asserts the classifier is
+# *absent*, not present).
 _REQUIRED_CLASSIFIER_GROUPS: dict[str, list[str]] = {
-    "license": ["License :: "],
     "python_versions": ["Programming Language :: Python :: 3.1"],
     "topic": ["Topic :: "],
     "dev_status": ["Development Status :: "],
 }
+
+# PEP 639: a `License ::` trove classifier is redundant — and, on
+# setuptools >= 77, an error — once a `license` SPDX expression is set.
+_LICENSE_CLASSIFIER_PREFIX = "License :: "
 
 # Required project_urls keys (case-sensitive — matches PyPI rendering).
 _REQUIRED_PROJECT_URLS = ("Homepage", "Documentation", "Repository", "Issues")
@@ -327,6 +336,10 @@ def _check_package(path: Path) -> list[str]:
     license_field = project.get("license")
     if not license_field:
         issues.append("missing `license`")
+    if any(c.startswith(_LICENSE_CLASSIFIER_PREFIX) for c in project.get("classifiers", [])):
+        issues.append(
+            "redundant `License ::` classifier alongside `license` SPDX expression (PEP 639)"
+        )
 
     # requires-python
     rp = project.get("requires-python")

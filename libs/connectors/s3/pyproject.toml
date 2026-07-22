@@ -12,7 +12,6 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -24,13 +23,17 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.4,<0.4",
-    "boto3>=1.28",
+    # <2: bounded-major convention (#61) — caps below the next major so a
+    # future boto3 release can't silently break this connector at resolve
+    # time.
+    "boto3>=1.28,<2",
     # backend.py imports botocore.exceptions directly (unguarded, module load).
     # boto3 always ships it, but declaring the direct import is honest and lets
     # deptry verify it. Floor tracks boto3>=1.28's botocore baseline; safe
     # because pip propagates boto3's exact botocore pin (a `--no-deps` install
-    # could still skew it, but that bypasses all our gates anyway).
-    "botocore>=1.31",
+    # could still skew it, but that bypasses all our gates anyway). <2 caps
+    # below the next major, same as boto3 above (#61).
+    "botocore>=1.31,<2",
 ]
 
 [project.urls]
@@ -49,8 +52,11 @@ async = [
     # async_backend.py imports aiobotocore.config.AioConfig directly. aioboto3
     # always pulls it, but the direct import is declared so deptry can verify
     # it; aioboto3 pins the exact aiobotocore (==2.7.0 at our 12.0 floor), so no
-    # resolver conflict — the floor just matches that true minimum.
-    "aiobotocore>=2.7",
+    # resolver conflict — the floor just matches that true minimum. <3 caps
+    # below the next major (#61); aioboto3 above already pins the exact
+    # aiobotocore it needs, so this cap is a backstop, not the binding
+    # constraint.
+    "aiobotocore>=2.7,<3",
 ]
 dev = [
     "pytest>=7.0",

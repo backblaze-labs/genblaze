@@ -13,7 +13,6 @@ license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -25,7 +24,11 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "pydantic>=2.0,<3",
-    "pillow>=10.0",
+    # <12: bounded-major convention (cf. pydantic<3, urllib3<3 below) — caps
+    # below the next major past the currently-verified 11.x release so a
+    # future Pillow major can't silently land breaking changes at resolve
+    # time (#61).
+    "pillow>=10.0,<12",
     # urllib3 is imported unguarded at module load in storage/transfer.py
     # (the shared PoolManager backing AssetTransfer's presigned-URL streaming),
     # and storage/__init__ imports transfer eagerly — so `import
@@ -47,7 +50,13 @@ Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
-parquet = ["pyarrow>=14.0"]
+# <23: pyarrow's leading version number bumps roughly every quarterly release
+# rather than tracking semver majors strictly, and the currently-resolvable
+# release (22.x) is already far past the 14.0 floor; capping at 14 or 15
+# would reject the version this extra is actually verified against today.
+# Bounded one major past what's currently verified (#61) rather than left
+# uncapped, matching the repo's bounded-major convention (cf. pydantic<3).
+parquet = ["pyarrow>=14.0,<23"]
 # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
 # test fixture (#108); cap until 1.49 is vetted against the test suite.
 audio = ["mutagen>=1.47,<1.49"]
@@ -55,8 +64,11 @@ audio = ["mutagen>=1.47,<1.49"]
 # function-local), so core stays installable without them. Advertised as
 # extras so callers can opt in explicitly. http floor matches the connectors
 # already on httpx>=0.24 (nvidia, gmicloud, stability-audio, replicate).
-http = ["httpx>=0.24"]
-otel = ["opentelemetry-api>=1.20"]
+# <1: bounded-major convention (#61); httpx is still pre-1.0 so this caps at
+# its next major rather than a next-minor (matches assemblyai/hume precedent
+# for other pre-1.0 SDKs elsewhere in this repo).
+http = ["httpx>=0.24,<1"]
+otel = ["opentelemetry-api>=1.20,<2"]
 # Additional linear-time gate for providers/pattern_safety.py's ReDoS guard
 # (issue #80), on top of the static heuristic that always runs regardless
 # (issue #148 — re2 accepting a pattern doesn't make it safe under the
@@ -66,7 +78,7 @@ otel = ["opentelemetry-api>=1.20"]
 # the Python versions this repo supports, so declaring it here (and in
 # `dev`, below) is low-risk and is what actually activates this extra gate
 # in CI.
-re2 = ["google-re2>=1.0"]
+re2 = ["google-re2>=1.0,<2"]
 # genblaze_core.testing ships in the wheel and is a public, documented surface
 # (MockProvider/ProviderComplianceTests — see connector test suites and the
 # langsmith README). It imports pytest at module load, so it's only usable with
@@ -79,15 +91,15 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
     "deptry>=0.23",
-    "pyarrow>=14.0",
+    "pyarrow>=14.0,<23",
     # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
     # test fixture (#108); cap until 1.49 is vetted against the test suite.
     "mutagen>=1.47,<1.49",
     "jsonschema>=4.0",
     "hypothesis>=6.0",
-    "httpx>=0.24",
-    "opentelemetry-api>=1.20",
-    "google-re2>=1.0",
+    "httpx>=0.24,<1",
+    "opentelemetry-api>=1.20,<2",
+    "google-re2>=1.0,<2",
 ]
 
 [tool.hatch.build.targets.wheel]

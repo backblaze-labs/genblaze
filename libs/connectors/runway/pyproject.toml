@@ -12,7 +12,6 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -24,7 +23,13 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.4,<0.4",
-    "runwayml>=0.6",
+    # <5: bounded-major convention (#61). The documented floor (0.6) predates
+    # the SDK's current major line — runwayml resolves to 4.x today, so
+    # capping at the next major after 0.6 (<1) would reject the version this
+    # connector is actually verified against. Capped one major past what's
+    # currently verified instead; the floor itself is unchanged here (raising
+    # it is a separate, larger fix — see #61 follow-up notes).
+    "runwayml>=0.6,<5",
 ]
 
 [project.urls]
