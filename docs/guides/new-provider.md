@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-07-21 -->
 # Adding a New Provider
 
 Step-by-step guide for contributing a provider adapter to genblaze. This guide is the canonical contract — every section maps to a check the compliance harness or pipeline relies on.
@@ -66,12 +66,15 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
 ]
 dependencies = [
     "genblaze-core>=0.3.0,<0.4",
-    "myprovider-sdk>=1.0",
+    # Cap every third-party runtime dep below its next major (`<1` if the
+    # SDK is still pre-1.0 — one rule for both, no separate next-minor
+    # carve-out) so a vendor major bump can't silently break a fresh
+    # install — see RELEASING.md's Dependency pinning policy (#61).
+    "myprovider-sdk>=1.0,<2",
 ]
 
 [project.urls]

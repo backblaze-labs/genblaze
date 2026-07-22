@@ -12,7 +12,6 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -24,7 +23,10 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.4,<0.4",
-    "langsmith>=0.1.0",
+    # <1: bounded-major convention (#61) — langsmith is pre-1.0, so this caps
+    # at its next major (matches the assemblyai/hume precedent for other
+    # pre-1.0 SDKs elsewhere in this repo).
+    "langsmith>=0.1.0,<1",
 ]
 
 [project.urls]

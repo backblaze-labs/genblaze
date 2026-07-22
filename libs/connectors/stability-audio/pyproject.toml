@@ -12,7 +12,6 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -24,7 +23,9 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.4,<0.4",
-    "httpx>=0.24",
+    # <1: bounded-major convention (#61) — httpx is pre-1.0, so this caps at
+    # its next major.
+    "httpx>=0.24,<1",
 ]
 
 [project.urls]

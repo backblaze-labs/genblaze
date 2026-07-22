@@ -36,6 +36,36 @@ Convention:
 The release workflow validates `tag == "v" + latest CHANGELOG wave name`
 before doing anything else. A mismatch fails the run.
 
+## Dependency pinning policy
+
+Two independent conventions apply to every `pyproject.toml`'s
+`[project.dependencies]` and product-facing `optional-dependencies` extras
+(dev/test tooling extras like `dev`/`testing` are exempt — see below):
+
+* **Internal `genblaze-*` deps** are pinned `>=<current>,<0.4` (bump the
+  upper bound only when the monorepo's own version line advances — see
+  `tools/check_pin_parity.py`).
+* **Third-party runtime deps** are capped below their next major version
+  (`>=X.Y,<X+1`), including packages still on a pre-1.0 line (`>=0.Y,<1`) —
+  e.g. `pydantic>=2.0,<3`, `lmnt>=2.6,<3`, `elevenlabs>=2.0,<3`,
+  `assemblyai>=0.45,<1`, `hume>=0.13.13,<1`. One rule for both pre- and
+  post-1.0 SDKs keeps the policy mechanical instead of requiring a judgment
+  call per package about how "volatile" its 0.x line is. An uncapped
+  third-party dep lets a vendor's major release break a clean `pip install`
+  at resolve time with no code change on our side — this is the exact class
+  of bug that broke `genblaze-lmnt` and `genblaze-elevenlabs` (#166, #163).
+  Dev/test tooling extras (`pytest`, `ruff`, `mypy`, `deptry`, `hypothesis`,
+  `jsonschema`, etc., normally grouped under a `dev` or `testing` extra) are
+  exempt from this cap — they're never resolved into a production install,
+  so a future major there costs us a CI failure to fix, not a broken
+  consumer install.
+
+  When a connector's floor is already several majors behind the version it
+  actually resolves to today (a floor-staleness bug in its own right, not a
+  packaging-cap issue), cap one major past the version currently verified
+  to work rather than the floor's next major — capping tighter than what's
+  actually in use would make a fresh install worse, not safer.
+
 ## Pre-release checklist
 
 Before cutting a release, verify on `main`:

@@ -12,7 +12,6 @@ requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
     "Environment :: Console",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -24,7 +23,9 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "genblaze-core>=0.3.6,<0.4",
-    "click>=8.0",
+    # <9: bounded-major convention (#61) — caps below the next major so a
+    # future click release can't silently break the CLI at resolve time.
+    "click>=8.0,<9",
 ]
 
 [project.urls]
