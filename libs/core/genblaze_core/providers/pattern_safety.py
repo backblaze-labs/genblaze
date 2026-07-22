@@ -203,15 +203,16 @@ def _is_nullable_separator(fragment: str) -> bool:
         return True
     try:
         return re.fullmatch(fragment, "") is not None
-    except (re.error, OverflowError):
+    except (re.error, OverflowError, RecursionError):
         # re.error: the fragment isn't valid as a standalone pattern (e.g.
         # it contains a backreference to a group defined outside it).
         # OverflowError: an absurdly large `{n,m}` repeat count (e.g.
-        # `{0,4294967296}`) raises this instead of re.error. Either way we
-        # can't prove the fragment is nullable, but per this module's
-        # conservative bias (false positives over false negatives — see
-        # module docstring), don't rule it out either: treat it as a
-        # nullable/unsafe separator.
+        # `{0,4294967296}`) raises this instead of re.error. RecursionError:
+        # extremely deep nesting can exceed the interpreter's recursion
+        # limit during compilation. None of these prove the fragment is
+        # nullable, but per this module's conservative bias (false
+        # positives over false negatives — see module docstring), don't
+        # rule it out either: treat it as a nullable/unsafe separator.
         return True
 
 
@@ -332,10 +333,40 @@ def _consume_escape(src: str, i: int) -> tuple[frozenset[str] | None, int]:
     return _escape_charset(src[i + 1]), i + 2
 
 
+def _find_bracket_class_end(src: str, open_idx: int) -> int:
+    """Return the index of the closing ``]`` for a ``[...]`` class starting
+    at ``src[open_idx] == "["``, or ``-1`` if unterminated.
+
+    Mirrors real ``re`` semantics for the two cases a naive
+    ``src.find("]", open_idx + 1)`` gets wrong: a ``]`` immediately after
+    ``[`` (or after ``[^``) is a *literal* member of the class, not the
+    closer (``[]a-y]`` matches ``]`` or ``a``-``y``); and a ``\\]`` inside
+    the class is an escaped literal, not the closer either. Getting this
+    wrong silently truncates the class and drops characters from the
+    computed charset — a confirmed false-negative bypass during review of
+    this fix (a truncated ``[]a-y]`` lost most of the ``a``-``y`` range).
+    """
+    i = open_idx + 1
+    n = len(src)
+    if i < n and src[i] == "^":
+        i += 1
+    if i < n and src[i] == "]":
+        i += 1  # leading `]` (post-negation, if any) is a literal member
+    while i < n:
+        if src[i] == "\\":
+            i += 2
+            continue
+        if src[i] == "]":
+            return i
+        i += 1
+    return -1
+
+
 def _bracket_charset(body: str) -> frozenset[str] | None:
     """Return the set of characters a ``[...]`` class body (the text
-    between the brackets) matches, or ``None`` (unknown/full) for a negated
-    class (``[^...]``) or a range too unusual to expand confidently.
+    between the brackets, as located by :func:`_find_bracket_class_end`)
+    matches, or ``None`` (unknown/full) for a negated class (``[^...]``)
+    or a range too unusual to expand confidently.
     """
     if body.startswith("^"):
         return None
@@ -394,7 +425,7 @@ def _branch_charset(branch: str) -> tuple[bool, frozenset[str] | None]:
         if ch == "\\":
             atom_charset, i = _consume_escape(branch, i)
         elif ch == "[":
-            close = branch.find("]", i + 1)
+            close = _find_bracket_class_end(branch, i)
             if close == -1:
                 return False, None
             atom_charset = _bracket_charset(branch[i + 1 : close])

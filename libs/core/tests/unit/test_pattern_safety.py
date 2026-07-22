@@ -177,6 +177,11 @@ class TestHeuristicUnsafe:
             r"(?:[a-c]|[a-z]{2})+",  # #157 review: overlapping character-class
             # ranges at different match lengths — the confirmed live bypass
             # from the security review of this fix
+            r"(?:[]a-y]|qq)+$",  # #157 review round 2: a literal `]` as the
+            # first char of a bracket class (real re semantics: `[]a-y]`
+            # matches `]` or a-y) was mis-parsed as an empty class, silently
+            # dropping the whole a-y range (including `q`) from the computed
+            # charset — a confirmed false-negative bypass caught in re-review
         ],
         ids=[
             "nested-plus",
@@ -199,6 +204,7 @@ class TestHeuristicUnsafe:
             "overlapping-alternation-class-vs-literal",
             "overlapping-alternation-hex-escape",
             "overlapping-alternation-class-range-different-lengths",
+            "overlapping-alternation-leading-bracket-literal",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
