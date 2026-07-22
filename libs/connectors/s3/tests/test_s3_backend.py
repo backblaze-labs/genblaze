@@ -839,3 +839,68 @@ class TestKeyFromUrl:
         # A URL produced by get_durable_url WITHOUT public_url_base.
         raw_url = f"{self._ENDPOINT}/my-bucket/genblaze/manifests/old.json"
         assert backend.key_from_url(raw_url) == "genblaze/manifests/old.json"
+
+    def test_foreign_host_returns_none_without_network_call(self, mock_boto3):
+        """Regression for #19: a foreign host must be rejected by comparing
+        the URL against our already-configured endpoint — never by forcing
+        a HeadBucket. Region verification is unrelated to "is this URL
+        even a candidate", so it must not fire on this path.
+        """
+        backend = self._make_backend(mock_boto3)
+        backend._region_verified = False
+        assert backend.key_from_url("https://other-host.example.com/my-bucket/k") is None
+        backend._client.head_bucket.assert_not_called()
+
+    def test_foreign_host_on_unverified_backend_with_bad_creds_returns_none(self, mock_boto3):
+        """Regression for #19: on an unverified backend with bad
+        credentials, a foreign URL must still return None instead of
+        surfacing the HeadBucket StorageError — otherwise cross-backend
+        manifest routing (read_manifest_for_asset) breaks on the first
+        backend it tries that isn't the right one.
+        """
+        backend = self._make_backend(mock_boto3)
+        backend._region_verified = False
+        backend._client.head_bucket.side_effect = _FakeClientError(
+            {"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"HTTPHeaders": {}}},
+            "HeadBucket",
+        )
+        assert backend.key_from_url("https://other-host.example.com/my-bucket/k") is None
+        backend._client.head_bucket.assert_not_called()
+
+    def test_own_bucket_url_resolves_without_verification(self, mock_boto3):
+        """An own-bucket URL (host already matches the configured endpoint)
+        must still resolve to its key even before region verification has
+        run — no HeadBucket is needed to recognize it.
+        """
+        backend = self._make_backend(mock_boto3)
+        backend._region_verified = False
+        url = f"{self._ENDPOINT}/my-bucket/genblaze/manifests/abc.json"
+        assert backend.key_from_url(url) == "genblaze/manifests/abc.json"
+        backend._client.head_bucket.assert_not_called()
+
+    def test_b2_bucket_migrated_region_recognized_without_network_call(self, mock_boto3):
+        """A URL minted after this bucket migrated to a different B2 region
+        (see _ensure_region_verified's 301-redirect auto-correct) still
+        resolves — B2 bucket names are globally unique, so a B2-shaped host
+        plus an exact bucket-name match is proof of ownership on its own,
+        with no HeadBucket required.
+        """
+        backend = self._make_backend(mock_boto3)
+        backend._region_verified = False
+        url = "https://s3.eu-central-003.backblazeb2.com/my-bucket/genblaze/manifests/abc.json"
+        assert backend.key_from_url(url) == "genblaze/manifests/abc.json"
+        backend._client.head_bucket.assert_not_called()
+
+    def test_non_b2_host_mismatch_not_leniently_matched_by_bucket_name(self, mock_boto3):
+        """The bucket-name-only allowance is B2-specific (global bucket
+        name uniqueness). A non-B2 custom endpoint (e.g. MinIO) with a
+        mismatched host must still be treated as foreign even if the
+        bucket name happens to coincide — two MinIO deployments can
+        legitimately share a bucket name.
+        """
+        backend = self._make_backend(mock_boto3, endpoint_url="https://minio.example.com")
+        backend._client.meta.endpoint_url = "https://minio.example.com"
+        backend._region_verified = False
+        url = "https://minio-other.example.com/my-bucket/some/key.json"
+        assert backend.key_from_url(url) is None
+        backend._client.head_bucket.assert_not_called()

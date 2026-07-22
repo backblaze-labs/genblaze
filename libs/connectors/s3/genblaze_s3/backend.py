@@ -97,6 +97,17 @@ def _b2_endpoint(region: str) -> str:
     return f"https://s3.{region}.backblazeb2.com"
 
 
+def _is_b2_host(host: str) -> bool:
+    """True when ``host`` is a Backblaze B2 S3-compatible domain.
+
+    Shared by ``_is_b2`` (checks this backend's configured endpoint) and
+    ``key_from_url`` (checks an arbitrary URL's host) so both stay in sync
+    if the B2 hostname pattern ever changes.
+    """
+    host = host.lower()
+    return host == "backblazeb2.com" or host.endswith(".backblazeb2.com")
+
+
 def _data_size(data: bytes | BinaryIO) -> int | None:
     """Best-effort total-size determination for a put payload.
 
@@ -321,7 +332,7 @@ class S3StorageBackend(StorageBackend):
         # Parse the host so the check can't be fooled by the domain appearing
         # elsewhere in the URL (e.g. https://evil.example/backblazeb2.com).
         host = (urlparse(raw if "://" in raw else f"//{raw}").hostname or "").lower()
-        return host == "backblazeb2.com" or host.endswith(".backblazeb2.com")
+        return _is_b2_host(host)
 
     def _client_kwargs(self) -> dict[str, Any]:
         """Assemble boto3.client kwargs from current instance state."""
@@ -1314,7 +1325,12 @@ class S3StorageBackend(StorageBackend):
 
         Returns ``None`` for URLs that clearly belong elsewhere (different
         host, different bucket, malformed) so callers can route across
-        backends without try/except gymnastics.
+        backends without try/except gymnastics. This check is host/bucket
+        comparison only — it never triggers a network call (no
+        ``HeadBucket``), so it returns ``None`` for foreign URLs even on an
+        unverified backend with bad or placeholder credentials. Callers like
+        ``read_manifest_for_asset`` rely on that to probe multiple backends
+        cheaply.
         """
         from urllib.parse import unquote, urlparse
 
@@ -1327,10 +1343,28 @@ class S3StorageBackend(StorageBackend):
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             return None
-        self._ensure_region_verified()
-        endpoint_host = urlparse(self._client.meta.endpoint_url or "").netloc
-        if parsed.netloc != endpoint_host:
-            return None
+
+        # Compare against the endpoint the client is *currently* configured
+        # for. Reading ``.meta.endpoint_url`` is a local attribute access —
+        # it reflects boto3's already-resolved endpoint (including the
+        # default AWS endpoint when no custom ``endpoint_url`` was passed)
+        # without triggering a network call, so a foreign host is rejected
+        # without ever touching the network.
+        current_host = urlparse(self._client.meta.endpoint_url or "").netloc
+        if parsed.netloc != current_host:
+            # Host doesn't match our current guess. Still might be ours: B2
+            # buckets can live in a different region than the one we were
+            # constructed/last-verified with (see _ensure_region_verified's
+            # 301-redirect auto-correct), so a URL minted after a region
+            # migration would carry a different B2 regional host. Recognize
+            # that case WITHOUT a network call — B2 bucket names are
+            # globally unique, so "B2-shaped host + our exact bucket name in
+            # the path" is sufficient proof of ownership on its own; a plain
+            # host mismatch against a non-B2 (or differently-branded) host
+            # is definitively foreign.
+            if not (self._is_b2 and _is_b2_host(parsed.netloc)):
+                return None
+
         path = parsed.path.lstrip("/")
         bucket_prefix = self._bucket + "/"
         if not path.startswith(bucket_prefix):
