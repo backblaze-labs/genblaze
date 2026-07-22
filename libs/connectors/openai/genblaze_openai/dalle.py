@@ -41,10 +41,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from genblaze_core._utils import open_pinned_https_connection
+from genblaze_core._utils import local_file_url, open_pinned_https_connection
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import Modality, ProviderErrorCode
@@ -537,7 +537,7 @@ class DalleProvider(SyncProvider):
             out_path = Path(tmp)
         out_path.write_bytes(img_bytes)
         return (
-            f"file://{quote(str(out_path.resolve()))}",
+            local_file_url(out_path.resolve()),
             hashlib.sha256(img_bytes).hexdigest(),
             len(img_bytes),
         )

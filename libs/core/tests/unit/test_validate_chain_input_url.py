@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from genblaze_core.exceptions import ProviderError
@@ -217,11 +217,23 @@ def test_double_encoded_strict_mode_rejects(tmp_path: Path) -> None:
 
 
 def test_windows_drive_letter_file_url(tmp_path: Path, monkeypatch) -> None:
-    """Regression for #132: url2pathname() strips the leading slash before a
-    Windows drive letter so Path.is_absolute() passes and Path.resolve()
-    produces the correct canonical path. Simulates Windows url2pathname."""
+    """Regression for #132/#164: url2pathname() strips the leading slash
+    before a Windows drive letter so Path.is_absolute() passes and
+    Path.resolve() produces the correct canonical path.
+
+    The URL is built with PureWindowsPath.as_uri() — the exact form
+    local_file_url() (the shared connector helper) produces for a Windows
+    path — proving assemblyai's file:// input validation (which calls this
+    function) accepts what connectors now emit. url2pathname is
+    monkeypatched to return the pre-computed real_path since a genuine
+    Windows path string can't round-trip through POSIX pathlib on this host;
+    nturl2path.url2pathname is exercised unmocked in
+    test_utils.py::TestLocalFileUrl.
+    """
     asset = tmp_path / "asset.mp4"
     real_path = str(asset.resolve())
+    win_url = PureWindowsPath(r"C:\tmp\asset.mp4").as_uri()
+    assert win_url == "file:///C:/tmp/asset.mp4"
     monkeypatch.setattr(
         "genblaze_core.providers.base.url2pathname",
         lambda _: real_path,
@@ -230,6 +242,6 @@ def test_windows_drive_letter_file_url(tmp_path: Path, monkeypatch) -> None:
     # (with allowlist) the containment check when url2pathname gives back
     # the correct Windows-resolved path.
     validate_chain_input_url(
-        "file:///C:/tmp/asset.mp4",
+        win_url,
         file_root_allowlist=(tmp_path,),
     )

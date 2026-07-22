@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. `genblaze_core.ParquetSink(...)`) still gets the actionable
   `pip install "genblaze[parquet]"` hint. `OptionalDependencyError` itself is
   unchanged (still `ImportError`-catchable) for non-attribute import paths.
+- **Fixed** local-output assets (`FFmpegCompositor`, `FFmpegTransform`, and
+  every connector that built its `file://` URL via `quote()`) could never
+  upload to B2 on Windows (#164). `file://` URLs were built as
+  `f"file://{quote(str(path.resolve()))}"`, which percent-encodes a Windows
+  drive colon and backslashes into `file://C%3A%5CUsers%5C...`; `urlparse`
+  then reads the entire percent-encoded string as `netloc` and leaves `path`
+  empty, so `_read_local_file`'s allowlist check always rejected it. A new
+  `genblaze_core._utils.local_file_url()` helper builds these URLs with
+  `Path.as_uri()` instead, producing the empty-netloc form
+  (`file:///C:/Users/...`) that `_read_local_file` (via `url2pathname`) and
+  `validate_chain_input_url` already parse correctly on every platform — the
+  sink and validator were already fixed; only the URL construction was
+  release-lagged. POSIX behavior is unchanged (`as_uri()` already produced
+  the same form there).
 
 ### genblaze-cli
 
@@ -59,6 +73,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MODEL_ERROR`; the message-based fallback delegates to the shared
   `classify_api_error` classifier instead of duplicating its "model" +
   "not found" pattern.
+- **Fixed** local audio outputs (TTS + SFX) couldn't upload to B2 on
+  Windows (#164) — see the `genblaze-core` entry above for the root cause.
+  Both `provider.py` and `sfx.py` now build their `file://` asset URL via
+  `genblaze_core._utils.local_file_url()`.
+
+### genblaze-decart
+
+- **Fixed** local video/image outputs couldn't upload to B2 on Windows
+  (#164) — see the `genblaze-core` entry above for the root cause. Both
+  `provider.py` and `image.py` now build their `file://` asset URL via
+  `genblaze_core._utils.local_file_url()`.
+
+### genblaze-google
+
+- **Fixed** local video outputs (Veo inline-bytes fallback) and Imagen
+  image outputs couldn't upload to B2 on Windows (#164) — see the
+  `genblaze-core` entry above for the root cause. Both `provider.py` and
+  `imagen.py` now build their `file://` asset URL via
+  `genblaze_core._utils.local_file_url()`.
+
+### genblaze-hume
+
+- **Fixed** local audio outputs couldn't upload to B2 on Windows (#164) —
+  see the `genblaze-core` entry above for the root cause. `provider.py` now
+  builds its `file://` asset URL via `genblaze_core._utils.local_file_url()`.
+
+### genblaze-openai
+
+- **Fixed** local outputs (Sora video, DALL-E/gpt-image-1 images, TTS
+  audio) couldn't upload to B2 on Windows (#164) — see the `genblaze-core`
+  entry above for the root cause. `dalle.py`, `provider.py`, and `tts.py`
+  now build their `file://` asset URL via
+  `genblaze_core._utils.local_file_url()`.
+
+### genblaze-stability-audio
+
+- **Fixed** local audio outputs couldn't upload to B2 on Windows (#164) —
+  see the `genblaze-core` entry above for the root cause. `provider.py` now
+  builds its `file://` asset URL via `genblaze_core._utils.local_file_url()`.
 
 ### genblaze-gmicloud
 
@@ -95,6 +148,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `temperature`/`top_p` as the closest replacement knobs, instead of the
   `TypeError` that forwarding an unsupported kwarg to the real 2.x SDK
   would raise.
+- **Fixed** local audio outputs couldn't upload to B2 on Windows (#164) —
+  see the `genblaze-core` entry above for the root cause. `provider.py` now
+  builds its `file://` asset URL via `genblaze_core._utils.local_file_url()`.
 
 ## [0.5.0] - 2026-07-16
 

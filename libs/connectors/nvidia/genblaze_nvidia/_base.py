@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 import httpx
+from genblaze_core._utils import local_file_url
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers.retry import retry_after_from_response
@@ -231,7 +232,7 @@ def save_bytes_to_output_dir(
     filename = f"{prefix}-{uuid.uuid4().hex[:12]}.{extension.lstrip('.')}"
     path = base / filename
     path.write_bytes(payload)
-    return path.resolve().as_uri()
+    return local_file_url(path.resolve())
 
 
 class NvidiaClient:

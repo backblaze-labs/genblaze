@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from pathlib import PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -161,8 +162,8 @@ def test_submit_converts_file_uri_to_local_path():
 
 
 def test_submit_decodes_percent_encoded_file_uri():
-    # Sibling connectors emit file:// URLs via quote(), so a path with spaces
-    # arrives percent-encoded; it must be decoded back to the real path.
+    # Sibling connectors emit file:// URLs via Path.as_uri(), so a path with
+    # spaces arrives percent-encoded; it must be decoded back to the real path.
     provider = _make_provider()
     step = _make_step(prompt="file:///srv/audio/my%20clip.wav")
     provider.submit(step)
@@ -185,6 +186,53 @@ def test_submit_https_url_passes_through_unchanged():
     step = _make_step(prompt=AUDIO_URL)
     provider.submit(step)
     assert _FakeTranscriber.last_submit["audio_url"] == AUDIO_URL
+
+
+def test_submit_rejects_old_quote_style_windows_file_uri():
+    """Regression for #164's "AssemblyAI wrinkle": the pre-fix per-connector
+    construction (``f"file://{quote(str(path))}"``) percent-encoded a
+    Windows drive colon/backslashes into ``file://C%3A%5CUsers...``.
+    ``urlparse`` reads that whole percent-encoded string as ``netloc``,
+    which ``validate_chain_input_url`` rejects (non-empty, non-localhost
+    netloc). This pins why every connector had to move to
+    ``local_file_url()``/``Path.as_uri()`` instead — the old form was never
+    valid input for this connector.
+    """
+    provider = _make_provider()
+    old_style_url = "file://C%3A%5CUsers%5Cclip.wav"
+    step = _make_step(prompt=old_style_url)
+    with pytest.raises(ProviderError, match="netloc"):
+        provider.submit(step)
+
+
+def test_submit_converts_windows_as_uri_file_uri_to_local_path(tmp_path, monkeypatch):
+    """Regression for #164: connectors now build Windows file:// URLs with
+    Path.as_uri(), which yields the empty-netloc RFC 8089 form
+    (file:///C:/...) — the opposite of the old quote()-based
+    file://C:/... this connector always rejected. Confirms the as_uri()
+    form passes validate_chain_input_url's netloc check and resolves to a
+    local path via url2pathname, matching the sibling core regression tests
+    for #132/#164 (test_transfer.py, test_validate_chain_input_url.py,
+    test_ffmpeg_utils.py).
+
+    Both url2pathname references (this module's and
+    genblaze_core.providers.base's) are monkeypatched to the value Windows'
+    real parser would produce for an absolute, resolvable path — pathlib.Path
+    here is PosixPath and can't represent Windows absolute-path semantics for
+    a raw backslash string. The genuine nturl2path.url2pathname parsing
+    itself is exercised unmocked in test_utils.py::TestLocalFileUrl.
+    """
+    real_file = tmp_path / "clip.wav"
+    real_path = str(real_file.resolve())
+    win_url = PureWindowsPath(r"C:\srv\audio\clip.wav").as_uri()
+    assert win_url == "file:///C:/srv/audio/clip.wav"
+    monkeypatch.setattr("genblaze_core.providers.base.url2pathname", lambda _: real_path)
+    monkeypatch.setattr("genblaze_assemblyai.provider.url2pathname", lambda _: real_path)
+
+    provider = _make_provider()
+    step = _make_step(prompt=win_url)
+    provider.submit(step)
+    assert _FakeTranscriber.last_submit["audio_url"] == real_path
 
 
 # --- full lifecycle -------------------------------------------------------

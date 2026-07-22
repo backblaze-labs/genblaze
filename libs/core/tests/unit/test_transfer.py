@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import socket
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
@@ -383,18 +383,28 @@ class TestReadLocalFile:
             _read_local_file(f"file://{missing}")
 
     def test_windows_drive_letter_file_url(self, tmp_path, monkeypatch):
-        """Regression for #132: file:///C:/path yields /C:/path from urlparse.path.
-        The old unquote() kept the leading slash, causing Path.resolve() to produce
-        a drive-relative path on Windows that failed the allowlist check.
-        url2pathname() strips the leading slash before the drive letter.
+        """Regression for #132/#164: file:///C:/path yields /C:/path from
+        urlparse.path. The old unquote() kept the leading slash, causing
+        Path.resolve() to produce a drive-relative path on Windows that
+        failed the allowlist check. url2pathname() strips the leading slash
+        before the drive letter.
 
-        Simulates Windows url2pathname behavior so the regression is catchable on
-        any platform — without the patch, the fake Windows URL's path would resolve
-        outside tmp_path and be rejected.
+        The input URL is built with PureWindowsPath.as_uri() — the exact
+        form local_file_url() (the shared helper every connector now calls)
+        produces for a Windows path — so this test proves the connector ->
+        sink contract holds, not just an arbitrary hardcoded string.
+
+        url2pathname is monkeypatched to return the pre-computed real_path
+        because a genuine Windows path string ("C:\\tmp\\asset.mp4") can't
+        round-trip through POSIX pathlib.Path.resolve() on this host; the
+        actual Windows parser (nturl2path.url2pathname) is exercised
+        unmocked in test_utils.py::TestLocalFileUrl.
         """
         test_file = tmp_path / "asset.mp4"
         test_file.write_bytes(b"video data")
         real_path = str(test_file.resolve())
+        win_url = PureWindowsPath(r"C:\tmp\asset.mp4").as_uri()
+        assert win_url == "file:///C:/tmp/asset.mp4"
 
         # Simulate what Windows url2pathname does: /C:/tmp/asset.mp4 → C:\tmp\asset.mp4
         # On the fix branch url2pathname is a module-level name we can monkeypatch.
@@ -407,7 +417,7 @@ class TestReadLocalFile:
             (tmp_path.resolve(),),
         )
 
-        data, _ = _read_local_file("file:///C:/tmp/asset.mp4")
+        data, _ = _read_local_file(win_url)
         assert data == b"video data"
 
 
