@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-assemblyai"
-version = "0.3.0"
+version = "0.3.1"
 description = "AssemblyAI (speech-to-text / transcription) provider adapter for genblaze"
 authors = [{name = "Eduardo Pavez", email = "epavez@backblaze.com"}]
 readme = "README.md"

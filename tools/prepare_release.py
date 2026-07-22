@@ -353,9 +353,16 @@ def set_package_json_version(text: str, new_version: str) -> str:
     return "".join(out)
 
 
-_DEP_LINE_RE = re.compile(
-    r'^(?P<indent>[ \t]*)"(?P<name>[A-Za-z0-9_.]+(?:-[A-Za-z0-9_.]+)*)'
-    r'>=(?P<floor>[0-9][0-9A-Za-z.]*)(?P<rest>[^"]*)"(?P<trail>,?[ \t]*)$'
+# Matches a single quoted dependency specifier *anywhere* on a line — not just
+# a line that is nothing but the quoted dep. This is what lets the single-line
+# inline-array extras (`decart = ["genblaze-decart>=0.3.1,<0.4"]`) get rewritten
+# alongside the multi-line bundle arrays (`video = [\n  "genblaze-decart>=...",\n]`);
+# an earlier full-line anchor silently skipped the inline form, leaving umbrella
+# per-connector extras stuck on a stale floor every release. Applied per token
+# so a line carrying several deps has each one rewritten.
+_DEP_TOKEN_RE = re.compile(
+    r'"(?P<name>[A-Za-z0-9_.]+(?:-[A-Za-z0-9_.]+)*)'
+    r'>=(?P<floor>[0-9][0-9A-Za-z.]*)(?P<rest>[^"]*)"'
 )
 
 
@@ -373,29 +380,21 @@ def rewrite_floors(
     actually changed.
     """
     changes: list[tuple[str, str, str]] = []
-    out_lines: list[str] = []
-    for line in text.splitlines(keepends=True):
-        stripped = line.rstrip("\n")
-        match = _DEP_LINE_RE.match(stripped)
-        if not match:
-            out_lines.append(line)
-            continue
+
+    def _sub(match: re.Match[str]) -> str:
         name = match.group("name")
         key = name_to_key.get(name)
         if key is None or key not in final_versions:
-            out_lines.append(line)
-            continue
+            return match.group(0)
         old_floor = match.group("floor")
         new_floor = final_versions[key]
         if old_floor == new_floor:
-            out_lines.append(line)
-            continue
+            return match.group(0)
         rest = match.group("rest")
-        old_pin = f"{name}>={old_floor}{rest}"
-        new_pin = f"{name}>={new_floor}{rest}"
-        out_lines.append(f'{match.group("indent")}"{new_pin}"{match.group("trail")}\n')
-        changes.append((name, old_pin, new_pin))
-    return "".join(out_lines), changes
+        changes.append((name, f"{name}>={old_floor}{rest}", f"{name}>={new_floor}{rest}"))
+        return f'"{name}>={new_floor}{rest}"'
+
+    return _DEP_TOKEN_RE.sub(_sub, text), changes
 
 
 # ---------------------------------------------------------------------------

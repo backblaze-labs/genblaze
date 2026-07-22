@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-hume"
-version = "0.3.1"
+version = "0.3.2"
 description = "Hume AI (Octave TTS) provider adapter for genblaze"
 authors = [{name = "Kamren Mahaney", email = "kmahaney@backblaze.com"}]
 readme = "README.md"

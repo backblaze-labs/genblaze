@@ -233,6 +233,33 @@ def test_rewrite_floors_updates_every_occurrence_across_extras():
     assert len(changes) == 2
 
 
+def test_rewrite_floors_updates_single_line_inline_extra():
+    """Umbrella per-connector extras are written inline on one line
+    (`decart = ["genblaze-decart>=0.3.1,<0.4"]`). These must be rewritten too —
+    a whole-line anchor skipped them, leaving the floor stale every release."""
+    text = (
+        "[project.optional-dependencies]\n"
+        'decart = ["genblaze-decart>=0.3.1,<0.4"]\n'
+        'video = [\n    "genblaze-decart>=0.3.1,<0.4",\n]\n'
+    )
+    new_text, changes = pr.rewrite_floors(text, {"genblaze-decart": "decart"}, {"decart": "0.3.2"})
+    assert 'decart = ["genblaze-decart>=0.3.2,<0.4"]' in new_text
+    assert new_text.count('"genblaze-decart>=0.3.2,<0.4"') == 2
+    assert len(changes) == 2
+
+
+def test_rewrite_floors_rewrites_multiple_deps_on_one_line():
+    """A fully-inline array with several deps has each tracked one rewritten."""
+    text = 'all = ["genblaze-core>=0.3.6,<0.4", "genblaze-s3>=0.3.5,<0.4"]\n'
+    new_text, changes = pr.rewrite_floors(
+        text,
+        {"genblaze-core": "core", "genblaze-s3": "s3"},
+        {"core": "0.3.7", "s3": "0.3.6"},
+    )
+    assert new_text == 'all = ["genblaze-core>=0.3.7,<0.4", "genblaze-s3>=0.3.6,<0.4"]\n'
+    assert len(changes) == 2
+
+
 def test_map_changed_files_prefix_matching_does_not_false_positive():
     """`openai` and a hypothetical `openai-realtime` connector must not
     cross-match on a bare prefix (no trailing-slash boundary bug)."""

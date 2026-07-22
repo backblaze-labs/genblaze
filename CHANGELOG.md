@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-22
+
+Bug-fix and compatibility wave with one new opt-in feature. Fixes cross-platform
+(Windows) `file://` asset uploads, ports the elevenlabs and lmnt connectors to
+their SDK 2.x response shapes, routes gmicloud Seedance FLF2V frames to their
+native slots, makes optional-dependency introspection safe, hardens the sink
+against B2 `HeadObject` 403s, normalizes CAS-key extension case for dedup, skips
+the network `HeadBucket` for foreign S3 URLs, falls back to input `char_count`
+in `per_input_chars` pricing, closes remaining ReDoS heuristic gaps, and adopts
+a mechanical dependency upper-bound policy across every package. New: `genblaze
+verify --fetch` performs byte-level verification of output assets against the
+manifest's committed digests.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.3 → **0.4.4**
+- `genblaze-core` 0.3.6 → **0.3.7**
+- `genblaze-cli` 0.3.4 → **0.3.5**
+- `genblaze-s3` 0.3.5 → **0.3.6**
+- `genblaze-assemblyai` 0.3.0 → **0.3.1**
+- `genblaze-decart` 0.3.1 → **0.3.2**
+- `genblaze-elevenlabs` 0.3.1 → **0.3.2**
+- `genblaze-gmicloud` 0.3.3 → **0.3.4**
+- `genblaze-google` 0.3.2 → **0.3.3**
+- `genblaze-hume` 0.3.1 → **0.3.2**
+- `genblaze-langsmith` 0.3.1 → **0.3.2**
+- `genblaze-lmnt` 0.3.1 → **0.3.2**
+- `genblaze-luma` 0.3.1 → **0.3.2**
+- `genblaze-nvidia` 0.3.1 → **0.3.2**
+- `genblaze-openai` 0.3.2 → **0.3.3**
+- `genblaze-replicate` 0.3.3 → **0.3.4**
+- `genblaze-runway` 0.3.1 → **0.3.2**
+- `genblaze-stability-audio` 0.3.1 → **0.3.2**
+
 ### genblaze-core
 
 - **Security** the ReDoS pattern-safety heuristic (`pattern_safety.py`) missed
