@@ -84,7 +84,7 @@ def per_input_chars(rate: float, per: int = 1000) -> PricingStrategy:
         if text:
             return (len(text) / per) * rate
 
-        total_chars = 0
+        total_chars = 0.0
         found = False
         for asset in ctx.step.inputs:
             count = _float_or_none(asset.metadata.get("char_count"))
