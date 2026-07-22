@@ -65,11 +65,27 @@ Known residual gaps (not detected):
   gate than this heuristic — see above); without the ``re2``/``dev``
   extra, a backreference-shaped pattern has no heuristic coverage. Not
   introduced by this change; pre-existing and out of scope for #157.
+* A nullable *group* between two unbounded groups (``(a+)(?:x)?(a+)`` or
+  ``(a+)(x?)(a+)``) evades the adjacency check: ``_has_adjacent_unbounded_groups``
+  treats a nullable *separator* (``-?``) as adjacency-preserving, but the
+  optional element here is itself a top-level group, so it resets the
+  run counter rather than being read as a separator. Same nullable-adjacency
+  shape ``_is_nullable_separator`` was added to catch, just wrapped in
+  parens.
 
-All three are true ReDoS shapes in principle; they're narrower than the
-patterns this module actively detects, and are left as future hardening
-rather than blocking this heuristic on a full regex-language-equivalence
-analysis, which is out of scope for a lightweight static check.
+These are all true ReDoS shapes — the same exponential class this module
+detects elsewhere, differing only in that *detecting* them requires
+reasoning the lightweight static check deliberately doesn't attempt (full
+regex-language equivalence). They're left as documented future hardening
+rather than blocking on that analysis.
+
+Deliberate over-rejection (conservative false positives): the alternation
+check treats *any* shared character between two branches as ambiguity, so
+some non-ambiguous quantified alternations are rejected too (``(?:v1|v2)+``,
+``(?:ab|bc)+`` — the differing character actually disambiguates them). This
+is intentional per the false-positive-over-false-negative bias above; do not
+"fix" it by weakening the check. Authors hitting it can split the alternation
+out of the quantifier.
 """
 
 from __future__ import annotations
@@ -246,7 +262,16 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     prev_end: int | None = None
     for start, end in top_level:
         unbounded = bool(re.search(_UNBOUNDED_QUANT, src[start + 1 : end]))
-        adjacent = prev_end is not None and _is_nullable_separator(src[prev_end + 1 : start])
+        # Two groups are "adjacent" only if the text between them can vanish
+        # (a nullable separator — see _is_nullable_separator). A top-level `|`
+        # in that gap is the exception: it puts the groups in DIFFERENT
+        # alternation branches (`(a+)|(b+)`), so they're never matched on the
+        # same path and can't partition a shared run — not this shape, and a
+        # linear-time pattern that must not be rejected (issue #157 follow-up).
+        adjacent = False
+        if prev_end is not None:
+            sep = src[prev_end + 1 : start]
+            adjacent = len(_split_top_level_alternatives(sep)) == 1 and _is_nullable_separator(sep)
         run = run + 1 if (adjacent and unbounded and run) else int(unbounded)
         if run >= 2:
             return True
@@ -438,6 +463,15 @@ def _branch_charset(branch: str) -> tuple[bool, frozenset[str] | None]:
         else:
             charset.update(atom_charset)
 
+        # A bare +/* (including lazy/possessive `+?`, `*+`) makes the atom
+        # unbounded, so the branch isn't the flat bounded shape this function
+        # characterizes — bail, matching the docstring. Without this, `+`/`*`
+        # fall through and get consumed as literal `+`/`*` characters, wrongly
+        # reporting the branch reducible; today that's masked only because the
+        # nested-quantifier check runs first, which is fragile to rely on.
+        if i < n and branch[i] in "+*":
+            return False, None
+
         # Skip a bounded quantifier on the atom just consumed — its exact
         # repeat count doesn't matter for a character-overlap check, only
         # that it IS bounded (an unbounded one still bails out below, since
@@ -459,6 +493,12 @@ def _charsets_overlap(a: frozenset[str] | None, b: frozenset[str] | None) -> boo
     (unknown/full — see :func:`_escape_charset`/:func:`_bracket_charset`) is
     treated as overlapping with anything, per this module's bias toward
     false positives over false negatives.
+
+    Note this is a deliberate over-approximation of true ambiguity — a single
+    shared character is enough to report overlap, so some non-ambiguous
+    alternations (``(?:v1|v2)+``) are rejected. That's intentional; see the
+    "Deliberate over-rejection" note in the module docstring before tightening
+    it.
     """
     return a is None or b is None or bool(a & b)
 
@@ -528,6 +568,44 @@ def _has_ambiguous_quantified_alternation(src: str) -> bool:
     return False
 
 
+def _unsafe_reason(src: str) -> str | None:
+    """Return a short, shape-specific description of the first
+    catastrophic-backtracking construct found in ``src``, or ``None`` if the
+    heuristic considers it safe.
+
+    Drives both the boolean gate (:func:`_heuristic_unsafe`) and the rejection
+    message in :func:`assert_safe`, so the message can name *which* shape fired
+    and give remediation that actually clears the check — rather than a generic
+    list of every possible reason plus fixes that may not apply (issue #157).
+    """
+    if _NESTED_QUANTIFIER.search(src) or _has_nested_unbounded_quantifier(src):
+        return (
+            "nested unbounded quantifiers such as `(a+)+` (an unbounded "
+            "quantifier repeated by another) — rewrite so no unbounded "
+            "quantifier is itself repeated, e.g. `(a+)+` -> `a+`"
+        )
+    if _has_ambiguous_quantified_alternation(src):
+        return (
+            "a quantified alternation whose branches can match overlapping "
+            "text, such as `(a|aa)+` — remove the overlap so each run of input "
+            "matches exactly one branch (e.g. `(a|aa)+` -> `a+`); note that "
+            "making the quantifier possessive does not clear this"
+        )
+    if _ADJACENT_QUANTIFIED_ATOM.search(src):
+        return (
+            "the same atom quantified back-to-back, such as `a+a+a+` — collapse "
+            "the repeats into a single quantifier, e.g. `a+a+` -> `a+`"
+        )
+    if _has_adjacent_unbounded_groups(src):
+        return (
+            "two or more adjacent unbounded-quantified groups, optionally "
+            "separated by a nullable delimiter, such as `(a+)(a+)` or "
+            "`(a+)-?(a+)` — separate them with a mandatory delimiter the groups "
+            "cannot themselves match"
+        )
+    return None
+
+
 def _heuristic_unsafe(src: str) -> bool:
     """Static ReDoS heuristic that always runs, whether or not ``re2`` is
     installed.
@@ -537,15 +615,10 @@ def _heuristic_unsafe(src: str) -> bool:
     about that pattern's safety under the engine actually used at match
     time (#148). Factored out of :func:`assert_safe` so it can be
     unit-tested directly regardless of whether ``re2`` happens to be
-    importable in the current environment.
+    importable in the current environment. Thin boolean wrapper over
+    :func:`_unsafe_reason`.
     """
-    return bool(
-        _NESTED_QUANTIFIER.search(src)
-        or _ADJACENT_QUANTIFIED_ATOM.search(src)
-        or _has_nested_unbounded_quantifier(src)
-        or _has_adjacent_unbounded_groups(src)
-        or _has_ambiguous_quantified_alternation(src)
-    )
+    return _unsafe_reason(src) is not None
 
 
 def assert_safe(pattern: re.Pattern[str]) -> None:
@@ -571,15 +644,11 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
                 f"(linear-time guarantee unavailable): {exc}"
             ) from exc
 
-    if _heuristic_unsafe(src):
+    reason = _unsafe_reason(src)
+    if reason is not None:
         raise ValueError(
-            f"Pattern {src!r} has nested unbounded quantifiers, an ambiguous "
-            f"(overlapping or duplicate) alternation under a quantifier, "
-            f"adjacent unbounded-quantified atoms, or adjacent (optionally "
-            f"delimiter-separated) unbounded-quantified groups, and is "
-            f"rejected to prevent catastrophic backtracking on adversarial "
-            f"input. Rewrite the pattern (anchor it, use non-capturing "
-            f"groups, or make quantifiers possessive) — installing "
+            f"Pattern {src!r} is rejected to prevent catastrophic backtracking "
+            f"on adversarial input: it contains {reason}. Installing "
             f"google-re2 does not bypass this check, since runtime matching "
             f"always uses stdlib re, which this heuristic protects."
         )
