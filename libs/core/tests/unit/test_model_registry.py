@@ -207,6 +207,77 @@ class TestPricing:
         ctx = PricingContext(step=step, assets=[], provider_payload={})
         assert per_input_chars(1.0, per=1000)(ctx) == pytest.approx(11 / 1000)
 
+    def test_per_input_chars_falls_back_to_input_asset_char_count(self):
+        """Chain-input step: prompt=None, text lives on the input asset instead."""
+        step = _step(
+            prompt=None,
+            inputs=[
+                Asset(
+                    url="file:///t.txt",
+                    media_type="text/plain",
+                    metadata={"char_count": 1234},
+                )
+            ],
+        )
+        ctx = PricingContext(step=step, assets=[], provider_payload={})
+        assert per_input_chars(1.0, per=1000)(ctx) == pytest.approx(1234 / 1000)
+
+    def test_per_input_chars_sums_multiple_input_assets(self):
+        step = _step(
+            prompt=None,
+            inputs=[
+                Asset(url="a", media_type="text/plain", metadata={"char_count": 100}),
+                Asset(url="b", media_type="text/plain", metadata={"char_count": 50}),
+            ],
+        )
+        ctx = PricingContext(step=step, assets=[], provider_payload={})
+        assert per_input_chars(1.0, per=1000)(ctx) == pytest.approx(150 / 1000)
+
+    def test_per_input_chars_ignores_non_text_inputs_without_char_count(self):
+        """Image/audio inputs with no char_count don't block the fallback."""
+        step = _step(
+            prompt=None,
+            inputs=[
+                Asset(url="img", media_type="image/png"),
+                Asset(url="txt", media_type="text/plain", metadata={"char_count": 42}),
+            ],
+        )
+        ctx = PricingContext(step=step, assets=[], provider_payload={})
+        assert per_input_chars(1.0, per=1000)(ctx) == pytest.approx(42 / 1000)
+
+    def test_per_input_chars_zero_char_count_is_a_real_cost_not_unknown(self):
+        """char_count=0 is a known value — yields 0.0, not None."""
+        step = _step(
+            prompt=None,
+            inputs=[Asset(url="a", media_type="text/plain", metadata={"char_count": 0})],
+        )
+        ctx = PricingContext(step=step, assets=[], provider_payload={})
+        assert per_input_chars(1.0, per=1000)(ctx) == 0.0
+
+    def test_per_input_chars_no_prompt_no_char_count_is_none(self):
+        """No prompt and no usable char_count anywhere: genuinely unknown."""
+        step = _step(
+            prompt=None,
+            inputs=[
+                Asset(url="img", media_type="image/png"),
+                Asset(url="txt", media_type="text/plain", metadata={"lang": "en"}),
+            ],
+        )
+        ctx = PricingContext(step=step, assets=[], provider_payload={})
+        assert per_input_chars(1.0, per=1000)(ctx) is None
+
+    def test_per_input_chars_invalid_char_count_is_ignored(self):
+        """Non-numeric char_count on one asset doesn't poison a valid one on another."""
+        step = _step(
+            prompt=None,
+            inputs=[
+                Asset(url="a", media_type="text/plain", metadata={"char_count": "not-a-number"}),
+                Asset(url="b", media_type="text/plain", metadata={"char_count": 20}),
+            ],
+        )
+        ctx = PricingContext(step=step, assets=[], provider_payload={})
+        assert per_input_chars(1.0, per=1000)(ctx) == pytest.approx(20 / 1000)
+
     def test_per_output_second(self):
         assets = [Asset(url="a", media_type="audio/mp3", duration=3.5)]
         ctx = PricingContext(step=_step(), assets=assets, provider_payload={})

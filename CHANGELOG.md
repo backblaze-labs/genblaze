@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** `CONTENT_ADDRESSABLE` storage keys did not normalize the source
+  extension's case, so byte-identical content fetched via a differently-cased
+  extension (e.g. `IMG.PNG` vs `img.png`) hashed to the same sha256 but landed
+  at different keys — defeating dedup and storing the bytes twice (#20).
+  `_build_key` now lowercases the extension only for the CAS branch (the key
+  is content-addressed, so casing is a pure accident of the origin URL);
+  `HIERARCHICAL` keys are asset_id-based, not content-hash-based, so their
+  extension casing is left untouched. Objects already stored under an
+  upper-case-extension CAS key are unaffected by this change and remain
+  reachable at their existing key — only *future* uploads of that content
+  will resolve to the lowercase key, so a pre-existing upper-case duplicate
+  won't retroactively merge with it.
 - **Fixed** `hasattr(genblaze_core, "ParquetSink")` (and
   `getattr(module, name, default)`, `inspect`/IDE attribute probing) raised
   `OptionalDependencyError` instead of returning `False`/the default when the
@@ -37,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sink and validator were already fixed; only the URL construction was
   release-lagged. POSIX behavior is unchanged (`as_uri()` already produced
   the same form there).
+- **Fixed** `per_input_chars()` silently returned `cost_usd=None` for
+  chain-input steps (#54). When a step is fed by an upstream step's output,
+  `Step.prompt` is typically `None` and the text lives on `Step.inputs`
+  instead — the strategy only read `ctx.step.prompt`, so TTS/analysis steps
+  chained off another step looked "free" instead of "unpriceable". It now
+  falls back to summing `metadata["char_count"]` across the step's input
+  assets when there's no prompt text, ignoring inputs with no/invalid
+  `char_count` (e.g. images). Returns `None` only when neither a prompt nor
+  any usable `char_count` exists; a genuinely-present `char_count` of `0`
+  still yields a real `0.0` cost rather than an "unknown" one.
 
 ### genblaze-cli
 
@@ -151,6 +173,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** local audio outputs couldn't upload to B2 on Windows (#164) —
   see the `genblaze-core` entry above for the root cause. `provider.py` now
   builds its `file://` asset URL via `genblaze_core._utils.local_file_url()`.
+
+### genblaze-s3
+
+- **Fixed** `key_from_url` forced a network `HeadBucket` (via
+  `_ensure_region_verified()`) before comparing the URL's host to this
+  backend's endpoint, and raised `StorageError` instead of returning `None`
+  for a foreign URL on an unverified backend with bad credentials (#19) —
+  breaking the documented "`None` = not mine" contract that cross-backend
+  manifest routing (`read_manifest_for_asset`) relies on. `key_from_url` now
+  compares the URL's host against the already-resolved endpoint first (a
+  local attribute read, no network call) and returns `None` immediately for
+  a clear mismatch; region verification never runs on this path. A B2
+  bucket that migrated to a different region after this backend was last
+  verified is still recognized without a `HeadBucket`, since B2 bucket names
+  are globally unique — a B2-shaped host plus an exact bucket-name match is
+  sufficient proof of ownership on its own.
 
 ### Packaging
 
