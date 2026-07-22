@@ -1,10 +1,12 @@
-<!-- last_verified: 2026-07-10 -->
+<!-- last_verified: 2026-07-21 -->
 # Maintainer Agent
 
-The `genblaze-maintainer` is an autonomous Claude Code agent that operates as the repo's primary guardian. It runs in an isolated git worktree with edit permissions and handles three distinct modes: resolving a specific GitHub issue end-to-end, autonomously discovering and fixing the highest-priority open issue when invoked with no prompt, or running a broad maintenance audit across six quality domains.
+The `genblaze-maintainer` is an autonomous Claude Code agent that operates as the repo's primary guardian. It runs in an isolated git worktree with edit permissions and handles four modes: resolving a specific GitHub issue (or a cluster of related issues) end-to-end, autonomously discovering and fixing the highest-priority open issue when invoked with no prompt, running a broad maintenance audit across six quality domains, or — in **Batch mode** — reviewing the entire open-issue list and resolving it cluster-by-cluster behind a human approval gate.
 
 - **Agent definition**: `.claude/agents/genblaze-maintainer.md`
 - **Checklists**: `.claude/agents/genblaze-maintainer/checklists/`
+- **Batch workflows**: `.claude/workflows/batch-plan.js`, `.claude/workflows/batch-execute.js`
+- **Deterministic core**: `tools/batch_cluster.py`, `tools/batch_plandoc.py`, `tools/batch_gitsteward.py` (tested under `make test`)
 - **Isolation**: `worktree` — each run gets a clean copy of the repo; no shared state with other agents
 
 ---
@@ -16,8 +18,33 @@ The first thing the agent decides is which mode it's in. These modes are mutuall
 | Invocation | Mode |
 |---|---|
 | `#70`, issue URL, "fix issue…" | Issue Resolution |
+| A cluster of issues (from `batch-execute`) | Issue Resolution (Cluster Resolution rules) |
 | No prompt, no issue, no scope | Autonomous Triage |
 | "audit", "scan", "check the repo" | Maintenance Audit |
+| `batch-plan` / `batch-execute` workflow | Batch (see below) |
+
+### Batch mode (all open issues)
+
+Batch mode reviews every open issue at once and is split into two workflows with
+a **hard human approval gate** between them (a workflow cannot pause mid-run, so
+the gate is the boundary between the two):
+
+1. **`batch-plan`** (read-only) — preflight-syncs `main`, scouts each open issue
+   for the files it would touch, then runs the deterministic, unit-tested
+   `tools/batch_*.py` core to cluster issues by shared files, dependency-order
+   them, and write an **approval-gated plan doc** to `docs/exec-plans/active/`.
+   Then it stops.
+2. **`batch-execute`** (after you approve) — re-validates the plan against live
+   state (aborts if `main` advanced, the doc was hand-edited, or a planned issue
+   closed), then dispatches one `genblaze-maintainer` executor per **executable**
+   cluster (dependency layer 0, within the size cap) in isolated worktrees off
+   `origin/main`. Each opens one merge-ready PR closing its member issues and
+   stops for human review. Dependent/oversized clusters are deferred to a
+   re-plan, never stacked. Cleanup prunes only merged branches, never force-deletes.
+
+The judgment call (which files an issue touches) is the only non-deterministic
+step; clustering, the approval token, and all git hygiene are deterministic and
+tested. See the exec-plan `maintainer-batch-issue-orchestration.md`.
 
 ---
 
