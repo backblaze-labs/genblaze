@@ -139,6 +139,28 @@ class TestBuildKey:
         )
         assert key == "assets/ab/cd/abcdef1234.png"
 
+    def test_content_addressable_normalizes_uppercase_extension(self):
+        """Byte-identical content with a differently-cased source extension
+        (e.g. .PNG vs .png) must dedup to the same CAS key — the extension
+        casing is an accident of the origin URL, not part of the content hash.
+        """
+        asset = Asset(url="https://x.com/IMG.PNG", media_type="image/png")
+        key_upper = _build_key(
+            KeyStrategy.CONTENT_ADDRESSABLE,
+            KeyBuilder.from_prefix("assets"),
+            asset,
+            "abcdef1234",
+            ".PNG",
+        )
+        key_lower = _build_key(
+            KeyStrategy.CONTENT_ADDRESSABLE,
+            KeyBuilder.from_prefix("assets"),
+            asset,
+            "abcdef1234",
+            ".png",
+        )
+        assert key_upper == key_lower == "assets/ab/cd/abcdef1234.png"
+
     def test_hierarchical(self):
         asset = Asset(url="https://x.com/img.png", media_type="image/png")
         key = _build_key(
@@ -171,6 +193,23 @@ class TestBuildKey:
         )
         assert key == f"pfx/2026-03-11/run-123/assets/{asset.asset_id}.png"
         assert "None" not in key
+
+    def test_hierarchical_preserves_extension_case(self):
+        """HIERARCHICAL keys are asset_id-based, not content-hash-based, so
+        there's no dedup collision to fix — extension casing is left as-is.
+        """
+        asset = Asset(url="https://x.com/IMG.PNG", media_type="image/png")
+        key = _build_key(
+            KeyStrategy.HIERARCHICAL,
+            KeyBuilder.from_prefix("assets"),
+            asset,
+            "abcdef1234",
+            ".PNG",
+            tenant=None,
+            date_str="2026-03-11",
+            run_id="run-123",
+        )
+        assert key == f"assets/2026-03-11/run-123/assets/{asset.asset_id}.PNG"
 
 
 class TestAssetTransfer:
@@ -236,6 +275,47 @@ class TestAssetTransfer:
 
         transfer.transfer(asset2)
         assert len(put_called) == 0  # Should have skipped
+
+    @patch("genblaze_core._utils.socket.getaddrinfo", return_value=_FAKE_ADDRINFO)
+    @patch("genblaze_core.storage.transfer._http_get_stream")
+    def test_content_addressable_dedup_ignores_extension_case(self, mock_urlopen, _mock_dns):
+        """End-to-end regression test for #20: byte-identical content fetched
+        via a differently-cased source extension (.PNG vs .png) must dedup —
+        the second transfer skips the upload rather than storing a duplicate.
+        """
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"data", b""]
+        mock_resp.headers = {"Content-Type": "image/png"}
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        backend = FakeBackend()
+        transfer = AssetTransfer(backend, prefix="assets")
+
+        # First transfer via an upper-case extension.
+        asset = Asset(url="https://cdn.example.com/IMG.PNG", media_type="image/png")
+        key = transfer.transfer(asset)
+        assert key in backend.store
+
+        # Second transfer, same bytes, lower-case extension — must resolve to
+        # the same CAS key and skip the upload (dedup hit).
+        mock_resp.read.side_effect = [b"data", b""]
+        mock_urlopen.return_value = mock_resp
+        asset2 = Asset(url="https://cdn.example.com/img.png", media_type="image/png")
+
+        original_put = backend.put
+        put_called = []
+
+        def tracking_put(*args, **kwargs):
+            put_called.append(True)
+            return original_put(*args, **kwargs)
+
+        backend.put = tracking_put
+
+        key2 = transfer.transfer(asset2)
+        assert key2 == key
+        assert len(put_called) == 0  # Should have skipped — dedup hit
 
     def test_http_url_rejected(self):
         transfer, _ = self._make_transfer()

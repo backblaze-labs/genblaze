@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** `CONTENT_ADDRESSABLE` storage keys did not normalize the source
+  extension's case, so byte-identical content fetched via a differently-cased
+  extension (e.g. `IMG.PNG` vs `img.png`) hashed to the same sha256 but landed
+  at different keys — defeating dedup and storing the bytes twice (#20).
+  `_build_key` now lowercases the extension only for the CAS branch (the key
+  is content-addressed, so casing is a pure accident of the origin URL);
+  `HIERARCHICAL` keys are asset_id-based, not content-hash-based, so their
+  extension casing is left untouched. Objects already stored under an
+  upper-case-extension CAS key are unaffected by this change and remain
+  reachable at their existing key — only *future* uploads of that content
+  will resolve to the lowercase key, so a pre-existing upper-case duplicate
+  won't retroactively merge with it.
 - **Fixed** `hasattr(genblaze_core, "ParquetSink")` (and
   `getattr(module, name, default)`, `inspect`/IDE attribute probing) raised
   `OptionalDependencyError` instead of returning `False`/the default when the

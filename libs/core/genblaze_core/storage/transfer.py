@@ -261,7 +261,13 @@ def _build_key(
     just supplies the per-strategy segments.
     """
     if strategy == KeyStrategy.CONTENT_ADDRESSABLE:
-        return key_builder.build(sha256[:2], sha256[2:4], f"{sha256}{ext}")
+        # Lowercase only here: the CAS key must depend on content (sha256),
+        # not on the source URL's incidental extension casing (.PNG vs .png).
+        # Without this, byte-identical content dedups or doesn't dedup purely
+        # based on how the origin server happened to case the path — HIERARCHICAL
+        # keys are asset_id-based (no dedup semantics), so their extension casing
+        # is left untouched.
+        return key_builder.build(sha256[:2], sha256[2:4], f"{sha256}{ext.lower()}")
     # HIERARCHICAL — group assets under run folder
     parts: list[str] = []
     if tenant:
