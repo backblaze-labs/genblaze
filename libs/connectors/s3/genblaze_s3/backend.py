@@ -1361,8 +1361,10 @@ class S3StorageBackend(StorageBackend):
             # globally unique, so "B2-shaped host + our exact bucket name in
             # the path" is sufficient proof of ownership on its own; a plain
             # host mismatch against a non-B2 (or differently-branded) host
-            # is definitively foreign.
-            if not (self._is_b2 and _is_b2_host(parsed.netloc)):
+            # is definitively foreign. Compare on ``.hostname`` (strips any
+            # userinfo/port) to match how ``_is_b2`` parses its own host, so
+            # the two checks can't silently diverge.
+            if not (self._is_b2 and _is_b2_host(parsed.hostname or "")):
                 return None
 
         path = parsed.path.lstrip("/")
