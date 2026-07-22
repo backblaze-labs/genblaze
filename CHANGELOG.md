@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sink and validator were already fixed; only the URL construction was
   release-lagged. POSIX behavior is unchanged (`as_uri()` already produced
   the same form there).
+- **Fixed** `per_input_chars()` silently returned `cost_usd=None` for
+  chain-input steps (#54). When a step is fed by an upstream step's output,
+  `Step.prompt` is typically `None` and the text lives on `Step.inputs`
+  instead — the strategy only read `ctx.step.prompt`, so TTS/analysis steps
+  chained off another step looked "free" instead of "unpriceable". It now
+  falls back to summing `metadata["char_count"]` across the step's input
+  assets when there's no prompt text, ignoring inputs with no/invalid
+  `char_count` (e.g. images). Returns `None` only when neither a prompt nor
+  any usable `char_count` exists; a genuinely-present `char_count` of `0`
+  still yields a real `0.0` cost rather than an "unknown" one.
 
 ### genblaze-cli
 
