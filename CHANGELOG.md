@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-22
+
+Bug-fix and compatibility wave with one new opt-in feature. Fixes cross-platform
+(Windows) `file://` asset uploads, ports the elevenlabs and lmnt connectors to
+their SDK 2.x response shapes (lmnt's `speed` param has no 2.x equivalent and is
+now dropped with a warning — see genblaze-lmnt below if you set it), routes
+gmicloud Seedance FLF2V frames to their native slots, makes optional-dependency
+introspection safe, hardens the sink against B2 `HeadObject` 403s, normalizes
+CAS-key extension case for dedup, skips the network `HeadBucket` for foreign S3
+URLs, falls back to input `char_count` in `per_input_chars` pricing, closes
+remaining ReDoS heuristic gaps, and adopts a mechanical dependency upper-bound
+policy across every package. New: `genblaze verify --fetch` performs byte-level
+verification of output assets against the manifest's committed digests.
+
+This heading is the release **wave** name and the git tag (`v0.6.0`); individual
+PyPI package versions move independently and are listed below (the umbrella
+`genblaze` package is `0.4.4`).
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.3 → **0.4.4**
+- `genblaze-core` 0.3.6 → **0.3.7**
+- `genblaze-cli` 0.3.4 → **0.3.5**
+- `genblaze-s3` 0.3.5 → **0.3.6**
+- `genblaze-assemblyai` 0.3.0 → **0.3.1**
+- `genblaze-decart` 0.3.1 → **0.3.2**
+- `genblaze-elevenlabs` 0.3.1 → **0.3.2**
+- `genblaze-gmicloud` 0.3.3 → **0.3.4**
+- `genblaze-google` 0.3.2 → **0.3.3**
+- `genblaze-hume` 0.3.1 → **0.3.2**
+- `genblaze-langsmith` 0.3.1 → **0.3.2**
+- `genblaze-lmnt` 0.3.1 → **0.3.2**
+- `genblaze-luma` 0.3.1 → **0.3.2**
+- `genblaze-nvidia` 0.3.1 → **0.3.2**
+- `genblaze-openai` 0.3.2 → **0.3.3**
+- `genblaze-replicate` 0.3.3 → **0.3.4**
+- `genblaze-runway` 0.3.1 → **0.3.2**
+- `genblaze-stability-audio` 0.3.1 → **0.3.2**
+
 ### genblaze-core
 
 - **Security** the ReDoS pattern-safety heuristic (`pattern_safety.py`) missed
@@ -102,8 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-cli
 
-- `genblaze verify --fetch` downloads each output asset and compares its bytes
-  against the manifest's committed `sha256` (with a `size_bytes` cross-check),
+- **Added** `genblaze verify --fetch` downloads each output asset and compares its
+  bytes against the manifest's committed `sha256` (with a `size_bytes` cross-check),
   closing the gap where verification stopped at declared digests. Remote fetches
   stream through the transfer layer's SSRF-validated, DNS-pinned path; presigned
   query strings are redacted from output; `file://` assets resolve against the
@@ -258,6 +297,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tooling extras (`pytest`, `ruff`, `mypy`, `deptry`, `hypothesis`,
   `jsonschema`, etc.) are unaffected — this policy applies to dependencies
   actually shipped to and resolved by consumers (#61).
+- `genblaze-assemblyai`, `genblaze-langsmith`, `genblaze-luma`,
+  `genblaze-nvidia`, and `genblaze-runway` were bumped this wave for these
+  packaging changes alone (no code change) — that is why they appear in the
+  released-versions list without a per-package section above.
+
+### Internal
+
+- **Fixed** `tools/prepare_release.py`'s `rewrite_floors` used a whole-line
+  regex anchor that only matched a dependency alone on its own line, so the
+  umbrella's single-line per-connector extras
+  (`decart = ["genblaze-decart>=…"]`) were silently skipped and left on a
+  stale floor every release. Switched to a token-level substitution that
+  rewrites a quoted dependency anywhere on a line (inline extras, multi-line
+  bundles, and multiple deps per line), with regression tests; this wave's
+  floor-update count rose from 33 to 47 as a result. Release tooling only —
+  no packaged code changed (stale floors were `>=` minimums, so installs
+  still resolved correctly).
 
 ## [0.5.0] - 2026-07-16
 

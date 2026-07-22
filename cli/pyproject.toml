@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-cli"
-version = "0.3.4"
+version = "0.3.5"
 description = "CLI for genblaze manifest operations"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "cli", "command-line"]
 
 dependencies = [
-    "genblaze-core>=0.3.6,<0.4",
+    "genblaze-core>=0.3.7,<0.4",
     # <9: bounded-major convention (#61) — caps below the next major so a
     # future click release can't silently break the CLI at resolve time.
     "click>=8.0,<9",
