@@ -68,13 +68,32 @@ def per_unit(rate: float) -> PricingStrategy:
 
 
 def per_input_chars(rate: float, per: int = 1000) -> PricingStrategy:
-    """Per-character pricing on the input prompt. ``per=1000`` → USD per 1K chars."""
+    """Per-character pricing on the input text. ``per=1000`` → USD per 1K chars.
+
+    Prefers ``step.prompt``. Chain-input steps (fed by an upstream step's
+    output) typically have ``prompt=None`` with the text living on
+    ``step.inputs`` instead — falls back to summing ``metadata["char_count"]``
+    across input assets so those steps aren't silently priced as "free".
+    Returns ``None`` only when no character source exists at all; a
+    genuinely-present ``char_count`` of ``0`` still yields a real (zero) cost
+    rather than an "unknown" one.
+    """
 
     def _strategy(ctx: PricingContext) -> float | None:
         text = ctx.step.prompt or ""
-        if not text:
+        if text:
+            return (len(text) / per) * rate
+
+        total_chars = 0.0
+        found = False
+        for asset in ctx.step.inputs:
+            count = _float_or_none(asset.metadata.get("char_count"))
+            if count is not None:
+                total_chars += count
+                found = True
+        if not found:
             return None
-        return (len(text) / per) * rate
+        return (total_chars / per) * rate
 
     return _strategy
 
