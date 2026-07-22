@@ -96,6 +96,18 @@ def test_speed_param_dropped_with_warning(mock_lmnt, caplog):
     )
 
 
+def test_speed_warning_emitted_once_per_provider(mock_lmnt, caplog):
+    """The ``speed``-dropped warning is deduped per provider so a batch of
+    clips all carrying ``speed`` doesn't spam an identical WARNING per call."""
+    provider, _ = mock_lmnt
+    step = Step(provider="lmnt", model="lmnt-1", prompt="test", params={"speed": "1.2"})
+    with caplog.at_level("WARNING", logger="genblaze.lmnt"):
+        provider.generate(step)
+        provider.generate(step)
+    speed_warnings = [rec for rec in caplog.records if "speed" in rec.message]
+    assert len(speed_warnings) == 1
+
+
 def test_durations_stored_in_payload(mock_lmnt):
     provider, client = mock_lmnt
     client.speech.generate_detailed = MagicMock(
