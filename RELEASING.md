@@ -283,11 +283,14 @@ production releases (recommended once the project graduates from alpha).
 * **The umbrella is the long pole.** If `publish-meta` fails, users
   cannot `pip install genblaze` — but they can still install individual
   packages. Treat a meta failure as a P0.
-* **install-verify is best-effort.** PyPI's CDN sometimes lags; the job
-  retries for 2 minutes before failing. A red `install-verify` after a
-  green publish graph usually means the package is fine and the index
-  is just behind — verify manually with `pip install genblaze==X.Y.Z`
-  in a fresh venv before assuming a regression.
+* **install-verify is best-effort.** PyPI's CDN sometimes lags. The
+  umbrella pre-check retries for 2 minutes before failing, and the
+  `genblaze[all]` install itself retries up to 5 times (30s apart) since
+  any of its ~14 connector packages can propagate independently of the
+  umbrella (#189). A red `install-verify` after a green publish graph
+  usually means a package is fine and the index is just behind — verify
+  manually with `pip install "genblaze[all]==X.Y.Z"` in a fresh venv
+  before assuming a regression.
 
 ## Post-publish verification
 

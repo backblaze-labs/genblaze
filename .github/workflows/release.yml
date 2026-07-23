@@ -486,5 +486,24 @@ jobs:
           version="$UMBRELLA_VERSION"
           python -m venv /tmp/verify
           /tmp/verify/bin/pip install --upgrade pip
-          /tmp/verify/bin/pip install "genblaze[all]==$version"
+
+          # The umbrella pre-check above only confirms `genblaze` itself is
+          # indexed; `genblaze[all]` also resolves the ~14 connector packages
+          # that propagate across PyPI's CDN independently, so this exact
+          # install can still 404 on a connector's stale edge even when the
+          # umbrella wait passed (#189). Retry the install itself — it's the
+          # operation that actually fails, regardless of which package lags.
+          attempts=5
+          for i in $(seq 1 "$attempts"); do
+            if /tmp/verify/bin/pip install "genblaze[all]==$version"; then
+              break
+            fi
+            if [ "$i" -eq "$attempts" ]; then
+              echo "::error::pip install genblaze[all]==$version failed after $attempts attempts"
+              exit 1
+            fi
+            echo "[$i/$attempts] pip install genblaze[all]==$version failed, retrying in 30s…"
+            sleep 30
+          done
+
           /tmp/verify/bin/python tools/release_import_smoke.py
