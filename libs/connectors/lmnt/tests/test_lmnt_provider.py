@@ -108,6 +108,21 @@ def test_speed_warning_emitted_once_per_provider(mock_lmnt, caplog):
     assert len(speed_warnings) == 1
 
 
+def test_seed_param_dropped_with_warning(mock_lmnt, caplog):
+    """``seed`` has no lmnt 2.x equivalent either — generate_detailed()
+    raises TypeError on the unknown kwarg, so it gets the same
+    drop-with-warning treatment as ``speed``."""
+    provider, client = mock_lmnt
+    step = Step(provider="lmnt", model="lmnt-1", prompt="test", seed=42)
+    with caplog.at_level("WARNING", logger="genblaze.lmnt"):
+        provider.generate(step)
+        provider.generate(step)
+    call_kwargs = client.speech.generate_detailed.call_args[1]
+    assert "seed" not in call_kwargs
+    seed_warnings = [rec for rec in caplog.records if "seed" in rec.message]
+    assert len(seed_warnings) == 1
+
+
 def test_durations_stored_in_payload(mock_lmnt):
     provider, client = mock_lmnt
     client.speech.generate_detailed = MagicMock(

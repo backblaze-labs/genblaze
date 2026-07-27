@@ -146,6 +146,7 @@ class LMNTProvider(SyncProvider):
         # notice on every generate() call. Mirrors model_registry's
         # `_warned_deprecated` dedup pattern.
         self._warned_speed = False
+        self._warned_seed = False
 
     def _make_client(self):
         """Create a fresh LMNT client for a single generate() call."""
@@ -195,8 +196,14 @@ class LMNTProvider(SyncProvider):
                 )
             if "language" in payload:
                 generate_kwargs["language"] = payload["language"]
-            if step.seed is not None:
-                generate_kwargs["seed"] = step.seed
+            if step.seed is not None and not self._warned_seed:
+                # generate_detailed() has no seed parameter in lmnt 2.x, so
+                # forwarding it raises TypeError before the request is made.
+                # Same treatment as `speed`: drop with a one-time warning.
+                self._warned_seed = True
+                logger.warning(
+                    "LMNT provider: 'seed' is not supported by lmnt SDK 2.x and will be ignored."
+                )
 
             # generate_detailed() is the JSON-response counterpart to the
             # raw-bytes speech.generate() — it's the only endpoint that can
