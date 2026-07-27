@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+import re
 from typing import Any
 
 from genblaze_core.exceptions import ProviderError
@@ -110,17 +111,29 @@ def _image_ref_to_gemini_part(ref: ImageURLRef) -> dict:
                 error_code=ProviderErrorCode.INVALID_INPUT,
             )
         meta = header[len("data:") :]
-        if ";base64" not in meta:
+        if "base64" not in meta.lower():
             raise ProviderError(
                 "Gemini inline_data requires a base64-encoded data URI "
                 "(e.g. 'data:image/jpeg;base64,...'); got a non-base64 data URI.",
                 error_code=ProviderErrorCode.INVALID_INPUT,
             )
-        mime_type = meta.split(";")[0] or ref.media_type or "application/octet-stream"
+        header_mime = _valid_mime_type(meta.split(";")[0])
+        mime_type = header_mime or ref.media_type or "application/octet-stream"
         return {"inline_data": {"mime_type": mime_type, "data": payload}}
 
     mime_type = ref.media_type or mimetypes.guess_type(url)[0] or "application/octet-stream"
     return {"file_data": {"mime_type": mime_type, "file_uri": url}}
+
+
+# RFC 2045 token chars, loosely: reject anything that isn't a plain "type/subtype"
+# so a malformed data-URI header (e.g. stray whitespace/control chars from a
+# hand-built URI) can't be forwarded verbatim into the request payload as mime_type.
+_MIME_TYPE_RE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
+
+
+def _valid_mime_type(candidate: str) -> str | None:
+    """Return `candidate` if it looks like a `type/subtype` MIME string, else None."""
+    return candidate if _MIME_TYPE_RE.match(candidate) else None
 
 
 def _gemini_text_only(content: Any) -> str:

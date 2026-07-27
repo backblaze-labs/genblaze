@@ -127,6 +127,48 @@ def test_https_image_url_translated_to_file_data(mock_client):
     assert parts == [{"file_data": {"mime_type": "image/png", "file_uri": "https://x/y.png"}}]
 
 
+def test_data_uri_base64_marker_is_case_insensitive(mock_client):
+    """RFC 2397 doesn't mandate lowercase `;base64,`; accept `;BASE64,` too."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                ImageURLContent(
+                    image_url=ImageURLRef(url="data:image/jpeg;BASE64,/9j/4AAQSkZJRg==")
+                )
+            ],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}}]
+
+
+def test_data_uri_with_malformed_mime_header_falls_back_to_octet_stream(mock_client):
+    """A data-URI header that doesn't look like `type/subtype` (e.g. injected control
+    chars or stray whitespace) must never be forwarded verbatim as `mime_type` — fall
+    back to a safe default instead."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                ImageURLContent(
+                    image_url=ImageURLRef(url="data:not a mime type;base64,/9j/4AAQSkZJRg==")
+                )
+            ],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"inline_data": {"mime_type": "application/octet-stream", "data": "/9j/4AAQSkZJRg=="}}
+    ]
+
+
 def test_malformed_data_uri_raises_invalid_input(mock_client):
     """A `data:` URI missing the comma-delimited payload is a client error, not a Gemini one."""
     from genblaze_core.models.chat import ImageURLContent, ImageURLRef
