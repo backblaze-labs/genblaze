@@ -293,6 +293,88 @@ def test_verify_fetch_no_output_assets_reports_nothing_to_fetch(tmp_path: Path) 
     assert "no output assets to fetch" in result.output
 
 
+def test_verify_fetch_rejects_file_url_with_remote_netloc(tmp_path: Path) -> None:
+    """file://remote-host/... must fail, not silently resolve to a local path
+    (#201) — mirrors core's validate_chain_input_url netloc contract."""
+    step = StepBuilder("test", "test-model").prompt("hello").build()
+    step.status = StepStatus.SUCCEEDED
+    asset = Asset(url="file://remote-host/tmp/a", media_type="image/png")
+    asset.sha256 = "f" * 64
+    step.assets = [asset]
+    run = RunBuilder("fetch-remote-netloc").add_step(step).build()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(Manifest.from_run(run).to_canonical_json(), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--fetch", str(manifest_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "netloc" in combined
+    assert "outside allowed roots" not in combined
+
+
+def test_verify_fetch_allows_file_url_with_localhost_netloc(tmp_path: Path) -> None:
+    """RFC 8089 permits an explicit 'localhost' authority; only non-empty,
+    non-localhost netlocs are rejected."""
+    manifest_path, asset_path = _create_fetch_manifest(tmp_path)
+    manifest_json = manifest_path.read_text(encoding="utf-8")
+    localhost_url = f"file://localhost{asset_path.resolve()}"
+    manifest_path.write_text(manifest_json.replace(asset_path.as_uri(), localhost_url))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--fetch", str(manifest_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "fetched and matched" in result.output
+
+
+def test_redact_url_blanks_userinfo() -> None:
+    """A presigned/basic-auth userinfo (user:pass@) is a credential; it must
+    not survive redaction any more than the query string does (#201)."""
+    from genblaze_cli.commands.verify import _redact_url
+
+    redacted = _redact_url("https://user:pass@cdn.example.com/output.png")
+
+    assert "user" not in redacted
+    assert "pass" not in redacted
+    assert "cdn.example.com/output.png" in redacted
+
+
+def test_verify_fetch_redacts_userinfo_in_label(tmp_path: Path) -> None:
+    """A userinfo-bearing asset URL must not leak credentials into the
+    per-asset label used in both OK and failure output."""
+    step = StepBuilder("test", "test-model").prompt("hello").build()
+    step.status = StepStatus.SUCCEEDED
+    asset = Asset(url="https://user:s3cr3t@cdn.example.com/output.png", media_type="image/png")
+    asset.sha256 = "f" * 64  # deliberately wrong; forces a failure line with the label
+    step.assets = [asset]
+    run = RunBuilder("fetch-userinfo").add_step(step).build()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(Manifest.from_run(run).to_canonical_json(), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--fetch", str(manifest_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "s3cr3t" not in combined
+
+
+def test_verify_help_mentions_mutual_exclusion() -> None:
+    """--fetch and --hash-only mutual exclusion must be discoverable from
+    --help, not just from triggering the UsageError (#201)."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--help"])
+
+    assert result.exit_code == 0
+    # Click wraps long help strings across lines, so assert against the
+    # normalized full block rather than a single line.
+    normalized = " ".join(result.output.split())
+    assert "mutually exclusive with --hash-only" in normalized.lower()
+    assert "mutually exclusive with --fetch" in normalized.lower()
+
+
 def test_verify_fetch_rejects_http_scheme(tmp_path: Path) -> None:
     """Plain http:// is rejected; https-only, same policy as the transfer layer."""
     step = StepBuilder("test", "test-model").prompt("hello").build()

@@ -26,8 +26,17 @@ _URL_QUERY_RE = re.compile(r"https?://\S+?\?\S+")
 
 def _redact_url(url: str) -> str:
     parsed = urlsplit(url)
-    if parsed.query:
-        return urlunsplit(parsed._replace(query="REDACTED"))
+    # Userinfo (user:pass@host) is a bearer credential exactly like a
+    # presigned query string (#201) — blank it the same way rather than
+    # only scrubbing the query.
+    netloc = parsed.netloc
+    if parsed.username or parsed.password:
+        netloc = parsed.hostname or ""
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+    if parsed.query or netloc != parsed.netloc:
+        query = "REDACTED" if parsed.query else parsed.query
+        return urlunsplit(parsed._replace(netloc=netloc, query=query))
     return url
 
 
@@ -48,36 +57,42 @@ def _hash_url_bytes(url: str, extra_roots: tuple[Path, ...] = ()) -> tuple[str, 
     temp-dir allowlist). Bytes are hashed as they arrive; a whole asset is
     never held in memory.
     """
-    scheme = urlsplit(url).scheme
+    parsed = urlsplit(url)
+    scheme = parsed.scheme
     if scheme == "https":
-        from genblaze_core.exceptions import StorageError
+        # TODO(#202): these are genblaze_core underscore-private symbols;
+        # the private-import cleanup (promoting a public streaming helper)
+        # is a deferred follow-up, not part of this fix.
         from genblaze_core.storage.transfer import (
             _DEFAULT_DOWNLOAD_TIMEOUT,
             _DEFAULT_MAX_DOWNLOAD_BYTES,
+            _HashingStreamReader,
             _http_get_stream,
         )
 
-        digest = hashlib.sha256()
-        size = 0
         resp = _http_get_stream(url, timeout=_DEFAULT_DOWNLOAD_TIMEOUT)
+        # Reuse the transfer layer's own chunk-read/incremental-sha256/cap
+        # loop instead of duplicating it (#202) — same exception type and
+        # message shape by construction, so callers see one error taxonomy.
+        reader = _HashingStreamReader(resp, max_bytes=_DEFAULT_MAX_DOWNLOAD_BYTES)
         try:
-            while chunk := resp.read(_FETCH_CHUNK):
-                digest.update(chunk)
-                size += len(chunk)
-                if size > _DEFAULT_MAX_DOWNLOAD_BYTES:
-                    # Same exception type and message shape as the transfer
-                    # layer's own cap, so callers see one error taxonomy.
-                    raise StorageError(
-                        f"Download exceeds {_DEFAULT_MAX_DOWNLOAD_BYTES} byte limit"
-                    )
+            while reader.read(_FETCH_CHUNK):
+                pass
         finally:
             resp.release_conn()
-        return digest.hexdigest(), size
+        return reader.sha256_hex, reader.size
     if scheme == "file":
         from genblaze_core._utils import ALLOWED_FILE_ROOTS
 
+        # RFC 8089: empty or 'localhost' netloc only; anything else is a
+        # remote-authority reference and must not be silently resolved as a
+        # local path (#201) — matches core's validate_chain_input_url.
+        if parsed.netloc and parsed.netloc != "localhost":
+            raise ValueError(
+                f"file:// URL must have empty or 'localhost' netloc; got {parsed.netloc!r}"
+            )
         allowed = (*ALLOWED_FILE_ROOTS, *(r.resolve() for r in extra_roots))
-        resolved = Path(url2pathname(urlsplit(url).path)).resolve()
+        resolved = Path(url2pathname(parsed.path)).resolve()
         if not any(resolved.is_relative_to(root) for root in allowed):
             raise ValueError(f"file:// path outside allowed roots: {resolved}")
         digest = hashlib.sha256()
@@ -130,12 +145,18 @@ def _fetch_and_compare(
 @click.option(
     "--hash-only",
     is_flag=True,
-    help="Only verify canonical_hash; skip output sha256 and asset-metadata checks.",
+    help=(
+        "Only verify canonical_hash; skip output sha256 and asset-metadata checks. "
+        "Mutually exclusive with --fetch."
+    ),
 )
 @click.option(
     "--fetch",
     is_flag=True,
-    help="Also download each output asset and compare its bytes to the declared sha256.",
+    help=(
+        "Also download each output asset and compare its bytes to the declared "
+        "sha256. Mutually exclusive with --hash-only."
+    ),
 )
 @click.option(
     "--allowed-root",
