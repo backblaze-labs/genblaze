@@ -19,21 +19,20 @@ if TYPE_CHECKING:
 # 256 KB chunks; matches the transfer layer's streaming granularity.
 _FETCH_CHUNK = 256 * 1024
 
-# A presigned URL's query string is a bearer credential for that object (#75);
-# it must never be echoed in CLI output or error messages.
-_URL_QUERY_RE = re.compile(r"https?://\S+?\?\S+")
+# A presigned URL's query string, or basic-auth userinfo (user:pass@host), is
+# a bearer credential for that object (#75, #201); it must never be echoed in
+# CLI output or error messages. Matches any http(s) URL — not just ones with a
+# query string — so a userinfo-only URL embedded in a transfer-layer exception
+# message is also caught; _redact_url no-ops on a URL with neither.
+_URL_RE = re.compile(r"https?://\S+")
 
 
 def _redact_url(url: str) -> str:
     parsed = urlsplit(url)
-    # Userinfo (user:pass@host) is a bearer credential exactly like a
-    # presigned query string (#201) — blank it the same way rather than
-    # only scrubbing the query.
-    netloc = parsed.netloc
-    if parsed.username or parsed.password:
-        netloc = parsed.hostname or ""
-        if parsed.port:
-            netloc = f"{netloc}:{parsed.port}"
+    # Strip userinfo by editing the netloc string directly rather than
+    # rebuilding it from parsed.hostname/.port — hostname strips the []
+    # brackets off an IPv6 literal, which would otherwise corrupt the URL.
+    netloc = parsed.netloc.rsplit("@", 1)[-1] if "@" in parsed.netloc else parsed.netloc
     if parsed.query or netloc != parsed.netloc:
         query = "REDACTED" if parsed.query else parsed.query
         return urlunsplit(parsed._replace(netloc=netloc, query=query))
@@ -41,7 +40,7 @@ def _redact_url(url: str) -> str:
 
 
 def _redact_text(text: str) -> str:
-    return _URL_QUERY_RE.sub(lambda m: _redact_url(m.group(0)), text)
+    return _URL_RE.sub(lambda m: _redact_url(m.group(0)), text)
 
 
 def _hash_url_bytes(url: str, extra_roots: tuple[Path, ...] = ()) -> tuple[str, int]:

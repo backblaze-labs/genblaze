@@ -361,6 +361,91 @@ def test_verify_fetch_redacts_userinfo_in_label(tmp_path: Path) -> None:
     assert "s3cr3t" not in combined
 
 
+def test_redact_url_preserves_ipv6_brackets() -> None:
+    """Stripping userinfo must not corrupt an IPv6 host literal's brackets —
+    rebuilding netloc from parsed.hostname (which unwraps them) would."""
+    from genblaze_cli.commands.verify import _redact_url
+
+    redacted = _redact_url("https://user:pass@[::1]:8443/output.png")
+
+    assert "user" not in redacted
+    assert "pass" not in redacted
+    assert "[::1]:8443" in redacted
+
+
+def test_verify_fetch_redacts_userinfo_without_query_in_failure_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A userinfo-bearing URL with no query string must still be redacted out
+    of freeform exception text (e.g. a transfer-layer error echoing the URL),
+    not just out of the per-asset label — _redact_text's matcher must not
+    require a literal '?' to catch a credential (#201)."""
+    from genblaze_core.exceptions import StorageError
+
+    url = "https://user:s3cr3t@cdn.example.com/output.png"
+    step = StepBuilder("test", "test-model").prompt("hello").build()
+    step.status = StepStatus.SUCCEEDED
+    asset = Asset(url=url, media_type="image/png")
+    asset.set_hash(b"whatever")
+    step.assets = [asset]
+    run = RunBuilder("fetch-userinfo-noquery").add_step(step).build()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(Manifest.from_run(run).to_canonical_json(), encoding="utf-8")
+
+    def _raise(url: str, *, timeout: float) -> None:
+        # Mirrors the transfer layer echoing the raw URL into its own
+        # exception message on a download failure.
+        raise StorageError(f"Download failed for {url}: connection refused")
+
+    monkeypatch.setattr("genblaze_core.storage.transfer._http_get_stream", _raise)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--fetch", str(manifest_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "s3cr3t" not in combined
+
+
+def test_verify_fetch_enforces_max_download_bytes_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The max-bytes cap must still be enforced through the
+    _HashingStreamReader wiring used to fetch https:// assets (#202)."""
+    step = StepBuilder("test", "test-model").prompt("hello").build()
+    step.status = StepStatus.SUCCEEDED
+    asset = Asset(url="https://cdn.example.com/output.png", media_type="image/png")
+    asset.sha256 = "f" * 64
+    step.assets = [asset]
+    run = RunBuilder("fetch-cap").add_step(step).build()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(Manifest.from_run(run).to_canonical_json(), encoding="utf-8")
+
+    class _FakeResp:
+        def __init__(self) -> None:
+            self._buf = b"x" * 20
+            self.released = False
+
+        def read(self, size: int) -> bytes:
+            chunk, self._buf = self._buf[:size], self._buf[size:]
+            return chunk
+
+        def release_conn(self) -> None:
+            self.released = True
+
+    monkeypatch.setattr(
+        "genblaze_core.storage.transfer._http_get_stream", lambda url, *, timeout: _FakeResp()
+    )
+    monkeypatch.setattr("genblaze_core.storage.transfer._DEFAULT_MAX_DOWNLOAD_BYTES", 10)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify", "--fetch", str(manifest_path)])
+    combined = result.output + getattr(result, "stderr", "")
+
+    assert result.exit_code != 0
+    assert "byte limit" in combined
+
+
 def test_verify_help_mentions_mutual_exclusion() -> None:
     """--fetch and --hash-only mutual exclusion must be discoverable from
     --help, not just from triggering the UsageError (#201)."""
