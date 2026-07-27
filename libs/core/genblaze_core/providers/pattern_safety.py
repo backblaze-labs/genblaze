@@ -65,13 +65,27 @@ Known residual gaps (not detected):
   gate than this heuristic — see above); without the ``re2``/``dev``
   extra, a backreference-shaped pattern has no heuristic coverage. Not
   introduced by this change; pre-existing and out of scope for #157.
-* A nullable *group* between two unbounded groups (``(a+)(?:x)?(a+)`` or
-  ``(a+)(x?)(a+)``) evades the adjacency check: ``_has_adjacent_unbounded_groups``
-  treats a nullable *separator* (``-?``) as adjacency-preserving, but the
-  optional element here is itself a top-level group, so it resets the
-  run counter rather than being read as a separator. Same nullable-adjacency
-  shape ``_is_nullable_separator`` was added to catch, just wrapped in
-  parens.
+* A nullable *group* between two unbounded groups whose own body has no
+  unbounded quantifier and is instead quantified from the *outside* with a
+  bounded quantifier (``(a+)(?:x)?(a+)`` or ``(a+)(x?)(a+)``) evades the
+  adjacency check: the group's own body contains no ``+``/``*``/``{n,}``, so
+  ``_has_adjacent_unbounded_groups`` never counts it as part of the run at
+  all — same nullable-adjacency shape ``_is_nullable_separator`` was added
+  to catch, just wrapped in parens instead of a bare separator. (A middle
+  group whose *own body* is both unbounded and nullable, e.g. ``(a+)(b*)(a+)``,
+  *is* handled — see ``_has_adjacent_unbounded_groups``'s "carried charset"
+  union, added for issue #200's review.)
+* A redundant group wrapper around an alternation that itself carries a
+  no-op or optional quantifier (``((a|aa){1})+$``, ``((a|aa)?)+$``) isn't
+  unwrapped by ``_unwrap_redundant_group`` — it only strips a wrapper whose
+  entire body is *exactly* one more nested group, with nothing else, so any
+  trailing quantifier on the wrapper (even a semantically inert ``{1}``)
+  stops the unwrap. Closing this fully means reasoning about which
+  quantifiers on a wrapper are no-ops for repetition-count purposes, a step
+  beyond the "redundant wrapper" case issue #196 reported and fixed; left
+  as a documented gap per this module's stated scope rather than chased
+  (confirmed in review of the #196 fix — not a regression, since the
+  pre-#196 heuristic missed these shapes too).
 
 These are all true ReDoS shapes — the same exponential class this module
 detects elsewhere, differing only in that *detecting* them requires
@@ -232,7 +246,28 @@ def _is_nullable_separator(fragment: str) -> bool:
         return True
 
 
-def _has_adjacent_unbounded_groups(src: str) -> bool:
+def _resolved_charset(reducible: bool, charset: frozenset[str] | None) -> frozenset[str] | None:
+    """Collapse a ``(reducible, charset)`` pair from :func:`_branch_charset`
+    into a single optional charset: ``None`` means "can't be resolved to a
+    concrete set" — either because the body wasn't reducible at all (a
+    nested group) or because it resolved to the unknown/full charset —
+    so :func:`_charsets_overlap`'s "assume overlap" bias applies uniformly
+    to both cases downstream.
+    """
+    return charset if reducible else None
+
+
+def _charset_union(a: frozenset[str] | None, b: frozenset[str] | None) -> frozenset[str] | None:
+    """Union two resolved charsets (see :func:`_resolved_charset`). ``None``
+    (unknown/full) absorbs — the union of "unknown" with anything is itself
+    unknown, matching this module's conservative bias.
+    """
+    if a is None or b is None:
+        return None
+    return a | b
+
+
+def _has_adjacent_unbounded_groups(src: str, flags: int = 0) -> bool:
     """True if 2+ top-level ``(...)`` groups, each containing an unbounded
     quantifier, appear back-to-back — separated by nothing, or only by text
     that can match the empty string — the ``(a+)(a+)(a+)`` /
@@ -254,17 +289,40 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     Two adjacent unbounded groups only ambiguously partition a shared run of
     input if their matched-character sets can actually overlap — a run is
     only continued past a group when :func:`_charsets_overlap` says so
-    against the *previous* group in the run (via :func:`_branch_charset`
-    with ``allow_unbounded=True``, which reduces a group's body to a
-    charset regardless of its quantifier's bound). ``([a-z]+)-?([0-9]+)``
-    has an unambiguous split point (a letter run can never contain a digit
-    or vice versa) and is linear-time safe, unlike ``(a+)-?(a+)`` where both
-    groups match the same character — this gate, added for issue #200,
-    stops the former from being over-rejected as a regression of the
-    nullable-separator broadening (issue #157) without weakening the
-    latter. A group whose body can't be reduced to a concrete charset
-    (nested groups, an unresolvable escape class) keeps the prior
+    against the charset "carried" from the run so far (via
+    :func:`_branch_charset` with ``allow_unbounded=True``, which reduces a
+    group's body to a charset regardless of its quantifier's bound).
+    ``([a-z]+)-?([0-9]+)`` has an unambiguous split point (a letter run can
+    never contain a digit or vice versa) and is linear-time safe, unlike
+    ``(a+)-?(a+)`` where both groups match the same character — this gate,
+    added for issue #200, stops the former from being over-rejected as a
+    regression of the nullable-separator broadening (issue #157) without
+    weakening the latter. A group whose body can't be reduced to a concrete
+    charset (nested groups, an unresolvable escape class) keeps the prior
     conservative "assume overlap" behavior.
+
+    The "carried" charset is a *union*, not just the immediately-preceding
+    group's charset: a group whose own body can match the empty string
+    (e.g. ``b*``) might contribute zero characters at match time, in which
+    case whatever preceded it is still effectively adjacent to whatever
+    follows. ``(a+)(b*)(a+)$`` must stay rejected — on the backtracking path
+    where ``b*`` matches nothing, it collapses to the canonical
+    ``(a+)(a+)$`` shape — even though ``a`` and ``b`` are themselves
+    disjoint; comparing only against the immediately-preceding group missed
+    this (a confirmed regression caught in review of the #200 fix).
+    ``([a-z]+)([0-9]*)([a-z]+)`` (a genuinely optional, disjoint middle
+    group) correctly stays allowed: unioning carries `[a-z]` and `[0-9]`
+    forward, and the trailing `[a-z]+` overlaps the *first* group's charset
+    through that union — so the true test is "do any two groups reachable
+    across a chain of nullable groups share a character", not merely
+    adjacent pairs.
+
+    ``flags`` is the compiled pattern's ``re`` flags, threaded through to
+    :func:`_branch_charset` so ``re.IGNORECASE`` case-folds the computed
+    charsets before comparison (see :func:`_case_fold_charset`) — otherwise
+    the charset-overlap gate itself would be a bypass for a
+    case-insensitive pattern whose alternating-case adjacent groups are
+    disjoint only by literal source text, not at match time.
     """
     spans = _iter_group_spans(src)
     # Only top-level groups matter for this shape — a group nested inside
@@ -275,13 +333,18 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
 
     run = 0
     prev_end: int | None = None
-    prev_reducible = False
-    prev_charset: frozenset[str] | None = None
+    # The charset "reachable" immediately before the next group's start
+    # position, given everything nullable earlier in the run might vanish
+    # (see the docstring above). `None` means unknown/unresolved -- treated
+    # as overlapping with anything, per this module's conservative bias.
+    carried: frozenset[str] | None = None
     for start, end in top_level:
         body = src[start + 1 : end]
         unbounded = bool(re.search(_UNBOUNDED_QUANT, body))
-        reducible, charset = (
-            _branch_charset(body, allow_unbounded=True) if unbounded else (False, None)
+        resolved = (
+            _resolved_charset(*_branch_charset(body, allow_unbounded=True, flags=flags))
+            if unbounded
+            else None
         )
         # Two groups are "adjacent" only if the text between them can vanish
         # (a nullable separator — see _is_nullable_separator). A top-level `|`
@@ -295,19 +358,25 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
             adjacent = len(_split_top_level_alternatives(sep)) == 1 and _is_nullable_separator(sep)
         if adjacent and unbounded and run:
             # Continuing a run: only if this group's charset can overlap the
-            # PRECEDING group's in the run (issue #200). Either side failing
-            # to reduce to a concrete charset falls back to the prior
-            # conservative "assume overlap" behavior.
-            overlaps = not (reducible and prev_reducible) or _charsets_overlap(
-                prev_charset, charset
-            )
-            run = run + 1 if overlaps else 1
+            # charset carried from the run so far (issue #200).
+            run = run + 1 if _charsets_overlap(carried, resolved) else 1
         else:
             run = int(unbounded)
         if run >= 2:
             return True
         prev_end = end
-        prev_reducible, prev_charset = reducible, charset
+        if unbounded:
+            if _is_nullable_separator(body):
+                # This group's own body can match empty -- it might vanish,
+                # so carry BOTH possibilities (its own charset, and
+                # whatever was already reachable) forward.
+                carried = _charset_union(carried, resolved)
+            else:
+                # Mandatory content -- a hard boundary that supersedes
+                # whatever was carried before it.
+                carried = resolved
+        else:
+            carried = None
     return False
 
 
@@ -451,8 +520,24 @@ def _bracket_charset(body: str) -> frozenset[str] | None:
     return frozenset(chars)
 
 
+def _case_fold_charset(charset: frozenset[str] | None, flags: int) -> frozenset[str] | None:
+    """Expand ``charset`` to include both cases of every letter when
+    ``flags`` has ``re.IGNORECASE`` set, so a later charset-overlap
+    comparison (:func:`_charsets_overlap`) reflects what the compiled
+    pattern actually matches at runtime rather than just its literal source
+    text. Without this, ``([a-z]+)([A-Z]+)`` compiled with ``re.IGNORECASE``
+    looks disjoint by source alone (`a-z` vs. `A-Z`) while matching exactly
+    the same characters once the flag is applied — a confirmed live bypass
+    of the #200 charset-overlap gate caught in security review of that fix.
+    ``None`` (unknown/full charset) passes through unchanged.
+    """
+    if charset is None or not (flags & re.IGNORECASE):
+        return charset
+    return frozenset(c for ch in charset for c in (ch.lower(), ch.upper()))
+
+
 def _branch_charset(
-    branch: str, *, allow_unbounded: bool = False
+    branch: str, *, allow_unbounded: bool = False, flags: int = 0
 ) -> tuple[bool, frozenset[str] | None]:
     """Return ``(reducible, charset)`` for ``branch``.
 
@@ -481,6 +566,15 @@ def _branch_charset(
     unbounded groups for charset overlap, issue #200), pass
     ``allow_unbounded=True`` so the quantifier is consumed instead of
     bailing.
+
+    ``flags`` is the compiled pattern's ``re`` flags (``pattern.flags`` in
+    :func:`assert_safe`). When ``re.IGNORECASE`` is set, the returned
+    charset is case-folded (both cases of every letter included) before
+    two charsets are compared for overlap — otherwise a pattern like
+    ``([a-z]+)([A-Z]+)`` compiled with ``re.IGNORECASE`` would look
+    disjoint by raw source text alone while actually matching the same
+    characters at runtime, silently defeating the charset-overlap gate a
+    security review of this fix confirmed is a live bypass otherwise.
     """
     charset: set[str] = set()
     unknown = False
@@ -546,7 +640,7 @@ def _branch_charset(
             if i < n and branch[i] in "?+":
                 i += 1
 
-    return True, (None if unknown else frozenset(charset))
+    return True, _case_fold_charset(None if unknown else frozenset(charset), flags)
 
 
 def _charsets_overlap(a: frozenset[str] | None, b: frozenset[str] | None) -> bool:
@@ -596,7 +690,7 @@ def _unwrap_redundant_group(body: str) -> str:
     return body
 
 
-def _has_ambiguous_quantified_alternation(src: str) -> bool:
+def _has_ambiguous_quantified_alternation(src: str, flags: int = 0) -> bool:
     """True if some ``(...)`` group is a 2+-branch alternation where two
     branches can match overlapping text, and the group itself is
     immediately followed by an unbounded quantifier — the ``(a|aa)+`` shape.
@@ -636,6 +730,13 @@ def _has_ambiguous_quantified_alternation(src: str) -> bool:
     ``((a|aa))+$``) is unwrapped via :func:`_unwrap_redundant_group` before
     the top-level ``|`` split below, so it can't hide the alternation from
     this check (issue #196).
+
+    ``flags`` is the compiled pattern's ``re`` flags, threaded to
+    :func:`_branch_charset` so the semantic overlap check is
+    ``re.IGNORECASE``-aware (see :func:`_case_fold_charset`) — otherwise
+    ``(?:[a-z]|[A-Z])+`` compiled case-insensitively would look like two
+    disjoint branches by source text alone while matching the same
+    characters at runtime.
     """
     for start, end in _iter_group_spans(src):
         if not re.match(_UNBOUNDED_QUANT, src[end + 1 :]):
@@ -660,14 +761,14 @@ def _has_ambiguous_quantified_alternation(src: str) -> bool:
                     or branch_b.startswith(branch_a)
                 ):
                     return True
-                reducible_a, charset_a = _branch_charset(branch_a)
-                reducible_b, charset_b = _branch_charset(branch_b)
+                reducible_a, charset_a = _branch_charset(branch_a, flags=flags)
+                reducible_b, charset_b = _branch_charset(branch_b, flags=flags)
                 if reducible_a and reducible_b and _charsets_overlap(charset_a, charset_b):
                     return True
     return False
 
 
-def _unsafe_reason(src: str) -> str | None:
+def _unsafe_reason(src: str, flags: int = 0) -> str | None:
     """Return a short, shape-specific description of the first
     catastrophic-backtracking construct found in ``src``, or ``None`` if the
     heuristic considers it safe.
@@ -676,6 +777,11 @@ def _unsafe_reason(src: str) -> str | None:
     message in :func:`assert_safe`, so the message can name *which* shape fired
     and give remediation that actually clears the check — rather than a generic
     list of every possible reason plus fixes that may not apply (issue #157).
+
+    ``flags`` are the compiled pattern's ``re`` flags (``0`` when called
+    directly with a bare source string, e.g. from tests) — threaded through
+    to the charset-overlap checks so ``re.IGNORECASE`` is accounted for
+    (see :func:`_case_fold_charset`).
     """
     if _NESTED_QUANTIFIER.search(src) or _has_nested_unbounded_quantifier(src):
         return (
@@ -683,7 +789,7 @@ def _unsafe_reason(src: str) -> str | None:
             "quantifier repeated by another) — rewrite so no unbounded "
             "quantifier is itself repeated, e.g. `(a+)+` -> `a+`"
         )
-    if _has_ambiguous_quantified_alternation(src):
+    if _has_ambiguous_quantified_alternation(src, flags):
         return (
             "a quantified alternation whose branches can match overlapping "
             "text, such as `(a|aa)+` — remove the overlap so each run of input "
@@ -695,7 +801,7 @@ def _unsafe_reason(src: str) -> str | None:
             "the same atom quantified back-to-back, such as `a+a+a+` — collapse "
             "the repeats into a single quantifier, e.g. `a+a+` -> `a+`"
         )
-    if _has_adjacent_unbounded_groups(src):
+    if _has_adjacent_unbounded_groups(src, flags):
         return (
             "two or more adjacent unbounded-quantified groups, optionally "
             "separated by a nullable delimiter, such as `(a+)(a+)` or "
@@ -705,7 +811,7 @@ def _unsafe_reason(src: str) -> str | None:
     return None
 
 
-def _heuristic_unsafe(src: str) -> bool:
+def _heuristic_unsafe(src: str, flags: int = 0) -> bool:
     """Static ReDoS heuristic that always runs, whether or not ``re2`` is
     installed.
 
@@ -717,7 +823,7 @@ def _heuristic_unsafe(src: str) -> bool:
     importable in the current environment. Thin boolean wrapper over
     :func:`_unsafe_reason`.
     """
-    return _unsafe_reason(src) is not None
+    return _unsafe_reason(src, flags) is not None
 
 
 def assert_safe(pattern: re.Pattern[str]) -> None:
@@ -743,7 +849,7 @@ def assert_safe(pattern: re.Pattern[str]) -> None:
                 f"(linear-time guarantee unavailable): {exc}"
             ) from exc
 
-    reason = _unsafe_reason(src)
+    reason = _unsafe_reason(src, pattern.flags)
     if reason is not None:
         raise ValueError(
             f"Pattern {src!r} is rejected to prevent catastrophic backtracking "
