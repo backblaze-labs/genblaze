@@ -22,7 +22,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "openai", "sora", "dall-e", "tts", "whisper"]
 
 dependencies = [
-    "genblaze-core>=0.3.4,<0.4",
+    "genblaze-core>=0.3.7,<0.4",
     # <3: bounded-major convention (#61). The documented floor (1.0) predates
     # the SDK's current major line — openai resolves to 2.x today, so
     # capping at the next major after 1.0 (<2) would reject the version this
