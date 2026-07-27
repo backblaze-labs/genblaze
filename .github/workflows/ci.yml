@@ -30,7 +30,10 @@ jobs:
           python-version: "3.13"
           cache: "pip"
           cache-dependency-path: "**/pyproject.toml"
-      - run: pip install ruff
+      # Pin ruff: unpinned drift false-reds lint on every PR + main when a new
+      # ruff reformats pre-existing files no PR touched (#211). Bump deliberately
+      # alongside a matching `make format`.
+      - run: pip install ruff==0.14.0
       - run: ruff check libs/ cli/ examples/
       - run: ruff format --check libs/ cli/ examples/
 
