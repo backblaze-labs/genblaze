@@ -56,7 +56,7 @@ async = [
     # below the next major (#61); aioboto3 above already pins the exact
     # aiobotocore it needs, so this cap is a backstop, not the binding
     # constraint.
-    "aiobotocore>=2.7,<3",
+    "aiobotocore>=2.7,<4",
 ]
 dev = [
     "pytest>=7.0",

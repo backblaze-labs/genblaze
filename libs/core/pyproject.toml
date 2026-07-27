@@ -28,7 +28,7 @@ dependencies = [
     # below the next major past the currently-verified 11.x release so a
     # future Pillow major can't silently land breaking changes at resolve
     # time (#61).
-    "pillow>=10.0,<12",
+    "pillow>=10.0,<13",
     # urllib3 is imported unguarded at module load in storage/transfer.py
     # (the shared PoolManager backing AssetTransfer's presigned-URL streaming),
     # and storage/__init__ imports transfer eagerly — so `import
@@ -56,7 +56,7 @@ Issues = "https://github.com/backblaze-labs/genblaze/issues"
 # would reject the version this extra is actually verified against today.
 # Bounded one major past what's currently verified (#61) rather than left
 # uncapped, matching the repo's bounded-major convention (cf. pydantic<3).
-parquet = ["pyarrow>=14.0,<23"]
+parquet = ["pyarrow>=14.0,<26"]
 # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
 # test fixture (#108); cap until 1.49 is vetted against the test suite.
 audio = ["mutagen>=1.47,<1.49"]
@@ -91,7 +91,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
     "deptry>=0.23",
-    "pyarrow>=14.0,<23",
+    "pyarrow>=14.0,<26",
     # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
     # test fixture (#108); cap until 1.49 is vetted against the test suite.
     "mutagen>=1.47,<1.49",
