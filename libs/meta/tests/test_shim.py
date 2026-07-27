@@ -114,8 +114,8 @@ class TestLazyAttributeCapabilityProbing:
         # The misleading "provider adapter" fallback must not appear.
         assert "provider adapter" not in msg
 
-    def test_genuinely_unknown_name_still_gets_fallback_message(self, missing_pyarrow):
-        self._evict_cached_lazy_attr("ParquetSink")
+    def test_genuinely_unknown_name_still_gets_fallback_message(self):
+        # Doesn't touch ParquetSink/pyarrow — no missing_pyarrow fixture needed.
         with pytest.raises(AttributeError) as excinfo:
             _ = genblaze.SoraProvider  # type: ignore[attr-defined]
         msg = str(excinfo.value)
