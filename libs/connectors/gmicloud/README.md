@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-07-27 -->
 # genblaze-gmicloud
 
 **[GMICloud](https://gmicloud.ai) multi-provider video / image / audio adapters for [genblaze](https://github.com/backblaze-labs/genblaze) — access Seedance, Kling, Veo, Sora, Wan, Seedream, FLUX, Gemini image, ElevenLabs, MiniMax and more through one API with SHA-256 provenance manifests.**
@@ -98,6 +98,22 @@ storage = ObjectStorageSink(
 
 [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) is the recommended default sink — cost-efficient, S3-compatible, Object Lock for immutable manifests.
 
+### Feeding a presigned B2 URL back in as a chain input
+
+"Upload to B2, presign, feed the presigned URL to a model" is a common pattern — e.g. restoring a previously-generated image with a follow-up edit step. If you pass that `Asset` via `external_inputs=` without a `sha256`, you'll see a `WARNING` that the step cache key and manifest canonical hash will be unstable, because presigned URLs rotate (a re-run gets a different URL, and a naive cache/hash would treat it as different content even though the bytes are identical). Precompute the hash once and the warning goes away — the manifest hash then reflects the actual bytes, not the rotating URL:
+
+```python
+import hashlib
+from genblaze_core.models.asset import Asset
+
+# `data` is the bytes you already uploaded to B2 (or re-download once to hash).
+sha256 = hashlib.sha256(data).hexdigest()
+
+asset = Asset(url=presigned_url, sha256=sha256, media_type="image/png")
+# pass via `external_inputs=[asset]` — the cache key and canonical hash are
+# now stable across reruns even though `presigned_url` rotates.
+```
+
 ## LLM access — standalone `chat()`
 
 For callers driving a media pipeline from an LLM — caption expansion, prompt rewriting, scene description — `genblaze-gmicloud` ships a `chat()` callable over GMICloud's OpenAI-compatible inference endpoint. It sits **outside** the `Pipeline` / `Step` machinery (text generation doesn't benefit from the polling / manifest / asset machinery built for media).
@@ -119,7 +135,9 @@ Only API-key auth is supported. Set `GMI_API_KEY` (obtain from https://console.g
 
 ## Configuring the endpoint (staging, proxies, VPC)
 
-All three provider classes and `chat()` accept a `base_url=` ctor kwarg (or `GMI_BASE_URL` env var) to override the default endpoint, and an `http_client=` kwarg for injecting a pre-built `httpx.Client` — useful for shared connection pools across multi-modality pipelines or for mocking in tests.
+**`GMI_BASE_URL` is queue-specific — it is read only by `GMICloudVideoProvider` / `GMICloudImageProvider` / `GMICloudAudioProvider` (all three accept a `base_url=` ctor kwarg too). `chat()` never reads `GMI_BASE_URL`** — it has its own default (GMICloud's OpenAI-compatible inference endpoint) and only takes an explicit `base_url=` argument. Setting `GMI_BASE_URL` to the inference/serving URL (`api.gmi-serving.com/v1`) to try to override both surfaces at once silently 404s every image/video/audio model while `chat()` keeps working — it looks exactly like an entitlement problem. The queue providers now reject any `base_url=`/`GMI_BASE_URL` that has this shape (path ending in `/v1`) with a clear `ProviderError` instead of a confusing wall of 404s (#193).
+
+Both `GMICloudBase` subclasses and `chat()` also accept an `http_client=` kwarg for injecting a pre-built `httpx.Client` — useful for shared connection pools across multi-modality pipelines or for mocking in tests.
 
 ```python
 import httpx

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -16,6 +17,9 @@ from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers import (
     DiscoverySupport,
     LiveProbeResult,
+    ValidationOutcome,
+    ValidationResult,
+    ValidationSource,
 )
 from genblaze_core.providers.base import BaseProvider, SubmitResult
 from genblaze_core.providers.model_registry import ModelRegistry
@@ -27,6 +31,22 @@ from ._errors import map_gmicloud_error
 _DEFAULT_BASE_URL = "https://console.gmicloud.ai/api/v1/ie/requestqueue/apikey"
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "cancelled"})
+
+
+def _is_inference_endpoint_shaped(url: str) -> bool:
+    """True when ``url`` has the shape of GMICloud's chat/inference endpoint.
+
+    GMICloud's OpenAI-compatible inference endpoint (``chat.py``'s own
+    default, ``https://api.gmi-serving.com/v1``) always terminates at
+    ``/v1``. The request-queue endpoint this module talks to always has
+    additional path segments after ``/v1`` (e.g. the default
+    ``.../v1/ie/requestqueue/apikey``, or a VPC proxy's own routing
+    suffix). A bare ``/v1`` ending is therefore a reliable signal that
+    ``GMI_BASE_URL``/``base_url=`` was pointed at the wrong surface — see
+    the guard in ``GMICloudBase.__init__`` (#193).
+    """
+    return url.rstrip("/").endswith("/v1")
+
 
 # Legacy flat outcome keys — kept as defensive fallbacks while GMICloud
 # completes its migration to the ``media_urls`` envelope.
@@ -128,6 +148,21 @@ class GMICloudBase(BaseProvider):
     family-attached empty-payload probe is the authoritative liveness
     signal — see ``_invoke_family_probe`` below and ``_probe.py``."""
 
+    _entitlement_gated_slugs: frozenset[str] = frozenset()
+    """Slugs known to require GMICloud account entitlement beyond a valid
+    API key (e.g. gated third-party models). The empty-payload probe (see
+    ``_probe.py``) can only prove a slug exists in GMICloud's catalog —
+    GMICloud validates payload *shape* before account *entitlement*, so
+    the probe's deliberately-empty payload never reaches the entitlement
+    gate a real, well-formed submit hits. That lets ``validate_model()``
+    report a slug as fully confirmed (``OK_AUTHORITATIVE``) when in fact
+    submitting it 404s with "you do not have access" — preflight passes,
+    the job dies at dispatch (#193). ``validate_model()`` below re-grades
+    these specific, known-gated slugs to ``OK_PROVISIONAL`` so the result
+    is honest about what the probe actually proved. Populated per-modality
+    by subclasses; empty by default (most slugs are not gated, and this
+    connector has no way to discover which are without a curated list)."""
+
     def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
         """Forward the family probe with this provider's ``httpx.Client``."""
         return probe(model_id, http=self._get_http_client())
@@ -159,6 +194,27 @@ class GMICloudBase(BaseProvider):
         self._api_key: str | None = api_key or os.environ.get("GMI_API_KEY")
         self._http_timeout = http_timeout
         self._base_url: str = base_url or os.environ.get("GMI_BASE_URL") or _DEFAULT_BASE_URL
+        # GMI_BASE_URL reads as a general GMICloud override but is only ever
+        # consulted here (chat() has its own hardcoded default and never
+        # reads it) — pointing it at the serving/inference URL silently
+        # 404s every image/video/audio model while chat() keeps working
+        # (#193). Skip the check when http_client is supplied: base_url is
+        # documented as ignored in that path, and raising here would
+        # contradict that contract for callers who inject their own client.
+        if http_client is None and _is_inference_endpoint_shaped(self._base_url):
+            source = "base_url=" if base_url else "GMI_BASE_URL"
+            raise ProviderError(
+                f"{source} {self._base_url!r} looks like GMICloud's chat/inference "
+                f"endpoint (path ends in '/v1'), not the request-queue endpoint "
+                f"{type(self).__name__} talks to. GMI_BASE_URL is read only by the "
+                "video/image/audio queue providers — chat() has its own default "
+                "and never consults it — so this would silently 404 every submit "
+                "on this provider while chat() keeps working fine. Leave it unset "
+                f"to use the default ({_DEFAULT_BASE_URL!r}), or point it at a "
+                "queue proxy/VPC URL with the queue's own path suffix "
+                "(e.g. '.../v1/ie/requestqueue/apikey').",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
         self._http_client: httpx.Client | None = http_client
         self._owns_client: bool = http_client is None
 
@@ -297,6 +353,49 @@ class GMICloudBase(BaseProvider):
                 "Verify the key at https://console.gmicloud.ai/.",
                 error_code=ProviderErrorCode.AUTH_FAILURE,
             )
+
+    def validate_model(self, model_id: str, *, refresh: bool = False) -> ValidationResult:
+        """Re-grade probe-confirmed-LIVE to provisional for known-gated slugs.
+
+        ``BaseProvider.validate_model()`` treats a family probe's LIVE
+        verdict as authoritative proof a slug is callable. For GMICloud
+        that's only true some of the time — see ``_entitlement_gated_slugs``
+        above for why the probe can't see entitlement failures. This
+        override leaves the base behavior untouched for every other slug
+        (the common case, and what the existing probe test suite pins) and
+        only re-grades the specific slugs this connector knows are gated,
+        so ``result.outcome`` genuinely distinguishes "known slug" from
+        "confirmed callable with this key" instead of collapsing both into
+        ``OK_AUTHORITATIVE``.
+        """
+        result = super().validate_model(model_id, refresh=refresh)
+        if (
+            result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+            and result.source is ValidationSource.PROBE
+            and self._is_entitlement_gated(model_id)
+        ):
+            return replace(
+                result,
+                outcome=ValidationOutcome.OK_PROVISIONAL,
+                detail=(
+                    f"known slug ({model_id!r} exists in GMICloud's catalog per "
+                    "the request-queue probe) but NOT confirmed callable with "
+                    "this API key — this slug is known to require additional "
+                    "GMICloud account entitlement, and the probe can't detect "
+                    "that (payload shape is validated before entitlement, so "
+                    "the empty-payload probe never reaches the same check a "
+                    "real submit hits). A real submit may still 404 with 'you "
+                    "do not have access'; verify catalog access at "
+                    "https://console.gmicloud.ai/ before running. See #193."
+                ),
+            )
+        return result
+
+    def _is_entitlement_gated(self, model_id: str) -> bool:
+        """True if ``model_id`` (raw or wire-canonical) is a known-gated slug."""
+        if model_id in self._entitlement_gated_slugs:
+            return True
+        return self._models.resolve_canonical(model_id) in self._entitlement_gated_slugs
 
     # ``probe_model()`` is intentionally not overridden here. As of
     # genblaze-core 0.3.0 the legacy ``probe_model`` adapter on
