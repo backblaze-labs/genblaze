@@ -30,3 +30,11 @@ updates:
       # wave (see RELEASING.md), not Dependabot — keeps it from opening PRs
       # that fight the umbrella version flow.
       - dependency-name: "genblaze-*"
+      # Bounded-major policy (#61): every runtime dep is capped one major past
+      # what the connector is verified against, so adopting a new major is a
+      # deliberate, manually-verified step — never an automated cap-raise
+      # (see #192, closed for exactly this reason). Dependabot still proposes
+      # minor/patch bumps within the verified major; major bumps are opened by
+      # a human once the connector is tested against the new major.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
