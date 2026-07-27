@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "genblaze-google"
 version = "0.3.3"
-description = "Google provider adapters for genblaze (Veo video, Imagen image)"
+description = "Google provider adapters for genblaze (Veo video, Imagen + Gemini image)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,6 +43,7 @@ dev = [
 [project.entry-points."genblaze.providers"]
 google-veo = "genblaze_google:VeoProvider"
 google-imagen = "genblaze_google:ImagenProvider"
+google-gemini-image = "genblaze_google:GeminiImageProvider"
 
 [tool.hatch.build.targets.wheel]
 packages = ["genblaze_google"]

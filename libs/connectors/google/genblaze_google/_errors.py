@@ -6,6 +6,15 @@ from genblaze_core.models.enums import ProviderErrorCode
 def map_google_error(exc: Exception) -> ProviderErrorCode:
     """Map a Google API exception to a ProviderErrorCode."""
     msg = str(exc).lower()
+    # Imagen entitlement gate (issue #206): models.get says the slug is
+    # cataloged, but :predict 404s for accounts without Imagen access.
+    # google_imagen_predict_probe catches this at preflight, but map it to
+    # MODEL_ERROR here too in case it ever slips through to call time — same
+    # code preflight already raises for a DEAD probe result, so the
+    # pipeline's fallback_models retry fires on it exactly like any other
+    # dead slug.
+    if "no longer available to new users" in msg:
+        return ProviderErrorCode.MODEL_ERROR
     if "rate" in msg or "429" in msg or "resource_exhausted" in msg:
         return ProviderErrorCode.RATE_LIMIT
     # Gemini / Imagen safety block — deterministic refusal, never retryable.

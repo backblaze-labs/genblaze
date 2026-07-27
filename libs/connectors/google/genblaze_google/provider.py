@@ -30,7 +30,6 @@ from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     BaseProvider,
     DiscoverySupport,
-    LiveProbeResult,
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
@@ -40,13 +39,14 @@ from genblaze_core.providers import (
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
+from genblaze_google._client import GoogleClientMixin
 from genblaze_google._errors import map_google_error
 from genblaze_google._families import GOOGLE_VEO_FAMILY, GOOGLE_VEO_LEGACY_FAMILY
 
 _FALLBACK = ModelSpec(model_id="*", modality=Modality.VIDEO)
 
 
-class VeoProvider(BaseProvider):
+class VeoProvider(GoogleClientMixin, BaseProvider):
     """Provider adapter for Google Veo video generation.
 
     Models match the ``google-veo`` family (``^veo-``). Current GA
@@ -125,10 +125,6 @@ class VeoProvider(BaseProvider):
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
 
-    def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
-        """Forward the family probe with this provider's lazy genai client."""
-        return probe(model_id, client=self._get_client())
-
     def normalize_params(self, params: dict, modality: Any = None) -> dict:
         """Map standard params to Veo-native names.
 
@@ -139,30 +135,6 @@ class VeoProvider(BaseProvider):
         if "duration" in p and "duration_seconds" not in p:
             p["duration_seconds"] = p.pop("duration")
         return p
-
-    def _get_client(self):
-        if self._client is None:
-            try:
-                from google import genai
-            except ImportError as exc:
-                raise ProviderError(
-                    "google-genai package not installed. Run: pip install google-genai"
-                ) from exc
-
-            if self._project:
-                # Vertex AI auth
-                self._client = genai.Client(
-                    vertexai=True,
-                    project=self._project,
-                    location=self._location,
-                )
-            else:
-                # Gemini API key auth
-                kwargs: dict = {}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                self._client = genai.Client(**kwargs)
-        return self._client
 
     def _build_config(self, payload: dict[str, Any], step: Step) -> Any:
         """Build a GenerateVideosConfig from the prepared payload."""

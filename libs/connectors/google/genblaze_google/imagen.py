@@ -4,9 +4,14 @@ Synchronous API: client.models.generate_images() returns images directly.
 
 **Catalog architecture (genblaze-core 0.3.0):** the SDK ships the
 pattern-keyed ``google-imagen`` family (``^imagen-``) instead of a
-hardcoded slug list. Authoritative liveness comes from
-``client.models.get(model=slug)`` via the family probe, so dead /
-unauthorized slugs surface at preflight rather than mid-call.
+hardcoded slug list. Liveness comes from ``google_imagen_predict_probe``
+via the family probe: ``client.models.get(model=slug)`` for catalog
+membership, plus a deliberately invalid ``generate_images`` call to
+distinguish catalog membership from account entitlement (imagen-4.0-*
+is catalog-listed but 404s "no longer available to new users" for new
+keys — issue #206), so dead / unentitled slugs surface at preflight
+rather than mid-call. If your account has no Imagen access, see
+``GeminiImageProvider`` for the Gemini-native image line instead.
 
 **Pricing**: per-image-by-model rates were dropped in 0.3.0. See
 ``docs/reference/pricing-recipes.md`` for the canonical Imagen
@@ -29,7 +34,6 @@ from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     DiscoverySupport,
-    LiveProbeResult,
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
@@ -39,17 +43,20 @@ from genblaze_core.providers import (
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
+from genblaze_google._client import GoogleClientMixin
 from genblaze_google._errors import map_google_error
 from genblaze_google._families import GOOGLE_IMAGEN_FAMILY
 
 _FALLBACK = ModelSpec(model_id="*", modality=Modality.IMAGE)
 
 
-class ImagenProvider(SyncProvider):
+class ImagenProvider(GoogleClientMixin, SyncProvider):
     """Provider adapter for Google Imagen image generation.
 
     Models match the ``google-imagen`` family (``^imagen-``). Current
-    examples: ``imagen-3.0-generate-002``, ``imagen-3.0-fast-generate-001``.
+    examples: ``imagen-4.0-generate-001``, ``imagen-4.0-fast-generate-001``
+    — catalog-listed, but entitlement-gated for accounts without Imagen
+    access (new Gemini API keys as of 2026-07; see ``google_imagen_predict_probe``).
 
     Imagen returns image bytes directly (synchronous, not operation-based).
     Output is saved to files; use ObjectStorageSink for cloud upload.
@@ -111,29 +118,6 @@ class ImagenProvider(SyncProvider):
         self._location = location
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
-
-    def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
-        """Forward the family probe with this provider's lazy genai client."""
-        return probe(model_id, client=self._get_client())
-
-    def _get_client(self):
-        if self._client is None:
-            try:
-                from google import genai
-            except ImportError as exc:
-                raise ProviderError(
-                    "google-genai package not installed. Run: pip install google-genai"
-                ) from exc
-            if self._project:
-                self._client = genai.Client(
-                    vertexai=True, project=self._project, location=self._location
-                )
-            else:
-                kwargs: dict = {}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                self._client = genai.Client(**kwargs)
-        return self._client
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
         """Generate image(s) via the Google Imagen API."""

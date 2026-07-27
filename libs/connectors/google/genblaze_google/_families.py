@@ -24,7 +24,7 @@ from genblaze_core.providers import (
     ModelSpec,
 )
 
-from ._probe import google_models_get_probe
+from ._probe import google_imagen_predict_probe, google_models_get_probe
 
 # --- Constraint helpers (constructor-cheap, family-shared) ----------------
 
@@ -157,15 +157,49 @@ GOOGLE_IMAGEN_FAMILY = ModelFamily(
         param_constraints=(_check_imagen_aspect_ratio,),
     ),
     description="Google Imagen family — text-to-image generation.",
+    # imagen-3.0-* left the catalog (404 on models.get) and were replaced by
+    # imagen-4.0-*, which IS catalog-listed but entitlement-gated for new
+    # keys — see google_imagen_predict_probe (issue #206) for how that
+    # distinction is surfaced at preflight instead of mid-run.
     example_slugs=(
-        "imagen-3.0-generate-002",
-        "imagen-3.0-fast-generate-001",
+        "imagen-4.0-generate-001",
+        "imagen-4.0-fast-generate-001",
     ),
+    # Not the plain google_models_get_probe: catalog membership alone
+    # (what models.get measures) isn't entitlement (what :predict
+    # enforces) for this family. See google_imagen_predict_probe's
+    # docstring for the full story (issue #206).
+    probe=google_imagen_predict_probe,
+)
+
+
+# Gemini-native image models — a DIFFERENT wire shape from Imagen
+# (generateContent + inline base64 bytes, not :predict). The only image
+# path callable on a freshly created Gemini API key, since imagen-4.0-*
+# is entitlement-gated there (issue #205). ``.*`` before the required
+# "image" segment excludes chat models (gemini-2.5-flash) while still
+# matching the "-preview" suffixed slugs (gemini-3-pro-image-preview) —
+# anchoring with a trailing ``$`` would miss those.
+GOOGLE_GEMINI_IMAGE_FAMILY = ModelFamily(
+    name="google-gemini-image",
+    pattern=re.compile(r"^gemini-.*-image"),
+    spec_template=ModelSpec(model_id="*", modality=Modality.IMAGE),
+    description=(
+        "Gemini-native image generation via generateContent — inline "
+        "base64 bytes, not Imagen's :predict shape."
+    ),
+    example_slugs=(
+        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image",
+    ),
+    # No reported entitlement gap for this family (issue #205) — plain
+    # catalog-membership probe is sufficient.
     probe=google_models_get_probe,
 )
 
 
 __all__ = [
+    "GOOGLE_GEMINI_IMAGE_FAMILY",
     "GOOGLE_IMAGEN_FAMILY",
     "GOOGLE_VEO_FAMILY",
     "GOOGLE_VEO_LEGACY_FAMILY",
