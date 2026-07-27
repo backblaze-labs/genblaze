@@ -137,7 +137,7 @@ Only API-key auth is supported. Set `GMI_API_KEY` (obtain from https://console.g
 
 **`GMI_BASE_URL` is queue-specific — it is read only by `GMICloudVideoProvider` / `GMICloudImageProvider` / `GMICloudAudioProvider` (all three accept a `base_url=` ctor kwarg too). `chat()` never reads `GMI_BASE_URL`** — it has its own default (GMICloud's OpenAI-compatible inference endpoint) and only takes an explicit `base_url=` argument. Setting `GMI_BASE_URL` to the inference/serving URL (`api.gmi-serving.com/v1`) to try to override both surfaces at once silently 404s every image/video/audio model while `chat()` keeps working — it looks exactly like an entitlement problem. The queue providers now reject any `base_url=`/`GMI_BASE_URL` that has this shape (path ending in `/v1`) with a clear `ProviderError` instead of a confusing wall of 404s (#193).
 
-Both `GMICloudBase` subclasses and `chat()` also accept an `http_client=` kwarg for injecting a pre-built `httpx.Client` — useful for shared connection pools across multi-modality pipelines or for mocking in tests.
+Both `GMICloudBase` subclasses and `chat()` also accept an `http_client=` kwarg for injecting a pre-built `httpx.Client` — useful for shared connection pools across multi-modality pipelines or for mocking in tests. It's also the escape hatch for the rare legitimate proxy that itself terminates at a bare `/v1` (e.g. it rewrites the queue path internally before forwarding): `base_url=`/`GMI_BASE_URL` reject that shape, but `http_client=` bypasses the check entirely since the base URL is baked into the client you hand it.
 
 ```python
 import httpx
