@@ -250,6 +250,21 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
     *mandatory* (non-nullable) separator between the groups — a literal
     character the group's own quantifier can't also match away — remains a
     real anchor and isn't flagged (see ``_is_nullable_separator``).
+
+    Two adjacent unbounded groups only ambiguously partition a shared run of
+    input if their matched-character sets can actually overlap — a run is
+    only continued past a group when :func:`_charsets_overlap` says so
+    against the *previous* group in the run (via :func:`_branch_charset`
+    with ``allow_unbounded=True``, which reduces a group's body to a
+    charset regardless of its quantifier's bound). ``([a-z]+)-?([0-9]+)``
+    has an unambiguous split point (a letter run can never contain a digit
+    or vice versa) and is linear-time safe, unlike ``(a+)-?(a+)`` where both
+    groups match the same character — this gate, added for issue #200,
+    stops the former from being over-rejected as a regression of the
+    nullable-separator broadening (issue #157) without weakening the
+    latter. A group whose body can't be reduced to a concrete charset
+    (nested groups, an unresolvable escape class) keeps the prior
+    conservative "assume overlap" behavior.
     """
     spans = _iter_group_spans(src)
     # Only top-level groups matter for this shape — a group nested inside
@@ -260,8 +275,14 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
 
     run = 0
     prev_end: int | None = None
+    prev_reducible = False
+    prev_charset: frozenset[str] | None = None
     for start, end in top_level:
-        unbounded = bool(re.search(_UNBOUNDED_QUANT, src[start + 1 : end]))
+        body = src[start + 1 : end]
+        unbounded = bool(re.search(_UNBOUNDED_QUANT, body))
+        reducible, charset = (
+            _branch_charset(body, allow_unbounded=True) if unbounded else (False, None)
+        )
         # Two groups are "adjacent" only if the text between them can vanish
         # (a nullable separator — see _is_nullable_separator). A top-level `|`
         # in that gap is the exception: it puts the groups in DIFFERENT
@@ -272,10 +293,21 @@ def _has_adjacent_unbounded_groups(src: str) -> bool:
         if prev_end is not None:
             sep = src[prev_end + 1 : start]
             adjacent = len(_split_top_level_alternatives(sep)) == 1 and _is_nullable_separator(sep)
-        run = run + 1 if (adjacent and unbounded and run) else int(unbounded)
+        if adjacent and unbounded and run:
+            # Continuing a run: only if this group's charset can overlap the
+            # PRECEDING group's in the run (issue #200). Either side failing
+            # to reduce to a concrete charset falls back to the prior
+            # conservative "assume overlap" behavior.
+            overlaps = not (reducible and prev_reducible) or _charsets_overlap(
+                prev_charset, charset
+            )
+            run = run + 1 if overlaps else 1
+        else:
+            run = int(unbounded)
         if run >= 2:
             return True
         prev_end = end
+        prev_reducible, prev_charset = reducible, charset
     return False
 
 
@@ -419,25 +451,36 @@ def _bracket_charset(body: str) -> frozenset[str] | None:
     return frozenset(chars)
 
 
-def _branch_charset(branch: str) -> tuple[bool, frozenset[str] | None]:
+def _branch_charset(
+    branch: str, *, allow_unbounded: bool = False
+) -> tuple[bool, frozenset[str] | None]:
     """Return ``(reducible, charset)`` for ``branch``.
 
-    ``reducible`` is ``False`` if ``branch`` contains a nested group or an
-    atom with a genuinely unbounded quantifier — i.e. it isn't a flat
-    sequence of simple atoms (literal chars, escapes, bracket classes,
-    each with at most a *bounded* quantifier: ``?``, ``{n}``, ``{n,m}``)
-    this function can characterize. :func:`_has_ambiguous_quantified_alternation`
-    skips the semantic overlap check for such branches and relies on its
-    plain textual prefix check instead — catching byte-identical/prefix
-    overlaps for that shape, but not semantic ones. Recursing into nested
-    groups to close that gap fully would mean re-implementing regex-language
-    equivalence, disproportionate for this lightweight heuristic (see the
-    module's "Known residual gaps").
+    ``reducible`` is ``False`` if ``branch`` contains a nested group — i.e.
+    it isn't a flat sequence of simple atoms (literal chars, escapes,
+    bracket classes) this function can characterize.
+    :func:`_has_ambiguous_quantified_alternation` skips the semantic overlap
+    check for such branches and relies on its plain textual prefix check
+    instead — catching byte-identical/prefix overlaps for that shape, but
+    not semantic ones. Recursing into nested groups to close that gap fully
+    would mean re-implementing regex-language equivalence, disproportionate
+    for this lightweight heuristic (see the module's "Known residual gaps").
 
     When ``reducible`` is ``True``, ``charset`` is the set of characters
     the branch can match anywhere in its length, or ``None`` (unknown/full
     — treated as overlapping with anything) when some atom couldn't be
     resolved to a concrete set (e.g. a negated class like ``\\D``).
+
+    By default (``allow_unbounded=False``) an atom with a genuinely
+    unbounded quantifier (``+``, ``*``, ``{n,}``) also makes the branch
+    unreducible — this is the mode :func:`_has_ambiguous_quantified_alternation`
+    uses, where an unbounded-repeated branch complicates length reasoning
+    this function doesn't attempt. Callers that only care about *which
+    characters* a group's body can ever match, regardless of how many times
+    (e.g. :func:`_has_adjacent_unbounded_groups` comparing two flanking
+    unbounded groups for charset overlap, issue #200), pass
+    ``allow_unbounded=True`` so the quantifier is consumed instead of
+    bailing.
     """
     charset: set[str] = set()
     unknown = False
@@ -463,27 +506,45 @@ def _branch_charset(branch: str) -> tuple[bool, frozenset[str] | None]:
         else:
             charset.update(atom_charset)
 
-        # A bare +/* (including lazy/possessive `+?`, `*+`) makes the atom
-        # unbounded, so the branch isn't the flat bounded shape this function
-        # characterizes — bail, matching the docstring. Without this, `+`/`*`
-        # fall through and get consumed as literal `+`/`*` characters, wrongly
-        # reporting the branch reducible; today that's masked only because the
+        # A bare +/* makes the atom unbounded. In the default mode this
+        # isn't the flat bounded shape the function characterizes — bail,
+        # matching the docstring. Without this, `+`/`*` fall through and get
+        # consumed as literal `+`/`*` characters, wrongly reporting the
+        # branch reducible; today that's masked only because the
         # nested-quantifier check runs first, which is fragile to rely on.
         if i < n and branch[i] in "+*":
-            return False, None
+            if not allow_unbounded:
+                return False, None
+            i += 1
+            # Consume a trailing lazy (`+?`) or possessive (`*+`) modifier so
+            # it isn't mistaken for a new literal atom on the next iteration.
+            if i < n and branch[i] in "?+":
+                i += 1
+            continue
 
-        # Skip a bounded quantifier on the atom just consumed — its exact
-        # repeat count doesn't matter for a character-overlap check, only
-        # that it IS bounded (an unbounded one still bails out below, since
-        # that shape is already handled by the other heuristic checks and
-        # complicates length reasoning this function doesn't attempt).
+        # Skip a quantifier on the atom just consumed — its exact repeat
+        # count doesn't matter for a character-overlap check, only whether
+        # it's bounded. In the default mode an unbounded brace (`{n,}`)
+        # still bails, since that shape is handled by the other heuristic
+        # checks and complicates length reasoning this function doesn't
+        # attempt; with `allow_unbounded=True` it's consumed like `+`/`*`.
         quant = re.match(r"\?|\{(\d*),?(\d*)\}", branch[i:])
         if quant:
-            if quant.group() != "?" and (
+            unbounded_brace = quant.group() != "?" and (
                 not quant.group(1) or ("," in quant.group() and not quant.group(2))
-            ):
+            )
+            if unbounded_brace and not allow_unbounded:
                 return False, None  # `{,m}` / `{n,}` — unbounded
             i += quant.end()
+            # A trailing lazy/possessive modifier after a BOUNDED quantifier
+            # (e.g. `a??`, `a{2,3}+`) isn't itself a new atom — consume it too.
+            # Before this fix, `_branch_charset('a??')` returned
+            # `(True, frozenset({'a', '?'}))`: the second `?` fell through to
+            # the plain-atom branch above and was added to the charset as a
+            # literal, a spurious character leaking into an otherwise-correct
+            # result (issue #196).
+            if i < n and branch[i] in "?+":
+                i += 1
 
     return True, (None if unknown else frozenset(charset))
 
@@ -501,6 +562,38 @@ def _charsets_overlap(a: frozenset[str] | None, b: frozenset[str] | None) -> boo
     it.
     """
     return a is None or b is None or bool(a & b)
+
+
+def _unwrap_redundant_group(body: str) -> str:
+    """Strip a group wrapper whose entire body is, itself, just one more
+    (optionally marked) group — repeating until no more wrappers remain,
+    e.g. ``(?:(?:a|aa))`` -> ``(?:a|aa)`` -> ``a|aa``.
+
+    ``_has_ambiguous_quantified_alternation`` only ever sees the *immediate*
+    body of the quantified group it's inspecting. A redundant wrapper around
+    an alternation — ``(?:(?:a|aa))+$`` or ``((a|aa))+$`` — puts the ``|``
+    one level deeper than that immediate body, so
+    ``_split_top_level_alternatives`` sees a single "branch" (the whole
+    wrapped group) and the ambiguity check never fires, even though the
+    unwrapped ``(a|aa)+$`` is correctly rejected (issue #196). Unwrapping
+    here before the caller checks for a top-level ``|`` closes that gap
+    without having to special-case it in the split/overlap logic itself.
+
+    Only unwraps when the body is *entirely* one nested group (no text
+    outside its span) — a body like ``x(?:a|b)`` is left alone, since the
+    group there isn't a redundant wrapper around the whole thing.
+    """
+    while body.startswith("(") and body.endswith(")"):
+        spans = _iter_group_spans(body)
+        top_level = [s for s in spans if not any(o[0] < s[0] and s[1] < o[1] for o in spans)]
+        if len(top_level) != 1 or top_level[0] != (0, len(body) - 1):
+            break
+        inner = body[1:-1]
+        marker = _GROUP_MARKER.match(inner)
+        if inner.startswith("?") and not marker:
+            break  # lookaround or other unrecognized `?` construct; opaque
+        body = inner[marker.end() :] if marker else inner
+    return body
 
 
 def _has_ambiguous_quantified_alternation(src: str) -> bool:
@@ -538,6 +631,11 @@ def _has_ambiguous_quantified_alternation(src: str) -> bool:
     An empty branch (``(a|)+``) is also skipped — Python's ``re`` special-
     cases zero-width alternatives in a loop to avoid infinite looping, so it
     isn't the same exponential-backtracking shape as a genuine overlap.
+
+    A redundant group wrapper around the alternation (``(?:(?:a|aa))+$``,
+    ``((a|aa))+$``) is unwrapped via :func:`_unwrap_redundant_group` before
+    the top-level ``|`` split below, so it can't hide the alternation from
+    this check (issue #196).
     """
     for start, end in _iter_group_spans(src):
         if not re.match(_UNBOUNDED_QUANT, src[end + 1 :]):
@@ -548,6 +646,7 @@ def _has_ambiguous_quantified_alternation(src: str) -> bool:
             continue
         if marker:
             body = body[marker.end() :]
+        body = _unwrap_redundant_group(body)
         if "|" not in body:
             continue
         branches = _split_top_level_alternatives(body)

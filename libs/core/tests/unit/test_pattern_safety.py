@@ -86,6 +86,29 @@ class TestAssertSafe:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(f"{'(a+)-?' * 3}(a+)$"))
 
+    @pytest.mark.parametrize(
+        "src",
+        [
+            r"(?:(?:a|aa))+$",  # #196: non-capturing redundant wrapper
+            r"((a|aa))+$",  # #196: capturing redundant wrapper
+        ],
+    )
+    def test_redundant_group_wrapper_around_alternation_rejected(self, src: str) -> None:
+        # #196: a group wrapped redundantly around an already-ambiguous
+        # alternation must not defeat the check the un-wrapped `(a|aa)+$`
+        # already fails.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(src))
+
+    def test_disjoint_charset_nullable_separator_groups_allowed(self) -> None:
+        # #200: flanking groups with disjoint charsets have an unambiguous
+        # split point and are linear-time safe -- must not be over-rejected
+        # as a regression of the #157 nullable-separator broadening.
+        assert_safe(re.compile(r"([a-z]+)-?([0-9]+)"))
+
+    def test_disjoint_charset_mandatory_separator_groups_allowed(self) -> None:
+        assert_safe(re.compile(r"([a-z]+)-([0-9]+)"))
+
     def test_realistic_evil_pattern_rejected(self) -> None:
         # The classic "(x+x+)+y" shape. Heuristic flags the nested quantifier;
         # that's enough to fail closed. Assembled at runtime (this fixture is only
@@ -129,6 +152,8 @@ class TestRedosGuardAlwaysRunsHeuristic:
             r"(v\d+)+.*",
             r"(a|aa)+$",  # #157: overlapping (non-identical) alternation
             r"(a+)-?(a+)-?(a+)-?(a+)$",  # #157: nullable-delimiter adjacent groups
+            r"(?:(?:a|aa))+$",  # #196: non-capturing redundant wrapper
+            r"((a|aa))+$",  # #196: capturing redundant wrapper
         ],
         ids=[
             "nested-plus-anchored",
@@ -136,6 +161,8 @@ class TestRedosGuardAlwaysRunsHeuristic:
             "version-prefix-catastrophic",
             "overlapping-alternation",
             "delimiter-separated-adjacent-groups",
+            "redundant-noncapturing-wrapper",
+            "redundant-capturing-wrapper",
         ],
     )
     @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
@@ -153,6 +180,33 @@ class TestRedosGuardAlwaysRunsHeuristic:
             monkeypatch.setattr(pattern_safety, "_re2", _FakeRe2)
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(src))
+
+
+class TestSafePatternsAllowedRegardlessOfHasRe2:
+    """Regression test for #200: a disjoint-charset, linear-time-safe
+    pattern must be ALLOWED whether or not ``google-re2`` is installed,
+    proving the #200 charset-overlap gate and the #196 stricter alternation
+    check coexist without either shape regressing the other."""
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            r"([a-z]+)-?([0-9]+)",  # #200: disjoint charsets, nullable separator
+            r"([a-z]+)-([0-9]+)",  # #200: disjoint charsets, mandatory separator
+        ],
+        ids=["disjoint-nullable-separator", "disjoint-mandatory-separator"],
+    )
+    @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
+    def test_allowed_regardless_of_has_re2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        src: str,
+        has_re2_value: bool,
+    ) -> None:
+        monkeypatch.setattr(pattern_safety, "_HAS_RE2", has_re2_value)
+        if has_re2_value:
+            monkeypatch.setattr(pattern_safety, "_re2", _FakeRe2)
+        assert_safe(re.compile(src))  # must not raise
 
 
 class TestHeuristicUnsafe:
@@ -195,6 +249,9 @@ class TestHeuristicUnsafe:
             # matches `]` or a-y) was mis-parsed as an empty class, silently
             # dropping the whole a-y range (including `q`) from the computed
             # charset — a confirmed false-negative bypass caught in re-review
+            r"(?:(?:a|aa))+$",  # #196: redundant non-capturing wrapper around
+            # an already-ambiguous alternation must not hide it
+            r"((a|aa))+$",  # #196: redundant capturing wrapper, same shape
         ],
         ids=[
             "nested-plus",
@@ -218,6 +275,8 @@ class TestHeuristicUnsafe:
             "overlapping-alternation-hex-escape",
             "overlapping-alternation-class-range-different-lengths",
             "overlapping-alternation-leading-bracket-literal",
+            "redundant-noncapturing-wrapper",
+            "redundant-capturing-wrapper",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
@@ -266,6 +325,12 @@ class TestHeuristicUnsafe:
             # isn't caught. Asserted here so a future attempt to close this
             # gap updates this test rather than silently changing behavior.
             r"(a(?:b)?|aa)+$",
+            # #200: flanking unbounded groups with disjoint charsets have an
+            # unambiguous split point and are linear-time safe -- must not
+            # be over-rejected as a regression of the #157 nullable-
+            # separator broadening.
+            r"([a-z]+)-?([0-9]+)",
+            r"([a-z]+)-([0-9]+)",
         ],
     )
     def test_passes_known_good_shapes(self, src: str) -> None:
@@ -374,6 +439,38 @@ class TestParserHelpers:
         self, branch: str, reducible: bool, charset: frozenset[str] | None
     ) -> None:
         assert _branch_charset(branch) == (reducible, charset)
+
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [
+            ("a??", frozenset("a")),  # lazy `?` after bounded `?` isn't a stray atom
+            ("a{2,3}+", frozenset("a")),  # possessive modifier after `{n,m}`
+        ],
+    )
+    def test_branch_charset_consumes_lazy_possessive_modifier(
+        self, branch: str, expected: frozenset[str]
+    ) -> None:
+        # #196: a trailing lazy (`?`) or possessive (`+`) modifier right
+        # after a bounded quantifier must be consumed, not treated as a new
+        # literal atom -- before this fix, `_branch_charset('a??')` returned
+        # `(True, frozenset({'a', '?'}))`, leaking a spurious `?`.
+        assert _branch_charset(branch) == (True, expected)
+
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [
+            ("a+", frozenset("a")),
+            ("[a-z]+", frozenset("abcdefghijklmnopqrstuvwxyz")),
+            ("a{2,}", frozenset("a")),
+        ],
+    )
+    def test_branch_charset_allow_unbounded(self, branch: str, expected: frozenset[str]) -> None:
+        # #200: _has_adjacent_unbounded_groups needs the charset of an
+        # unbounded group's body (to compare flanking groups for overlap),
+        # not a reducibility verdict about being safely alternation-checkable
+        # -- allow_unbounded=True consumes the unbounded quantifier instead
+        # of bailing.
+        assert _branch_charset(branch, allow_unbounded=True) == (True, expected)
 
     @pytest.mark.parametrize("frag", ["", "-?", r"\s*", "(?:foo)?", "x*"])
     def test_nullable_separator_true(self, frag: str) -> None:
