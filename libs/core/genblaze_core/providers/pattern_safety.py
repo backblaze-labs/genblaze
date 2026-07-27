@@ -310,12 +310,18 @@ def _has_adjacent_unbounded_groups(src: str, flags: int = 0) -> bool:
     ``(a+)(a+)$`` shape — even though ``a`` and ``b`` are themselves
     disjoint; comparing only against the immediately-preceding group missed
     this (a confirmed regression caught in review of the #200 fix).
-    ``([a-z]+)([0-9]*)([a-z]+)`` (a genuinely optional, disjoint middle
-    group) correctly stays allowed: unioning carries `[a-z]` and `[0-9]`
-    forward, and the trailing `[a-z]+` overlaps the *first* group's charset
-    through that union — so the true test is "do any two groups reachable
-    across a chain of nullable groups share a character", not merely
-    adjacent pairs.
+    ``([a-z]+)([0-9]*)([a-z]+)`` correctly stays REJECTED for the same
+    reason: unioning carries `[a-z]` and `[0-9]` forward, and the trailing
+    `[a-z]+` overlaps the *first* group's charset through that union — on
+    the path where the middle `[0-9]*` matches nothing, this genuinely
+    collapses to the ambiguous `([a-z]+)([a-z]+)$` shape, so rejecting it is
+    correct, not collateral damage. The true test is "do any two groups
+    reachable across a chain of nullable groups share a character", not
+    merely adjacent pairs. A hard boundary — either a *mandatory* separator
+    immediately before a group, or a group whose own content is mandatory —
+    severs the chain and resets what's carried (e.g. `(a+)-(b*)(a+)$` stays
+    ALLOWED: the mandatory `-` proves the first group can't bleed into the
+    `b*`/third-group pair that follows it).
 
     ``flags`` is the compiled pattern's ``re`` flags, threaded through to
     :func:`_branch_charset` so ``re.IGNORECASE`` case-folds the computed
@@ -365,18 +371,28 @@ def _has_adjacent_unbounded_groups(src: str, flags: int = 0) -> bool:
         if run >= 2:
             return True
         prev_end = end
-        if unbounded:
-            if _is_nullable_separator(body):
-                # This group's own body can match empty -- it might vanish,
-                # so carry BOTH possibilities (its own charset, and
-                # whatever was already reachable) forward.
-                carried = _charset_union(carried, resolved)
-            else:
-                # Mandatory content -- a hard boundary that supersedes
-                # whatever was carried before it.
-                carried = resolved
-        else:
+        if not unbounded:
             carried = None
+        elif not adjacent:
+            # A mandatory (non-nullable) separator sits immediately before
+            # this group -- or this is the first group in the pattern --
+            # either way it's a hard boundary: whatever was carried before
+            # it can't bleed through, so start fresh from this group's own
+            # charset alone. Without this check, a stale `carried` from
+            # before the boundary would still be unioned in below whenever
+            # THIS group happens to be nullable, wrongly treating e.g.
+            # `(a+)-(b*)(a+)$` as if the mandatory `-` weren't there (a
+            # confirmed over-rejection caught in re-review of this fix).
+            carried = resolved
+        elif _is_nullable_separator(body):
+            # This group's own body can match empty -- it might vanish, so
+            # carry BOTH possibilities (its own charset, and whatever was
+            # already reachable through the adjacent chain) forward.
+            carried = _charset_union(carried, resolved)
+        else:
+            # Mandatory content, reached via a nullable separator -- a hard
+            # boundary that supersedes whatever was carried before it.
+            carried = resolved
     return False
 
 
@@ -530,10 +546,27 @@ def _case_fold_charset(charset: frozenset[str] | None, flags: int) -> frozenset[
     the same characters once the flag is applied — a confirmed live bypass
     of the #200 charset-overlap gate caught in security review of that fix.
     ``None`` (unknown/full charset) passes through unchanged.
+
+    ``str.lower()``/``str.upper()`` aren't always 1:1: some codepoints case-map
+    to a *multi-character* string (Turkish ``İ``.lower() is the two-character
+    ``i̇`` — base ``i`` plus a combining dot above; German ``ß``.upper() is the
+    two-character ``SS``). ``.update(ch.lower())``/``.update(ch.upper())``
+    below relies on ``set.update`` iterating a string *by character*, so a
+    multi-character result is decomposed into its individual characters
+    rather than kept as one opaque multi-char element — otherwise the plain
+    ``i`` that ``İ`` case-folds to under real ``re.IGNORECASE`` matching would
+    never land in the charset, silently reopening the exact bypass class this
+    function exists to close (confirmed exploitable: security review of this
+    fix found ``(İ+)(i+)(İ+)...`` sailed past `assert_safe` and backtracks
+    catastrophically at runtime).
     """
     if charset is None or not (flags & re.IGNORECASE):
         return charset
-    return frozenset(c for ch in charset for c in (ch.lower(), ch.upper()))
+    folded: set[str] = set(charset)
+    for ch in charset:
+        folded.update(ch.lower())
+        folded.update(ch.upper())
+    return frozenset(folded)
 
 
 def _branch_charset(

@@ -9,6 +9,7 @@ from genblaze_core.providers import pattern_safety
 from genblaze_core.providers.pattern_safety import (
     _bracket_charset,
     _branch_charset,
+    _case_fold_charset,
     _escape_charset,
     _heuristic_unsafe,
     _is_nullable_separator,
@@ -231,6 +232,25 @@ class TestAdjacentGroupsNullableMiddleGroup:
     def test_nullable_middle_group_all_disjoint_allowed(self) -> None:
         assert_safe(re.compile(r"(a+)(b*)(c+)$"))
 
+    def test_two_nullable_groups_transitive_overlap_rejected(self) -> None:
+        # Two nullable unbounded groups in a row before the charset repeats:
+        # the union must keep accumulating across BOTH, not just the last one.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(a+)(b*)(c*)(a+)$"))
+
+    def test_mandatory_separator_before_nullable_group_severs_carry_allowed(self) -> None:
+        # #200 re-review: a MANDATORY (non-nullable) separator right before a
+        # later nullable group is a hard boundary -- it must reset what's
+        # carried forward, not let an earlier group's charset silently union
+        # through it. Before this fix, the stale carried charset from group 1
+        # wrongly made this look ambiguous with group 3.
+        assert_safe(re.compile(r"(a+)-(b*)(a+)$"))
+
+    def test_mandatory_content_before_nullable_group_severs_carry_allowed(self) -> None:
+        # Same "hard boundary" rule, but the boundary is the PRECEDING
+        # group's own mandatory content rather than a literal separator.
+        assert_safe(re.compile(r"(a+)(c+)(b*)(a+)$"))
+
 
 class TestIgnoreCaseAwareCharsetOverlap:
     """Regression tests for a security-review finding on the #200 fix: the
@@ -256,6 +276,17 @@ class TestIgnoreCaseAwareCharsetOverlap:
 
     def test_alternation_disjoint_case_without_ignorecase_allowed(self) -> None:
         assert_safe(re.compile(r"(?:[a-z]|[A-Z])+"))
+
+    def test_non_ascii_case_fold_with_multi_char_mapping_rejected(self) -> None:
+        # Turkish dotted capital I (U+0130) lower-cases to a TWO-character
+        # string ("i" + a combining dot above), unlike the ASCII a/A pairs
+        # above. A naive fold that adds `ch.lower()` as one opaque element
+        # (instead of decomposing it into its individual characters) never
+        # produces the plain "i" needed to detect overlap with a literal
+        # "i" elsewhere -- silently reopening this exact bypass class for
+        # non-ASCII letters even after the ASCII case is fixed.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile("(İ+)(i+)(İ+)(i+)(İ+)(i+)$", re.IGNORECASE))
 
 
 class TestHeuristicUnsafe:
@@ -557,6 +588,25 @@ class TestParserHelpers:
         # `[a-z]` and `[A-Z]` disjoint by source text alone despite matching
         # the same characters at runtime.
         assert _branch_charset(branch, flags=flags) == (True, expected)
+
+    def test_case_fold_charset_decomposes_multi_char_case_mapping(self) -> None:
+        # Security re-review finding: Turkish "İ" (U+0130) lower-cases to the
+        # TWO-character string "i̇" (base "i" + combining dot above), unlike
+        # ASCII a/A. `_case_fold_charset` must decompose that into its
+        # individual characters (via `set.update` iterating the string) so
+        # the plain "i" lands in the folded set -- an earlier version added
+        # the whole multi-char string as one opaque element instead, which
+        # never overlapped a literal "i" elsewhere, reopening the exact
+        # bypass class this function exists to close.
+        folded = _case_fold_charset(frozenset("İ"), re.IGNORECASE)
+        assert folded is not None
+        assert "i" in folded
+
+    def test_case_fold_charset_noop_without_ignorecase(self) -> None:
+        assert _case_fold_charset(frozenset("aA"), 0) == frozenset("aA")
+
+    def test_case_fold_charset_passes_through_unknown(self) -> None:
+        assert _case_fold_charset(None, re.IGNORECASE) is None
 
     @pytest.mark.parametrize("frag", ["", "-?", r"\s*", "(?:foo)?", "x*"])
     def test_nullable_separator_true(self, frag: str) -> None:
