@@ -9,6 +9,7 @@ from genblaze_core.providers import pattern_safety
 from genblaze_core.providers.pattern_safety import (
     _bracket_charset,
     _branch_charset,
+    _case_fold_charset,
     _escape_charset,
     _heuristic_unsafe,
     _is_nullable_separator,
@@ -86,6 +87,40 @@ class TestAssertSafe:
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(f"{'(a+)-?' * 3}(a+)$"))
 
+    @pytest.mark.parametrize(
+        "src",
+        [
+            # Assembled at runtime (only analyzed by assert_safe, never matched)
+            # so the catastrophic literal isn't itself flagged by CodeQL's ReDoS
+            # scan -- same convention as the fixtures above.
+            f"(?:(?:a|{'a' * 2}))+$",  # #196: non-capturing redundant wrapper
+            f"((a|{'a' * 2}))+$",  # #196: capturing redundant wrapper
+        ],
+    )
+    def test_redundant_group_wrapper_around_alternation_rejected(self, src: str) -> None:
+        # #196: a group wrapped redundantly around an already-ambiguous
+        # alternation must not defeat the check the un-wrapped `(a|aa)+$`
+        # already fails.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(src))
+
+    def test_triple_nested_redundant_wrapper_rejected(self) -> None:
+        # #196: _unwrap_redundant_group's docstring claims it repeats "until
+        # no more wrappers remain" -- pin that beyond the single-level case.
+        # Assembled at runtime so the fixture isn't flagged as a static ReDoS
+        # literal by code scanning (see test_realistic_evil_pattern).
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(f"(?:(?:(?:a|{'a' * 2})))+$"))
+
+    def test_disjoint_charset_nullable_separator_groups_allowed(self) -> None:
+        # #200: flanking groups with disjoint charsets have an unambiguous
+        # split point and are linear-time safe -- must not be over-rejected
+        # as a regression of the #157 nullable-separator broadening.
+        assert_safe(re.compile(r"([a-z]+)-?([0-9]+)"))
+
+    def test_disjoint_charset_mandatory_separator_groups_allowed(self) -> None:
+        assert_safe(re.compile(r"([a-z]+)-([0-9]+)"))
+
     def test_realistic_evil_pattern_rejected(self) -> None:
         # The classic "(x+x+)+y" shape. Heuristic flags the nested quantifier;
         # that's enough to fail closed. Assembled at runtime (this fixture is only
@@ -129,6 +164,8 @@ class TestRedosGuardAlwaysRunsHeuristic:
             r"(v\d+)+.*",
             r"(a|aa)+$",  # #157: overlapping (non-identical) alternation
             r"(a+)-?(a+)-?(a+)-?(a+)$",  # #157: nullable-delimiter adjacent groups
+            r"(?:(?:a|aa))+$",  # #196: non-capturing redundant wrapper
+            r"((a|aa))+$",  # #196: capturing redundant wrapper
         ],
         ids=[
             "nested-plus-anchored",
@@ -136,6 +173,8 @@ class TestRedosGuardAlwaysRunsHeuristic:
             "version-prefix-catastrophic",
             "overlapping-alternation",
             "delimiter-separated-adjacent-groups",
+            "redundant-noncapturing-wrapper",
+            "redundant-capturing-wrapper",
         ],
     )
     @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
@@ -153,6 +192,106 @@ class TestRedosGuardAlwaysRunsHeuristic:
             monkeypatch.setattr(pattern_safety, "_re2", _FakeRe2)
         with pytest.raises(ValueError, match="catastrophic backtracking"):
             assert_safe(re.compile(src))
+
+
+class TestSafePatternsAllowedRegardlessOfHasRe2:
+    """Regression test for #200: a disjoint-charset, linear-time-safe
+    pattern must be ALLOWED whether or not ``google-re2`` is installed,
+    proving the #200 charset-overlap gate and the #196 stricter alternation
+    check coexist without either shape regressing the other."""
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            r"([a-z]+)-?([0-9]+)",  # #200: disjoint charsets, nullable separator
+            r"([a-z]+)-([0-9]+)",  # #200: disjoint charsets, mandatory separator
+        ],
+        ids=["disjoint-nullable-separator", "disjoint-mandatory-separator"],
+    )
+    @pytest.mark.parametrize("has_re2_value", [True, False], ids=["re2-present", "re2-absent"])
+    def test_allowed_regardless_of_has_re2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        src: str,
+        has_re2_value: bool,
+    ) -> None:
+        monkeypatch.setattr(pattern_safety, "_HAS_RE2", has_re2_value)
+        if has_re2_value:
+            monkeypatch.setattr(pattern_safety, "_re2", _FakeRe2)
+        assert_safe(re.compile(src))  # must not raise
+
+
+class TestAdjacentGroupsNullableMiddleGroup:
+    """Regression tests for a #200-review finding: comparing only the
+    immediately-preceding group's charset missed the case where a NULLABLE
+    unbounded group sits between two others. `(a+)(b*)(a+)$` must stay
+    rejected -- on the path where `b*` matches zero characters, it collapses
+    to the canonical `(a+)(a+)$` ambiguous-partition shape, even though `a`
+    and `b` are themselves disjoint charsets. `(a+)(b*)(c+)$`, where the
+    outer groups are ALSO disjoint from each other, must stay allowed."""
+
+    def test_nullable_middle_group_reopens_ambiguity_rejected(self) -> None:
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(a+)(b*)(a+)$"))
+
+    def test_nullable_middle_group_all_disjoint_allowed(self) -> None:
+        assert_safe(re.compile(r"(a+)(b*)(c+)$"))
+
+    def test_two_nullable_groups_transitive_overlap_rejected(self) -> None:
+        # Two nullable unbounded groups in a row before the charset repeats:
+        # the union must keep accumulating across BOTH, not just the last one.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(a+)(b*)(c*)(a+)$"))
+
+    def test_mandatory_separator_before_nullable_group_severs_carry_allowed(self) -> None:
+        # #200 re-review: a MANDATORY (non-nullable) separator right before a
+        # later nullable group is a hard boundary -- it must reset what's
+        # carried forward, not let an earlier group's charset silently union
+        # through it. Before this fix, the stale carried charset from group 1
+        # wrongly made this look ambiguous with group 3.
+        assert_safe(re.compile(r"(a+)-(b*)(a+)$"))
+
+    def test_mandatory_content_before_nullable_group_severs_carry_allowed(self) -> None:
+        # Same "hard boundary" rule, but the boundary is the PRECEDING
+        # group's own mandatory content rather than a literal separator.
+        assert_safe(re.compile(r"(a+)(c+)(b*)(a+)$"))
+
+
+class TestIgnoreCaseAwareCharsetOverlap:
+    """Regression tests for a security-review finding on the #200 fix: the
+    charset-overlap gates (adjacent groups AND quantified alternation) must
+    fold case when the compiled pattern has ``re.IGNORECASE`` set, or a
+    pattern whose groups are disjoint only in literal source text (e.g.
+    `[a-z]` vs. `[A-Z]`) slips past as a false "safe" verdict despite
+    matching identical characters at runtime."""
+
+    def test_adjacent_groups_ignorecase_folds_to_overlap_rejected(self) -> None:
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(
+                re.compile(r"([a-z]+)([A-Z]+)([a-z]+)([A-Z]+)([a-z]+)([A-Z]+)$", re.IGNORECASE)
+            )
+
+    def test_adjacent_groups_disjoint_case_without_ignorecase_allowed(self) -> None:
+        # Same shape, no flag -- genuinely disjoint at match time, must stay safe.
+        assert_safe(re.compile(r"([a-z]+)([A-Z]+)([a-z]+)([A-Z]+)([a-z]+)([A-Z]+)$"))
+
+    def test_alternation_ignorecase_folds_to_overlap_rejected(self) -> None:
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(?:[a-z]|[A-Z])+", re.IGNORECASE))
+
+    def test_alternation_disjoint_case_without_ignorecase_allowed(self) -> None:
+        assert_safe(re.compile(r"(?:[a-z]|[A-Z])+"))
+
+    def test_non_ascii_case_fold_with_multi_char_mapping_rejected(self) -> None:
+        # Turkish dotted capital I (U+0130) lower-cases to a TWO-character
+        # string ("i" + a combining dot above), unlike the ASCII a/A pairs
+        # above. A naive fold that adds `ch.lower()` as one opaque element
+        # (instead of decomposing it into its individual characters) never
+        # produces the plain "i" needed to detect overlap with a literal
+        # "i" elsewhere -- silently reopening this exact bypass class for
+        # non-ASCII letters even after the ASCII case is fixed.
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile("(İ+)(i+)(İ+)(i+)(İ+)(i+)$", re.IGNORECASE))
 
 
 class TestHeuristicUnsafe:
@@ -195,6 +334,9 @@ class TestHeuristicUnsafe:
             # matches `]` or a-y) was mis-parsed as an empty class, silently
             # dropping the whole a-y range (including `q`) from the computed
             # charset — a confirmed false-negative bypass caught in re-review
+            r"(?:(?:a|aa))+$",  # #196: redundant non-capturing wrapper around
+            # an already-ambiguous alternation must not hide it
+            r"((a|aa))+$",  # #196: redundant capturing wrapper, same shape
         ],
         ids=[
             "nested-plus",
@@ -218,6 +360,8 @@ class TestHeuristicUnsafe:
             "overlapping-alternation-hex-escape",
             "overlapping-alternation-class-range-different-lengths",
             "overlapping-alternation-leading-bracket-literal",
+            "redundant-noncapturing-wrapper",
+            "redundant-capturing-wrapper",
         ],
     )
     def test_flags_known_bad_shapes(self, src: str) -> None:
@@ -266,6 +410,22 @@ class TestHeuristicUnsafe:
             # isn't caught. Asserted here so a future attempt to close this
             # gap updates this test rather than silently changing behavior.
             r"(a(?:b)?|aa)+$",
+            # #200: flanking unbounded groups with disjoint charsets have an
+            # unambiguous split point and are linear-time safe -- must not
+            # be over-rejected as a regression of the #157 nullable-
+            # separator broadening.
+            r"([a-z]+)-?([0-9]+)",
+            r"([a-z]+)-([0-9]+)",
+            # #196 review: documented residual gap, not a regression (the
+            # pre-#196 heuristic missed these too) -- a redundant wrapper
+            # that itself carries a no-op/optional quantifier isn't
+            # unwrapped by _unwrap_redundant_group, which only strips a
+            # wrapper whose entire body is exactly one more nested group
+            # with nothing else. Asserted here so a future attempt to widen
+            # the unwrap updates this test rather than silently changing
+            # behavior (see the module's "Known residual gaps").
+            r"((a|aa){1})+$",
+            r"((a|aa)?)+$",
         ],
     )
     def test_passes_known_good_shapes(self, src: str) -> None:
@@ -374,6 +534,84 @@ class TestParserHelpers:
         self, branch: str, reducible: bool, charset: frozenset[str] | None
     ) -> None:
         assert _branch_charset(branch) == (reducible, charset)
+
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [
+            ("a??", frozenset("a")),  # lazy `?` after bounded `?` isn't a stray atom
+            ("a{2,3}+", frozenset("a")),  # possessive modifier after `{n,m}`
+        ],
+    )
+    def test_branch_charset_consumes_lazy_possessive_modifier(
+        self, branch: str, expected: frozenset[str]
+    ) -> None:
+        # #196: a trailing lazy (`?`) or possessive (`+`) modifier right
+        # after a bounded quantifier must be consumed, not treated as a new
+        # literal atom -- before this fix, `_branch_charset('a??')` returned
+        # `(True, frozenset({'a', '?'}))`, leaking a spurious `?`.
+        assert _branch_charset(branch) == (True, expected)
+
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [
+            ("a+", frozenset("a")),
+            ("[a-z]+", frozenset("abcdefghijklmnopqrstuvwxyz")),
+            ("a{2,}", frozenset("a")),
+        ],
+    )
+    def test_branch_charset_allow_unbounded(self, branch: str, expected: frozenset[str]) -> None:
+        # #200: _has_adjacent_unbounded_groups needs the charset of an
+        # unbounded group's body (to compare flanking groups for overlap),
+        # not a reducibility verdict about being safely alternation-checkable
+        # -- allow_unbounded=True consumes the unbounded quantifier instead
+        # of bailing.
+        assert _branch_charset(branch, allow_unbounded=True) == (True, expected)
+
+    def test_branch_charset_allow_unbounded_still_bails_on_nested_group(self) -> None:
+        # allow_unbounded only changes how a bare unbounded QUANTIFIER is
+        # handled -- a nested group in the body is unconditionally
+        # unreducible either way (the `ch in "(|)"` bailout runs first).
+        assert _branch_charset("(?:x)+", allow_unbounded=True) == (False, None)
+
+    @pytest.mark.parametrize(
+        ("branch", "flags", "expected"),
+        [
+            ("a", 0, frozenset("a")),
+            ("a", re.IGNORECASE, frozenset("aA")),
+            (
+                "[a-z]",
+                re.IGNORECASE,
+                frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            ),
+        ],
+    )
+    def test_branch_charset_ignorecase_folds(
+        self, branch: str, flags: int, expected: frozenset[str]
+    ) -> None:
+        # Security-review finding on the #200 fix: without case-folding, a
+        # charset-overlap comparison under `re.IGNORECASE` would judge
+        # `[a-z]` and `[A-Z]` disjoint by source text alone despite matching
+        # the same characters at runtime.
+        assert _branch_charset(branch, flags=flags) == (True, expected)
+
+    def test_case_fold_charset_decomposes_multi_char_case_mapping(self) -> None:
+        # Security re-review finding: Turkish "İ" (U+0130) lower-cases to the
+        # TWO-character string "i̇" (base "i" + combining dot above), unlike
+        # ASCII a/A. `_case_fold_charset` must decompose that into its
+        # individual characters (via `set.update` iterating the string) so
+        # the plain "i" lands in the folded set -- an earlier version added
+        # the whole multi-char string as one opaque element instead, which
+        # never overlapped a literal "i" elsewhere, reopening the exact
+        # bypass class this function exists to close.
+        folded = _case_fold_charset(frozenset("İ"), re.IGNORECASE)
+        assert folded is not None
+        assert "i" in folded
+
+    def test_case_fold_charset_noop_without_ignorecase(self) -> None:
+        assert _case_fold_charset(frozenset("aA"), 0) == frozenset("aA")
+
+    def test_case_fold_charset_passes_through_unknown(self) -> None:
+        assert _case_fold_charset(None, re.IGNORECASE) is None
 
     @pytest.mark.parametrize("frag", ["", "-?", r"\s*", "(?:foo)?", "x*"])
     def test_nullable_separator_true(self, frag: str) -> None:
