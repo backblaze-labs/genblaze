@@ -50,24 +50,138 @@ def mock_client():
     return client
 
 
-def test_image_block_refused_with_clear_message(mock_client):
-    """Gemini does not accept OpenAI-vision shape — raise INVALID_INPUT, not mid-runtime."""
+def test_data_uri_image_translated_to_inline_data(mock_client):
+    """A `data:` URI ImageURLContent block becomes a Gemini `inline_data` part.
+
+    Regression test for #194: genblaze-google's chat() used to reject any
+    ImageURLContent block pre-flight, breaking provider-swappable multimodal
+    with the OpenAI-wire connectors (which accept it directly).
+    """
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    data_uri = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    msgs = [
+        ChatMessage(role="user", content=[ImageURLContent(image_url=ImageURLRef(url=data_uri))])
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}}]
+
+
+def test_text_and_image_multimodal_message_round_trips(mock_client):
+    """Exact repro from #194: TextContent + ImageURLContent(data URI) in one message."""
     from genblaze_core.models.chat import ImageURLContent, ImageURLRef, TextContent
+
+    data_uri = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                TextContent(text="Describe this frame."),
+                ImageURLContent(image_url=ImageURLRef(url=data_uri)),
+            ],
+        )
+    ]
+    resp = chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"text": "Describe this frame."},
+        {"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}},
+    ]
+    assert resp.text == "Hello!"
+
+
+def test_raw_dict_message_with_image_url_also_works(mock_client):
+    """The raw-dict workaround the old error message recommended must actually work too —
+    `_normalize_to_gemini` coerces dicts back through `ChatMessage(**m)`, so the fix for
+    typed `ImageURLContent` has to cover this path as well (#194)."""
+    data_uri = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    raw = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this frame."},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ],
+    }
+    chat("gemini-2.5-flash", messages=[raw], client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"text": "Describe this frame."},
+        {"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}},
+    ]
+
+
+def test_https_image_url_translated_to_file_data(mock_client):
+    """A non-`data:` URL maps to Gemini's `file_data` part; mime type guessed from
+    extension when `media_type` isn't given."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[ImageURLContent(image_url=ImageURLRef(url="https://x/y.png"))],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"file_data": {"mime_type": "image/png", "file_uri": "https://x/y.png"}}]
+
+
+def test_data_uri_base64_marker_is_case_insensitive(mock_client):
+    """RFC 2397 doesn't mandate lowercase `;base64,`; accept `;BASE64,` too."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
 
     msgs = [
         ChatMessage(
             role="user",
             content=[
-                TextContent(text="describe"),
-                ImageURLContent(image_url=ImageURLRef(url="https://x/y.png")),
+                ImageURLContent(
+                    image_url=ImageURLRef(url="data:image/jpeg;BASE64,/9j/4AAQSkZJRg==")
+                )
             ],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}}]
+
+
+def test_data_uri_with_malformed_mime_header_falls_back_to_octet_stream(mock_client):
+    """A data-URI header that doesn't look like `type/subtype` (e.g. injected control
+    chars or stray whitespace) must never be forwarded verbatim as `mime_type` — fall
+    back to a safe default instead."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                ImageURLContent(
+                    image_url=ImageURLRef(url="data:not a mime type;base64,/9j/4AAQSkZJRg==")
+                )
+            ],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"inline_data": {"mime_type": "application/octet-stream", "data": "/9j/4AAQSkZJRg=="}}
+    ]
+
+
+def test_malformed_data_uri_raises_invalid_input(mock_client):
+    """A `data:` URI missing the comma-delimited payload is a client error, not a Gemini one."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[ImageURLContent(image_url=ImageURLRef(url="data:image/jpeg;base64"))],
         )
     ]
     with pytest.raises(ProviderError) as info:
         chat("gemini-2.5-flash", messages=msgs, client=mock_client)
     assert info.value.error_code == ProviderErrorCode.INVALID_INPUT
-    assert "ImageURLContent" in str(info.value)
-    assert "inline_data" in str(info.value) or "file_data" in str(info.value)
 
 
 def test_video_block_refused_with_clear_message(mock_client):
@@ -85,7 +199,9 @@ def test_video_block_refused_with_clear_message(mock_client):
 
 
 def test_text_only_list_content_translated(mock_client):
-    """All-text list content translates cleanly to Gemini's parts shape."""
+    """All-text list content translates cleanly to Gemini's parts shape — one
+    `parts` entry per content block, matching the OpenAI connector's block-per-part
+    translation (needed so image blocks can be interleaved, see #194)."""
     from genblaze_core.models.chat import TextContent
 
     msgs = [
@@ -93,9 +209,8 @@ def test_text_only_list_content_translated(mock_client):
     ]
     chat("gemini-2.5-flash", messages=msgs, client=mock_client)
     call = mock_client.models.generate_content.call_args.kwargs
-    # first user content's parts text should join the blocks.
     parts = call["contents"][0]["parts"]
-    assert parts == [{"text": "hello world"}]
+    assert parts == [{"text": "hello"}, {"text": " world"}]
 
 
 def test_prompt_shorthand(mock_client):
