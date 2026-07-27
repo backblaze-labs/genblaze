@@ -22,7 +22,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "nvidia", "nim", "nemotron"]
 
 dependencies = [
-    "genblaze-core>=0.3.4,<0.4",
+    "genblaze-core>=0.3.7,<0.4",
     # <1: bounded-major convention (#61) — httpx is pre-1.0, so this caps at
     # its next major.
     "httpx>=0.24,<1",

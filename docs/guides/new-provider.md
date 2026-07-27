@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-07-27 -->
 # Adding a New Provider
 
 Step-by-step guide for contributing a provider adapter to genblaze. This guide is the canonical contract — every section maps to a check the compliance harness or pipeline relies on.
@@ -264,6 +264,8 @@ if step.inputs:
 ```
 
 This prevents SSRF — only `https://` and `file://` URLs are allowed.
+
+> **Local file output:** if your provider writes a local file and exposes it as a `file://` asset, build the URL with `genblaze_core._utils.local_file_url(path.resolve())` — never `f"file://{quote(str(path))}"`. `local_file_url()` uses `Path.as_uri()`, which yields the empty-netloc form (`file:///C:/...`) that parses correctly on every platform, including Windows; the hand-rolled `quote()` pattern percent-encodes the drive colon and broke every connector-produced asset on Windows (#164).
 
 > **Shortcut:** if your provider uses a `ModelSpec` with `input_mapping` declared, call `self.prepare_payload(step, base_params=...)` instead. It runs the full ModelSpec pipeline (aliases → transformer → chain inputs → coercers → defaults → schemas → required → constraints → allowlist) **and** SSRF-validates every `step.inputs` URL automatically. See [`model-registry.md`](../features/model-registry.md) for the pipeline order.
 
