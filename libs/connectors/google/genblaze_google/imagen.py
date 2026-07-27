@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,9 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    ValidationOutcome,
+    ValidationResult,
+    ValidationSource,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -118,6 +122,50 @@ class ImagenProvider(GoogleClientMixin, SyncProvider):
         self._location = location
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
+
+    @staticmethod
+    def _is_entitlement_gated(model_id: str) -> bool:
+        """True for imagen slugs known to be catalog-listed but not callable
+        on a new key. ``imagen-4.0-*`` return 200 from ``models.get`` but 404
+        "no longer available to new users" on the ``:predict`` call for keys
+        created after the imagen 3.0->4.0 migration — an account-entitlement
+        gate ``models.get`` can't see (#206)."""
+        return model_id.startswith("imagen-4.0")
+
+    def validate_model(self, model_id: str, *, refresh: bool = False) -> ValidationResult:
+        """Re-grade a probe-confirmed-LIVE result to ``OK_PROVISIONAL`` for
+        entitlement-gated imagen slugs.
+
+        ``models.get`` only proves catalog membership. Confirming entitlement
+        at preflight would require a real (billable) ``:predict`` call, so
+        rather than spend money probing — or hard-failing with ``DEAD`` on any
+        404, which would lock out an entitled user on an unrelated error — the
+        known-gated ``imagen-4.0-*`` slugs are surfaced as ``OK_PROVISIONAL``:
+        a warn that the slug is known but not confirmed callable with this key
+        (mirrors the gmicloud entitlement-gating fix, #193). Every other slug
+        keeps the base behavior. See #206.
+        """
+        result = super().validate_model(model_id, refresh=refresh)
+        if (
+            result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+            and result.source is ValidationSource.PROBE
+            and self._is_entitlement_gated(model_id)
+        ):
+            return replace(
+                result,
+                outcome=ValidationOutcome.OK_PROVISIONAL,
+                detail=(
+                    f"known slug ({model_id!r} exists in Google's catalog per "
+                    "models.get) but NOT confirmed callable with this API key: "
+                    "imagen-4.0-* require account entitlement that isn't visible "
+                    "at preflight (models.get returns 200; :predict 404s 'no "
+                    "longer available to new users' for keys created after the "
+                    "imagen 3.0->4.0 migration). A real run may 404; if so, use "
+                    "the Gemini-native image models (google-gemini-image), which "
+                    "need no such entitlement. See #206."
+                ),
+            )
+        return result
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
         """Generate image(s) via the Google Imagen API."""

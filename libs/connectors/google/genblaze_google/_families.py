@@ -24,7 +24,7 @@ from genblaze_core.providers import (
     ModelSpec,
 )
 
-from ._probe import google_imagen_predict_probe, google_models_get_probe
+from ._probe import google_models_get_probe
 
 # --- Constraint helpers (constructor-cheap, family-shared) ----------------
 
@@ -157,19 +157,17 @@ GOOGLE_IMAGEN_FAMILY = ModelFamily(
         param_constraints=(_check_imagen_aspect_ratio,),
     ),
     description="Google Imagen family — text-to-image generation.",
-    # imagen-3.0-* left the catalog (404 on models.get) and were replaced by
-    # imagen-4.0-*, which IS catalog-listed but entitlement-gated for new
-    # keys — see google_imagen_predict_probe (issue #206) for how that
-    # distinction is surfaced at preflight instead of mid-run.
+    # imagen-3.0-* left the catalog (404 on models.get -> DEAD) and were
+    # replaced by imagen-4.0-*, which IS catalog-listed but entitlement-gated
+    # for new keys. The plain catalog-membership probe can't see that gate
+    # (models.get returns 200); ImagenProvider.validate_model re-grades the
+    # known-gated imagen-4.0-* slugs to OK_PROVISIONAL rather than a billable
+    # :predict probe or a hard DEAD — see issue #206.
     example_slugs=(
         "imagen-4.0-generate-001",
         "imagen-4.0-fast-generate-001",
     ),
-    # Not the plain google_models_get_probe: catalog membership alone
-    # (what models.get measures) isn't entitlement (what :predict
-    # enforces) for this family. See google_imagen_predict_probe's
-    # docstring for the full story (issue #206).
-    probe=google_imagen_predict_probe,
+    probe=google_models_get_probe,
 )
 
 
