@@ -6,10 +6,19 @@ same signature, same ``ChatResponse`` shape. Auth: ``GEMINI_API_KEY`` or
 from __future__ import annotations
 
 import asyncio
+import mimetypes
+import re
 from typing import Any
 
 from genblaze_core.exceptions import ProviderError
-from genblaze_core.models.chat import ChatMessage, ChatResponse, TextContent, ToolCall
+from genblaze_core.models.chat import (
+    ChatMessage,
+    ChatResponse,
+    ImageURLContent,
+    ImageURLRef,
+    TextContent,
+    ToolCall,
+)
 from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers.retry import retry_after_from_response
 
@@ -40,26 +49,98 @@ def _normalize_to_gemini(
 
     for m in iter_msgs:
         msg = m if isinstance(m, ChatMessage) else ChatMessage(**m)
-        text = _gemini_text_only(msg.content)
         # Gemini takes a separate system_instruction; pull the first system msg out.
+        # system_instruction is plain text only, so reject media blocks there too.
         if msg.role == "system":
             if system_instruction is None:
-                system_instruction = text
+                system_instruction = _gemini_text_only(msg.content)
             continue
         role = _ROLE_MAP.get(msg.role, "user")
-        contents.append({"role": role, "parts": [{"text": text}]})
+        contents.append({"role": role, "parts": _content_to_gemini_parts(msg.content)})
 
     return contents, system_instruction
+
+
+def _content_to_gemini_parts(content: Any) -> list[dict]:
+    """Translate ChatMessage.content into Gemini `parts` (text + inline/file image data).
+
+    Mirrors the block-to-wire translation `genblaze_openai.chat._normalize_messages`
+    already does for the OpenAI-vision shape, so a `ChatMessage` built from the
+    canonical content blocks is portable across providers instead of being
+    pre-flight-rejected here (#194). Block types Gemini has no `parts` mapping
+    for (video, audio) still raise a precise `INVALID_INPUT` rather than
+    failing mid-request.
+    """
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts: list[dict] = []
+    for block in content:
+        if isinstance(block, TextContent):
+            parts.append({"text": block.text})
+        elif isinstance(block, ImageURLContent):
+            parts.append(_image_ref_to_gemini_part(block.image_url))
+        else:
+            raise ProviderError(
+                f"Gemini does not accept {type(block).__name__}. Only TextContent and "
+                "ImageURLContent translate to Gemini `parts` today. Pass native Gemini "
+                "parts via raw dict messages, or wait for genblaze-google's typed "
+                "multimodal support (tracked in framework-dx-recommendations.md).",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+    return parts
+
+
+def _image_ref_to_gemini_part(ref: ImageURLRef) -> dict:
+    """Translate an `ImageURLRef` to Gemini's `inline_data` or `file_data` part.
+
+    - `data:` URIs decode to `inline_data` — the base64 payload split from the
+      URI header, mime type read from the header (falling back to
+      `media_type` if the header omits one).
+    - Any other URL (e.g. a Gemini Files API URI) passes through as
+      `file_data`; mime type comes from `media_type` if set, else a
+      best-effort guess from the URL's extension. Gemini validates the URI
+      upstream — we don't preflight-reject unresolvable URLs here.
+    """
+    url = ref.url
+    if url.startswith("data:"):
+        header, _, payload = url.partition(",")
+        if not payload:
+            raise ProviderError(
+                f"Malformed data URI in image_url — missing comma-delimited payload: "
+                f"{url[:32]}...",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        meta = header[len("data:") :]
+        if "base64" not in meta.lower():
+            raise ProviderError(
+                "Gemini inline_data requires a base64-encoded data URI "
+                "(e.g. 'data:image/jpeg;base64,...'); got a non-base64 data URI.",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        header_mime = _valid_mime_type(meta.split(";")[0])
+        mime_type = header_mime or ref.media_type or "application/octet-stream"
+        return {"inline_data": {"mime_type": mime_type, "data": payload}}
+
+    mime_type = ref.media_type or mimetypes.guess_type(url)[0] or "application/octet-stream"
+    return {"file_data": {"mime_type": mime_type, "file_uri": url}}
+
+
+# RFC 2045 token chars, loosely: reject anything that isn't a plain "type/subtype"
+# so a malformed data-URI header (e.g. stray whitespace/control chars from a
+# hand-built URI) can't be forwarded verbatim into the request payload as mime_type.
+_MIME_TYPE_RE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
+
+
+def _valid_mime_type(candidate: str) -> str | None:
+    """Return `candidate` if it looks like a `type/subtype` MIME string, else None."""
+    return candidate if _MIME_TYPE_RE.match(candidate) else None
 
 
 def _gemini_text_only(content: Any) -> str:
     """Reduce ChatMessage.content to plain text; raise on non-text blocks.
 
-    Gemini's chat API does not accept the OpenAI-vision wire shape — media
-    requires `inline_data` (base64) or `file_data` (File API URI). Until the
-    Google connector grows native multimodal block translation, refuse
-    Image/Video blocks at construction with a precise message rather than
-    erroring mid-runtime.
+    Only used for `system` messages — Gemini's `system_instruction` is a
+    plain string field, unlike `contents[].parts` which accepts media.
     """
     if isinstance(content, str):
         return content
@@ -69,10 +150,8 @@ def _gemini_text_only(content: Any) -> str:
             text_parts.append(block.text)
             continue
         raise ProviderError(
-            f"Gemini does not accept {type(block).__name__}. Pass media as "
-            "inline_data (base64) or file_data (File API URI) via raw dict messages, "
-            "or wait for genblaze-google's typed multimodal support (tracked in "
-            "framework-dx-recommendations.md).",
+            f"Gemini's system_instruction does not accept {type(block).__name__} — "
+            "only TextContent blocks are supported for system messages.",
             error_code=ProviderErrorCode.INVALID_INPUT,
         )
     return "".join(text_parts)

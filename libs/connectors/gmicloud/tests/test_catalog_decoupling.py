@@ -119,6 +119,19 @@ class TestImageFamilyResolution:
         match = provider._models.match_family("seedream-5.0-lite")
         assert match is None  # falls through to permissive fallback
 
+    def test_gpt_image_2_edit_routes_to_minimal_edit_family(self) -> None:
+        """#193 item 2: gpt-image-2-edit rejects the standard image surface
+        (aspect_ratio, number_of_images, etc.) with a generic 400 — the
+        dedicated family narrows the allowlist to prompt + image only."""
+        provider = GMICloudImageProvider(api_key="test")
+        match = provider._models.match_family("gpt-image-2-edit")
+        assert match is not None
+        assert match.family.name == "gmi-image-minimal-edit"
+        allowlist = match.spec.param_allowlist or set()
+        assert allowlist == {"prompt", "image", "image_url"}
+        assert "aspect_ratio" not in allowlist
+        assert "number_of_images" not in allowlist
+
 
 class TestVideoFamilyResolution:
     def test_pixverse_routes_to_pixverse_family(self) -> None:
