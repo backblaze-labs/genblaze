@@ -154,13 +154,31 @@ class GeminiImageProvider(GoogleClientMixin, SyncProvider):
             payload = self.prepare_payload(step)
             prompt = payload.get("prompt", step.prompt or "")
 
+            from google.genai import types as genai_types
+
+            # Gemini image models only emit inline image parts when the request
+            # explicitly asks for the IMAGE modality; without response_modalities
+            # the API can return a text description and we'd wrongly fall into
+            # the "no inline image data" branch on every real call (#205).
             response = client.models.generate_content(
                 model=step.model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
+                config=genai_types.GenerateContentConfig(response_modalities=["IMAGE"]),
             )
 
             candidates = getattr(response, "candidates", None) or []
             if not candidates:
+                # A blocked *prompt* returns zero candidates with the reason on
+                # response.prompt_feedback (distinct from a candidate-level
+                # finish_reason). Map a policy block to CONTENT_POLICY so it
+                # isn't misreported as a generic, retryable INVALID_INPUT (#205).
+                block = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+                if block is not None:
+                    raise ProviderError(
+                        f"Gemini blocked the image prompt "
+                        f"(block_reason={str(block).rsplit('.', 1)[-1]})",
+                        error_code=ProviderErrorCode.CONTENT_POLICY,
+                    )
                 raise ProviderError(
                     "Gemini returned no candidates for image generation",
                     error_code=ProviderErrorCode.INVALID_INPUT,

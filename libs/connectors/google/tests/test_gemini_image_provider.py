@@ -41,9 +41,14 @@ def _candidate(parts, finish_reason="STOP"):
     return candidate
 
 
-def _response(candidates):
+def _response(candidates, block_reason=None):
+    """Mock generate_content response. ``block_reason`` populates
+    ``prompt_feedback.block_reason`` (set only when Gemini blocks the prompt
+    itself and returns zero candidates); default None models a normal
+    (non-blocked) response."""
     resp = MagicMock()
     resp.candidates = candidates
+    resp.prompt_feedback = MagicMock(block_reason=block_reason)
     return resp
 
 
@@ -72,6 +77,9 @@ def mock_gemini(tmp_path):
         )
         provider = GeminiImageProvider(api_key="test-key", output_dir=str(tmp_path))
         provider._client = client
+        # Handle to the mocked google.genai.types so tests can assert on the
+        # GenerateContentConfig the provider builds (response_modalities).
+        client._genai_types = mock_types
         yield provider, client
 
 
@@ -86,6 +94,46 @@ def test_generate_returns_image_asset(mock_gemini):
     asset = result.assets[0]
     assert asset.media_type == "image/png"
     assert asset.url.startswith("file://")
+
+
+def test_generate_requests_image_modality(mock_gemini):
+    """Gemini image models only return inline images when the request asks for
+    the IMAGE modality — the provider must set response_modalities (#205)."""
+    provider, client = mock_gemini
+    provider.generate(_step())
+    # a config was passed to generate_content...
+    assert client.models.generate_content.call_args.kwargs.get("config") is not None
+    # ...and it was built as GenerateContentConfig(response_modalities=["IMAGE"]).
+    cfg_call = client._genai_types.GenerateContentConfig.call_args
+    assert cfg_call.kwargs.get("response_modalities") == ["IMAGE"]
+
+
+def test_prompt_level_safety_block_raises_content_policy(mock_gemini):
+    """A blocked prompt returns zero candidates with prompt_feedback.block_reason
+    set — that's a content-policy refusal, not a generic INVALID_INPUT (#205)."""
+    provider, client = mock_gemini
+    client.models.generate_content.return_value = _response([], block_reason="IMAGE_SAFETY")
+    with pytest.raises(ProviderError) as excinfo:
+        provider.generate(_step(prompt="disallowed prompt"))
+    assert excinfo.value.error_code == ProviderErrorCode.CONTENT_POLICY
+    assert "blocked" in str(excinfo.value).lower()
+
+
+def test_family_matches_expected_slugs():
+    """Pin the ^gemini-.*-image family against issue #205's real catalog: it
+    must match every Gemini image slug (incl. -preview) and exclude chat."""
+    from genblaze_google._families import GOOGLE_GEMINI_IMAGE_FAMILY as fam
+
+    for slug in (
+        "gemini-2.5-flash-image",
+        "gemini-3-pro-image",
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image-preview",
+        "gemini-3.1-flash-lite-image",
+    ):
+        assert fam.pattern.match(slug), f"should match {slug}"
+    for slug in ("gemini-2.5-flash", "gemini-3-pro", "imagen-4.0-generate-001"):
+        assert not fam.pattern.match(slug), f"should NOT match {slug}"
 
 
 def test_generate_passes_prompt_to_generate_content(mock_gemini):
