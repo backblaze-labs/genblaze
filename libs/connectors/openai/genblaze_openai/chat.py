@@ -145,10 +145,11 @@ def chat(
         client: Pre-built `openai.OpenAI` instance — escape hatch for tests
             and custom clients. When supplied, its lifecycle is the caller's
             (we won't close it).
-        retry_on_rate_limit: When ``True``, a 429 wait-and-retry using the
-            server's ``Retry-After`` hint (falling back to exponential backoff)
-            instead of raising immediately. Off by default — existing callers
-            see no behavior change. See ``docs/features/llm-calls.md``.
+        retry_on_rate_limit: When ``True``, waits and retries on a 429 using
+            the server's ``Retry-After`` hint (falling back to exponential
+            backoff) instead of raising immediately. Off by default —
+            existing callers see no behavior change. See
+            ``docs/features/llm-calls.md``.
         retry_policy: Optional ``RetryPolicy`` controlling attempt cap / backoff
             when ``retry_on_rate_limit=True`` (or passed on its own to opt in
             implicitly). Defaults to ``RetryPolicy()`` (6 attempts).
@@ -164,6 +165,10 @@ def chat(
         Internally-created clients are closed after each call to avoid
         resource leaks.
     """
+    # retry_policy alone (without the bool flag) also opts in — see the
+    # retry_policy docstring above.
+    retry_managed = retry_on_rate_limit or retry_policy is not None
+
     own_client = client is None
     if own_client:
         try:
@@ -175,6 +180,12 @@ def chat(
             ckwargs["api_key"] = api_key
         if base_url:
             ckwargs["base_url"] = base_url
+        if retry_managed:
+            # We already retry via call_with_rate_limit_retry below; disable
+            # the SDK's own internal retry (default 2) so RetryPolicy.max_attempts
+            # stays authoritative instead of being multiplied by a second,
+            # invisible retry layer underneath it.
+            ckwargs["max_retries"] = 0
         client = openai.OpenAI(**ckwargs)
 
     payload: dict[str, Any] = {
@@ -204,7 +215,8 @@ def chat(
             ) from exc
 
     try:
-        if retry_on_rate_limit or retry_policy is not None:
+        # retry_policy= alone opts in implicitly, even without retry_on_rate_limit=True.
+        if retry_managed:
             raw = call_with_rate_limit_retry(_invoke, policy=retry_policy)
         else:
             raw = _invoke()

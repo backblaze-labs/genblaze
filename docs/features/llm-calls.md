@@ -87,16 +87,34 @@ runs in, so it never blocks the event loop.
 **Known limits of this opt-in loop:**
 
 - **Bounded but not tiny.** Worst case is `(max_attempts - 1) *
-  MAX_RETRY_AFTER_SEC` — with the default policy (6 attempts, 120s cap), that's
-  up to ~10 minutes if a misbehaving upstream returns the maximum `Retry-After`
-  hint on every attempt. Pass a tighter `retry_policy=RetryPolicy(max_attempts=2)`
-  if that's unacceptable for your call site.
+  MAX_RETRY_AFTER_SEC`, *plus* each attempt's own HTTP `timeout=` — so the
+  actual ceiling is higher than the ~10 minutes that bound alone suggests
+  (e.g. the default policy's 6 attempts × 120s backoff cap, plus up to 6 ×
+  `timeout` seconds if attempts themselves stall). Pass a tighter
+  `retry_policy=RetryPolicy(max_attempts=2)` and/or a smaller `timeout=` if
+  that's unacceptable for your call site.
+- **`achat()` occupies a thread-pool worker for the whole wait.** `asyncio.to_thread`
+  runs on Python's shared default `ThreadPoolExecutor` (capped around
+  `min(32, os.cpu_count() + 4)` workers, process-wide). A retrying
+  `achat(retry_on_rate_limit=True)` call holds its worker — sleeping, not just
+  computing — for as long as the loop above, so a burst of concurrent retrying
+  calls can exhaust that pool and stall unrelated `to_thread` work elsewhere in
+  the process. Bound how many `achat()` calls run concurrently (e.g. an
+  `asyncio.Semaphore`) rather than firing an unbounded number at once.
 - **Not a rate limiter.** This is a per-call retry wrapper, not a shared
   token-bucket / queue-level limiter. Many concurrent callers hitting the same
   TPM ceiling all see the same server `Retry-After` hint and wake in lockstep,
   which can immediately re-trip the limit. For sustained, high-concurrency
   archive runs, pace calls externally (e.g. a semaphore or a queue) in addition
   to (not instead of) `retry_on_rate_limit=True`.
+- **The SDK's own internal retry is disabled when genblaze manages retries.**
+  When `chat()` creates its own client (i.e. no `client=` passed) and
+  `retry_on_rate_limit=True` or `retry_policy=` is set, the OpenAI/Gemini SDK's
+  built-in retry is turned off (`max_retries=0` / a single-attempt
+  `HttpRetryOptions`) so `RetryPolicy.max_attempts` is the only retry budget in
+  effect — otherwise the SDK would retry underneath this loop and multiply the
+  effective attempt count. If you pass your own `client=`, its retry
+  configuration is untouched — configure it yourself to match.
 
 ## Limits (v1)
 

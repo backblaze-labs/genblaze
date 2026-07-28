@@ -10,6 +10,7 @@ keep working unchanged.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 import uuid
@@ -24,6 +25,8 @@ from genblaze_core.models.enums import ProviderErrorCode
 
 if TYPE_CHECKING:
     from genblaze_core.models.step import Step
+
+logger = logging.getLogger("genblaze.provider.retry")
 
 _T = TypeVar("_T")
 
@@ -303,7 +306,16 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
                 exc.error_code, attempt
             ):
                 raise
-            time.sleep(policy.compute_delay(attempt, retry_after=exc.retry_after))
+            delay = policy.compute_delay(attempt, retry_after=exc.retry_after)
+            # Multi-minute sleeps are otherwise silent to the caller — log so a
+            # stalled archive run is visible instead of looking hung.
+            logger.info(
+                "rate limited, retrying in %.1fs (attempt %d/%d)",
+                delay,
+                attempt,
+                policy.max_attempts,
+            )
+            time.sleep(delay)
             attempt += 1
 
 
