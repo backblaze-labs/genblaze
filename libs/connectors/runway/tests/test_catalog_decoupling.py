@@ -76,9 +76,16 @@ class TestRunwayGenFamily:
             assert match is None, slug
 
     def test_resolved_spec_carries_constraints(self) -> None:
-        """The family's constraints (duration ∈ {5, 10}, ratio value set,
-        input image required — #226) ride on every resolved spec. Subclasses
-        inherit Runway's validation without code duplication.
+        """The family's constraints (duration ∈ {5, 10}, ratio value set)
+        ride on every resolved spec. Subclasses inherit Runway's validation
+        without code duplication.
+
+        The image-required check is NOT one of these constraints — it's
+        endpoint routing, not a fixed property of the model, so submit()
+        calls it explicitly only when it has already decided (no image +
+        family match) that image_to_video is the only valid endpoint for
+        this model and no image was given. See test_runway_provider.py for
+        the routing behavior end-to-end.
 
         The ``ratio`` default is deliberately NOT on the spec — gen3a_turbo's
         accepted ratio set is disjoint from gen4_turbo's, so a single
@@ -91,7 +98,7 @@ class TestRunwayGenFamily:
 
         provider = RunwayProvider(api_secret="test")
         spec = provider._models.get("gen4_turbo")
-        assert len(spec.param_constraints) == 3
+        assert len(spec.param_constraints) == 2
         # The aspect_ratio → ratio alias travels with the spec_template.
         assert spec.param_aliases.get("aspect_ratio") == "ratio"
 
@@ -102,11 +109,13 @@ class TestRunwayGenFamily:
 class TestBroadenedFallbackCatalog:
     """gen4.5, veo3, veo3.1, veo3.1_fast are accepted by the pinned SDK
     (runwayml>=0.6,<5, resolving to 4.7.0) but don't match the ``*_turbo``
-    family pattern — they route through the permissive fallback. Duration/
-    ratio value ranges differ per model so aren't strictly validated there,
-    but the fallback still carries the image-required constraint that's
-    true for every model on this endpoint (the ratio default is applied in
-    submit(), not on the spec — see test_runway_provider.py)."""
+    family pattern — they route through the permissive fallback. Unlike
+    gen4_turbo/gen3a_turbo, these models are text-capable (the SDK's
+    text_to_video.create accepts them), so no image-required constraint
+    applies at the spec level — submit() routes them to text_to_video when
+    no image is given (see test_runway_provider.py for the end-to-end
+    behavior). Duration/ratio value ranges differ per model on both
+    endpoints and aren't strictly validated at the spec level either."""
 
     @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
     def test_broadened_slugs_do_not_match_turbo_family(self, slug: str) -> None:
@@ -116,12 +125,14 @@ class TestBroadenedFallbackCatalog:
         assert provider._models.match_family(slug) is None, slug
 
     @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
-    def test_broadened_slugs_still_require_image(self, slug: str) -> None:
+    def test_broadened_slugs_carry_no_spec_level_constraints(self, slug: str) -> None:
+        """No image-required constraint at the spec level — these models
+        are text-capable, so requiring an image would be wrong."""
         from genblaze_runway import RunwayProvider
 
         provider = RunwayProvider(api_secret="test")
         spec = provider._models.get(slug)
-        assert len(spec.param_constraints) == 1  # only _check_prompt_image
+        assert spec.param_constraints == ()
 
 
 # --- validate_model end-to-end --------------------------------------------

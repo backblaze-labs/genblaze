@@ -25,6 +25,7 @@ def mock_runway():
     """Patch runwayml with a mock client."""
     mock_client = MagicMock()
     mock_client.image_to_video.create.return_value = SimpleNamespace(id="task-abc")
+    mock_client.text_to_video.create.return_value = SimpleNamespace(id="ttv-task-abc")
     mock_client.tasks.retrieve.return_value = SimpleNamespace(
         id="task-abc",
         status="SUCCEEDED",
@@ -174,6 +175,86 @@ def test_submit_prompt_image_via_params_https_forwarded(mock_runway):
         params={"prompt_image": "https://example.com/reference.jpg"},
     )
     provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["prompt_image"] == "https://example.com/reference.jpg"
+
+
+# --- text_to_video path (no image input) — #226 follow-up -----------------
+
+
+def test_submit_text_only_prompt_works_for_text_capable_model(mock_runway):
+    """Reproduces the reporter's exact scenario from #226 — a text-only
+    prompt with no input image — but on a text-capable model (veo3.1)
+    instead of the image-only gen4_turbo. This is the "severely nerfed"
+    complaint: text-only prompts on the right model should just work."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="veo3.1",
+        prompt="A timelapse of wildflowers blooming in a meadow, soft morning light, macro detail",
+    )
+    task_id = provider.submit(step)
+    assert task_id == "ttv-task-abc"
+    client.image_to_video.create.assert_not_called()
+    call_kwargs = client.text_to_video.create.call_args[1]
+    assert call_kwargs["model"] == "veo3.1"
+    assert "wildflowers" in call_kwargs["prompt_text"]
+    assert call_kwargs["ratio"] == "1280:720"
+    assert call_kwargs["duration"] == 8
+
+
+def test_submit_text_to_video_user_ratio_and_duration_override(mock_runway):
+    """Explicit ratio/duration params win over the text_to_video defaults."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="veo3.1",
+        prompt="a sunset",
+        params={"ratio": "1080:1920", "duration": 6},
+    )
+    provider.submit(step)
+    call_kwargs = client.text_to_video.create.call_args[1]
+    assert call_kwargs["ratio"] == "1080:1920"
+    assert call_kwargs["duration"] == 6
+
+
+def test_submit_text_to_video_rejects_image_only_ratio(mock_runway):
+    """A ratio value valid for image_to_video but not text_to_video (e.g.
+    "1104:832", one of gen4_turbo's image ratios) must be rejected — the
+    two endpoints have different accepted ratio sets."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="veo3.1",
+        prompt="a sunset",
+        params={"ratio": "1104:832"},
+    )
+    with pytest.raises(ProviderError, match="Invalid ratio"):
+        provider.submit(step)
+    client.text_to_video.create.assert_not_called()
+
+
+def test_submit_image_only_model_text_only_still_raises(mock_runway):
+    """gen4_turbo/gen3a_turbo never fall back to text_to_video — the pinned
+    SDK's text_to_video.create doesn't accept either as a model literal, so
+    a text-only request to one of them must still raise the actionable
+    image-required error, not silently route to the wrong endpoint."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen3a_turbo", prompt="a sunset")
+    with pytest.raises(ProviderError, match="image-to-video only"):
+        provider.submit(step)
+    client.image_to_video.create.assert_not_called()
+    client.text_to_video.create.assert_not_called()
+
+
+def test_submit_fallback_model_with_image_still_uses_image_to_video(mock_runway):
+    """A text-capable fallback model (gen4.5) WITH an input image still
+    routes to image_to_video, not text_to_video — image presence, not
+    model capability, decides the endpoint when both are available."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen4.5", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    client.text_to_video.create.assert_not_called()
     call_kwargs = client.image_to_video.create.call_args[1]
     assert call_kwargs["prompt_image"] == "https://example.com/reference.jpg"
 
