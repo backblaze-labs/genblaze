@@ -4,9 +4,14 @@ Synchronous API: client.models.generate_images() returns images directly.
 
 **Catalog architecture (genblaze-core 0.3.0):** the SDK ships the
 pattern-keyed ``google-imagen`` family (``^imagen-``) instead of a
-hardcoded slug list. Authoritative liveness comes from
-``client.models.get(model=slug)`` via the family probe, so dead /
-unauthorized slugs surface at preflight rather than mid-call.
+hardcoded slug list. Liveness comes from ``google_imagen_predict_probe``
+via the family probe: ``client.models.get(model=slug)`` for catalog
+membership, plus a deliberately invalid ``generate_images`` call to
+distinguish catalog membership from account entitlement (imagen-4.0-*
+is catalog-listed but 404s "no longer available to new users" for new
+keys — issue #206), so dead / unentitled slugs surface at preflight
+rather than mid-call. If your account has no Imagen access, see
+``GeminiImageProvider`` for the Gemini-native image line instead.
 
 **Pricing**: per-image-by-model rates were dropped in 0.3.0. See
 ``docs/reference/pricing-recipes.md`` for the canonical Imagen
@@ -19,6 +24,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,27 +35,32 @@ from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_core.providers import (
     DiscoverySupport,
-    LiveProbeResult,
     ModelRegistry,
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    ValidationOutcome,
+    ValidationResult,
+    ValidationSource,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
+from genblaze_google._client import GoogleClientMixin
 from genblaze_google._errors import map_google_error
 from genblaze_google._families import GOOGLE_IMAGEN_FAMILY
 
 _FALLBACK = ModelSpec(model_id="*", modality=Modality.IMAGE)
 
 
-class ImagenProvider(SyncProvider):
+class ImagenProvider(GoogleClientMixin, SyncProvider):
     """Provider adapter for Google Imagen image generation.
 
     Models match the ``google-imagen`` family (``^imagen-``). Current
-    examples: ``imagen-3.0-generate-002``, ``imagen-3.0-fast-generate-001``.
+    examples: ``imagen-4.0-generate-001``, ``imagen-4.0-fast-generate-001``
+    — catalog-listed, but entitlement-gated for accounts without Imagen
+    access (new Gemini API keys as of 2026-07; see ``google_imagen_predict_probe``).
 
     Imagen returns image bytes directly (synchronous, not operation-based).
     Output is saved to files; use ObjectStorageSink for cloud upload.
@@ -112,28 +123,49 @@ class ImagenProvider(SyncProvider):
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
 
-    def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
-        """Forward the family probe with this provider's lazy genai client."""
-        return probe(model_id, client=self._get_client())
+    @staticmethod
+    def _is_entitlement_gated(model_id: str) -> bool:
+        """True for imagen slugs known to be catalog-listed but not callable
+        on a new key. ``imagen-4.0-*`` return 200 from ``models.get`` but 404
+        "no longer available to new users" on the ``:predict`` call for keys
+        created after the imagen 3.0->4.0 migration — an account-entitlement
+        gate ``models.get`` can't see (#206)."""
+        return model_id.startswith("imagen-4.0")
 
-    def _get_client(self):
-        if self._client is None:
-            try:
-                from google import genai
-            except ImportError as exc:
-                raise ProviderError(
-                    "google-genai package not installed. Run: pip install google-genai"
-                ) from exc
-            if self._project:
-                self._client = genai.Client(
-                    vertexai=True, project=self._project, location=self._location
-                )
-            else:
-                kwargs: dict = {}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                self._client = genai.Client(**kwargs)
-        return self._client
+    def validate_model(self, model_id: str, *, refresh: bool = False) -> ValidationResult:
+        """Re-grade a probe-confirmed-LIVE result to ``OK_PROVISIONAL`` for
+        entitlement-gated imagen slugs.
+
+        ``models.get`` only proves catalog membership. Confirming entitlement
+        at preflight would require a real (billable) ``:predict`` call, so
+        rather than spend money probing — or hard-failing with ``DEAD`` on any
+        404, which would lock out an entitled user on an unrelated error — the
+        known-gated ``imagen-4.0-*`` slugs are surfaced as ``OK_PROVISIONAL``:
+        a warn that the slug is known but not confirmed callable with this key
+        (mirrors the gmicloud entitlement-gating fix, #193). Every other slug
+        keeps the base behavior. See #206.
+        """
+        result = super().validate_model(model_id, refresh=refresh)
+        if (
+            result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+            and result.source is ValidationSource.PROBE
+            and self._is_entitlement_gated(model_id)
+        ):
+            return replace(
+                result,
+                outcome=ValidationOutcome.OK_PROVISIONAL,
+                detail=(
+                    f"known slug ({model_id!r} exists in Google's catalog per "
+                    "models.get) but NOT confirmed callable with this API key: "
+                    "imagen-4.0-* require account entitlement that isn't visible "
+                    "at preflight (models.get returns 200; :predict 404s 'no "
+                    "longer available to new users' for keys created after the "
+                    "imagen 3.0->4.0 migration). A real run may 404; if so, use "
+                    "the Gemini-native image models (google-gemini-image), which "
+                    "need no such entitlement. See #206."
+                ),
+            )
+        return result
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
         """Generate image(s) via the Google Imagen API."""
