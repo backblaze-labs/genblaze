@@ -30,6 +30,20 @@ def test_rate_limit_still_classifies():
     assert map_google_error(Exception("RESOURCE_EXHAUSTED 429")) == ProviderErrorCode.RATE_LIMIT
 
 
+def test_generate_content_kwarg_error_not_misclassified_as_rate_limit():
+    """ "rate" is a substring of "generate"/"generateContent" — a bare `"rate" in msg`
+    check would wrongly retry this deterministic TypeError as a 429 (#221 follow-up)."""
+    exc = TypeError("generate_content() got an unexpected keyword argument 'foo'")
+    assert map_google_error(exc) != ProviderErrorCode.RATE_LIMIT
+
+
+def test_model_not_found_for_generate_content_not_misclassified_as_rate_limit():
+    exc = Exception(
+        "404 NOT_FOUND. models/gemini-x is not found or is not supported for generateContent."
+    )
+    assert map_google_error(exc) != ProviderErrorCode.RATE_LIMIT
+
+
 def test_auth_failure():
     assert map_google_error(Exception("403 permission denied")) == ProviderErrorCode.AUTH_FAILURE
 

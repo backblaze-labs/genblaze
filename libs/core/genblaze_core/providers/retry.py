@@ -10,6 +10,7 @@ keep working unchanged.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 import uuid
@@ -24,6 +25,8 @@ from genblaze_core.models.enums import ProviderErrorCode
 
 if TYPE_CHECKING:
     from genblaze_core.models.step import Step
+
+logger = logging.getLogger("genblaze.provider")
 
 _T = TypeVar("_T")
 
@@ -291,7 +294,9 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
     Raises:
         ProviderError: Re-raised once attempts are exhausted, or immediately
             if the error isn't classified as ``RATE_LIMIT`` (or the policy
-            doesn't consider ``RATE_LIMIT`` retryable).
+            doesn't consider ``RATE_LIMIT`` retryable). ``exc.attempts`` is
+            set to the number of attempts made before re-raising, matching
+            ``BaseProvider``'s pipeline retry loop.
     """
     policy = policy or RetryPolicy()
     attempt = 1
@@ -302,8 +307,11 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
             if exc.error_code != ProviderErrorCode.RATE_LIMIT or not policy.should_retry(
                 exc.error_code, attempt
             ):
+                exc.attempts = attempt
                 raise
-            time.sleep(policy.compute_delay(attempt, retry_after=exc.retry_after))
+            delay = policy.compute_delay(attempt, retry_after=exc.retry_after)
+            logger.warning("rate-limit retry %d/%d in %.1fs", attempt, policy.max_attempts, delay)
+            time.sleep(delay)
             attempt += 1
 
 
