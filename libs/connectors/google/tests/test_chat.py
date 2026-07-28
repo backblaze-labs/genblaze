@@ -345,6 +345,53 @@ def test_internally_created_client_closed_once_across_retries(monkeypatch):
     created_clients[0].close.assert_called_once()
 
 
+def test_own_client_disables_sdk_retry_when_genblaze_manages_it(monkeypatch):
+    """When genblaze creates its own client AND retry is genblaze-managed, the
+    SDK's internal retry must be disabled (a single-attempt `HttpRetryOptions`)
+    — otherwise the SDK would retry underneath `call_with_rate_limit_retry` and
+    `RetryPolicy.max_attempts` wouldn't be authoritative, multiplying
+    rate-limited traffic (#221 panel review)."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    fake_google = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.models.generate_content.side_effect = ProviderError(
+            "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+        )
+        created_clients.append(c)
+        return c
+
+    fake_google.genai.Client.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    with pytest.raises(ProviderError):
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            api_key="test-key",
+            retry_policy=RetryPolicy.disabled(),
+        )
+
+    assert "http_options" in fake_google.genai.Client.call_args.kwargs
+    # RetryPolicy.disabled() -> genblaze doesn't retry either -> exactly one SDK call.
+    assert created_clients[0].models.generate_content.call_count == 1
+
+
+def test_own_client_keeps_default_sdk_retry_when_retry_not_opted_in(monkeypatch):
+    """Default (opt-out) path must not set `http_options` — no behavior change
+    for existing callers who rely on the SDK's own retry behavior."""
+    fake_google = MagicMock()
+    fake_google.genai.Client.return_value.models.generate_content.return_value = _mock_response()
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    chat("gemini-2.5-flash", prompt="hi", api_key="test-key")
+
+    assert "http_options" not in fake_google.genai.Client.call_args.kwargs
+
+
 # --- Opt-in rate-limit backoff (#221) ---
 #
 # `chat()`/`achat()` already parse a 429's `Retry-After` hint onto
