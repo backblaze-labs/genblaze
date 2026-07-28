@@ -471,10 +471,11 @@ different shapes:
 - **TTS**: per-1M-character rates per model tier.
 - **Image** (DALL-E + GPT-Image): tiered by `(quality, size)` per model.
 - **Sora** (video): per-second rates that depend on `(model, size,
-  seconds)`. **The SDK ships no Sora pricing recipe** because a flat
-  table can't represent the per-second formula honestly. Use the
-  upstream's published rate calculator until OpenAI exposes a stable
-  programmatic shape.
+  seconds)`. A flat per-video dict would misreport cost by 10x+ across
+  duration/size combinations, so the SDK ships no *rate*, only the
+  *shape* of the strategy — see the "OpenAI Sora" section below, which
+  leaves the actual per-second rate for you to fill in after verifying
+  it at the upstream's published rate calculator.
 
 ```python
 from genblaze_core.providers import per_input_chars, tiered
@@ -555,15 +556,23 @@ tables and register the new slugs as they appear in the catalog.
 
 ## OpenAI Sora
 
-Sora bills per `(model, size, seconds)` — a flat per-video rate misreports
-cost by 10x+ across duration/size combinations, which is why the SDK ships
-no Sora recipe (see the module docstring in `genblaze_openai/provider.py`).
-Register a custom strategy that reads the native `seconds` param directly;
-Sora assets carry no probed `duration` metadata, so `ctx.output_duration_s`
-won't work here the way it does for Stability Audio (which probes the
-rendered file's real duration — see that section above). Veo and Luma's
-recipes also read `step.params` directly rather than `output_duration_s`,
-for the same reason: neither connector probes actual output duration either.
+Sora bills per `(model, size, seconds)`. See the module docstring in
+`genblaze_openai/provider.py` for why the SDK ships no *rate* for it: a
+flat per-video dict would misreport cost by 10x+ across duration/size
+combinations, and no widely-verified per-second rate table was available
+to source at the snapshot date above. The strategy *shape* below is
+still useful — register it once you've confirmed your own rate.
+
+The strategy reads `seconds` directly off `step.params`, falling back to
+the canonical `duration` alias — `estimate_cost()` never runs
+`normalize_params()`, so a caller passing `{"duration": 8}` (the alias
+`generate()` would otherwise rewrite to `seconds` at submit time) must
+still resolve to a cost, the same dual-key guard the Veo recipe below
+uses for `duration_seconds` / `duration`. Sora assets also carry no
+probed `duration` metadata (see `fetch_output()`), so
+`ctx.output_duration_s` won't work here the way it does for Stability
+Audio, which probes the rendered file's real duration (see that section
+below).
 
 ```python
 from genblaze_core.providers import PricingContext, PricingStrategy
@@ -572,7 +581,7 @@ from genblaze_openai import SoraProvider
 
 def per_second(rate: float) -> PricingStrategy:
     def _strategy(ctx: PricingContext) -> float | None:
-        seconds = ctx.step.params.get("seconds")
+        seconds = ctx.step.params.get("seconds") or ctx.step.params.get("duration")
         if seconds is None:
             return None
         try:
@@ -589,13 +598,15 @@ def per_second(rate: float) -> PricingStrategy:
 
 
 sora = SoraProvider(api_key="...")
-# Placeholder rates below — confirm current per-second pricing at
-# openai.com/pricing before relying on these for real cost tracking; Sora
-# rates vary by both model tier and requested size, which this simplified
+# RATE is intentionally left undefined — confirm current per-second pricing
+# at openai.com/pricing before registering; a guessed number here is worse
+# than the default `None`, since a budget gate reading a silently-wrong
+# concrete cost is harder to catch than one reading "unknown." Sora rates
+# also vary by both model tier and requested size, which this simplified
 # strategy ignores (extend the key to (model, size) via `tiered()` if you
 # need per-size accuracy).
-sora.models.register_pricing("sora-2", per_second(0.10))
-sora.models.register_pricing("sora-2-pro", per_second(0.30))
+sora.models.register_pricing("sora-2", per_second(RATE))  # RATE: confirm first
+sora.models.register_pricing("sora-2-pro", per_second(RATE))  # RATE: confirm first
 ```
 
 ---
