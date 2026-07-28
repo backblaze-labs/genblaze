@@ -54,6 +54,11 @@ nvidia = ["genblaze-nvidia>=0.3.3,<0.4"]
 # `pip install "genblaze[parquet]"` -- the exact incantation
 # OptionalDependencyError prints, see genblaze_core._optional -- actually
 # resolves instead of failing with an unknown-extra error.
+# NOTE: tools/prepare_release.py's rewrite_floors() only matches
+# `name>=floor`, not a `name[extra]>=floor` pin -- this floor is NOT synced
+# automatically when core's version bumps in a future wave. Bump it by hand
+# alongside `genblaze-core`'s own floor above until the tool supports this
+# shape.
 parquet = ["genblaze-core[parquet]>=0.3.8,<0.4"]
 
 # Curated bundles

@@ -295,7 +295,7 @@ class TestIgnoreCaseAwareCharsetOverlap:
 
 
 class TestWildcardAdjacentGroupsOverlap:
-    """Regression tests for a release-readiness-panel finding: `.` was
+    """Regression tests for a bug in the #200 charset-overlap gate: `.` was
     treated as the literal character '.' by `_branch_charset` instead of
     "matches anything", so two adjacent unbounded groups built from `.+`
     looked charset-disjoint from an `[a-z]+` sibling even though they can
@@ -321,7 +321,7 @@ class TestWildcardAdjacentGroupsOverlap:
 
 
 class TestNonCapturingGroupCharsetOverlap:
-    """Regression tests for a release-readiness-panel finding:
+    """Regression tests for a bug in the #200 charset-overlap gate:
     `_has_adjacent_unbounded_groups` analyzed a group's RAW body -- including
     a leading `?:`/`?P<name>` marker -- instead of stripping it first (unlike
     the sibling `_has_ambiguous_quantified_alternation`, which already does).
@@ -342,16 +342,27 @@ class TestNonCapturingGroupCharsetOverlap:
     def test_named_group_disjoint_from_non_capturing_allowed(self) -> None:
         assert_safe(re.compile(r"^(?P<letters>[a-z]+)(?:[0-9]+)$"))
 
-    def test_lookahead_adjacent_to_unbounded_group_still_rejected(self) -> None:
+    def test_lookahead_between_overlapping_unbounded_groups_still_rejected(self) -> None:
         # A lookaround marker (`?=`, `?!`, ...) is intentionally left
         # unstripped by this fix -- it's a distinct, out-of-scope construct
         # (zero-width, not a capturing/non-capturing group) whose existing
         # conservative handling must not regress as a side effect of the
-        # `?:`/`?P<name>` fix above. Tested against the static heuristic
-        # directly, not `assert_safe()`: when `google-re2` is installed it
-        # rejects this pattern first anyway (lookarounds are an unsupported
-        # re2 construct), which would mask a heuristic regression here.
+        # `?:`/`?P<name>` fix above. This case is rejected via the carried-
+        # charset union reaching back to the first `(a+)`, not because the
+        # lookahead itself is treated as unsafe -- see the next test.
+        # Tested against the static heuristic directly, not `assert_safe()`:
+        # when `google-re2` is installed it rejects this pattern first
+        # anyway (lookarounds are an unsupported re2 construct), which would
+        # mask a heuristic regression here.
         assert _heuristic_unsafe(r"(a+)(?=[0-9]+)(a+)$") is True
+
+    def test_lookahead_between_disjoint_unbounded_groups_allowed(self) -> None:
+        # The case that actually discriminates "leave lookarounds
+        # unstripped" from "resolve them to unknown/full charset": a
+        # zero-width lookahead can never itself overlap a neighboring
+        # group, so forcing it to unknown/full (the naive alternative fix)
+        # would wrongly reject this genuinely disjoint, linear-time pattern.
+        assert _heuristic_unsafe(r"(a+)(?=[0-9]+)(b+)$") is False
 
 
 class TestHeuristicUnsafe:

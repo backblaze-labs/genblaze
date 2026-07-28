@@ -44,25 +44,28 @@ umbrella `genblaze` package is `0.4.5`).
   a quantified alternation with overlapping branches whose textual prefixes
   differ, and adjacent unbounded-quantified groups whose reachable character
   sets actually overlap despite looking disjoint by source text alone (#196,
-  #200). Both are now rejected by `assert_safe()`. Fixing #200's
-  charset-overlap gate introduced two further bugs, both closed in this same
-  release before it shipped: (1) an unescaped `.` was resolved to the literal
-  character `'.'` instead of "matches anything", so `(.+)([a-z]+)$`-shaped
-  patterns were wrongly accepted as safe — a real ReDoS bypass, reopening the
-  exact class #196/#200 closed for other atom shapes; and (2) a `(?:...)`/
-  `(?P<name>...)` group's marker prefix was analyzed as literal match text
-  instead of being stripped first, so two charset-disjoint non-capturing
-  groups like `(?:[a-z]+)(?:[0-9]+)` were wrongly *rejected* as unsafe. Both
-  are covered by new regression tests; lookaround groups (`(?=...)`, `(?!...)`)
-  are intentionally left out of scope for the second fix and keep their
-  existing conservative (reject) behavior.
+  #200). Both are now rejected by `assert_safe()`. That charset-overlap gate
+  itself had two bugs, also closed here: an unescaped `.` no longer resolves
+  to the literal character `'.'` (it now correctly means "matches anything"),
+  so a pattern like `(.+)([a-z]+)$` is rejected as it should be; and a
+  `(?:...)`/`(?P<name>...)` group's marker prefix is now stripped before
+  charset analysis, so a genuinely safe pattern like `(?:[a-z]+)(?:[0-9]+)$`
+  is no longer wrongly rejected. **Upgrade impact:** the shipped connector
+  catalog contains no pattern of either shape, so this only affects
+  third-party or future connectors — a `ModelFamily` pattern with two or
+  more adjacent unbounded groups where one uses `.` will now be rejected at
+  import time (fix: separate the groups with a mandatory, non-nullable
+  delimiter, or narrow `.` to an explicit character class); a pattern using
+  `(?:...)`/`(?P<name>...)` that was previously (incorrectly) rejected will
+  now import successfully. Lookaround groups (`(?=...)`, `(?!...)`) keep
+  their existing, unchanged handling.
 - **Fixed** `Mp4Handler.embed()` raised on a `str` path instead of accepting
   one like every other media handler, and `Pipeline.step()` accepted any
   object as a provider instead of validating it's a `BaseProvider` — a
   non-provider value previously surfaced a confusing failure deep inside
   `run()` instead of immediately at the call site (#224, #225).
 
-### genblaze-openai / genblaze-google (chat helpers)
+### genblaze-openai
 
 - **Added** opt-in rate-limit backoff for `chat()`/`achat()` and the vision
   helpers via `retry_on_rate_limit=`/`retry_policy=` kwargs, wrapping calls in
@@ -71,34 +74,37 @@ umbrella `genblaze` package is `0.4.5`).
   genblaze already manages backoff on an internally-created client, closing a
   double-retry (multiplicative wait) bug the initial opt-in introduced; a
   caller-supplied `client=` keeps its own retry configuration untouched
-  (#221, #235). Currently wired into `openai`/`google` only — see
+  (#221, #235). The identical feature and fix landed in `genblaze-google`
+  (see below); currently wired into `openai`/`google` only — see
   `docs/features/llm-calls.md`.
-- **Fixed** (`genblaze-openai`) confirmed `estimate_cost()` already computed
-  per-model pricing correctly; the reported gap was a documentation error in
+- **Docs** confirmed `estimate_cost()` already computed per-model pricing
+  correctly; the reported gap was a documentation error in
   `docs/reference/pricing-recipes.md`, now corrected, plus added test
   coverage pinning the existing (correct) behavior (#222, #223). No
   production code changed.
 
 ### genblaze-google
 
+- **Added** the same opt-in rate-limit backoff described under
+  `genblaze-openai` above (#221, #235).
 - **Added** `GeminiImageProvider`, a native Gemini image-generation provider
   (`google-gemini-image` entry point) alongside the existing Imagen provider,
   sharing client construction via a new `GoogleClientMixin` (#205).
-- **Fixed** the Imagen entitlement probe re-grades a probe-confirmed-`LIVE`
-  but known-gated slug to `OK_PROVISIONAL` instead of a misleading
-  authoritative `OK`, mirroring the same gmicloud fix below (#206).
+- **Fixed** a probe-confirmed-`LIVE` but known-gated Imagen slug reported a
+  misleading authoritative `OK` instead of `OK_PROVISIONAL`, mirroring the
+  same gmicloud fix below (#206).
 - **Fixed** `chat()`/vision calls sent an `ImageURLContent` input as an
   unsupported field instead of translating it to Gemini's
   `inline_data`/`file_data` wire format (#217).
 
 ### genblaze-gmicloud
 
-- **Fixed** preflight validation now distinguishes a known-catalog slug from
-  one confirmed callable with the caller's API key, re-grading a
-  probe-confirmed slug that isn't confirmed-callable to `OK_PROVISIONAL`
-  instead of a misleading authoritative `OK` (#193). Added a guard against a
-  misconfigured `base_url`/`GMI_BASE_URL` pointed at the wrong endpoint shape
-  (a silent-404 footgun), and an edit-mode fallback path.
+- **Fixed** preflight validation didn't distinguish a known-catalog slug from
+  one confirmed callable with the caller's API key, reporting a misleading
+  authoritative `OK` for a probe-confirmed slug that isn't confirmed-callable
+  instead of `OK_PROVISIONAL` (#193). Added a guard against a misconfigured
+  `base_url`/`GMI_BASE_URL` pointed at the wrong endpoint shape (a
+  silent-404 footgun), and an edit-mode fallback path.
 
 ### genblaze-runway
 
@@ -124,9 +130,9 @@ umbrella `genblaze` package is `0.4.5`).
 
 ### genblaze (umbrella)
 
-- **Fixed** `OptionalDependencyError`'s `__getattr__` propagation preserved
-  the original install hint instead of losing it to a generic message
-  (#213).
+- **Fixed** the umbrella's lazy `__getattr__` lost the original install hint
+  to a generic message when propagating `OptionalDependencyError` instead of
+  preserving it (#213).
 - **Added** a `parquet` extra re-exposing `genblaze-core[parquet]`, so
   `pip install "genblaze[parquet]"` — the exact incantation
   `OptionalDependencyError` prints for `ParquetSink` — resolves instead of
@@ -141,6 +147,13 @@ umbrella `genblaze` package is `0.4.5`).
   version wasn't bumped alongside it (#209) — a `pypi-pin-parity` trap that
   would have blocked (not silently shipped) this release. Closed here by
   bumping all nine to a new patch version.
+- **Fixed** `genblaze-openai` and `genblaze-google` import
+  `call_with_rate_limit_retry`, new in `genblaze-core` 0.3.8 this release,
+  but still declared a `genblaze-core>=0.3.7` floor — the same class of gap
+  as the item above, catchable only because it's caught here rather than by
+  any automated gate (`tools/prepare_release.py` doesn't check connector→core
+  floors against the symbols a connector actually imports). Both floors are
+  now `genblaze-core>=0.3.8,<0.4`.
 
 ### Internal
 

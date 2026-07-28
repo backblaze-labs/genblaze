@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-23 -->
+<!-- last_verified: 2026-07-28 -->
 # genblaze
 
 Umbrella metapackage for genblaze — a provider-agnostic SDK for AI media generation with built-in provenance (manifests, SHA-256 hashing, B2/S3 durable storage).
@@ -22,6 +22,9 @@ pip install "genblaze[audio]"     # ElevenLabs + LMNT + Stability Audio + GMIClo
 
 # Everything
 pip install "genblaze[all]"
+
+# Optional: Parquet-backed manifest sink (ParquetSink)
+pip install "genblaze[parquet]"
 ```
 
 ## Import

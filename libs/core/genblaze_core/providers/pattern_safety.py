@@ -86,6 +86,27 @@ Known residual gaps (not detected):
   as a documented gap per this module's stated scope rather than chased
   (confirmed in review of the #196 fix — not a regression, since the
   pre-#196 heuristic missed these shapes too).
+* An escape sequence whose real match set differs from its own source
+  characters, other than the bare ``.`` wildcard (which ``_branch_charset``
+  does resolve to unknown/full) — e.g. a 3-digit octal escape resolves to
+  its four literal source characters instead of the single character it
+  actually matches, so two groups built from an octal escape and its
+  literal-character equivalent can look charset-disjoint when they aren't.
+  Same false-negative class the ``.`` fix closes, left open for this
+  narrower, rarely-used escape family rather than chased exhaustively.
+* A ``?``-prefixed group construct ``_GROUP_MARKER`` doesn't recognize —
+  scoped inline flags (``(?i:...)``), atomic groups (``(?>...)``), and
+  lookarounds (``(?=...)``, ``(?!...)``, ``(?<=...)``, ``(?<!...)``) — is
+  intentionally left with its marker characters unstripped before charset
+  analysis (see ``_has_adjacent_unbounded_groups``), so those characters
+  can spuriously collide with a sibling group's charset and cause
+  over-rejection (e.g. ``(?i:[0-9]+)(?:[a-z]+)$`` is rejected because the
+  ``i`` in ``?i:`` collides with ``[a-z]``). Recognizing every one of these
+  prefixes correctly would also require deciding what each construct means
+  for adjacency (a lookaround, unlike ``?:``/``?P<name>``, is zero-width
+  and can never actually overlap a neighbor — see the fix below), so this
+  is left as a documented gap rather than generalized past the two marker
+  shapes reported.
 
 These are all true ReDoS shapes — the same exponential class this module
 detects elsewhere, differing only in that *detecting* them requires
@@ -214,9 +235,13 @@ def _has_nested_unbounded_quantifier(src: str) -> bool:
 
 
 def _is_nullable_separator(fragment: str) -> bool:
-    """True if ``fragment`` — the raw text sitting between two top-level
-    groups — can itself match the empty string, e.g. ``-?``, ``\\s*``,
-    ``(?:foo)?``, or the empty string itself.
+    """True if ``fragment`` can itself match the empty string, e.g. ``-?``,
+    ``\\s*``, ``(?:foo)?``, or the empty string itself.
+
+    ``fragment`` is usually the raw text sitting between two top-level
+    groups, but ``_has_adjacent_unbounded_groups`` also passes a group's own
+    (marker-stripped) body here, to ask the same question about the group
+    itself: can its content match zero repetitions (e.g. ``b*`` vs. ``b+``)?
 
     A separator that can vanish doesn't break adjacency: on the adversarial
     input that makes the two flanking groups ambiguous, the regex engine
@@ -353,10 +378,13 @@ def _has_adjacent_unbounded_groups(src: str, flags: int = 0) -> bool:
         # and `:` to the group's charset as if they were real matchable
         # characters, so two disjoint non-capturing groups like
         # `(?:[a-z]+)(?:[0-9]+)` spuriously "overlap" via those marker
-        # characters and get rejected (a confirmed false positive). An
-        # unrecognized `?`-prefixed body (a lookaround) is intentionally
-        # left unstripped -- its existing conservative handling is
-        # unrelated to this fix and out of scope here.
+        # characters and get rejected (a confirmed false positive). A
+        # `?`-prefixed body _GROUP_MARKER doesn't recognize (a lookaround,
+        # a scoped inline flag) is intentionally left unstripped: unlike
+        # `?:`/`?P<name>`, those constructs' semantics vary (a lookaround is
+        # zero-width and can't overlap a neighbor at all), so folding them
+        # into the same charset analysis needs its own reasoning per
+        # construct -- see the "Known residual gaps" note above.
         marker = _GROUP_MARKER.match(body)
         if marker:
             body = body[marker.end() :]

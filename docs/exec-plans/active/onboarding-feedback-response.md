@@ -95,9 +95,13 @@ findings, ranked by how broken they are:
   confirm `python -c "import pyarrow"` succeeds for both. Paste output in PR.
 - **CHANGELOG:** add a `New extras` note that users pinning
   `genblaze-cli[parquet]` will now pull `pyarrow>=14.0` on upgrade.
-- Decision deferred: whether to *also* add `genblaze[parquet]` on the umbrella
-  for symmetry. Default to **no** — keeps the umbrella focused on the SDK
-  surface and avoids dragging pyarrow into pure-SDK installs.
+- **Resolved (v0.7.0, #236):** `genblaze[parquet]` now exists on the
+  umbrella, re-exposing `genblaze-core[parquet]` — the earlier "default to
+  no" call above didn't hold up: it's an opt-in extra like every other one
+  here, so it doesn't drag pyarrow into a plain `pip install genblaze`. This
+  closes the specific complaint in issue #6 (the error message pointing at a
+  nonexistent umbrella extra); `genblaze-cli[index]`/`[parquet]` above is
+  still open, tracked separately.
 
 ### A3 — Version compatibility table (#1)
 
