@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -58,9 +59,9 @@ class WebpHandler(BaseMediaHandler):
 
     def embed(
         self,
-        source: Path,
+        source: str | os.PathLike[str],
         manifest: Manifest,
-        output: Path | None = None,
+        output: str | os.PathLike[str] | None = None,
         *,
         lossless: bool | None = None,
         quality: int = 90,
@@ -71,8 +72,11 @@ class WebpHandler(BaseMediaHandler):
         stay lossless, VP8 sources stay lossy. Explicitly pass ``True`` or
         ``False`` to force a specific encoding.
         """
-        output = output or source
         try:
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
+            source = Path(source)
+            output = Path(output) if output else source
             manifest_json = manifest.to_canonical_json()
             xmp_data = _build_xmp(manifest_json)
             if len(xmp_data) > MAX_XMP_BYTES:
@@ -89,8 +93,9 @@ class WebpHandler(BaseMediaHandler):
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed manifest in WebP: {exc}") from exc
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         try:
+            source = Path(source)
             data = read_media_bytes(source)
             manifest_json = _scan_xmp_for_manifest(data, source)
             return parse_manifest(json.loads(manifest_json))

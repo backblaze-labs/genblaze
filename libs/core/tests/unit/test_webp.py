@@ -18,6 +18,15 @@ def test_webp_embed_and_extract(tmp_webp: Path, sample_manifest: Manifest) -> No
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_webp_embed_and_extract_accept_str_path(tmp_webp: Path, sample_manifest: Manifest) -> None:
+    handler = WebpHandler()
+    embed_result = handler.embed(str(tmp_webp), sample_manifest)
+    assert isinstance(embed_result, Path)
+
+    extracted = handler.extract(str(tmp_webp))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
 def test_webp_verify(tmp_webp: Path, sample_manifest: Manifest) -> None:
     handler = WebpHandler()
     handler.embed(tmp_webp, sample_manifest)

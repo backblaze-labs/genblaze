@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -23,9 +24,17 @@ INFO_TAG = b"IMFL"  # "Info GenBLaze" (tag kept for backward compat)
 class WavHandler(BaseMediaHandler):
     """Embed and extract manifests in WAV LIST/INFO chunks."""
 
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
-        output = output or source
+    def embed(
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
+    ) -> Path:
         try:
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
+            source = Path(source)
+            output = Path(output) if output else source
             manifest_bytes = manifest.to_canonical_json().encode("utf-8")
             data = read_media_bytes(source)
 
@@ -59,8 +68,9 @@ class WavHandler(BaseMediaHandler):
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed manifest in WAV: {exc}") from exc
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         try:
+            source = Path(source)
             data = read_media_bytes(source)
             _reject_unsupported_wav_variants(data, source)
             if data[:4] != b"RIFF" or data[8:12] != b"WAVE":

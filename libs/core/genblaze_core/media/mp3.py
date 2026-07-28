@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -16,8 +17,12 @@ TXXX_DESC = "genblaze:manifest"
 class Mp3Handler(BaseMediaHandler):
     """Embed and extract manifests in MP3 ID3v2 TXXX frames."""
 
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
-        output = output or source
+    def embed(
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
+    ) -> Path:
         try:
             from mutagen.id3 import ID3, TXXX, ID3NoHeaderError
         except ImportError as exc:
@@ -27,6 +32,10 @@ class Mp3Handler(BaseMediaHandler):
             ) from exc
 
         try:
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
+            source = Path(source)
+            output = Path(output) if output else source
             # Mutagen mutates files in place — copy first so a crash mid-save
             # cannot touch the source file.
             with atomic_write(output) as tmp:
@@ -44,7 +53,7 @@ class Mp3Handler(BaseMediaHandler):
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed manifest in MP3: {exc}") from exc
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         try:
             from mutagen.id3 import ID3
         except ImportError as exc:
@@ -54,6 +63,7 @@ class Mp3Handler(BaseMediaHandler):
             ) from exc
 
         try:
+            source = Path(source)
             tags = ID3(source)
             frame = tags.get(f"TXXX:{TXXX_DESC}")
             if frame is None:

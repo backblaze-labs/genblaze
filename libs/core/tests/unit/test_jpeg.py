@@ -18,6 +18,15 @@ def test_jpeg_embed_and_extract(tmp_jpeg: Path, sample_manifest: Manifest) -> No
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_jpeg_embed_and_extract_accept_str_path(tmp_jpeg: Path, sample_manifest: Manifest) -> None:
+    handler = JpegHandler()
+    embed_result = handler.embed(str(tmp_jpeg), sample_manifest)
+    assert isinstance(embed_result, Path)
+
+    extracted = handler.extract(str(tmp_jpeg))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
 def test_jpeg_verify(tmp_jpeg: Path, sample_manifest: Manifest) -> None:
     handler = JpegHandler()
     handler.embed(tmp_jpeg, sample_manifest)

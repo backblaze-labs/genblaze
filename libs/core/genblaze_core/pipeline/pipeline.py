@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
@@ -99,6 +100,13 @@ _RESERVED_GRAPH_METADATA_KEYS = frozenset({"_fallback_models", "_input_from"})
 
 def _coerce_str(value: str | bytes | bytearray) -> str:
     return value if isinstance(value, str) else value.decode("utf-8", errors="replace")
+
+
+def _describe_step_provider_arg(value: Any) -> str:
+    """Describe a bad ``step(provider=...)`` argument for the TypeError message (#224)."""
+    if inspect.isfunction(value) or inspect.ismethod(value):
+        return f"function {value.__name__!r}"
+    return f"{type(value).__name__} instance"
 
 
 def _resolve_raise_on_failure(
@@ -681,6 +689,22 @@ class Pipeline(Runnable[None, PipelineResult]):
             **extra_params: Provider-specific parameters as top-level kwargs
                 (e.g. ``duration=10``). Merged with ``params=`` above.
         """
+        # Fail immediately, at the mistake, rather than at run() with a
+        # bare AttributeError on an internal method name (#224). The most
+        # common miss is passing a standalone chat()/achat() function —
+        # those are convenience helpers, not BaseProvider instances.
+        # Deliberately TypeError, not GenblazeError like the sibling guards
+        # below (reserved-param names, metadata collisions) — this rejects
+        # the argument's *type*, not a value/usage mistake within an
+        # otherwise-valid call, matching the same distinction already drawn
+        # in canonical/_normalize.py and models/chat.py.
+        if not isinstance(provider, BaseProvider):
+            raise TypeError(
+                f"step() expected a BaseProvider; got {_describe_step_provider_arg(provider)}. "
+                "chat()/achat() are convenience helpers, not pipeline steps — wrap them in "
+                "a SyncProvider to record them as a step (see docs/features/llm-calls.md)."
+            )
+
         # Explicit params= dict and **extra_params kwargs both feed
         # Step.params; kwargs win on key collision since they're the more
         # specific, call-site-local override.

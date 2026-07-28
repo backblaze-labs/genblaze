@@ -33,6 +33,31 @@ def test_extract_from_sidecar(tmp_path: Path, sample_manifest: Manifest) -> None
     assert extracted.canonical_hash == sample_manifest.canonical_hash
 
 
+def test_embed_and_extract_accept_str_path(tmp_path: Path, sample_manifest: Manifest) -> None:
+    """_sidecar_path() calls Path.with_suffix() — same class of bug as #225's
+    Mp4Handler, since SmartEmbedder's fallback and direct callers may pass str."""
+    src = tmp_path / "image.png"
+    src.write_bytes(b"fake png")
+
+    handler = SidecarHandler()
+    handler.embed(str(src), sample_manifest)
+    extracted = handler.extract(str(src))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
+def test_embed_accepts_str_output_override(tmp_path: Path, sample_manifest: Manifest) -> None:
+    """_sidecar_path(output or source) — the output= str branch, not just
+    source=, must also be coerced (embed()'s `output or source` ternary)."""
+    src = tmp_path / "image.png"
+    src.write_bytes(b"fake png")
+    out = tmp_path / "renamed.png"
+
+    handler = SidecarHandler()
+    result = handler.embed(src, sample_manifest, output=str(out))
+    assert result == out.with_suffix(out.suffix + ".genblaze.json")
+    assert result.exists()
+
+
 def test_extract_from_sidecar_uses_parse_manifest_invariants(tmp_path: Path) -> None:
     src = tmp_path / "image.png"
     src.write_bytes(b"fake png")

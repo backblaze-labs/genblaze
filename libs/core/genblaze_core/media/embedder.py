@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -43,9 +44,9 @@ class SmartEmbedder:
 
     def embed(
         self,
-        source: Path,
+        source: str | os.PathLike[str],
         manifest: Manifest,
-        output: Path | None = None,
+        output: str | os.PathLike[str] | None = None,
         *,
         policy: EmbedPolicy | None = None,
         mime_type: str | None = None,
@@ -59,6 +60,12 @@ class SmartEmbedder:
             policy: Optional embed policy for redaction.
             mime_type: MIME type override. Guessed from extension if not provided.
         """
+        # Coerce up front — every EmbedResult.path branch below defaults to
+        # `output or source`, and EmbedResult.path is typed Path. Without
+        # this, a str source= OR output= with no override would return a
+        # str in a Path-typed field (#225).
+        source = Path(source)
+        output = Path(output) if output else None
         if policy is not None and policy.embed_mode == "none":
             return EmbedResult(
                 path=output or source,
@@ -173,14 +180,21 @@ def sniff_mime(path: Path) -> str | None:
     return None
 
 
-def guess_mime(path: Path) -> str:
+def guess_mime(path: str | os.PathLike[str]) -> str:
     """Determine MIME type, preferring file content over extension.
 
     Magic-byte sniff wins when it identifies a known signature; falls back
     to extension lookup, then to ``application/octet-stream``. This makes a
     misnamed file (e.g. ``image.png`` containing JPEG bytes) dispatch to
     the correct handler instead of failing inside the wrong one.
+
+    Coerces str/PathLike to Path — ``sniff_mime()`` returning None
+    (unrecognized signature) falls through to ``path.suffix.lower()``, a
+    Path-only call. ``SmartEmbedder.embed()`` coerces its own ``source``
+    before calling this, but ``guess_mime()`` is also public API — this
+    guards direct callers against the same confusing AttributeError as #225.
     """
+    path = Path(path)
     return (
         sniff_mime(path)
         or _EXTENSION_MIME_MAP.get(path.suffix.lower())
