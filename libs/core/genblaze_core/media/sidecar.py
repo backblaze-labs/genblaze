@@ -43,7 +43,7 @@ class SidecarHandler(BaseMediaHandler):
 
     def embed(
         self,
-        source: Path,
+        source: str | os.PathLike[str],
         manifest: Manifest,
         output: Path | None = None,
         *,
@@ -57,9 +57,12 @@ class SidecarHandler(BaseMediaHandler):
             output: Optional override output path.
             policy: If set, apply embed policy (e.g. pointer mode, redaction).
         """
-        sidecar = self._sidecar_path(output or source)
-        sidecar.parent.mkdir(parents=True, exist_ok=True)
         try:
+            # _sidecar_path() coerces source to Path — kept inside the try
+            # so a malformed source (e.g. embedded NUL) raises EmbeddingError
+            # like any other bad-source failure, not a bare ValueError.
+            sidecar = self._sidecar_path(output or source)
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
             json_str = (
                 manifest.to_embed_json(policy)
                 if policy is not None
@@ -75,23 +78,26 @@ class SidecarHandler(BaseMediaHandler):
         except Exception as exc:
             raise EmbeddingError(f"Failed to write sidecar: {exc}") from exc
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         """Extract manifest from a sidecar file.
 
         Raises PointerSidecarError if the sidecar contains a pointer-mode
         manifest (no embedded run data — only a URI to fetch).
         """
-        sidecar = self._sidecar_path(source)
-        if not sidecar.exists():
-            raise EmbeddingError(f"No sidecar file found at {sidecar}")
-        # Cap sidecar size — attacker-controllable when the media file ships
-        # paired with its sidecar (zip-bomb-shaped JSON OOMs the consumer).
-        size = sidecar.stat().st_size
-        if size > MAX_MANIFEST_BYTES:
-            raise EmbeddingError(
-                f"Sidecar exceeds size limit: {size} > {MAX_MANIFEST_BYTES} bytes"
-            )
         try:
+            # _sidecar_path() coerces source to Path — kept inside the try
+            # for the same reason as embed() above.
+            sidecar = self._sidecar_path(source)
+            if not sidecar.exists():
+                raise EmbeddingError(f"No sidecar file found at {sidecar}")
+            # Cap sidecar size — attacker-controllable when the media file
+            # ships paired with its sidecar (zip-bomb-shaped JSON OOMs the
+            # consumer).
+            size = sidecar.stat().st_size
+            if size > MAX_MANIFEST_BYTES:
+                raise EmbeddingError(
+                    f"Sidecar exceeds size limit: {size} > {MAX_MANIFEST_BYTES} bytes"
+                )
             data = json.loads(sidecar.read_text(encoding="utf-8"))
             # Detect pointer-mode sidecar: has manifest_uri but no run data
             if "run" not in data and "manifest_uri" in data:

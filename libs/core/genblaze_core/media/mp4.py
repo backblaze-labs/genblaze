@@ -34,14 +34,17 @@ class Mp4Handler(BaseMediaHandler):
     def embed(
         self, source: str | os.PathLike[str], manifest: Manifest, output: Path | None = None
     ) -> Path:
-        # Accept str like the rest of the ecosystem (open(), shutil, PIL) —
-        # without this, a bare str reaches source.stat() below and raises a
-        # confusing AttributeError that gets wrapped as EmbeddingError,
-        # implying the MEDIA is corrupt rather than the caller's argument.
-        source = Path(source)
-        output = output or source
-        file_size = source.stat().st_size
         try:
+            # Accept str like the rest of the ecosystem (open(), shutil, PIL)
+            # — without this, a bare str reaches source.stat() below and
+            # raises a confusing AttributeError implying the MEDIA is corrupt
+            # rather than the caller's argument. Coercing inside the try also
+            # means a malformed path string (e.g. embedded NUL) surfaces as
+            # the same EmbeddingError as any other bad-source failure,
+            # instead of an uncaught bare ValueError.
+            source = Path(source)
+            output = output or source
+            file_size = source.stat().st_size
             if file_size <= MAX_FILE_BYTES:
                 return self._embed_inmemory(source, manifest, output)
             if file_size <= MAX_MMAP_BYTES:

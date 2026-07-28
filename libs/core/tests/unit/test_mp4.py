@@ -22,7 +22,8 @@ def test_mp4_extract_accepts_str_path(tmp_mp4: Path, sample_manifest: Manifest) 
     confusing AttributeError from str.stat() that gets wrapped as an
     EmbeddingError implying the MP4 itself is corrupt (#225)."""
     handler = Mp4Handler()
-    handler.embed(str(tmp_mp4), sample_manifest)
+    embed_result = handler.embed(str(tmp_mp4), sample_manifest)
+    assert isinstance(embed_result, Path), "embed() must return Path even for a str source"
 
     extracted = handler.extract(str(tmp_mp4))
     assert extracted.canonical_hash == sample_manifest.canonical_hash

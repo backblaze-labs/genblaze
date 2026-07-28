@@ -17,6 +17,15 @@ def test_wav_embed_and_extract(tmp_wav: Path, sample_manifest: Manifest) -> None
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_wav_embed_and_extract_accept_str_path(tmp_wav: Path, sample_manifest: Manifest) -> None:
+    handler = WavHandler()
+    embed_result = handler.embed(str(tmp_wav), sample_manifest)
+    assert isinstance(embed_result, Path)
+
+    extracted = handler.extract(str(tmp_wav))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
 def test_wav_verify(tmp_wav: Path, sample_manifest: Manifest) -> None:
     handler = WavHandler()
     handler.embed(tmp_wav, sample_manifest)
