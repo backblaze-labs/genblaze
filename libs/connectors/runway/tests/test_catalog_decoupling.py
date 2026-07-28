@@ -78,7 +78,15 @@ class TestRunwayGenFamily:
     def test_resolved_spec_carries_constraints(self) -> None:
         """The family's constraints (duration ∈ {5, 10}, ratio value set,
         input image required — #226) ride on every resolved spec. Subclasses
-        inherit Runway's validation without code duplication."""
+        inherit Runway's validation without code duplication.
+
+        The ``ratio`` default is deliberately NOT on the spec — gen3a_turbo's
+        accepted ratio set is disjoint from gen4_turbo's, so a single
+        model-blind ``param_defaults`` value would be wrong for one of the
+        two family-matched slugs. ``submit()`` fills it in per-model instead
+        (see ``_default_ratio_for_model``, exercised in
+        test_runway_provider.py).
+        """
         from genblaze_runway import RunwayProvider
 
         provider = RunwayProvider(api_secret="test")
@@ -86,8 +94,6 @@ class TestRunwayGenFamily:
         assert len(spec.param_constraints) == 3
         # The aspect_ratio → ratio alias travels with the spec_template.
         assert spec.param_aliases.get("aspect_ratio") == "ratio"
-        # A default ratio is filled in when the caller doesn't supply one.
-        assert spec.param_defaults.get("ratio") == "1280:720"
 
 
 # --- Broadened catalog (#226): SDK-accepted slugs outside *_turbo ---------
@@ -98,8 +104,9 @@ class TestBroadenedFallbackCatalog:
     (runwayml>=0.6,<5, resolving to 4.7.0) but don't match the ``*_turbo``
     family pattern — they route through the permissive fallback. Duration/
     ratio value ranges differ per model so aren't strictly validated there,
-    but the fallback still carries the ratio default and the image-required
-    constraint that's true for every model on this endpoint."""
+    but the fallback still carries the image-required constraint that's
+    true for every model on this endpoint (the ratio default is applied in
+    submit(), not on the spec — see test_runway_provider.py)."""
 
     @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
     def test_broadened_slugs_do_not_match_turbo_family(self, slug: str) -> None:
@@ -109,12 +116,11 @@ class TestBroadenedFallbackCatalog:
         assert provider._models.match_family(slug) is None, slug
 
     @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
-    def test_broadened_slugs_still_require_image_and_get_ratio_default(self, slug: str) -> None:
+    def test_broadened_slugs_still_require_image(self, slug: str) -> None:
         from genblaze_runway import RunwayProvider
 
         provider = RunwayProvider(api_secret="test")
         spec = provider._models.get(slug)
-        assert spec.param_defaults.get("ratio") == "1280:720"
         assert len(spec.param_constraints) == 1  # only _check_prompt_image
 
 

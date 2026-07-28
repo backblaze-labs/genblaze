@@ -31,8 +31,11 @@ combination. A step with no chained/attached image now raises a clear
 message. Slugs outside the ``*_turbo`` family pattern that the pinned SDK
 also accepts (``gen4.5``, ``veo3``, ``veo3.1``, ``veo3.1_fast``) route
 through the permissive fallback — duration/ratio value ranges differ per
-model and aren't strictly validated there, but the image requirement and
-``ratio`` default still apply.
+model and aren't strictly validated there, but the image requirement still
+applies. ``submit()`` also fills in a landscape ``ratio`` default when the
+caller omits one; gen3a_turbo gets its own default since its accepted
+ratio set is disjoint from every other model's (see
+``_default_ratio_for_model``).
 
 Docs: https://docs.runwayml.com/
 """
@@ -68,11 +71,14 @@ _VALID_DURATIONS = frozenset({5, 10})
 # colon aspect ratio like "16:9" — verified against runwayml SDK 4.7.0's
 # ``image_to_video.create`` overloads (the pin is ``runwayml>=0.6,<5``,
 # which resolves to 4.x today). This is the union of every ratio literal
-# across the models that route through this endpoint (gen4_turbo,
-# gen3a_turbo, gen4.5, veo3, veo3.1, veo3.1_fast); each model only accepts a
-# subset of these, so a value accepted here can still be rejected
-# server-side for the wrong model. That's fine — submit-time errors are the
-# authoritative signal (see ``DiscoverySupport.NONE`` above).
+# across the models that route through this endpoint (gen4_turbo, gen4.5,
+# veo3, veo3.1, veo3.1_fast share one set; gen3a_turbo has its own disjoint
+# set — {"768:1280", "1280:768"} — hence the union rather than one shared
+# constant). Each model only accepts a subset of these, so a value accepted
+# here can still be rejected server-side for the wrong model. That's fine —
+# submit-time errors are the authoritative signal (see
+# ``DiscoverySupport.NONE`` above); this check only rejects values no model
+# accepts.
 _VALID_RATIOS = frozenset(
     {
         "1280:720",
@@ -83,13 +89,36 @@ _VALID_RATIOS = frozenset(
         "1584:672",
         "1080:1920",
         "1920:1080",
+        "768:1280",
+        "1280:768",
     }
 )
 
-# Every current Runway video model accepts 1280:720 (16:9 landscape), so
-# it's a safe default when the caller doesn't supply one — the SDK requires
-# ``ratio`` in most (though not all) valid argument combinations.
+# Landscape default when the caller doesn't supply a ratio — valid for every
+# current model *except* gen3a_turbo, whose accepted set doesn't include it
+# (see ``_default_ratio_for_model`` below). The SDK requires ``ratio`` in
+# most (though not all) valid argument combinations.
 _DEFAULT_RATIO = "1280:720"
+
+# gen3a_turbo's ratio set — {"768:1280", "1280:768"} — is disjoint from every
+# other model's, so it needs its own default. ``param_defaults`` on
+# ModelSpec can't express a per-model value (the family template is shared
+# across every matched slug), so the default is resolved here, in submit(),
+# where ``step.model`` is available, instead.
+_GEN3A_TURBO_DEFAULT_RATIO = "1280:768"
+
+
+def _default_ratio_for_model(model_id: str) -> str:
+    """Pick a landscape default ratio valid for the resolved model.
+
+    gen3a_turbo is the one model this connector targets with a ratio set
+    disjoint from everyone else's; every other current and expected future
+    slug (gen4_turbo, gen4.5, veo3, veo3.1, veo3.1_fast, and future
+    ``*_turbo`` variants) accepts ``_DEFAULT_RATIO``.
+    """
+    if model_id == "gen3a_turbo":
+        return _GEN3A_TURBO_DEFAULT_RATIO
+    return _DEFAULT_RATIO
 
 
 def _check_ratio(params: dict[str, Any]) -> None:
@@ -132,7 +161,7 @@ def _check_prompt_image(params: dict[str, Any]) -> None:
     "Missing required arguments; Expected either (...)" message (#226)
     instead of telling the caller what to actually do about it.
     """
-    if "prompt_image" not in params:
+    if not params.get("prompt_image"):
         raise ProviderError(
             "Runway video models require an input image (routed to "
             "'prompt_image'). Chain an image-producing step "
@@ -147,7 +176,10 @@ def _check_prompt_image(params: dict[str, Any]) -> None:
 # future (gen4a_turbo, gen5_turbo, etc.) variants without a code change.
 # Constraints (duration ∈ {5, 10}, ratio ∈ _VALID_RATIOS, image required)
 # are Runway-wide rather than per-model, so they live on the family
-# spec_template.
+# spec_template. The ``ratio`` *default* is deliberately NOT set here — it
+# differs for gen3a_turbo (see ``_default_ratio_for_model``) and
+# ``param_defaults`` can't express a per-model value across one shared
+# template — submit() fills it in instead.
 _RUNWAY_GEN_FAMILY = ModelFamily(
     name="runway-gen-video",
     pattern=re.compile(r"^gen\w+_turbo$"),
@@ -155,7 +187,6 @@ _RUNWAY_GEN_FAMILY = ModelFamily(
         model_id="*",
         modality=Modality.VIDEO,
         param_aliases={"aspect_ratio": "ratio"},
-        param_defaults={"ratio": _DEFAULT_RATIO},
         param_constraints=(_check_duration, _check_ratio, _check_prompt_image),
         input_mapping=route_images(slots=("prompt_image",)),
     ),
@@ -171,12 +202,11 @@ _RUNWAY_GEN_FAMILY = ModelFamily(
 # differ per model, e.g. veo3's duration is fixed at 8s; submit-time errors
 # are the authoritative signal — see ``DiscoverySupport.NONE`` above), but
 # the one invariant that's true for every model on this endpoint — an input
-# image is required — still applies, along with the ``ratio`` default.
+# image is required — still applies.
 _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
     param_aliases={"aspect_ratio": "ratio"},
-    param_defaults={"ratio": _DEFAULT_RATIO},
     param_constraints=(_check_prompt_image,),
     input_mapping=route_images(slots=("prompt_image",)),
 )
@@ -301,6 +331,20 @@ class RunwayProvider(BaseProvider):
                     request[key] = payload[key]
             if "watermark" in request:
                 request["watermark"] = bool(request["watermark"])
+            # Model-aware default: gen3a_turbo's valid ratio set is disjoint
+            # from every other model's, so the default can't live on the
+            # shared ModelSpec (see _default_ratio_for_model docstring).
+            request.setdefault("ratio", _default_ratio_for_model(step.model))
+
+            # prompt_image reaches here two ways: routed from step.inputs
+            # (already SSRF-validated by validate_chain_input_url in
+            # prepare_payload) or supplied directly via step.params — which
+            # is NOT validated upstream. _check_prompt_image's error message
+            # explicitly suggests the params={'prompt_image': ...} path, so
+            # validate it here regardless of origin before it reaches the SDK.
+            prompt_image = request.get("prompt_image")
+            if isinstance(prompt_image, str):
+                validate_asset_url(prompt_image)
 
             task = client.image_to_video.create(**request)
             return task.id

@@ -89,6 +89,95 @@ def test_submit_user_ratio_overrides_default(mock_runway):
     assert call_kwargs["ratio"] == "832:1104"
 
 
+def test_submit_gen3a_turbo_gets_its_own_ratio_default(mock_runway):
+    """gen3a_turbo's accepted ratio set ({"768:1280", "1280:768"}) is
+    disjoint from gen4_turbo's — it must NOT get the generic 1280:720
+    default, which the real API would reject for this model."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen3a_turbo", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["ratio"] == "1280:768"
+
+
+def test_submit_gen3a_turbo_accepts_its_native_ratio(mock_runway):
+    """A gen3a_turbo-native ratio value (invalid for gen4_turbo) is accepted,
+    not wrongly rejected by the cross-model _VALID_RATIOS union."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen3a_turbo",
+        prompt="a sunset",
+        params={"ratio": "768:1280"},
+        inputs=_IMAGE_INPUT,
+    )
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["ratio"] == "768:1280"
+
+
+def test_submit_broadened_fallback_model_end_to_end(mock_runway):
+    """A model outside the *_turbo family (veo3.1, accepted by the pinned
+    SDK) still gets the image-required check, the generic ratio default,
+    and image routing all the way through submit() — not just spec
+    attributes checked in isolation."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="veo3.1", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["model"] == "veo3.1"
+    assert call_kwargs["prompt_image"] == "https://example.com/reference.jpg"
+    assert call_kwargs["ratio"] == "1280:720"
+
+
+def test_submit_non_image_chain_input_still_requires_image(mock_runway):
+    """Chaining a video-producing step's output (no image asset) must still
+    raise the actionable error — route_images only picks up image/* assets,
+    so a video-only chain input leaves 'prompt_image' unset."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        inputs=[Asset(url="https://example.com/clip.mp4", media_type="video/mp4")],
+    )
+    with pytest.raises(ProviderError, match="require an input image"):
+        provider.submit(step)
+    client.image_to_video.create.assert_not_called()
+
+
+def test_submit_prompt_image_via_params_is_url_validated(mock_runway):
+    """_check_prompt_image's error message points callers at
+    params={'prompt_image': url} as a fallback — that path skips the
+    step.inputs SSRF check (validate_chain_input_url), so submit() must
+    validate it directly before forwarding to the SDK."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={"prompt_image": "http://evil.example/payload.jpg"},
+    )
+    with pytest.raises(ProviderError, match="Unsafe asset URL"):
+        provider.submit(step)
+    client.image_to_video.create.assert_not_called()
+
+
+def test_submit_prompt_image_via_params_https_forwarded(mock_runway):
+    """A valid https prompt_image supplied directly via params (no chained
+    step.inputs) is accepted and forwarded as-is."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={"prompt_image": "https://example.com/reference.jpg"},
+    )
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["prompt_image"] == "https://example.com/reference.jpg"
+
+
 def test_poll_returns_true_on_succeeded(mock_runway):
     provider, _ = mock_runway
     assert provider.poll("task-abc") is True
