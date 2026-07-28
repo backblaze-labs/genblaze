@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-google"
-version = "0.3.3"
+version = "0.3.4"
 description = "Google provider adapters for genblaze (Veo video, Imagen + Gemini image)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -22,7 +22,11 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "google", "veo", "imagen", "gemini"]
 
 dependencies = [
-    "genblaze-core>=0.3.7,<0.4",
+    # >=0.3.8: this connector imports call_with_rate_limit_retry, added to
+    # genblaze-core in 0.3.8 -- a >=0.3.7 floor would let pip resolve this
+    # package against the still-published 0.3.7 core and fail with
+    # ImportError at `import genblaze_google`.
+    "genblaze-core>=0.3.8,<0.4",
     # <2: bounded-major convention (#61) — caps below the next major so a
     # future google-genai release can't silently break this connector at
     # resolve time.
