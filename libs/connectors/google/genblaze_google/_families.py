@@ -1,7 +1,8 @@
-"""Google model families — Veo (video) and Imagen (image).
+"""Google model families — Veo (video), Imagen (image), and
+Gemini-native image generation.
 
 Pattern-keyed; future ``veo-N`` / ``imagen-N`` slugs inherit param
-shape automatically. Both families ship the
+shape automatically. All families ship the
 ``google_models_get_probe`` so ``Pipeline.preflight()`` returns
 ``OK_AUTHORITATIVE`` when the slug exists on the user's project,
 ``NOT_FOUND`` when it doesn't, and ``OK_PROVISIONAL`` when google-genai

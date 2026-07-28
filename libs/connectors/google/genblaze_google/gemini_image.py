@@ -6,17 +6,18 @@ image bytes in ``candidates[].content.parts[].inline_data``, NOT the
 pattern widening of Imagen — see issue #205.
 
 **Why this provider exists:** on a freshly created Gemini API key, every
-``imagen-*`` slug 404s "no longer available to new users" (an account
-entitlement gate — see ``google_imagen_predict_probe`` / issue #206). The
-Gemini-native ``*-image`` line (``gemini-2.5-flash-image``,
+currently-cataloged ``imagen-4.0-*`` slug 404s "no longer available to new
+users" (an account entitlement gate — see ``ImagenProvider.validate_model``
+/ issue #206). The Gemini-native ``*-image`` line (``gemini-2.5-flash-image``,
 ``gemini-3.1-flash-image``, etc.) speaks ``generateContent`` instead of
 ``:predict`` and has no reported entitlement gap, making it the only
 image path a new key can actually call.
 
 **Catalog architecture:** ships the pattern-keyed ``google-gemini-image``
 family (``^gemini-.*-image``, deliberately excludes chat models like
-``gemini-2.5-flash``). No known entitlement gap for this family, so it
-uses the plain ``google_models_get_probe`` (unlike Imagen).
+``gemini-2.5-flash``). Uses the same ``google_models_get_probe`` as Imagen,
+but with no known entitlement gap it needs no ``ImagenProvider``-style
+``validate_model`` re-grade.
 
 Docs: https://ai.google.dev/gemini-api/docs/image-generation
 """
