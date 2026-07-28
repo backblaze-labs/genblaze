@@ -560,7 +560,10 @@ cost by 10x+ across duration/size combinations, which is why the SDK ships
 no Sora recipe (see the module docstring in `genblaze_openai/provider.py`).
 Register a custom strategy that reads the native `seconds` param directly;
 Sora assets carry no probed `duration` metadata, so `ctx.output_duration_s`
-won't work here the way it does for Veo/Luma:
+won't work here the way it does for Stability Audio (which probes the
+rendered file's real duration — see that section above). Veo and Luma's
+recipes also read `step.params` directly rather than `output_duration_s`,
+for the same reason: neither connector probes actual output duration either.
 
 ```python
 from genblaze_core.providers import PricingContext, PricingStrategy
@@ -570,7 +573,17 @@ from genblaze_openai import SoraProvider
 def per_second(rate: float) -> PricingStrategy:
     def _strategy(ctx: PricingContext) -> float | None:
         seconds = ctx.step.params.get("seconds")
-        return float(seconds) * rate if seconds is not None else None
+        if seconds is None:
+            return None
+        try:
+            seconds_f = float(seconds)
+        except (TypeError, ValueError):
+            return None
+        # Reject non-finite/negative values (NaN, inf, malformed input)
+        # rather than silently returning a poisoned or negative cost.
+        if seconds_f < 0 or seconds_f != seconds_f or seconds_f in (float("inf"), float("-inf")):
+            return None
+        return seconds_f * rate
 
     return _strategy
 

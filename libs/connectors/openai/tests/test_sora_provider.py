@@ -262,31 +262,41 @@ def test_estimate_cost_none_by_default():
     assert provider.estimate_cost("sora-2", {"seconds": 8, "size": "1280x720"}) is None
 
 
+def _per_second(rate: float):
+    """Reads the native ``seconds`` param directly — Sora bills by requested
+    duration, not by an asset's probed duration (Sora assets carry no
+    duration metadata; see fetch_output()). Matches the recipe registered
+    in docs/reference/pricing-recipes.md, including its input guards: a
+    non-numeric, negative, or non-finite ``seconds`` yields ``None`` (unknown
+    cost) rather than raising or silently reporting a poisoned/negative cost.
+    """
+    from genblaze_core.providers import PricingContext
+
+    def _strategy(ctx: PricingContext) -> float | None:
+        seconds = ctx.step.params.get("seconds")
+        if seconds is None:
+            return None
+        try:
+            seconds_f = float(seconds)
+        except (TypeError, ValueError):
+            return None
+        if seconds_f < 0 or seconds_f != seconds_f or seconds_f in (float("inf"), float("-inf")):
+            return None
+        return seconds_f * rate
+
+    return _strategy
+
+
 def test_estimate_cost_with_registered_per_second_pricing():
     """Registering a per-second strategy (the documented recipe) makes
     estimate_cost() return a Decimal that scales with requested duration —
     doubling ``seconds`` doubles the estimate."""
-    from genblaze_core.providers import PricingContext, PricingStrategy
-
-    def per_second(rate: float) -> PricingStrategy:
-        """Reads the native ``seconds`` param directly — Sora bills by
-        requested duration, not by an asset's probed duration (Sora assets
-        carry no duration metadata; see fetch_output())."""
-
-        def _strategy(ctx: PricingContext) -> float | None:
-            seconds = ctx.step.params.get("seconds")
-            if seconds is None:
-                return None
-            return float(seconds) * rate
-
-        return _strategy
-
     with patch.dict("sys.modules", {"openai": MagicMock()}):
         from genblaze_openai import SoraProvider
 
         provider = SoraProvider(api_key="test-key")
     provider._models = provider.models.fork()
-    provider.models.register_pricing("sora-2", per_second(0.10))
+    provider.models.register_pricing("sora-2", _per_second(0.10))
 
     short_cost = provider.estimate_cost("sora-2", {"seconds": 4})
     long_cost = provider.estimate_cost("sora-2", {"seconds": 8})
