@@ -79,10 +79,24 @@ resp = chat("gpt-4o-mini", messages=frame_messages, retry_on_rate_limit=True)
 ```
 
 Pass a `genblaze_core.providers.retry.RetryPolicy` via `retry_policy=` to tune
-the attempt cap or backoff timing (passing `retry_policy=` alone, without
-`retry_on_rate_limit=True`, also opts in). `achat()` accepts the same kwargs —
-the retry wait happens inside the worker thread `achat` already runs in, so it
-never blocks the event loop.
+the attempt cap, retryable-code set, or backoff timing (passing `retry_policy=`
+alone, without `retry_on_rate_limit=True`, also opts in). `achat()` accepts the
+same kwargs — the retry wait happens inside the worker thread `achat` already
+runs in, so it never blocks the event loop.
+
+**Known limits of this opt-in loop:**
+
+- **Bounded but not tiny.** Worst case is `(max_attempts - 1) *
+  MAX_RETRY_AFTER_SEC` — with the default policy (6 attempts, 120s cap), that's
+  up to ~10 minutes if a misbehaving upstream returns the maximum `Retry-After`
+  hint on every attempt. Pass a tighter `retry_policy=RetryPolicy(max_attempts=2)`
+  if that's unacceptable for your call site.
+- **Not a rate limiter.** This is a per-call retry wrapper, not a shared
+  token-bucket / queue-level limiter. Many concurrent callers hitting the same
+  TPM ceiling all see the same server `Retry-After` hint and wake in lockstep,
+  which can immediately re-trip the limit. For sustained, high-concurrency
+  archive runs, pace calls externally (e.g. a semaphore or a queue) in addition
+  to (not instead of) `retry_on_rate_limit=True`.
 
 ## Limits (v1)
 

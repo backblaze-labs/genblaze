@@ -316,6 +316,35 @@ def test_achat_runs_in_thread(mock_client):
     assert resp.text == "Hello!"
 
 
+def test_internally_created_client_closed_once_across_retries(monkeypatch):
+    """The client must be created once, reused across every retry attempt, and
+    closed exactly once after the loop finishes — not per-attempt (#221)."""
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    fake_google = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.models.generate_content.side_effect = [
+            ProviderError(
+                "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+            ),
+            _mock_response(),
+        ]
+        created_clients.append(c)
+        return c
+
+    fake_google.genai.Client.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    resp = chat("gemini-2.5-flash", prompt="hi", api_key="test-key", retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert fake_google.genai.Client.call_count == 1  # one client for the whole retry loop
+    assert created_clients[0].models.generate_content.call_count == 2
+    created_clients[0].close.assert_called_once()
+
+
 # --- Opt-in rate-limit backoff (#221) ---
 #
 # `chat()`/`achat()` already parse a 429's `Retry-After` hint onto

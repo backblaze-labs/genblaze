@@ -1082,6 +1082,23 @@ def test_call_with_rate_limit_retry_falls_back_to_computed_backoff(mock_sleep) -
     mock_sleep.assert_called_once_with(1.0)  # attempt 1: 1.0 * 2**0, no jitter
 
 
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_honors_policy_retryable_codes(mock_sleep) -> None:
+    """A policy that excludes RATE_LIMIT from `retryable_codes` (e.g. `.disabled()`)
+    must not retry, even though the raised code is RATE_LIMIT — `RetryPolicy` should
+    mean the same thing here as it does on the `BaseProvider` pipeline path."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import RetryPolicy, call_with_rate_limit_retry
+
+    def fn():
+        raise ProviderError("429", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1)
+
+    with pytest.raises(ProviderError):
+        call_with_rate_limit_retry(fn, policy=RetryPolicy.disabled())
+
+    mock_sleep.assert_not_called()
+
+
 # --- StepRetriedEvent emission ---
 
 

@@ -256,11 +256,24 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
     ``BaseProvider``'s pipeline retry loop (``RetryPolicy.compute_delay`` —
     server hint wins when present, else exponential backoff with jitter).
 
-    Only ``ProviderErrorCode.RATE_LIMIT`` is retried here, regardless of
-    ``policy.retryable_codes`` — this helper exists to fix 429 backoff
-    specifically, not to become a general retry wrapper for the convenience
-    helpers. Any other exception (including other ``ProviderError`` codes)
-    propagates on the first attempt.
+    Narrowed to ``ProviderErrorCode.RATE_LIMIT`` — this helper exists to fix
+    429 backoff specifically, not to become a general retry wrapper for the
+    convenience helpers — but still defers to ``policy.should_retry`` (which
+    checks both ``policy.retryable_codes`` membership and the ``max_attempts``
+    budget) rather than hardcoding the attempt-cap check. A caller who passes
+    a ``policy`` with ``RATE_LIMIT`` excluded from ``retryable_codes`` (e.g.
+    ``RetryPolicy.disabled()``) gets no retry, same as they would on the
+    ``BaseProvider`` pipeline path. Any other exception (including other
+    ``ProviderError`` codes) propagates on the first attempt.
+
+    Bounded worst case: total wait is at most ``(max_attempts - 1) *
+    MAX_RETRY_AFTER_SEC`` — with the default policy (6 attempts), up to ~10
+    minutes if a misbehaving upstream returns the maximum ``Retry-After`` hint
+    on every attempt. There's no wall-clock deadline gate (unlike
+    ``BaseProvider``'s pipeline retry, which bails out once a step's overall
+    ``timeout`` would be exceeded) — this is a single, unscheduled call with no
+    equivalent deadline to check against. Pass a tighter ``policy`` (e.g.
+    ``max_attempts=2``) if that worst case is unacceptable for your call site.
 
     Synchronous by design: callers on the async path (``achat``) already run
     the whole sync call — including this retry loop — via
@@ -270,13 +283,15 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
     Args:
         fn: Zero-arg callable to invoke. Should raise ``ProviderError`` (with
             ``error_code``/``retry_after`` set) on failure.
-        policy: Controls the attempt cap and backoff timing. Defaults to
-            ``RetryPolicy()`` (6 attempts, ``Retry-After`` honored, exponential
-            + full-jitter fallback when no hint is present).
+        policy: Controls the attempt cap, retryable-code set, and backoff
+            timing. Defaults to ``RetryPolicy()`` (6 attempts, ``Retry-After``
+            honored, exponential + full-jitter fallback when no hint is
+            present).
 
     Raises:
         ProviderError: Re-raised once attempts are exhausted, or immediately
-            if the error isn't classified as ``RATE_LIMIT``.
+            if the error isn't classified as ``RATE_LIMIT`` (or the policy
+            doesn't consider ``RATE_LIMIT`` retryable).
     """
     policy = policy or RetryPolicy()
     attempt = 1
@@ -284,7 +299,9 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
         try:
             return fn()
         except ProviderError as exc:
-            if exc.error_code != ProviderErrorCode.RATE_LIMIT or attempt >= policy.max_attempts:
+            if exc.error_code != ProviderErrorCode.RATE_LIMIT or not policy.should_retry(
+                exc.error_code, attempt
+            ):
                 raise
             time.sleep(policy.compute_delay(attempt, retry_after=exc.retry_after))
             attempt += 1

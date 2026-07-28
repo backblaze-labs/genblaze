@@ -236,6 +236,35 @@ def test_internally_created_client_is_closed(monkeypatch):
     created_clients[0].close.assert_called_once()
 
 
+def test_internally_created_client_closed_once_across_retries(monkeypatch):
+    """The client must be created once, reused across every retry attempt, and
+    closed exactly once after the loop finishes — not per-attempt (#221)."""
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    fake_openai = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.chat.completions.create.side_effect = [
+            ProviderError(
+                "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+            ),
+            _mock_completion(),
+        ]
+        created_clients.append(c)
+        return c
+
+    fake_openai.OpenAI.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+    resp = chat("gpt-4o", prompt="hi", api_key="sk-test", retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert fake_openai.OpenAI.call_count == 1  # one client for the whole retry loop
+    assert created_clients[0].chat.completions.create.call_count == 2
+    created_clients[0].close.assert_called_once()
+
+
 def test_base_url_forwarded_to_sdk(monkeypatch):
     fake_openai = MagicMock()
     fake_openai.OpenAI.return_value.chat.completions.create.return_value = _mock_completion()
