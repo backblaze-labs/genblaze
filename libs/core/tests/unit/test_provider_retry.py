@@ -8,6 +8,7 @@ import time
 from typing import Any, ClassVar
 from unittest.mock import patch
 
+import pytest
 from genblaze_core.models.enums import ProviderErrorCode, StepStatus
 from genblaze_core.models.step import UPSTREAM_ID_KEY, Step
 from genblaze_core.providers.base import (
@@ -998,6 +999,120 @@ def test_retry_after_parser_invalid_value() -> None:
         headers = {"Retry-After": "not-a-number"}
 
     assert retry_after_from_response(_FakeResp()) is None
+
+
+# --- call_with_rate_limit_retry (#221) ---
+#
+# Backs the opt-in `retry_on_rate_limit=` flag on the standalone chat()/achat()
+# helpers in genblaze-openai and genblaze-google. Connector-level tests cover
+# the wiring; these cover the shared decision loop in isolation.
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_honors_retry_after(mock_sleep) -> None:
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import call_with_rate_limit_retry
+
+    calls = [
+        ProviderError("429", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=2.0),
+        "ok",
+    ]
+
+    def fn():
+        result = calls.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    assert call_with_rate_limit_retry(fn) == "ok"
+    mock_sleep.assert_called_once_with(2.0)
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_raises_after_max_attempts(mock_sleep) -> None:
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import RetryPolicy, call_with_rate_limit_retry
+
+    def fn():
+        raise ProviderError("429", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1)
+
+    with pytest.raises(ProviderError) as exc:
+        call_with_rate_limit_retry(fn, policy=RetryPolicy(max_attempts=3))
+
+    assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
+    assert mock_sleep.call_count == 2  # 3 attempts, 2 waits between them
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_ignores_non_rate_limit_codes(mock_sleep) -> None:
+    """Only RATE_LIMIT is retried — every other code (and bare exceptions) fails fast."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import call_with_rate_limit_retry
+
+    def fn():
+        raise ProviderError("blocked", error_code=ProviderErrorCode.CONTENT_POLICY)
+
+    with pytest.raises(ProviderError) as exc:
+        call_with_rate_limit_retry(fn)
+
+    assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
+    mock_sleep.assert_not_called()
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_falls_back_to_computed_backoff(mock_sleep) -> None:
+    """No Retry-After hint — falls back to RetryPolicy's exponential+jitter backoff,
+    same math as the pipeline path (bounded by initial_backoff/max_backoff)."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import RetryPolicy, call_with_rate_limit_retry
+
+    calls = [
+        ProviderError("429", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=None),
+        "ok",
+    ]
+
+    def fn():
+        result = calls.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    policy = RetryPolicy(jitter="none", initial_backoff_sec=1.0, backoff_multiplier=2.0)
+    assert call_with_rate_limit_retry(fn, policy=policy) == "ok"
+    mock_sleep.assert_called_once_with(1.0)  # attempt 1: 1.0 * 2**0, no jitter
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_honors_policy_retryable_codes(mock_sleep) -> None:
+    """A policy that excludes RATE_LIMIT from `retryable_codes` (e.g. `.disabled()`)
+    must not retry, even though the raised code is RATE_LIMIT — `RetryPolicy` should
+    mean the same thing here as it does on the `BaseProvider` pipeline path."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import RetryPolicy, call_with_rate_limit_retry
+
+    def fn():
+        raise ProviderError("429", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1)
+
+    with pytest.raises(ProviderError):
+        call_with_rate_limit_retry(fn, policy=RetryPolicy.disabled())
+
+    mock_sleep.assert_not_called()
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_sets_attempts_on_exhaustion(mock_sleep) -> None:
+    """Matches BaseProvider._retry_phase: the re-raised ProviderError.attempts
+    reflects how many attempts actually ran, not the constructor default of 1."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import RetryPolicy, call_with_rate_limit_retry
+
+    def fn():
+        raise ProviderError("429", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1)
+
+    with pytest.raises(ProviderError) as exc:
+        call_with_rate_limit_retry(fn, policy=RetryPolicy(max_attempts=3))
+
+    assert exc.value.attempts == 3
 
 
 # --- StepRetriedEvent emission ---

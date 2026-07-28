@@ -72,6 +72,7 @@ from genblaze_core.providers.retry import (
     MAX_RETRY_AFTER_SEC,
     PRE_RESPONSE_EXCEPTIONS,
     RetryPolicy,
+    call_with_rate_limit_retry,
     retry_after_from_response,
 )
 from genblaze_core.providers.spec import (
@@ -134,6 +135,7 @@ __all__ = [
     "bucketed_by_duration",
     "by_model_and_param",
     "by_param",
+    "call_with_rate_limit_retry",
     "chain_routers",
     "compute_cost",
     "discover_providers",

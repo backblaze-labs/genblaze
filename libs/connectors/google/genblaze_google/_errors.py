@@ -17,7 +17,11 @@ def map_google_error(exc: Exception) -> ProviderErrorCode:
     # fallback_models retry fires on it exactly like any other dead slug.
     if "no longer available to new users" in msg:
         return ProviderErrorCode.MODEL_ERROR
-    if "rate" in msg or "429" in msg or "resource_exhausted" in msg:
+    # Bare "rate" collides with "generate"/"generateContent" (this call's own
+    # method name shows up in most SDK error strings) — match on "rate limit" /
+    # "rate_limit" instead, same predicate genblaze_core's own classify_api_error
+    # uses (providers/base.py).
+    if "rate limit" in msg or "rate_limit" in msg or "429" in msg or "resource_exhausted" in msg:
         return ProviderErrorCode.RATE_LIMIT
     # Gemini / Imagen safety block — deterministic refusal, never retryable.
     # Surfaces as "safety", "blocked", "responsibleai", or "content_filter"

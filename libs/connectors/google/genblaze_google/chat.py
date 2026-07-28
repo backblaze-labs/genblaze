@@ -20,7 +20,11 @@ from genblaze_core.models.chat import (
     ToolCall,
 )
 from genblaze_core.models.enums import ProviderErrorCode
-from genblaze_core.providers.retry import retry_after_from_response
+from genblaze_core.providers.retry import (
+    RetryPolicy,
+    call_with_rate_limit_retry,
+    retry_after_from_response,
+)
 
 from genblaze_google._errors import map_google_error
 
@@ -215,6 +219,8 @@ def chat(
     project: str | None = None,
     location: str = "us-central1",
     client: Any = None,
+    retry_on_rate_limit: bool = False,
+    retry_policy: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> ChatResponse:
     """Call a Google Gemini model and return a uniform `ChatResponse`.
@@ -230,10 +236,18 @@ def chat(
         project: GCP project for Vertex AI auth (mutually exclusive with api_key).
         location: GCP region for Vertex AI.
         client: Pre-built `google.genai.Client` — escape hatch for tests.
+        retry_on_rate_limit: When ``True``, a 429 wait-and-retry using the
+            server's ``Retry-After`` hint (falling back to exponential backoff)
+            instead of raising immediately. Off by default — existing callers
+            see no behavior change. See ``docs/features/llm-calls.md``.
+        retry_policy: Optional ``RetryPolicy`` controlling attempt cap / backoff
+            when ``retry_on_rate_limit=True`` (or passed on its own to opt in
+            implicitly). Defaults to ``RetryPolicy()`` (6 attempts).
         **kwargs: Extra keys merged into the `generation_config`.
 
     Raises:
         ProviderError: With a classified `error_code` for any SDK exception.
+            Re-raised once retries (if enabled) are exhausted.
     """
     own_client = client is None
     if own_client:
@@ -268,20 +282,28 @@ def chat(
     if gen_config:
         call_kwargs["config"] = gen_config
 
+    def _invoke() -> Any:
+        try:
+            return client.models.generate_content(**call_kwargs)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                f"Gemini chat failed: {exc}",
+                error_code=map_google_error(exc),
+                retry_after=retry_after_from_response(exc),
+            ) from exc
+
     try:
-        raw = client.models.generate_content(**call_kwargs)
-    except ProviderError:
-        raise
-    except Exception as exc:
-        raise ProviderError(
-            f"Gemini chat failed: {exc}",
-            error_code=map_google_error(exc),
-            retry_after=retry_after_from_response(exc),
-        ) from exc
+        if retry_on_rate_limit or retry_policy is not None:
+            raw = call_with_rate_limit_retry(_invoke, policy=retry_policy)
+        else:
+            raw = _invoke()
     finally:
         if own_client:
             # Best-effort close — not all google-genai versions expose close(),
-            # so probe via hasattr to stay compatible.
+            # so probe via hasattr to stay compatible. Closed once here (not
+            # per attempt) so the client stays open across retries.
             close_fn = getattr(client, "close", None)
             if callable(close_fn):
                 close_fn()
@@ -294,5 +316,10 @@ async def achat(
     messages: list[ChatMessage] | list[dict] | None = None,
     **kwargs: Any,
 ) -> ChatResponse:
-    """Async wrapper around `chat()`. Runs in a worker thread (matches `BaseProvider.ainvoke`)."""
+    """Async wrapper around `chat()`. Runs in a worker thread (matches `BaseProvider.ainvoke`).
+
+    Accepts the same `retry_on_rate_limit` / `retry_policy` kwargs as `chat()`.
+    Any backoff sleep happens inside the worker thread, so it never blocks the
+    event loop — no separate async retry path is needed.
+    """
     return await asyncio.to_thread(chat, model, messages, **kwargs)

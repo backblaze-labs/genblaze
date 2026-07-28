@@ -11,7 +11,11 @@ from typing import Any
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.chat import ChatMessage, ChatResponse, ToolCall, coerce_response_format
 from genblaze_core.models.enums import ProviderErrorCode
-from genblaze_core.providers.retry import retry_after_from_response
+from genblaze_core.providers.retry import (
+    RetryPolicy,
+    call_with_rate_limit_retry,
+    retry_after_from_response,
+)
 
 from genblaze_openai._errors import map_openai_error
 
@@ -118,6 +122,8 @@ def chat(
     base_url: str | None = None,
     timeout: float = 60.0,
     client: Any = None,
+    retry_on_rate_limit: bool = False,
+    retry_policy: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> ChatResponse:
     """Call an OpenAI chat / completion model and return a uniform `ChatResponse`.
@@ -139,10 +145,18 @@ def chat(
         client: Pre-built `openai.OpenAI` instance — escape hatch for tests
             and custom clients. When supplied, its lifecycle is the caller's
             (we won't close it).
+        retry_on_rate_limit: When ``True``, a 429 wait-and-retry using the
+            server's ``Retry-After`` hint (falling back to exponential backoff)
+            instead of raising immediately. Off by default — existing callers
+            see no behavior change. See ``docs/features/llm-calls.md``.
+        retry_policy: Optional ``RetryPolicy`` controlling attempt cap / backoff
+            when ``retry_on_rate_limit=True`` (or passed on its own to opt in
+            implicitly). Defaults to ``RetryPolicy()`` (6 attempts).
         **kwargs: Forwarded to `client.chat.completions.create`.
 
     Raises:
         ProviderError: With a classified `error_code` for any SDK exception.
+            Re-raised once retries (if enabled) are exhausted.
 
     Performance note:
         For high-throughput callers (many chat calls in a tight loop), pass a
@@ -177,20 +191,28 @@ def chat(
         payload["response_format"] = coerce_response_format(response_format)
     payload.update(kwargs)
 
+    def _invoke() -> Any:
+        try:
+            return client.chat.completions.create(**payload)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                f"OpenAI chat failed: {exc}",
+                error_code=map_openai_error(exc),
+                retry_after=retry_after_from_response(exc),
+            ) from exc
+
     try:
-        raw = client.chat.completions.create(**payload)
-    except ProviderError:
-        raise
-    except Exception as exc:
-        raise ProviderError(
-            f"OpenAI chat failed: {exc}",
-            error_code=map_openai_error(exc),
-            retry_after=retry_after_from_response(exc),
-        ) from exc
+        if retry_on_rate_limit or retry_policy is not None:
+            raw = call_with_rate_limit_retry(_invoke, policy=retry_policy)
+        else:
+            raw = _invoke()
     finally:
         if own_client:
             # Best-effort close — matches the GMI chat pattern and prevents
-            # httpx transport leaks on high-throughput callers.
+            # httpx transport leaks on high-throughput callers. Closed once
+            # here (not per attempt) so the client stays open across retries.
             close_fn = getattr(client, "close", None)
             if callable(close_fn):
                 close_fn()
@@ -208,5 +230,9 @@ async def achat(
     Matches the in-tree `BaseProvider.ainvoke` pattern (uses `asyncio.to_thread`
     rather than the SDK's native async client) for consistency. Switch to
     `openai.AsyncOpenAI` here if true async I/O ever shows up in profiling.
+
+    Accepts the same `retry_on_rate_limit` / `retry_policy` kwargs as `chat()`.
+    Any backoff sleep happens inside the worker thread, so it never blocks the
+    event loop — no separate async retry path is needed.
     """
     return await asyncio.to_thread(chat, model, messages, **kwargs)

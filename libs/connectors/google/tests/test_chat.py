@@ -314,3 +314,153 @@ def test_cost_usd_always_none(mock_client):
 def test_achat_runs_in_thread(mock_client):
     resp = asyncio.run(achat("gemini-2.5-flash", prompt="hi", client=mock_client))
     assert resp.text == "Hello!"
+
+
+def test_internally_created_client_closed_once_across_retries(monkeypatch):
+    """The client must be created once, reused across every retry attempt, and
+    closed exactly once after the loop finishes — not per-attempt (#221)."""
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    fake_google = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.models.generate_content.side_effect = [
+            ProviderError(
+                "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+            ),
+            _mock_response(),
+        ]
+        created_clients.append(c)
+        return c
+
+    fake_google.genai.Client.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    resp = chat("gemini-2.5-flash", prompt="hi", api_key="test-key", retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert fake_google.genai.Client.call_count == 1  # one client for the whole retry loop
+    assert created_clients[0].models.generate_content.call_count == 2
+    created_clients[0].close.assert_called_once()
+
+
+# --- Opt-in rate-limit backoff (#221) ---
+#
+# `chat()`/`achat()` already parse a 429's `Retry-After` hint onto
+# `ProviderError.retry_after`; these tests cover the opt-in wait-and-retry
+# loop built on top of that (`genblaze_core.providers.retry.call_with_rate_limit_retry`).
+# `time.sleep` is patched at its source in `genblaze_core.providers.retry` so
+# tests never actually block, and so we can assert the delay used.
+
+
+def test_default_does_not_retry_on_rate_limit(mock_client, monkeypatch):
+    """Opt-out is the default — an unadorned `chat()` call must still raise on the
+    first 429, with no sleep and no second attempt."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = ProviderError(
+        "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.5
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        chat("gemini-2.5-flash", prompt="hi", client=mock_client)
+
+    assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
+    assert mock_client.models.generate_content.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_on_rate_limit_waits_then_succeeds(mock_client, monkeypatch):
+    """`retry_on_rate_limit=True` waits the server's `Retry-After` hint, then retries."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        ProviderError("rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.5),
+        _mock_response(),
+    ]
+
+    resp = chat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+    assert sleeps == [0.5]  # server hint honored verbatim, not a computed backoff
+
+
+def test_retry_on_rate_limit_raises_after_attempt_cap(mock_client, monkeypatch):
+    """After `max_attempts`, the last rate-limit error still propagates."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    mock_client.models.generate_content.side_effect = ProviderError(
+        "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            client=mock_client,
+            retry_on_rate_limit=True,
+            retry_policy=RetryPolicy(max_attempts=3),
+        )
+
+    assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
+    assert mock_client.models.generate_content.call_count == 3
+
+
+def test_retry_policy_alone_opts_in_without_the_flag(mock_client, monkeypatch):
+    """Passing `retry_policy=` implies opt-in even without `retry_on_rate_limit=True`."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        ProviderError("rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.2),
+        _mock_response(),
+    ]
+
+    resp = chat(
+        "gemini-2.5-flash",
+        prompt="hi",
+        client=mock_client,
+        retry_policy=RetryPolicy(max_attempts=4),
+    )
+
+    assert resp.text == "Hello!"
+    assert sleeps == [0.2]
+
+
+def test_retry_on_rate_limit_does_not_retry_other_error_codes(mock_client, monkeypatch):
+    """Only RATE_LIMIT is eligible — a content-policy error still fails fast even
+    with retries enabled."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = ProviderError(
+        "blocked", error_code=ProviderErrorCode.CONTENT_POLICY
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        chat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+
+    assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
+    assert mock_client.models.generate_content.call_count == 1
+    assert sleeps == []
+
+
+def test_achat_retry_on_rate_limit(mock_client, monkeypatch):
+    """`achat()` forwards retry kwargs through to `chat()` via `asyncio.to_thread`."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        ProviderError("rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.3),
+        _mock_response(),
+    ]
+
+    resp = asyncio.run(
+        achat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+    )
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+    assert sleeps == [0.3]
