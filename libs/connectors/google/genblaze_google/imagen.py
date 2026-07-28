@@ -4,14 +4,15 @@ Synchronous API: client.models.generate_images() returns images directly.
 
 **Catalog architecture (genblaze-core 0.3.0):** the SDK ships the
 pattern-keyed ``google-imagen`` family (``^imagen-``) instead of a
-hardcoded slug list. Liveness comes from ``google_imagen_predict_probe``
-via the family probe: ``client.models.get(model=slug)`` for catalog
-membership, plus a deliberately invalid ``generate_images`` call to
-distinguish catalog membership from account entitlement (imagen-4.0-*
-is catalog-listed but 404s "no longer available to new users" for new
-keys — issue #206), so dead / unentitled slugs surface at preflight
-rather than mid-call. If your account has no Imagen access, see
-``GeminiImageProvider`` for the Gemini-native image line instead.
+hardcoded slug list. Liveness comes from ``google_models_get_probe``
+(``client.models.get(model=slug)``), so dead slugs surface at preflight
+rather than mid-call. ``models.get`` only proves catalog membership, not
+account entitlement: imagen-4.0-* are catalog-listed but 404 "no longer
+available to new users" for new keys (issue #206). Rather than spend a
+billable ``:predict`` call to probe entitlement, ``validate_model``
+re-grades those known-gated slugs to ``OK_PROVISIONAL``. If your account
+has no Imagen access, see ``GeminiImageProvider`` for the Gemini-native
+image line instead.
 
 **Pricing**: per-image-by-model rates were dropped in 0.3.0. See
 ``docs/reference/pricing-recipes.md`` for the canonical Imagen
@@ -60,7 +61,8 @@ class ImagenProvider(GoogleClientMixin, SyncProvider):
     Models match the ``google-imagen`` family (``^imagen-``). Current
     examples: ``imagen-4.0-generate-001``, ``imagen-4.0-fast-generate-001``
     — catalog-listed, but entitlement-gated for accounts without Imagen
-    access (new Gemini API keys as of 2026-07; see ``google_imagen_predict_probe``).
+    access (new Gemini API keys as of 2026-07; ``validate_model`` re-grades
+    these to ``OK_PROVISIONAL``).
 
     Imagen returns image bytes directly (synchronous, not operation-based).
     Output is saved to files; use ObjectStorageSink for cloud upload.
