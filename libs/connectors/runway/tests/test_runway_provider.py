@@ -90,6 +90,56 @@ def test_submit_user_ratio_overrides_default(mock_runway):
     assert call_kwargs["ratio"] == "832:1104"
 
 
+def test_submit_watermark_param_not_forwarded(mock_runway):
+    """The pinned SDK's image_to_video.create has no 'watermark' parameter
+    at all (keyword-only, no **kwargs) — forwarding a user-supplied
+    params={'watermark': ...} would raise an opaque TypeError wrapped as a
+    generic "Runway submit failed" error. It must be silently dropped, not
+    forwarded."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={"watermark": True},
+        inputs=_IMAGE_INPUT,
+    )
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert "watermark" not in call_kwargs
+
+
+def test_submit_gen4_5_image_path_defaults_duration(mock_runway):
+    """gen4.5's image_to_video.create overload marks `duration` required
+    (no Omit) — the image path must default it, not just ratio."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen4.5", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["duration"] == 8
+
+
+def test_submit_veo3_image_path_defaults_duration(mock_runway):
+    """veo3's image_to_video.create overload pins `duration` to exactly 8
+    (Literal[8], no Omit) — the image path must default it."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="veo3", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["duration"] == 8
+
+
+def test_submit_gen4_turbo_image_path_leaves_duration_absent(mock_runway):
+    """gen4_turbo accepts an absent duration on image_to_video — unlike
+    gen4.5/veo3, it must NOT get a forced default (pre-existing behavior,
+    unaffected by the gen4.5/veo3 duration-default fix)."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen4_turbo", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert "duration" not in call_kwargs
+
+
 def test_submit_gen3a_turbo_gets_its_own_ratio_default(mock_runway):
     """gen3a_turbo's accepted ratio set ({"768:1280", "1280:768"}) is
     disjoint from gen4_turbo's — it must NOT get the generic 1280:720
@@ -148,7 +198,7 @@ def test_submit_non_image_chain_input_still_requires_image(mock_runway):
 
 
 def test_submit_prompt_image_via_params_is_url_validated(mock_runway):
-    """_check_prompt_image's error message points callers at
+    """_raise_image_required_error's message points callers at
     params={'prompt_image': url} as a fallback — that path skips the
     step.inputs SSRF check (validate_chain_input_url), so submit() must
     validate it directly before forwarding to the SDK."""
@@ -177,6 +227,56 @@ def test_submit_prompt_image_via_params_https_forwarded(mock_runway):
     provider.submit(step)
     call_kwargs = client.image_to_video.create.call_args[1]
     assert call_kwargs["prompt_image"] == "https://example.com/reference.jpg"
+
+
+def test_submit_prompt_image_list_shape_is_url_validated(mock_runway):
+    """Multi-frame prompt_image (a list of {"uri": ...} dicts, e.g. for
+    veo3.1/veo3.1_fast first/last-frame arrays) must be SSRF-validated
+    per-item, not just the single-string shape."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={
+            "prompt_image": [
+                {"uri": "https://example.com/first.jpg"},
+                {"uri": "http://evil.example/last.jpg"},
+            ]
+        },
+    )
+    with pytest.raises(ProviderError, match="Unsafe asset URL"):
+        provider.submit(step)
+    client.image_to_video.create.assert_not_called()
+
+
+def test_submit_prompt_image_data_uri_is_allowed(mock_runway):
+    """A data: URI is a local, no-network-fetch image submission — not an
+    SSRF vector — and must not be rejected by the https-only guard."""
+    provider, client = mock_runway
+    data_uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={"prompt_image": data_uri},
+    )
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["prompt_image"] == data_uri
+
+
+def test_submit_prompt_image_list_with_data_uri_is_allowed(mock_runway):
+    """A data: URI inside the list-of-dicts shape is likewise allowed."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={"prompt_image": [{"uri": "data:image/png;base64,AAAA"}]},
+    )
+    provider.submit(step)
+    client.image_to_video.create.assert_called_once()
 
 
 # --- text_to_video path (no image input) — #226 follow-up -----------------
@@ -247,6 +347,36 @@ def test_submit_text_to_video_rejects_image_only_ratio(mock_runway):
     with pytest.raises(ProviderError, match="Invalid ratio"):
         provider.submit(step)
     client.text_to_video.create.assert_not_called()
+
+
+def test_fetch_output_records_resolved_text_to_video_duration(mock_runway):
+    """submit()'s resolved text_to_video duration default (8) must be
+    reflected in fetch_output's duration metadata — not the image-oriented
+    5s fallback fetch_output falls back to when nothing was recorded
+    (duration provenance, #226 follow-up)."""
+    provider, client = mock_runway
+    client.tasks.retrieve.return_value = SimpleNamespace(
+        id="ttv-task-abc",
+        status="SUCCEEDED",
+        output=["https://runway-output.com/video.mp4"],
+    )
+    step = Step(provider="runway", model="veo3.1", prompt="a sunset")
+    provider.submit(step)
+    assert step.params["duration"] == 8
+    result = provider.fetch_output("ttv-task-abc", step)
+    assert result.assets[0].duration == 8.0
+
+
+def test_fetch_output_records_resolved_image_to_video_duration(mock_runway):
+    """Same provenance guarantee on the image_to_video path: gen4.5's
+    resolved duration default (8) must be recorded, not fetch_output's 5s
+    fallback."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen4.5", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    assert step.params["duration"] == 8
+    result = provider.fetch_output("task-abc", step)
+    assert result.assets[0].duration == 8.0
 
 
 def test_submit_image_only_model_text_only_still_raises(mock_runway):

@@ -130,6 +130,28 @@ def _default_ratio_for_model(model_id: str) -> str:
     return _DEFAULT_RATIO
 
 
+# gen4.5 and veo3's image_to_video.create overloads mark `duration` as
+# required (no Omit) — unlike gen4_turbo/gen3a_turbo/veo3.1/veo3.1_fast,
+# where it's optional. veo3 additionally pins it to exactly 8 (Literal[8]);
+# 8 is also within gen4.5's documented 2-10 range, so one constant covers
+# both without a per-model split.
+_IMAGE_REQUIRED_DURATION_MODELS = frozenset({"gen4.5", "veo3"})
+_IMAGE_REQUIRED_DURATION_DEFAULT = 8
+
+
+def _default_duration_for_image_model(model_id: str) -> int | None:
+    """Return a required duration default for image_to_video, or None.
+
+    Every other model on this endpoint (gen4_turbo, gen3a_turbo, veo3.1,
+    veo3.1_fast) accepts an *absent* duration — for those, returning None
+    preserves the pre-existing behavior of only forwarding duration when
+    the caller supplied one.
+    """
+    if model_id in _IMAGE_REQUIRED_DURATION_MODELS:
+        return _IMAGE_REQUIRED_DURATION_DEFAULT
+    return None
+
+
 def _check_ratio(params: dict[str, Any]) -> None:
     """Validate the (post-alias) Runway-native ``ratio`` value."""
     ratio = params.get("ratio")
@@ -159,8 +181,8 @@ def _check_duration(params: dict[str, Any]) -> None:
     params["duration"] = dur
 
 
-def _check_prompt_image(model_id: str, params: dict[str, Any]) -> None:
-    """Require a source image, with an actionable error instead of the SDK's leak.
+def _raise_image_required_error(model_id: str) -> None:
+    """Raise an actionable error instead of letting the SDK's leak through.
 
     Called explicitly from ``submit()`` — NOT wired as a blanket
     ``param_constraint`` — because the image requirement is endpoint-specific,
@@ -173,18 +195,46 @@ def _check_prompt_image(model_id: str, params: dict[str, Any]) -> None:
     ``_submit_text_to_video``). Without this check, a text-only request to
     an image-only model would surface the SDK's generic "Missing required
     arguments; Expected either (...)" message (#226) instead of telling the
-    caller what to do about it.
+    caller what to do about it. The caller (``submit()``) has already
+    confirmed no image was given, so this always raises — there's no
+    condition left to check here.
     """
-    if not params.get("prompt_image"):
-        raise ProviderError(
-            f"{model_id} is image-to-video only and requires an input "
-            "image (routed to 'prompt_image'). Chain an image-producing "
-            "step (e.g. `.step(..., input_from=[N])` or "
-            "`external_inputs=[image_asset]`), pass one directly via "
-            "params={'prompt_image': '<https-url>'}, or use a text-capable "
-            "model (gen4.5, veo3, veo3.1, veo3.1_fast) for text-only prompts.",
-            error_code=ProviderErrorCode.INVALID_INPUT,
-        )
+    raise ProviderError(
+        f"{model_id} is image-to-video only and requires an input "
+        "image (routed to 'prompt_image'). Chain an image-producing "
+        "step (e.g. `.step(..., input_from=[N])` or "
+        "`external_inputs=[image_asset]`), pass one directly via "
+        "params={'prompt_image': '<https-url>'}, or use a text-capable "
+        "model (gen4.5, veo3, veo3.1, veo3.1_fast) for text-only prompts.",
+        error_code=ProviderErrorCode.INVALID_INPUT,
+    )
+
+
+def _validate_prompt_image(prompt_image: Any) -> None:
+    """SSRF-guard ``prompt_image`` regardless of which shape it arrives in.
+
+    The SDK accepts ``prompt_image`` as either a single URL/data-URI string
+    or an iterable of dicts with a ``uri`` field (multi-frame first/last-
+    frame arrays, e.g. for veo3.1/veo3.1_fast). Images routed from
+    ``step.inputs`` already passed ``validate_chain_input_url`` upstream (in
+    ``prepare_payload``); this closes the gap for values supplied directly
+    via ``step.params``, which aren't validated anywhere else.
+
+    ``data:`` URIs are a local, no-network-fetch image submission — not an
+    SSRF vector — and are left alone. Every ``http``/``https`` value (in
+    either shape) is validated with ``validate_asset_url`` (https-only,
+    matching the SDK's documented "A HTTPS URL" contract for this field).
+    """
+
+    def _check_one(uri: Any) -> None:
+        if isinstance(uri, str) and not uri.startswith("data:"):
+            validate_asset_url(uri)
+
+    if isinstance(prompt_image, str):
+        _check_one(prompt_image)
+    elif isinstance(prompt_image, (list, tuple)):
+        for item in prompt_image:
+            _check_one(item.get("uri") if isinstance(item, dict) else item)
 
 
 # --- text_to_video (no image input) ----------------------------------------
@@ -228,7 +278,7 @@ def _check_text_ratio(params: dict[str, Any]) -> None:
 # Every matched slug is image-to-video only (see submit()'s routing) — the
 # pinned SDK's text_to_video.create doesn't accept any of them as a `model`
 # literal — so a text-only request to one raises the actionable
-# _check_prompt_image error. That capability is carried as
+# _raise_image_required_error error. That capability is carried as
 # ``extras["image_only"]`` (the framework's documented per-model escape
 # hatch — see the Google Veo connector's ``extras["has_audio"]`` for the
 # same pattern) rather than re-deriving it from the family's *parameter-shape*
@@ -236,7 +286,7 @@ def _check_text_ratio(params: dict[str, Any]) -> None:
 # capability) stay decoupled even though today they happen to coincide for
 # every *_turbo slug. Constraints (duration ∈ {5, 10}, ratio ∈ _VALID_RATIOS)
 # are Runway-wide rather than per-model, so they live on the family
-# spec_template; _check_prompt_image is NOT one of them — it's called
+# spec_template; the image-required check is NOT one of them — it's called
 # explicitly from submit()'s routing decision (endpoint choice is
 # per-request, not a fixed property of the spec). The ``ratio`` *default*
 # is deliberately NOT set here either — it differs for gen3a_turbo (see
@@ -404,8 +454,9 @@ class RunwayProvider(BaseProvider):
             is_image_only = bool(self._models.get(step.model).extras.get("image_only"))
             if not has_image and is_image_only:
                 # e.g. gen4_turbo/gen3a_turbo: image-to-video only, no
-                # image given — always raises (has_image is False here).
-                _check_prompt_image(step.model, payload)
+                # image given — this is the only place that can be reached
+                # with is_image_only True and no image, so it always raises.
+                _raise_image_required_error(step.model)
 
             if has_image:
                 task = self._submit_image_to_video(client, step, payload)
@@ -422,44 +473,63 @@ class RunwayProvider(BaseProvider):
             ) from exc
 
     def _submit_image_to_video(self, client: Any, step: Step, payload: dict[str, Any]) -> Any:
-        """Submit via Runway's ``image_to_video`` endpoint (image input required)."""
+        """Submit via Runway's ``image_to_video`` endpoint (image input required).
+
+        Note: the pinned SDK's ``image_to_video.create`` has no ``watermark``
+        parameter at all (it's keyword-only with no ``**kwargs``), so it's
+        deliberately not forwarded here — a ``params={'watermark': ...}``
+        would otherwise raise an opaque ``TypeError`` wrapped as a generic
+        "Runway submit failed" (exactly the class of error #226 set out to
+        kill).
+        """
         # Translate canonical 'prompt' to Runway's 'prompt_text'; only the
         # SDK-recognized keys are forwarded to image_to_video.create.
         request: dict = {
             "model": step.model,
             "prompt_text": payload.get("prompt", step.prompt or ""),
         }
-        for key in ("duration", "ratio", "seed", "watermark", "prompt_image"):
+        for key in ("duration", "ratio", "seed", "prompt_image"):
             if key in payload:
                 request[key] = payload[key]
-        if "watermark" in request:
-            request["watermark"] = bool(request["watermark"])
         # Model-aware default: gen3a_turbo's valid ratio set is disjoint
         # from every other model's, so the default can't live on the
         # shared ModelSpec (see _default_ratio_for_model docstring).
         request.setdefault("ratio", _default_ratio_for_model(step.model))
+        # gen4.5/veo3 mark `duration` required on this endpoint; every other
+        # model accepts an absent one (see _default_duration_for_image_model).
+        default_duration = _default_duration_for_image_model(step.model)
+        if default_duration is not None:
+            request.setdefault("duration", default_duration)
 
         # prompt_image reaches here two ways: routed from step.inputs
         # (already SSRF-validated by validate_chain_input_url in
         # prepare_payload) or supplied directly via step.params — which
-        # is NOT validated upstream. _check_prompt_image's error message
+        # is NOT validated upstream. _raise_image_required_error's message
         # explicitly suggests the params={'prompt_image': ...} path, so
-        # validate it here regardless of origin before it reaches the SDK.
-        prompt_image = request.get("prompt_image")
-        if isinstance(prompt_image, str):
-            validate_asset_url(prompt_image)
+        # validate it here regardless of origin, and regardless of shape
+        # (single URL/data-URI string, or a list of {"uri": ...} dicts for
+        # multi-frame models) before it reaches the SDK.
+        if "prompt_image" in request:
+            _validate_prompt_image(request["prompt_image"])
+
+        # Record what was actually submitted so fetch_output's duration
+        # metadata (and any duration-keyed pricing) matches reality instead
+        # of guessing 5s for a model that just got a real default applied.
+        if "duration" in request:
+            step.params.setdefault("duration", request["duration"])
 
         return client.image_to_video.create(**request)
 
     def _submit_text_to_video(self, client: Any, step: Step, payload: dict[str, Any]) -> Any:
         """Submit via Runway's ``text_to_video`` endpoint (no image input).
 
-        Only reached for models the family-pattern check in ``submit()``
-        already excluded from the image-only set. The pinned SDK's
-        ``text_to_video.create`` accepts gen4.5, veo3, veo3.1, veo3.1_fast;
-        any other slug is forwarded permissively — submit-time errors are
-        the authoritative signal (see ``DiscoverySupport.NONE`` above) — so
-        a future text-capable model works without a code change.
+        Only reached for models ``submit()`` has already determined are not
+        image-only (``extras["image_only"]`` unset — see ``_RUNWAY_GEN_FAMILY``
+        and ``_FALLBACK``). The pinned SDK's ``text_to_video.create`` accepts
+        gen4.5, veo3, veo3.1, veo3.1_fast; any other slug is forwarded
+        permissively — submit-time errors are the authoritative signal (see
+        ``DiscoverySupport.NONE`` above) — so a future text-capable model
+        works without a code change.
         """
         _check_text_ratio(payload)
         request: dict = {
@@ -473,6 +543,13 @@ class RunwayProvider(BaseProvider):
         # see _TEXT_VALID_RATIOS / _TEXT_DEFAULT_DURATION.
         request.setdefault("ratio", _TEXT_DEFAULT_RATIO)
         request.setdefault("duration", _TEXT_DEFAULT_DURATION)
+
+        # Record what was actually submitted — duration is always resolved
+        # here (defaulted if the caller omitted it), so fetch_output's
+        # duration metadata reflects the real submission instead of its own
+        # image_to_video-oriented 5s fallback.
+        step.params.setdefault("duration", request["duration"])
+
         return client.text_to_video.create(**request)
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:

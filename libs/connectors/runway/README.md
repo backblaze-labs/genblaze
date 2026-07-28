@@ -17,8 +17,9 @@
 
 | Model | Notes |
 |---|---|
-| `gen4_turbo` | Latest Runway video model — fast, highest quality |
-| `gen3a_turbo` | Previous generation — still supported |
+| `gen4_turbo` | Latest Runway Gen model — fast, highest quality. **Image-to-video only**: every request needs an input image (`inputs=`/`external_inputs=`/`params={'prompt_image': url}`). |
+| `gen3a_turbo` | Previous generation — still supported. Also **image-to-video only**. |
+| `gen4.5`, `veo3`, `veo3.1`, `veo3.1_fast` | Support **both** image-to-video and text-only prompts — with no input image, the provider routes to Runway's text-to-video endpoint automatically. |
 
 ## Install
 
@@ -28,7 +29,10 @@ pip install genblaze-runway
 
 Registers the `runway` provider via entry points; [`genblaze-core`](https://pypi.org/project/genblaze-core/) discovers it automatically.
 
-## Quickstart — Gen-4 Turbo text-to-video
+## Quickstart — text-to-video
+
+`gen4_turbo`/`gen3a_turbo` are image-to-video only; use a text-capable model
+(`gen4.5`, `veo3`, `veo3.1`, `veo3.1_fast`) for text-only prompts:
 
 ```bash
 pip install genblaze-core genblaze-runway
@@ -41,9 +45,31 @@ from genblaze_runway import RunwayProvider
 
 run, manifest = (
     Pipeline("runway-demo")
+    .step(RunwayProvider(), model="veo3.1",
+          prompt="A timelapse of wildflowers blooming in a meadow, soft morning light, macro detail",
+          modality=Modality.VIDEO, duration=8)
+    .run(timeout=300)
+)
+print(run.steps[0].assets[0].url, manifest.canonical_hash)
+assert manifest.verify()
+```
+
+## Quickstart — Gen-4 Turbo image-to-video
+
+`gen4_turbo` always requires a source image — pass one via `external_inputs`:
+
+```python
+from genblaze_core import Asset, Modality, Pipeline
+from genblaze_runway import RunwayProvider
+
+reference_image = Asset(url="https://example.com/reference.jpg", media_type="image/jpeg")
+
+run, manifest = (
+    Pipeline("runway-demo")
     .step(RunwayProvider(), model="gen4_turbo",
           prompt="A timelapse of wildflowers blooming in a meadow, soft morning light, macro detail",
-          modality=Modality.VIDEO, duration=10)
+          modality=Modality.VIDEO, duration=10,
+          external_inputs=[reference_image])
     .run(timeout=300)
 )
 print(run.steps[0].assets[0].url, manifest.canonical_hash)
