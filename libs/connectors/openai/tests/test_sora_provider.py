@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -240,6 +241,125 @@ def test_submit_rejects_unsafe_chain_input_url(mock_openai):
     step = Step(provider="openai-sora", model="sora-2", prompt="animate", inputs=[img])
     with pytest.raises(ProviderError, match="Unsafe chain input URL"):
         provider.submit(step)
+
+
+# --- Cost tracking ---
+#
+# As of genblaze-core 0.3.0 the SDK ships zero hardcoded prices for Sora —
+# a flat per-video rate would misreport cost by 10x+ since Sora bills per
+# (model, size, seconds), and no widely-verified per-second rate table was
+# available to source. See the module docstring and the "OpenAI Sora"
+# section of docs/reference/pricing-recipes.md for the canonical guidance:
+# register a per-second strategy with your own verified rate — a fabricated
+# number would turn "unknown cost" into a silently-wrong concrete one, which
+# is worse for a budget gate than None.
+
+
+def test_estimate_cost_none_by_default():
+    """No ModelSpec ships pricing, so estimate_cost() returns None until the
+    caller registers a strategy — this is the bug reported in #222/#223."""
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        from genblaze_openai import SoraProvider
+
+        provider = SoraProvider(api_key="test-key")
+    assert provider.estimate_cost("sora-2", {"seconds": 8, "size": "1280x720"}) is None
+
+
+def _per_second(rate: float):
+    """Mirrors the ``per_second`` recipe in docs/reference/pricing-recipes.md
+    exactly, including its guards, so these tests double as a regression
+    check on that doc staying accurate:
+
+    - Reads the native ``seconds`` param, falling back to the canonical
+      ``duration`` alias — ``estimate_cost()`` never runs
+      ``normalize_params()``, so a caller passing ``duration`` (the alias
+      ``generate()`` would otherwise rewrite to ``seconds`` at submit time)
+      must still resolve to a cost. Sora assets also carry no probed
+      duration metadata (see ``fetch_output()``), so ``ctx.output_duration_s``
+      isn't an option either.
+    - A non-numeric, negative, or non-finite value yields ``None`` (unknown
+      cost) rather than raising or silently reporting a poisoned/negative
+      cost.
+    """
+    from genblaze_core.providers import PricingContext
+
+    def _strategy(ctx: PricingContext) -> float | None:
+        seconds = ctx.step.params.get("seconds") or ctx.step.params.get("duration")
+        if seconds is None:
+            return None
+        try:
+            seconds_f = float(seconds)
+        except (TypeError, ValueError):
+            return None
+        if seconds_f < 0 or seconds_f != seconds_f or seconds_f in (float("inf"), float("-inf")):
+            return None
+        return seconds_f * rate
+
+    return _strategy
+
+
+def test_estimate_cost_with_registered_per_second_pricing():
+    """Registering a per-second strategy (the documented recipe) makes
+    estimate_cost() return a Decimal that scales with requested duration —
+    doubling ``seconds`` doubles the estimate."""
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        from genblaze_openai import SoraProvider
+
+        provider = SoraProvider(api_key="test-key")
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("sora-2", _per_second(0.10))
+
+    short_cost = provider.estimate_cost("sora-2", {"seconds": 4})
+    long_cost = provider.estimate_cost("sora-2", {"seconds": 8})
+
+    assert isinstance(short_cost, Decimal)
+    assert isinstance(long_cost, Decimal)
+    assert float(long_cost) == pytest.approx(float(short_cost) * 2)
+
+
+def test_estimate_cost_falls_back_to_duration_alias():
+    """estimate_cost() never runs normalize_params(), so a caller passing
+    the canonical ``duration`` alias (rather than native ``seconds``) must
+    still get a real cost out of the registered recipe — not a silent
+    None. Regression guard for the dual-key read."""
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        from genblaze_openai import SoraProvider
+
+        provider = SoraProvider(api_key="test-key")
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("sora-2", _per_second(0.10))
+
+    seconds_cost = provider.estimate_cost("sora-2", {"seconds": 8})
+    duration_cost = provider.estimate_cost("sora-2", {"duration": 8})
+
+    assert duration_cost is not None
+    assert duration_cost == seconds_cost
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"seconds": "not-a-number"},
+        {"seconds": None},
+        {"seconds": -4},
+        {"seconds": float("nan")},
+        {"seconds": float("inf")},
+        {"seconds": object()},
+        {},
+    ],
+)
+def test_estimate_cost_returns_none_on_malformed_seconds(params):
+    """The registered strategy's input guards must return None — not
+    raise, not silently report a negative/NaN/infinite cost — for every
+    malformed shape of the ``seconds``/``duration`` param."""
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        from genblaze_openai import SoraProvider
+
+        provider = SoraProvider(api_key="test-key")
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("sora-2", _per_second(0.10))
+
+    assert provider.estimate_cost("sora-2", params) is None
 
 
 # --- Compliance harness ---
