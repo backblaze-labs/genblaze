@@ -40,6 +40,21 @@ def test_embed_unknown_format_sidecar(tmp_path: Path) -> None:
     assert result.sidecar_path.exists()
 
 
+def test_embed_accepts_str_output_override(tmp_path: Path) -> None:
+    """EmbedResult.path=output or source used to leak a raw str when
+    output= was passed as a str with no override handling — every branch
+    (inline, sidecar, none, pointer) must return a real Path."""
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+    out = tmp_path / "renamed.png"
+
+    embedder = SmartEmbedder()
+    result = embedder.embed(png, _make_manifest(), output=str(out))
+    assert result.method == "inline"
+    assert isinstance(result.path, Path)
+    assert result.path == out
+
+
 def test_embed_unknown_format_sidecar_accepts_str_source(tmp_path: Path) -> None:
     """guess_mime()'s extension-fallback branch (magic bytes unrecognized)
     used to call path.suffix.lower() directly on a raw str source, raising

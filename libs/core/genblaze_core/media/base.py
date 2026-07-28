@@ -80,16 +80,21 @@ class BaseMediaHandler(ABC):
     """Abstract base for media embedding/extraction."""
 
     @abstractmethod
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
+    def embed(
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
+    ) -> Path:
         """Embed a manifest into a media file. Returns path to output file."""
         ...
 
     @abstractmethod
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         """Extract a manifest from a media file."""
         ...
 
-    def verify(self, source: Path) -> bool:
+    def verify(self, source: str | os.PathLike[str]) -> bool:
         """Extract and run ``Manifest.verify()``."""
         manifest = self.extract(source)
         return manifest.verify()

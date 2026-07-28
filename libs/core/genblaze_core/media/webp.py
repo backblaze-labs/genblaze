@@ -61,7 +61,7 @@ class WebpHandler(BaseMediaHandler):
         self,
         source: str | os.PathLike[str],
         manifest: Manifest,
-        output: Path | None = None,
+        output: str | os.PathLike[str] | None = None,
         *,
         lossless: bool | None = None,
         quality: int = 90,
@@ -73,10 +73,10 @@ class WebpHandler(BaseMediaHandler):
         ``False`` to force a specific encoding.
         """
         try:
-            # Coerce before the output-or-source default so a str source
-            # with no output= override still returns a Path (#225).
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
             source = Path(source)
-            output = output or source
+            output = Path(output) if output else source
             manifest_json = manifest.to_canonical_json()
             xmp_data = _build_xmp(manifest_json)
             if len(xmp_data) > MAX_XMP_BYTES:

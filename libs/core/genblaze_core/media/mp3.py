@@ -18,7 +18,10 @@ class Mp3Handler(BaseMediaHandler):
     """Embed and extract manifests in MP3 ID3v2 TXXX frames."""
 
     def embed(
-        self, source: str | os.PathLike[str], manifest: Manifest, output: Path | None = None
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
     ) -> Path:
         try:
             from mutagen.id3 import ID3, TXXX, ID3NoHeaderError
@@ -29,10 +32,10 @@ class Mp3Handler(BaseMediaHandler):
             ) from exc
 
         try:
-            # Coerce before the output-or-source default so a str source
-            # with no output= override still returns a Path (#225).
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
             source = Path(source)
-            output = output or source
+            output = Path(output) if output else source
             # Mutagen mutates files in place — copy first so a crash mid-save
             # cannot touch the source file.
             with atomic_write(output) as tmp:

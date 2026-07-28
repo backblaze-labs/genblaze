@@ -99,13 +99,16 @@ class JpegHandler(BaseMediaHandler):
     """Embed and extract manifests in JPEG XMP metadata."""
 
     def embed(
-        self, source: str | os.PathLike[str], manifest: Manifest, output: Path | None = None
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
     ) -> Path:
         try:
-            # Coerce before the output-or-source default so a str source
-            # with no output= override still returns a Path (#225).
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
             source = Path(source)
-            output = output or source
+            output = Path(output) if output else source
             manifest_json = manifest.to_canonical_json()
             xmp_data = _build_xmp(manifest_json)
             if len(xmp_data) > MAX_XMP_BYTES:

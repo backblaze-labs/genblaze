@@ -30,6 +30,20 @@ def test_mp4_extract_accepts_str_path(tmp_mp4: Path, sample_manifest: Manifest) 
     assert extracted.verify()
 
 
+def test_mp4_embed_accepts_str_output(
+    tmp_path: Path, tmp_mp4: Path, sample_manifest: Manifest
+) -> None:
+    """output= must also be coerced — embed() used to return the raw str
+    the caller passed for output= instead of a Path (one layer below the
+    source= fix: `output = output or source` never touched output)."""
+    out = tmp_path / "out.mp4"
+    handler = Mp4Handler()
+    result = handler.embed(tmp_mp4, sample_manifest, output=str(out))
+    assert isinstance(result, Path)
+    assert result == out
+    assert handler.verify(out)
+
+
 def test_mp4_verify(tmp_mp4: Path, sample_manifest: Manifest) -> None:
     handler = Mp4Handler()
     handler.embed(tmp_mp4, sample_manifest)

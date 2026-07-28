@@ -32,7 +32,10 @@ class Mp4Handler(BaseMediaHandler):
     """Embed and extract manifests in MP4 using a custom UUID box."""
 
     def embed(
-        self, source: str | os.PathLike[str], manifest: Manifest, output: Path | None = None
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
     ) -> Path:
         try:
             # Accept str like the rest of the ecosystem (open(), shutil, PIL)
@@ -43,7 +46,9 @@ class Mp4Handler(BaseMediaHandler):
             # the same EmbeddingError as any other bad-source failure,
             # instead of an uncaught bare ValueError.
             source = Path(source)
-            output = output or source
+            # output= is just as caller-facing as source= — a str output
+            # must not leak out of the -> Path contract either (#225).
+            output = Path(output) if output else source
             file_size = source.stat().st_size
             if file_size <= MAX_FILE_BYTES:
                 return self._embed_inmemory(source, manifest, output)

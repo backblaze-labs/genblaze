@@ -45,7 +45,7 @@ class SidecarHandler(BaseMediaHandler):
         self,
         source: str | os.PathLike[str],
         manifest: Manifest,
-        output: Path | None = None,
+        output: str | os.PathLike[str] | None = None,
         *,
         policy: EmbedPolicy | None = None,
     ) -> Path:

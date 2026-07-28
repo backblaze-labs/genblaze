@@ -693,6 +693,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         # bare AttributeError on an internal method name (#224). The most
         # common miss is passing a standalone chat()/achat() function —
         # those are convenience helpers, not BaseProvider instances.
+        # Deliberately TypeError, not GenblazeError like the sibling guards
+        # below (reserved-param names, metadata collisions) — this rejects
+        # the argument's *type*, not a value/usage mistake within an
+        # otherwise-valid call, matching the same distinction already drawn
+        # in canonical/_normalize.py and models/chat.py.
         if not isinstance(provider, BaseProvider):
             raise TypeError(
                 f"step() expected a BaseProvider; got {_describe_step_provider_arg(provider)}. "

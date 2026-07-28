@@ -20,7 +20,10 @@ class FlacHandler(BaseMediaHandler):
     """Embed and extract manifests in FLAC files via Vorbis comments."""
 
     def embed(
-        self, source: str | os.PathLike[str], manifest: Manifest, output: Path | None = None
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
     ) -> Path:
         try:
             from mutagen.flac import FLAC
@@ -31,10 +34,10 @@ class FlacHandler(BaseMediaHandler):
             ) from exc
 
         try:
-            # Coerce before the output-or-source default so a str source
-            # with no output= override still returns a Path (#225).
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
             source = Path(source)
-            output = output or source
+            output = Path(output) if output else source
             with atomic_write(output) as tmp:
                 shutil.copy2(source, tmp)
                 audio = FLAC(tmp)

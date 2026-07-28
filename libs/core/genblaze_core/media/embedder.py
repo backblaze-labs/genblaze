@@ -46,7 +46,7 @@ class SmartEmbedder:
         self,
         source: str | os.PathLike[str],
         manifest: Manifest,
-        output: Path | None = None,
+        output: str | os.PathLike[str] | None = None,
         *,
         policy: EmbedPolicy | None = None,
         mime_type: str | None = None,
@@ -62,9 +62,10 @@ class SmartEmbedder:
         """
         # Coerce up front — every EmbedResult.path branch below defaults to
         # `output or source`, and EmbedResult.path is typed Path. Without
-        # this, a str source with no output= override would return a str
-        # in a Path-typed field (#225).
+        # this, a str source= OR output= with no override would return a
+        # str in a Path-typed field (#225).
         source = Path(source)
+        output = Path(output) if output else None
         if policy is not None and policy.embed_mode == "none":
             return EmbedResult(
                 path=output or source,
