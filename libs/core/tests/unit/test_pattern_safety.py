@@ -294,6 +294,66 @@ class TestIgnoreCaseAwareCharsetOverlap:
             assert_safe(re.compile("(İ+)(i+)(İ+)(i+)(İ+)(i+)$", re.IGNORECASE))
 
 
+class TestWildcardAdjacentGroupsOverlap:
+    """Regression tests for a release-readiness-panel finding: `.` was
+    treated as the literal character '.' by `_branch_charset` instead of
+    "matches anything", so two adjacent unbounded groups built from `.+`
+    looked charset-disjoint from an `[a-z]+` sibling even though they can
+    match the same input at runtime -- reopening the exact ReDoS bypass
+    class #200 closed for other atom shapes. Confirmed regression: before
+    this fix, `_heuristic_unsafe(r"(.+)([a-z]+)$")` returned `False`."""
+
+    def test_wildcard_adjacent_to_charset_group_rejected(self) -> None:
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(.+)([a-z]+)$"))
+
+    def test_wildcard_adjacent_groups_reported_adversarial_shape_rejected(self) -> None:
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(.+)([a-z]+)(.+)([a-z]+)(.+)([a-z]+)$"))
+
+    def test_wildcard_adjacent_to_wildcard_still_rejected(self) -> None:
+        # Sanity check: two `.+` groups were already correctly rejected
+        # before this fix (both resolve to the same literal '.' charset by
+        # accident) -- must stay rejected afterward too, now for the
+        # correct reason (both are unknown/full, which always overlaps).
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"(.+)(.+)$"))
+
+
+class TestNonCapturingGroupCharsetOverlap:
+    """Regression tests for a release-readiness-panel finding:
+    `_has_adjacent_unbounded_groups` analyzed a group's RAW body -- including
+    a leading `?:`/`?P<name>` marker -- instead of stripping it first (unlike
+    the sibling `_has_ambiguous_quantified_alternation`, which already does).
+    `?` and `:` were added to the group's charset as if they were real
+    matchable characters, so two charset-disjoint non-capturing groups
+    spuriously "overlapped" via those marker characters and were rejected.
+    Confirmed regression: before this fix,
+    `_heuristic_unsafe(r"^(?:[a-z]+)(?:[0-9]+)$")` returned `True` even
+    though this is a safe, linear-time pattern."""
+
+    def test_non_capturing_disjoint_groups_allowed(self) -> None:
+        assert_safe(re.compile(r"^(?:[a-z]+)(?:[0-9]+)$"))
+
+    def test_non_capturing_overlapping_groups_still_rejected(self) -> None:
+        with pytest.raises(ValueError, match="catastrophic backtracking"):
+            assert_safe(re.compile(r"^(?:[a-z]+)(?:[a-z]+)$"))
+
+    def test_named_group_disjoint_from_non_capturing_allowed(self) -> None:
+        assert_safe(re.compile(r"^(?P<letters>[a-z]+)(?:[0-9]+)$"))
+
+    def test_lookahead_adjacent_to_unbounded_group_still_rejected(self) -> None:
+        # A lookaround marker (`?=`, `?!`, ...) is intentionally left
+        # unstripped by this fix -- it's a distinct, out-of-scope construct
+        # (zero-width, not a capturing/non-capturing group) whose existing
+        # conservative handling must not regress as a side effect of the
+        # `?:`/`?P<name>` fix above. Tested against the static heuristic
+        # directly, not `assert_safe()`: when `google-re2` is installed it
+        # rejects this pattern first anyway (lookarounds are an unsupported
+        # re2 construct), which would mask a heuristic regression here.
+        assert _heuristic_unsafe(r"(a+)(?=[0-9]+)(a+)$") is True
+
+
 class TestHeuristicUnsafe:
     """Direct tests of the heuristic detector, independent of whether
     ``re2`` happens to be installed in the environment. Installing

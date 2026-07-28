@@ -346,6 +346,20 @@ def _has_adjacent_unbounded_groups(src: str, flags: int = 0) -> bool:
     carried: frozenset[str] | None = None
     for start, end in top_level:
         body = src[start + 1 : end]
+        # Strip a recognized non-capturing/named-group marker before any of
+        # the reads below, mirroring _has_ambiguous_quantified_alternation
+        # (see its own marker handling). Without this, `(?:[a-z]+)`'s body
+        # is the literal text `?:[a-z]+` -- `_branch_charset` then adds `?`
+        # and `:` to the group's charset as if they were real matchable
+        # characters, so two disjoint non-capturing groups like
+        # `(?:[a-z]+)(?:[0-9]+)` spuriously "overlap" via those marker
+        # characters and get rejected (a confirmed false positive). An
+        # unrecognized `?`-prefixed body (a lookaround) is intentionally
+        # left unstripped -- its existing conservative handling is
+        # unrelated to this fix and out of scope here.
+        marker = _GROUP_MARKER.match(body)
+        if marker:
+            body = body[marker.end() :]
         unbounded = bool(re.search(_UNBOUNDED_QUANT, body))
         resolved = (
             _resolved_charset(*_branch_charset(body, allow_unbounded=True, flags=flags))
@@ -625,6 +639,17 @@ def _branch_charset(
                 return False, None
             atom_charset = _bracket_charset(branch[i + 1 : close])
             i = close + 1
+        elif ch == ".":
+            # An unescaped `.` matches any character (except a newline,
+            # absent re.DOTALL) -- not the literal character '.'. Treating
+            # it as {'.'} let two adjacent groups built from e.g. `.+` look
+            # charset-disjoint from a sibling `[a-z]+` when they can
+            # actually both match the same input, reopening the exact
+            # ReDoS bypass class #200 closed for other atom shapes (a
+            # confirmed regression: `(.+)([a-z]+)$` is flagged safe without
+            # this branch).
+            atom_charset = None
+            i += 1
         else:
             atom_charset = frozenset(ch)
             i += 1
