@@ -1,4 +1,5 @@
-"""Shared Google API error mapping — used by provider.py, imagen.py."""
+"""Shared Google API error mapping — used by provider.py, imagen.py,
+chat.py, gemini_image.py."""
 
 from genblaze_core.models.enums import ProviderErrorCode
 
@@ -8,11 +9,12 @@ def map_google_error(exc: Exception) -> ProviderErrorCode:
     msg = str(exc).lower()
     # Imagen entitlement gate (issue #206): models.get says the slug is
     # cataloged, but :predict 404s for accounts without Imagen access.
-    # ImagenProvider.validate_model warns (OK_PROVISIONAL) rather than blocks at
-    # preflight, so an unentitled imagen-4.0-* slug is expected to reach call
-    # time and 404 here — this mapping is the primary enforcement point, not a
-    # rare backstop. MODEL_ERROR lets the pipeline's fallback_models retry fire
-    # on it exactly like any other dead slug.
+    # ImagenProvider.validate_model warns (OK_PROVISIONAL) rather than blocks
+    # at preflight, so an unentitled imagen-4.0-* slug is expected to reach
+    # call time and 404 on the actual API call — this branch, not preflight,
+    # is where the gate is actually handled. MODEL_ERROR matches what
+    # preflight already raises for a DEAD probe result, so the pipeline's
+    # fallback_models retry fires on it exactly like any other dead slug.
     if "no longer available to new users" in msg:
         return ProviderErrorCode.MODEL_ERROR
     if "rate" in msg or "429" in msg or "resource_exhausted" in msg:

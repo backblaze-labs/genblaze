@@ -80,10 +80,10 @@ class ImagenProvider(GoogleClientMixin, SyncProvider):
 
     name = "google-imagen"
     discovery_support = DiscoverySupport.PARTIAL
-    """google-genai exposes ``client.models.get`` per-slug; that's the
-    authoritative liveness signal. There's no Imagen-only catalog
-    listing endpoint, so we stay PARTIAL and rely on the family
-    probe."""
+    """google-genai exposes ``client.models.get`` per-slug; that's
+    authoritative for catalog membership (not account entitlement —
+    see ``validate_model``). There's no Imagen-only catalog listing
+    endpoint, so we stay PARTIAL and rely on the family probe."""
 
     @classmethod
     def create_registry(cls) -> ModelRegistry:

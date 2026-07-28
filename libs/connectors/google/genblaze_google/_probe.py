@@ -14,9 +14,10 @@ Mapping:
   ``OK_PROVISIONAL`` rather than blocking the user.
 
 Used by ``DiscoverySupport.PARTIAL`` providers in
-``genblaze-google``: ``VeoProvider`` and ``ImagenProvider``. Each
-provider attaches this callable to its ``ModelFamily`` instances and
-forwards its lazy-built genai client via ``_invoke_family_probe``.
+``genblaze-google``: ``VeoProvider``, ``ImagenProvider``, and
+``GeminiImageProvider``. Each provider attaches this callable to its
+``ModelFamily`` instances and forwards its lazy-built genai client via
+``_invoke_family_probe``.
 """
 
 from __future__ import annotations
