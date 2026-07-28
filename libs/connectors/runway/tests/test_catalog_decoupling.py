@@ -76,9 +76,24 @@ class TestRunwayGenFamily:
             assert match is None, slug
 
     def test_resolved_spec_carries_constraints(self) -> None:
-        """The family's constraints (duration ∈ {5, 10}, ratio ∈ {16:9,
-        9:16}) ride on every resolved spec. Subclasses inherit Runway's
-        validation without code duplication."""
+        """The family's constraints (duration ∈ {5, 10}, ratio value set)
+        ride on every resolved spec. Subclasses inherit Runway's validation
+        without code duplication.
+
+        The image-required check is NOT one of these constraints — it's
+        endpoint routing, not a fixed property of the model, so submit()
+        calls it explicitly only when it has already decided (no image +
+        family match) that image_to_video is the only valid endpoint for
+        this model and no image was given. See test_runway_provider.py for
+        the routing behavior end-to-end.
+
+        The ``ratio`` default is deliberately NOT on the spec — gen3a_turbo's
+        accepted ratio set is disjoint from gen4_turbo's, so a single
+        model-blind ``param_defaults`` value would be wrong for one of the
+        two family-matched slugs. ``submit()`` fills it in per-model instead
+        (see ``_default_ratio_for_model``, exercised in
+        test_runway_provider.py).
+        """
         from genblaze_runway import RunwayProvider
 
         provider = RunwayProvider(api_secret="test")
@@ -86,6 +101,60 @@ class TestRunwayGenFamily:
         assert len(spec.param_constraints) == 2
         # The aspect_ratio → ratio alias travels with the spec_template.
         assert spec.param_aliases.get("aspect_ratio") == "ratio"
+
+    def test_family_matched_specs_carry_image_only_capability_flag(self) -> None:
+        """Endpoint-capability (image_to_video vs. text_to_video) rides as
+        ``extras["image_only"]`` on the resolved spec — the framework's
+        documented per-model escape hatch (same pattern as the Google Veo
+        connector's ``extras["has_audio"]``) — not a re-derivation of the
+        family's parameter-shape regex at submit() time."""
+        from genblaze_runway import RunwayProvider
+
+        provider = RunwayProvider(api_secret="test")
+        for slug in ("gen4_turbo", "gen3a_turbo", "gen5_turbo"):
+            assert provider._models.get(slug).extras.get("image_only") is True, slug
+
+
+# --- Broadened catalog (#226): SDK-accepted slugs outside *_turbo ---------
+
+
+class TestBroadenedFallbackCatalog:
+    """gen4.5, veo3, veo3.1, veo3.1_fast are accepted by the pinned SDK
+    (runwayml>=0.6,<5, resolving to 4.7.0) but don't match the ``*_turbo``
+    family pattern — they route through the permissive fallback. Unlike
+    gen4_turbo/gen3a_turbo, these models are text-capable (the SDK's
+    text_to_video.create accepts them), so no image-required constraint
+    applies at the spec level — submit() routes them to text_to_video when
+    no image is given (see test_runway_provider.py for the end-to-end
+    behavior). Duration/ratio value ranges differ per model on both
+    endpoints and aren't strictly validated at the spec level either."""
+
+    @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
+    def test_broadened_slugs_do_not_match_turbo_family(self, slug: str) -> None:
+        from genblaze_runway import RunwayProvider
+
+        provider = RunwayProvider(api_secret="test")
+        assert provider._models.match_family(slug) is None, slug
+
+    @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
+    def test_broadened_slugs_carry_no_spec_level_constraints(self, slug: str) -> None:
+        """No image-required constraint at the spec level — these models
+        are text-capable, so requiring an image would be wrong."""
+        from genblaze_runway import RunwayProvider
+
+        provider = RunwayProvider(api_secret="test")
+        spec = provider._models.get(slug)
+        assert spec.param_constraints == ()
+
+    @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
+    def test_broadened_slugs_are_not_flagged_image_only(self, slug: str) -> None:
+        """extras["image_only"] is absent (falsy) for fallback-routed
+        specs — submit() must not treat these as image-only."""
+        from genblaze_runway import RunwayProvider
+
+        provider = RunwayProvider(api_secret="test")
+        spec = provider._models.get(slug)
+        assert not spec.extras.get("image_only")
 
 
 # --- validate_model end-to-end --------------------------------------------
