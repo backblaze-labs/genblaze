@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-07-28 -->
 # Pricing recipes
 
 > **Not maintained.** Prices in this document are snapshots taken at the
@@ -534,8 +534,12 @@ OPENAI_GPT_IMAGE_1_RATES: dict = {
     ("high", "auto"): 0.167,
 }
 
-# (Similar tables exist for gpt-image-1.5 and gpt-image-1-mini.
-# gpt-image-2 has no published rates — leave its pricing None.)
+# gpt-image-1.5, gpt-image-1-mini, and gpt-image-2 have no rate table here —
+# unlike gpt-image-1 there is no widely-verified per-(quality, size) price
+# list for these variants as of the snapshot date above. Don't guess at
+# numbers for them; build a table the same shape as OPENAI_GPT_IMAGE_1_RATES
+# once you've confirmed current rates at openai.com/pricing, then register
+# it the same way.
 
 dalle = DalleProvider(api_key="...")
 dalle.models.register_pricing("dall-e-3", tiered(OPENAI_DALLE3_RATES, key=image_key))
@@ -546,6 +550,40 @@ dalle.models.register_pricing("gpt-image-1", tiered(OPENAI_GPT_IMAGE_1_RATES, ke
 OpenAI ships new image variants frequently. Match the family pattern
 via `provider.discover_models(refresh=True)`, then extend the rate
 tables and register the new slugs as they appear in the catalog.
+
+---
+
+## OpenAI Sora
+
+Sora bills per `(model, size, seconds)` — a flat per-video rate misreports
+cost by 10x+ across duration/size combinations, which is why the SDK ships
+no Sora recipe (see the module docstring in `genblaze_openai/provider.py`).
+Register a custom strategy that reads the native `seconds` param directly;
+Sora assets carry no probed `duration` metadata, so `ctx.output_duration_s`
+won't work here the way it does for Veo/Luma:
+
+```python
+from genblaze_core.providers import PricingContext, PricingStrategy
+from genblaze_openai import SoraProvider
+
+
+def per_second(rate: float) -> PricingStrategy:
+    def _strategy(ctx: PricingContext) -> float | None:
+        seconds = ctx.step.params.get("seconds")
+        return float(seconds) * rate if seconds is not None else None
+
+    return _strategy
+
+
+sora = SoraProvider(api_key="...")
+# Placeholder rates below — confirm current per-second pricing at
+# openai.com/pricing before relying on these for real cost tracking; Sora
+# rates vary by both model tier and requested size, which this simplified
+# strategy ignores (extend the key to (model, size) via `tiered()` if you
+# need per-size accuracy).
+sora.models.register_pricing("sora-2", per_second(0.10))
+sora.models.register_pricing("sora-2-pro", per_second(0.30))
+```
 
 ---
 
