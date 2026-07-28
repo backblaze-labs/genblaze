@@ -59,7 +59,7 @@ def test_submit_without_image_raises_actionable_error(mock_runway):
         prompt="wildflowers blooming",
         params={"duration": 10},
     )
-    with pytest.raises(ProviderError, match="require an input image"):
+    with pytest.raises(ProviderError, match="requires an input image"):
         provider.submit(step)
     client.image_to_video.create.assert_not_called()
 
@@ -142,7 +142,7 @@ def test_submit_non_image_chain_input_still_requires_image(mock_runway):
         prompt="a sunset",
         inputs=[Asset(url="https://example.com/clip.mp4", media_type="video/mp4")],
     )
-    with pytest.raises(ProviderError, match="require an input image"):
+    with pytest.raises(ProviderError, match="requires an input image"):
         provider.submit(step)
     client.image_to_video.create.assert_not_called()
 
@@ -201,6 +201,21 @@ def test_submit_text_only_prompt_works_for_text_capable_model(mock_runway):
     assert "wildflowers" in call_kwargs["prompt_text"]
     assert call_kwargs["ratio"] == "1280:720"
     assert call_kwargs["duration"] == 8
+
+
+def test_submit_unrecognized_slug_no_image_routes_to_text_to_video(mock_runway):
+    """A genuinely unrecognized/future slug (not gen*_turbo, not gen4.5/
+    veo3*) with no image still reaches text_to_video via the permissive
+    fallback — extras["image_only"] is absent for fallback-routed specs, so
+    it isn't wrongly treated as image-only. Submit-time API errors (not a
+    client-side guess) are authoritative for slugs the SDK doesn't actually
+    support."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="totally-new-model", prompt="a sunset")
+    provider.submit(step)
+    client.image_to_video.create.assert_not_called()
+    call_kwargs = client.text_to_video.create.call_args[1]
+    assert call_kwargs["model"] == "totally-new-model"
 
 
 def test_submit_text_to_video_user_ratio_and_duration_override(mock_runway):

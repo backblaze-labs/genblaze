@@ -159,26 +159,27 @@ def _check_duration(params: dict[str, Any]) -> None:
     params["duration"] = dur
 
 
-def _check_prompt_image(params: dict[str, Any]) -> None:
+def _check_prompt_image(model_id: str, params: dict[str, Any]) -> None:
     """Require a source image, with an actionable error instead of the SDK's leak.
 
     Called explicitly from ``submit()`` — NOT wired as a blanket
     ``param_constraint`` — because the image requirement is endpoint-specific,
-    not model-specific: gen4_turbo/gen3a_turbo only ever go through
-    ``image_to_video`` (see ``@required_args`` on
-    ``ImageToVideoResource.create`` in the runwayml SDK, which never omits
-    ``prompt_image``), so a text-only request to one of those has no valid
-    endpoint to route to. Every other model can take the ``text_to_video``
-    path instead when no image is given (see ``_submit_text_to_video``).
-    Without this check, a text-only gen4_turbo/gen3a_turbo request would
-    surface the SDK's generic "Missing required arguments; Expected either
-    (...)" message (#226) instead of telling the caller what to do about it.
+    not model-specific: models with ``extras["image_only"]`` set (see
+    ``_RUNWAY_GEN_FAMILY``) only ever go through ``image_to_video`` (see
+    ``@required_args`` on ``ImageToVideoResource.create`` in the runwayml
+    SDK, which never omits ``prompt_image``), so a text-only request to one
+    of those has no valid endpoint to route to. Every other model can take
+    the ``text_to_video`` path instead when no image is given (see
+    ``_submit_text_to_video``). Without this check, a text-only request to
+    an image-only model would surface the SDK's generic "Missing required
+    arguments; Expected either (...)" message (#226) instead of telling the
+    caller what to do about it.
     """
     if not params.get("prompt_image"):
         raise ProviderError(
-            "gen4_turbo and gen3a_turbo are image-to-video only and require "
-            "an input image (routed to 'prompt_image'). Chain an "
-            "image-producing step (e.g. `.step(..., input_from=[N])` or "
+            f"{model_id} is image-to-video only and requires an input "
+            "image (routed to 'prompt_image'). Chain an image-producing "
+            "step (e.g. `.step(..., input_from=[N])` or "
             "`external_inputs=[image_asset]`), pass one directly via "
             "params={'prompt_image': '<https-url>'}, or use a text-capable "
             "model (gen4.5, veo3, veo3.1, veo3.1_fast) for text-only prompts.",
@@ -227,15 +228,21 @@ def _check_text_ratio(params: dict[str, Any]) -> None:
 # Every matched slug is image-to-video only (see submit()'s routing) — the
 # pinned SDK's text_to_video.create doesn't accept any of them as a `model`
 # literal — so a text-only request to one raises the actionable
-# _check_prompt_image error. Constraints (duration ∈ {5, 10},
-# ratio ∈ _VALID_RATIOS) are Runway-wide rather than per-model, so they
-# live on the family spec_template; _check_prompt_image is NOT one of
-# them — it's called explicitly from submit()'s routing decision (endpoint
-# choice is per-request, not a fixed property of the spec). The ``ratio``
-# *default* is deliberately NOT set here either — it differs for
-# gen3a_turbo (see ``_default_ratio_for_model``) and ``param_defaults``
-# can't express a per-model value across one shared template — submit()
-# fills it in instead.
+# _check_prompt_image error. That capability is carried as
+# ``extras["image_only"]`` (the framework's documented per-model escape
+# hatch — see the Google Veo connector's ``extras["has_audio"]`` for the
+# same pattern) rather than re-deriving it from the family's *parameter-shape*
+# regex at submit() time, so the two concerns (param shape vs. endpoint
+# capability) stay decoupled even though today they happen to coincide for
+# every *_turbo slug. Constraints (duration ∈ {5, 10}, ratio ∈ _VALID_RATIOS)
+# are Runway-wide rather than per-model, so they live on the family
+# spec_template; _check_prompt_image is NOT one of them — it's called
+# explicitly from submit()'s routing decision (endpoint choice is
+# per-request, not a fixed property of the spec). The ``ratio`` *default*
+# is deliberately NOT set here either — it differs for gen3a_turbo (see
+# ``_default_ratio_for_model``) and ``param_defaults`` can't express a
+# per-model value across one shared template — submit() fills it in
+# instead.
 _RUNWAY_GEN_FAMILY = ModelFamily(
     name="runway-gen-video",
     pattern=re.compile(r"^gen\w+_turbo$"),
@@ -245,6 +252,7 @@ _RUNWAY_GEN_FAMILY = ModelFamily(
         param_aliases={"aspect_ratio": "ratio"},
         param_constraints=(_check_duration, _check_ratio),
         input_mapping=route_images(slots=("prompt_image",)),
+        extras={"image_only": True},
     ),
     description="Runway Gen video family (Gen-3a, Gen-4, future *_turbo variants).",
     example_slugs=("gen4_turbo", "gen3a_turbo"),
@@ -255,12 +263,12 @@ _RUNWAY_GEN_FAMILY = ModelFamily(
 # SDK accepts but that don't fit the ``*_turbo`` pattern (gen4.5, veo3,
 # veo3.1, veo3.1_fast) plus any future/unrecognized slug — falls back here.
 # These models are text-capable (text_to_video.create accepts them), so
-# submit() routes them to image_to_video when an image is given and to
-# text_to_video otherwise — no image requirement applies at the spec level.
-# Duration/ratio *value* validation is intentionally skipped for both
-# endpoints here (valid ranges differ per model, e.g. veo3's duration is
-# fixed at 8s; submit-time errors are the authoritative signal — see
-# ``DiscoverySupport.NONE`` above).
+# ``extras["image_only"]`` is absent (falsy) — submit() routes them to
+# image_to_video when an image is given and to text_to_video otherwise; no
+# image requirement applies at the spec level. Duration/ratio *value*
+# validation is intentionally skipped for both endpoints here (valid ranges
+# differ per model, e.g. veo3's duration is fixed at 8s; submit-time errors
+# are the authoritative signal — see ``DiscoverySupport.NONE`` above).
 _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
@@ -390,10 +398,14 @@ class RunwayProvider(BaseProvider):
             payload = self.prepare_payload(step)
             has_image = bool(payload.get("prompt_image"))
 
-            if not has_image and _RUNWAY_GEN_FAMILY.matches(step.model):
-                # gen4_turbo/gen3a_turbo: image-to-video only, no image
-                # given — always raises (has_image is False here).
-                _check_prompt_image(payload)
+            # Endpoint capability is a resolved-spec property
+            # (extras["image_only"]), not re-derived from the family's
+            # parameter-shape regex — see _RUNWAY_GEN_FAMILY's comment.
+            is_image_only = bool(self._models.get(step.model).extras.get("image_only"))
+            if not has_image and is_image_only:
+                # e.g. gen4_turbo/gen3a_turbo: image-to-video only, no
+                # image given — always raises (has_image is False here).
+                _check_prompt_image(step.model, payload)
 
             if has_image:
                 task = self._submit_image_to_video(client, step, payload)
