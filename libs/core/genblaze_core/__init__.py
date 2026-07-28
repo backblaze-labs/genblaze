@@ -7,6 +7,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Pipeline": ("genblaze_core.pipeline.pipeline", "Pipeline"),
     "PipelineResult": ("genblaze_core.pipeline.result", "PipelineResult"),
     "StepCompleteEvent": ("genblaze_core.pipeline.result", "StepCompleteEvent"),
+    # runnable configuration
+    "RunnableConfig": ("genblaze_core.runnable.config", "RunnableConfig"),
     # pipeline cache
     "StepCache": ("genblaze_core.pipeline.cache", "StepCache"),
     # pipeline templates
@@ -132,6 +134,10 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
 }
 
 __all__ = [*_LAZY_IMPORTS.keys(), "__version__"]
+
+
+def __dir__() -> list[str]:
+    return sorted(set(__all__) | set(globals().keys()))
 
 
 def __getattr__(name: str):

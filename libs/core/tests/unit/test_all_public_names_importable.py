@@ -19,6 +19,30 @@ import sys
 import genblaze_core
 
 
+def test_dir_surfaces_lazy_names_before_first_access() -> None:
+    """Lazy public names must be discoverable without importing their modules."""
+    script = (
+        "import genblaze_core;"
+        "assert 'Pipeline' not in genblaze_core.__dict__;"
+        "assert 'Pipeline' in dir(genblaze_core)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_runnable_config_is_a_top_level_export() -> None:
+    """RunnableConfig is part of the public runnable API."""
+    from genblaze_core import RunnableConfig
+    from genblaze_core.runnable.config import RunnableConfig as NestedRunnableConfig
+
+    assert RunnableConfig is NestedRunnableConfig
+
+
 def test_all_public_names_resolve() -> None:
     """Every name in __all__ must be retrievable without AttributeError."""
     failures = []
