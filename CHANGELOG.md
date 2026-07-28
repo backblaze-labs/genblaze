@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-28
+
+Bug-fix wave with one new opt-in feature and one new provider. Closes a
+regression in the ReDoS pattern-safety heuristic (both the shape #196/#200
+fixed and two further false-positive/false-negative bugs those same fixes
+introduced), adds an opt-in rate-limit backoff for `chat()`/vision helpers,
+ships a native Gemini image provider, fixes Runway's image-to-video routing,
+and closes a `verify --fetch` SSRF gap.
+
+This heading is the release **wave** name and the git tag (`v0.7.0`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.5`).
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.4 → **0.4.5**
+- `genblaze-core` 0.3.7 → **0.3.8**
+- `genblaze-cli` 0.3.5 → **0.3.6**
+- `genblaze-assemblyai` 0.3.1 → **0.3.2**
+- `genblaze-decart` 0.3.2 → **0.3.3**
+- `genblaze-elevenlabs` 0.3.2 → **0.3.3**
+- `genblaze-gmicloud` 0.3.4 → **0.3.5**
+- `genblaze-google` 0.3.3 → **0.3.4**
+- `genblaze-hume` 0.3.2 → **0.3.3**
+- `genblaze-lmnt` 0.3.2 → **0.3.3**
+- `genblaze-nvidia` 0.3.2 → **0.3.3**
+- `genblaze-openai` 0.3.3 → **0.3.4**
+- `genblaze-runway` 0.3.2 → **0.3.3**
+- `genblaze-stability-audio` 0.3.2 → **0.3.3**
+
+### genblaze-core
+
+- **Security** the ReDoS pattern-safety heuristic (`pattern_safety.py`) missed
+  two more catastrophic-backtracking shapes on top of #157 (fixed in 0.6.0):
+  a quantified alternation with overlapping branches whose textual prefixes
+  differ, and adjacent unbounded-quantified groups whose reachable character
+  sets actually overlap despite looking disjoint by source text alone (#196,
+  #200). Both are now rejected by `assert_safe()`. Fixing #200's
+  charset-overlap gate introduced two further bugs, both closed in this same
+  release before it shipped: (1) an unescaped `.` was resolved to the literal
+  character `'.'` instead of "matches anything", so `(.+)([a-z]+)$`-shaped
+  patterns were wrongly accepted as safe — a real ReDoS bypass, reopening the
+  exact class #196/#200 closed for other atom shapes; and (2) a `(?:...)`/
+  `(?P<name>...)` group's marker prefix was analyzed as literal match text
+  instead of being stripped first, so two charset-disjoint non-capturing
+  groups like `(?:[a-z]+)(?:[0-9]+)` were wrongly *rejected* as unsafe. Both
+  are covered by new regression tests; lookaround groups (`(?=...)`, `(?!...)`)
+  are intentionally left out of scope for the second fix and keep their
+  existing conservative (reject) behavior.
+- **Fixed** `Mp4Handler.embed()` raised on a `str` path instead of accepting
+  one like every other media handler, and `Pipeline.step()` accepted any
+  object as a provider instead of validating it's a `BaseProvider` — a
+  non-provider value previously surfaced a confusing failure deep inside
+  `run()` instead of immediately at the call site (#224, #225).
+
+### genblaze-openai / genblaze-google (chat helpers)
+
+- **Added** opt-in rate-limit backoff for `chat()`/`achat()` and the vision
+  helpers via `retry_on_rate_limit=`/`retry_policy=` kwargs, wrapping calls in
+  `genblaze_core.providers.retry.call_with_rate_limit_retry` (#221). A
+  follow-up in this same release disables the SDK's own internal retry when
+  genblaze already manages backoff on an internally-created client, closing a
+  double-retry (multiplicative wait) bug the initial opt-in introduced; a
+  caller-supplied `client=` keeps its own retry configuration untouched
+  (#221, #235). Currently wired into `openai`/`google` only — see
+  `docs/features/llm-calls.md`.
+- **Fixed** (`genblaze-openai`) confirmed `estimate_cost()` already computed
+  per-model pricing correctly; the reported gap was a documentation error in
+  `docs/reference/pricing-recipes.md`, now corrected, plus added test
+  coverage pinning the existing (correct) behavior (#222, #223). No
+  production code changed.
+
+### genblaze-google
+
+- **Added** `GeminiImageProvider`, a native Gemini image-generation provider
+  (`google-gemini-image` entry point) alongside the existing Imagen provider,
+  sharing client construction via a new `GoogleClientMixin` (#205).
+- **Fixed** the Imagen entitlement probe re-grades a probe-confirmed-`LIVE`
+  but known-gated slug to `OK_PROVISIONAL` instead of a misleading
+  authoritative `OK`, mirroring the same gmicloud fix below (#206).
+- **Fixed** `chat()`/vision calls sent an `ImageURLContent` input as an
+  unsupported field instead of translating it to Gemini's
+  `inline_data`/`file_data` wire format (#217).
+
+### genblaze-gmicloud
+
+- **Fixed** preflight validation now distinguishes a known-catalog slug from
+  one confirmed callable with the caller's API key, re-grading a
+  probe-confirmed slug that isn't confirmed-callable to `OK_PROVISIONAL`
+  instead of a misleading authoritative `OK` (#193). Added a guard against a
+  misconfigured `base_url`/`GMI_BASE_URL` pointed at the wrong endpoint shape
+  (a silent-404 footgun), and an edit-mode fallback path.
+
+### genblaze-runway
+
+- **Fixed** `image_to_video` on models that require an input image (e.g.
+  `gen4_turbo`, `gen3a_turbo`) now raises a clear, actionable error instead of
+  silently failing when no image is supplied; corrected the model catalog's
+  ratio literals, which were wrong pixel-dimension strings for several models
+  (#226).
+
+### genblaze-lmnt
+
+- **Fixed** an unsupported `seed` parameter was silently forwarded to
+  `generate_detailed` instead of being dropped; it's now dropped with a
+  one-time warning so callers know to stop passing it (#207).
+
+### genblaze-cli
+
+- **Fixed** `verify --fetch` accepted a `file://` URL with a remote authority
+  (e.g. `file://evil-host/path`) instead of rejecting it, and could leak
+  presigned-URL userinfo/credentials into output; both are now blocked/
+  redacted. Also dedupes redundant stream-hash computation on the same asset
+  (#214).
+
+### genblaze (umbrella)
+
+- **Fixed** `OptionalDependencyError`'s `__getattr__` propagation preserved
+  the original install hint instead of losing it to a generic message
+  (#213).
+- **Added** a `parquet` extra re-exposing `genblaze-core[parquet]`, so
+  `pip install "genblaze[parquet]"` — the exact incantation
+  `OptionalDependencyError` prints for `ParquetSink` — resolves instead of
+  failing with an unknown-extra error.
+
+### Packaging
+
+- **Fixed** nine connectors' (`genblaze-assemblyai`, `-decart`,
+  `-elevenlabs`, `-google`, `-hume`, `-lmnt`, `-nvidia`, `-openai`,
+  `-stability-audio`) `genblaze-core` dependency floor was raised to
+  `>=0.3.7` for `local_file_url()` users, but each package's own published
+  version wasn't bumped alongside it (#209) — a `pypi-pin-parity` trap that
+  would have blocked (not silently shipped) this release. Closed here by
+  bumping all nine to a new patch version.
+
 ### Internal
 
 - **Fixed** `install-verify`'s "Wait for PyPI to index the umbrella" pre-check
@@ -20,6 +155,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   truly missing/unresolvable package still fails the job after retries are
   exhausted. The umbrella pre-check and the import-smoke invocation are
   unchanged. Release tooling only — no packaged code changed.
+- **Fixed** the lint job's `ruff` version could drift from what contributors
+  run locally, producing false-red CI on a clean local run; pinned to
+  `0.14.0` (#212).
+- **Fixed** Dependabot could propose a major-version bump on a runtime
+  dependency, which this repo's pinning policy caps below the next major by
+  hand; Dependabot config now excludes major-version updates for runtime
+  deps (#216).
+- **Fixed** `tools/batch_cluster.py` could drop an in-flight dependency
+  blocker between clustering passes (#210).
+- **Chore** bumped the GitHub Actions dependency group (#191).
 
 ## [0.6.0] - 2026-07-22
 
