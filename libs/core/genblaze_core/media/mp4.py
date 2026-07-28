@@ -7,6 +7,7 @@ For files 500 MB–2 GB, uses seek-based file I/O to avoid loading entire file i
 from __future__ import annotations
 
 import json
+import os
 import struct
 import uuid
 from pathlib import Path
@@ -30,7 +31,14 @@ GENBLAZE_UUID_BYTES = GENBLAZE_UUID.bytes
 class Mp4Handler(BaseMediaHandler):
     """Embed and extract manifests in MP4 using a custom UUID box."""
 
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
+    def embed(
+        self, source: str | os.PathLike[str], manifest: Manifest, output: Path | None = None
+    ) -> Path:
+        # Accept str like the rest of the ecosystem (open(), shutil, PIL) —
+        # without this, a bare str reaches source.stat() below and raises a
+        # confusing AttributeError that gets wrapped as EmbeddingError,
+        # implying the MEDIA is corrupt rather than the caller's argument.
+        source = Path(source)
         output = output or source
         file_size = source.stat().st_size
         try:
@@ -133,8 +141,11 @@ class Mp4Handler(BaseMediaHandler):
                 dst.write(uuid_box)
         return output
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         try:
+            # See embed()'s comment: coerce so a str source fails on the
+            # actual MP4 content, not on this helper's Path-only API.
+            source = Path(source)
             file_size = source.stat().st_size
             if file_size <= MAX_FILE_BYTES:
                 data = source.read_bytes()

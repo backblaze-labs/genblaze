@@ -2264,6 +2264,34 @@ def test_step_rejects_metadata_colliding_with_reserved_graph_keys() -> None:
         )
 
 
+def test_step_rejects_non_provider_at_build_time() -> None:
+    """A plain function (e.g. chat()) must raise immediately at step(), not
+    surface as AttributeError deep inside run() (#224)."""
+
+    def chat(model: str, prompt: str) -> str:
+        return "hi"
+
+    with pytest.raises(TypeError, match="BaseProvider"):
+        Pipeline("t").step(chat, model="gpt-4o", prompt="say hi")
+
+
+def test_step_rejects_non_provider_names_the_bad_value() -> None:
+    """The error should name the offending function so the caller can find
+    the mistake without a traceback dive (#224)."""
+
+    def chat(model: str, prompt: str) -> str:
+        return "hi"
+
+    with pytest.raises(TypeError, match="chat"):
+        Pipeline("t").step(chat, model="gpt-4o", prompt="say hi")
+
+
+def test_step_rejects_non_provider_instance() -> None:
+    """Any non-BaseProvider object — not just functions — must be rejected."""
+    with pytest.raises(TypeError, match="BaseProvider"):
+        Pipeline("t").step(object(), model="m", prompt="p")
+
+
 def test_fallback_retry_preserves_caller_metadata() -> None:
     """A model-fallback retry must not wipe caller metadata / _input_from —
     _try_fallback_models() used to reassign fb_step.metadata wholesale (#53)."""

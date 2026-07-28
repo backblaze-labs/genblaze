@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,7 +34,11 @@ class PointerSidecarError(EmbeddingError):
 class SidecarHandler(BaseMediaHandler):
     """Store/retrieve manifests as JSON sidecar files."""
 
-    def _sidecar_path(self, source: Path) -> Path:
+    def _sidecar_path(self, source: str | os.PathLike[str]) -> Path:
+        # Coerce so a str source (SmartEmbedder's sidecar fallback, or a
+        # caller invoking SidecarHandler directly) doesn't hit with_suffix()
+        # — a Path-only method — with the same confusing failure as #225.
+        source = Path(source)
         return source.with_suffix(source.suffix + ".genblaze.json")
 
     def embed(

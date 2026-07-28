@@ -21,6 +21,16 @@ def test_embed_and_extract(tmp_png: Path, sample_manifest: Manifest) -> None:
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_embed_and_extract_accept_str_path(tmp_png: Path, sample_manifest: Manifest) -> None:
+    """PNG routes through the shared read_media_bytes() helper (base.py), so
+    the str-coercion fix for #225 must cover it too, not just Mp4Handler."""
+    handler = PngHandler()
+    handler.embed(str(tmp_png), sample_manifest)
+
+    extracted = handler.extract(str(tmp_png))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
 def test_extract_uses_parse_manifest_invariants(tmp_png: Path) -> None:
     step = Step(
         provider="test",

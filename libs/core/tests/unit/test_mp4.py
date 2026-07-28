@@ -17,6 +17,18 @@ def test_mp4_embed_and_extract(tmp_mp4: Path, sample_manifest: Manifest) -> None
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_mp4_extract_accepts_str_path(tmp_mp4: Path, sample_manifest: Manifest) -> None:
+    """extract() (and embed()) must coerce a str source instead of raising a
+    confusing AttributeError from str.stat() that gets wrapped as an
+    EmbeddingError implying the MP4 itself is corrupt (#225)."""
+    handler = Mp4Handler()
+    handler.embed(str(tmp_mp4), sample_manifest)
+
+    extracted = handler.extract(str(tmp_mp4))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+    assert extracted.verify()
+
+
 def test_mp4_verify(tmp_mp4: Path, sample_manifest: Manifest) -> None:
     handler = Mp4Handler()
     handler.embed(tmp_mp4, sample_manifest)

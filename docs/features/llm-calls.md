@@ -10,7 +10,49 @@ is a media-generation framework; chat is a convenience for callers that
 want to drive media steps from an LLM without taking a second LLM-routing
 dependency. If you need manifest provenance for an LLM call, stash details
 in `step.metadata` on the downstream media step, or wrap the call in your
-own `SyncProvider` subclass.
+own `SyncProvider` subclass (recipe below).
+
+`Pipeline.step()` requires a `BaseProvider` instance and raises `TypeError`
+immediately if you pass `chat`/`achat` directly — they're plain functions,
+not providers, so there's nothing for `Pipeline.run()` to call `invoke()` on.
+
+## Recording a chat step's provenance
+
+To make a script-writing `chat()` call appear as a step in the manifest
+(so provenance covers the words as well as the downstream media), wrap it
+in a small local `SyncProvider`:
+
+```python
+from genblaze_core._utils import compute_sha256
+from genblaze_core import Asset, Pipeline, SyncProvider
+from genblaze_openai import chat
+
+class ChatStep(SyncProvider):
+    name = "openai-chat"
+
+    def generate(self, step, config=None):
+        resp = chat(step.model, prompt=step.prompt)
+        digest = compute_sha256(resp.text.encode("utf-8"))
+        # url="text:<sha256>" + metadata["text"] is the convention Pipeline's
+        # own moderation code reads (_input_text_payloads) for textual assets
+        # — an inline data: URI has undefined sink behavior, avoid it.
+        step.assets.append(
+            Asset(url=f"text:{digest}", media_type="text/plain", sha256=digest,
+                  metadata={"text": resp.text})
+        )
+        return step
+
+pipe = (
+    Pipeline("narration")
+    .step(ChatStep(), model="gpt-4o", prompt="Write a one-line narration")
+    .step(TtsProvider(), model="tts-1", input_from=[0])
+)
+```
+
+`ChatStep` only needs `generate()` — `SyncProvider` handles the rest of the
+submit/poll/fetch_output lifecycle. This is a documentation recipe, not a
+built-in class; there is no first-party text/chat `BaseProvider` today (see
+`docs/exec-plans/active/multimodal-chat-provider.md`).
 
 ## Surface
 
