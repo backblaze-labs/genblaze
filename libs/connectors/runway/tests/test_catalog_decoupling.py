@@ -76,16 +76,46 @@ class TestRunwayGenFamily:
             assert match is None, slug
 
     def test_resolved_spec_carries_constraints(self) -> None:
-        """The family's constraints (duration ∈ {5, 10}, ratio ∈ {16:9,
-        9:16}) ride on every resolved spec. Subclasses inherit Runway's
-        validation without code duplication."""
+        """The family's constraints (duration ∈ {5, 10}, ratio value set,
+        input image required — #226) ride on every resolved spec. Subclasses
+        inherit Runway's validation without code duplication."""
         from genblaze_runway import RunwayProvider
 
         provider = RunwayProvider(api_secret="test")
         spec = provider._models.get("gen4_turbo")
-        assert len(spec.param_constraints) == 2
+        assert len(spec.param_constraints) == 3
         # The aspect_ratio → ratio alias travels with the spec_template.
         assert spec.param_aliases.get("aspect_ratio") == "ratio"
+        # A default ratio is filled in when the caller doesn't supply one.
+        assert spec.param_defaults.get("ratio") == "1280:720"
+
+
+# --- Broadened catalog (#226): SDK-accepted slugs outside *_turbo ---------
+
+
+class TestBroadenedFallbackCatalog:
+    """gen4.5, veo3, veo3.1, veo3.1_fast are accepted by the pinned SDK
+    (runwayml>=0.6,<5, resolving to 4.7.0) but don't match the ``*_turbo``
+    family pattern — they route through the permissive fallback. Duration/
+    ratio value ranges differ per model so aren't strictly validated there,
+    but the fallback still carries the ratio default and the image-required
+    constraint that's true for every model on this endpoint."""
+
+    @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
+    def test_broadened_slugs_do_not_match_turbo_family(self, slug: str) -> None:
+        from genblaze_runway import RunwayProvider
+
+        provider = RunwayProvider(api_secret="test")
+        assert provider._models.match_family(slug) is None, slug
+
+    @pytest.mark.parametrize("slug", ["gen4.5", "veo3", "veo3.1", "veo3.1_fast"])
+    def test_broadened_slugs_still_require_image_and_get_ratio_default(self, slug: str) -> None:
+        from genblaze_runway import RunwayProvider
+
+        provider = RunwayProvider(api_secret="test")
+        spec = provider._models.get(slug)
+        assert spec.param_defaults.get("ratio") == "1280:720"
+        assert len(spec.param_constraints) == 1  # only _check_prompt_image
 
 
 # --- validate_model end-to-end --------------------------------------------

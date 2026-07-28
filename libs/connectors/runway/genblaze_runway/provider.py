@@ -22,6 +22,18 @@ $0.50). As of 0.3.0 the SDK no longer ships pricing — register the
 recipe yourself if you want cost tracking. See
 ``docs/reference/pricing-recipes.md`` for the canonical Runway recipe.
 
+**Image requirement (#226)**: every model this connector submits to goes
+through ``client.image_to_video.create()`` — the only endpoint used here —
+and the pinned SDK (``runwayml>=0.6,<5``, resolving to 4.7.0 today) always
+requires ``prompt_image`` for that endpoint; there is no text-only
+combination. A step with no chained/attached image now raises a clear
+``ProviderError`` instead of the SDK's generic "Missing required arguments"
+message. Slugs outside the ``*_turbo`` family pattern that the pinned SDK
+also accepts (``gen4.5``, ``veo3``, ``veo3.1``, ``veo3.1_fast``) route
+through the permissive fallback — duration/ratio value ranges differ per
+model and aren't strictly validated there, but the image requirement and
+``ratio`` default still apply.
+
 Docs: https://docs.runwayml.com/
 """
 
@@ -51,7 +63,33 @@ from genblaze_core.runnable.config import RunnableConfig
 from ._errors import map_runway_error
 
 _VALID_DURATIONS = frozenset({5, 10})
-_VALID_RATIOS = frozenset({"16:9", "9:16"})
+
+# Runway's ``ratio`` is a pixel-dimension string (e.g. "1280:720"), not a
+# colon aspect ratio like "16:9" — verified against runwayml SDK 4.7.0's
+# ``image_to_video.create`` overloads (the pin is ``runwayml>=0.6,<5``,
+# which resolves to 4.x today). This is the union of every ratio literal
+# across the models that route through this endpoint (gen4_turbo,
+# gen3a_turbo, gen4.5, veo3, veo3.1, veo3.1_fast); each model only accepts a
+# subset of these, so a value accepted here can still be rejected
+# server-side for the wrong model. That's fine — submit-time errors are the
+# authoritative signal (see ``DiscoverySupport.NONE`` above).
+_VALID_RATIOS = frozenset(
+    {
+        "1280:720",
+        "720:1280",
+        "1104:832",
+        "832:1104",
+        "960:960",
+        "1584:672",
+        "1080:1920",
+        "1920:1080",
+    }
+)
+
+# Every current Runway video model accepts 1280:720 (16:9 landscape), so
+# it's a safe default when the caller doesn't supply one — the SDK requires
+# ``ratio`` in most (though not all) valid argument combinations.
+_DEFAULT_RATIO = "1280:720"
 
 
 def _check_ratio(params: dict[str, Any]) -> None:
@@ -83,11 +121,32 @@ def _check_duration(params: dict[str, Any]) -> None:
     params["duration"] = dur
 
 
-# Single family covering the Runway Gen video catalog. The pattern
+def _check_prompt_image(params: dict[str, Any]) -> None:
+    """Require a source image, with an actionable error instead of the SDK's leak.
+
+    Runway's ``image_to_video`` endpoint — the only one this connector
+    calls — always requires ``prompt_image``; there is no argument
+    combination that omits it (see ``@required_args`` on
+    ``ImageToVideoResource.create`` in the runwayml SDK). Without this
+    check, a step submitted with no input image surfaces the SDK's generic
+    "Missing required arguments; Expected either (...)" message (#226)
+    instead of telling the caller what to actually do about it.
+    """
+    if "prompt_image" not in params:
+        raise ProviderError(
+            "Runway video models require an input image (routed to "
+            "'prompt_image'). Chain an image-producing step "
+            "(e.g. `.step(..., input_from=[N])` or `external_inputs=[image_asset]`) "
+            "or pass one directly via params={'prompt_image': '<https-url>'}.",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
+
+
+# Single family covering the Runway Gen *_turbo video catalog. The pattern
 # ``^gen\w+_turbo$`` absorbs current (gen3a_turbo, gen4_turbo) and any
-# future (gen4a_turbo, gen5_turbo, etc.) variants without a code
-# change. Constraints (duration ∈ {5, 10}, ratio ∈ {16:9, 9:16}) are
-# Runway-wide rather than per-model, so they live on the family
+# future (gen4a_turbo, gen5_turbo, etc.) variants without a code change.
+# Constraints (duration ∈ {5, 10}, ratio ∈ _VALID_RATIOS, image required)
+# are Runway-wide rather than per-model, so they live on the family
 # spec_template.
 _RUNWAY_GEN_FAMILY = ModelFamily(
     name="runway-gen-video",
@@ -96,7 +155,8 @@ _RUNWAY_GEN_FAMILY = ModelFamily(
         model_id="*",
         modality=Modality.VIDEO,
         param_aliases={"aspect_ratio": "ratio"},
-        param_constraints=(_check_duration, _check_ratio),
+        param_defaults={"ratio": _DEFAULT_RATIO},
+        param_constraints=(_check_duration, _check_ratio, _check_prompt_image),
         input_mapping=route_images(slots=("prompt_image",)),
     ),
     description="Runway Gen video family (Gen-3a, Gen-4, future *_turbo variants).",
@@ -104,19 +164,36 @@ _RUNWAY_GEN_FAMILY = ModelFamily(
 )
 
 
+# Anything not matching the Gen-turbo family — including slugs the pinned
+# SDK accepts but that don't fit the ``*_turbo`` pattern (gen4.5, veo3,
+# veo3.1, veo3.1_fast) plus any future/unrecognized slug — falls back here.
+# Duration/ratio *value* validation is intentionally skipped (valid ranges
+# differ per model, e.g. veo3's duration is fixed at 8s; submit-time errors
+# are the authoritative signal — see ``DiscoverySupport.NONE`` above), but
+# the one invariant that's true for every model on this endpoint — an input
+# image is required — still applies, along with the ``ratio`` default.
 _FALLBACK = ModelSpec(
     model_id="*",
     modality=Modality.VIDEO,
     param_aliases={"aspect_ratio": "ratio"},
+    param_defaults={"ratio": _DEFAULT_RATIO},
+    param_constraints=(_check_prompt_image,),
     input_mapping=route_images(slots=("prompt_image",)),
 )
 
 
 class RunwayProvider(BaseProvider):
-    """Provider adapter for Runway video generation (Gen-3, Gen-4).
+    """Provider adapter for Runway video generation (Gen-3, Gen-4, veo3*).
 
     Models match the ``runway-gen-video`` family (any ``gen<N>[a]_turbo``
-    slug). Duration must be 5 or 10; aspect ratio must be 16:9 or 9:16.
+    slug — duration must be 5 or 10, ratio a pixel string like "1280:720")
+    or fall back permissively to any other slug the pinned SDK accepts
+    (``gen4.5``, ``veo3``, ``veo3.1``, ``veo3.1_fast``). Every model on
+    this endpoint requires an input image: chain an image-producing step,
+    pass ``external_inputs=[image_asset]``, or set
+    ``params={'prompt_image': url}`` directly — omitting it raises a clear
+    ``ProviderError`` rather than the SDK's generic "Missing required
+    arguments" message (#226).
 
     Auth: Set ``RUNWAYML_API_SECRET`` env var or pass ``api_secret``.
 

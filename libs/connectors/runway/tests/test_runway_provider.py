@@ -8,11 +8,16 @@ from urllib.parse import urlparse
 
 import pytest
 from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import StepStatus
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.run import Run
 from genblaze_core.models.step import Step
 from genblaze_core.testing import ProviderComplianceTests
+
+# Runway's image_to_video endpoint always requires a source image (#226);
+# every submit()-exercising test below needs one chained via step.inputs.
+_IMAGE_INPUT = [Asset(url="https://example.com/reference.jpg", media_type="image/jpeg")]
 
 
 @pytest.fixture
@@ -36,10 +41,52 @@ def mock_runway():
 
 def test_submit_returns_task_id(mock_runway):
     provider, client = mock_runway
-    step = Step(provider="runway", model="gen4_turbo", prompt="a sunset")
+    step = Step(provider="runway", model="gen4_turbo", prompt="a sunset", inputs=_IMAGE_INPUT)
     task_id = provider.submit(step)
     assert task_id == "task-abc"
     client.image_to_video.create.assert_called_once()
+
+
+def test_submit_without_image_raises_actionable_error(mock_runway):
+    """Reproduces #226: gen4_turbo submitted with no input image must raise
+    a clear, actionable ProviderError — not the SDK's raw "Missing required
+    arguments" leak."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="wildflowers blooming",
+        params={"duration": 10},
+    )
+    with pytest.raises(ProviderError, match="require an input image"):
+        provider.submit(step)
+    client.image_to_video.create.assert_not_called()
+
+
+def test_submit_routes_input_image_and_defaults_ratio(mock_runway):
+    """An image chained via step.inputs is routed to 'prompt_image'; ratio
+    defaults to 1280:720 when the caller doesn't specify one."""
+    provider, client = mock_runway
+    step = Step(provider="runway", model="gen4_turbo", prompt="a sunset", inputs=_IMAGE_INPUT)
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["prompt_image"] == "https://example.com/reference.jpg"
+    assert call_kwargs["ratio"] == "1280:720"
+
+
+def test_submit_user_ratio_overrides_default(mock_runway):
+    """An explicit ratio param wins over the default."""
+    provider, client = mock_runway
+    step = Step(
+        provider="runway",
+        model="gen4_turbo",
+        prompt="a sunset",
+        params={"ratio": "832:1104"},
+        inputs=_IMAGE_INPUT,
+    )
+    provider.submit(step)
+    call_kwargs = client.image_to_video.create.call_args[1]
+    assert call_kwargs["ratio"] == "832:1104"
 
 
 def test_poll_returns_true_on_succeeded(mock_runway):
@@ -75,7 +122,7 @@ def test_fetch_output_failed_raises(mock_runway):
 
 def test_invoke_full_lifecycle(mock_runway):
     provider, _ = mock_runway
-    step = Step(provider="runway", model="gen4_turbo", prompt="a sunset")
+    step = Step(provider="runway", model="gen4_turbo", prompt="a sunset", inputs=_IMAGE_INPUT)
     result = provider.invoke(step)
     assert result.status == StepStatus.SUCCEEDED
     assert len(result.assets) == 1
@@ -83,7 +130,9 @@ def test_invoke_full_lifecycle(mock_runway):
 
 def test_url_only_output_manifest_does_not_verify_without_sink(mock_runway):
     provider, _ = mock_runway
-    result = provider.invoke(Step(provider="runway", model="gen4_turbo", prompt="a sunset"))
+    result = provider.invoke(
+        Step(provider="runway", model="gen4_turbo", prompt="a sunset", inputs=_IMAGE_INPUT)
+    )
 
     manifest = Manifest.from_run(Run(name="same", steps=[result]))
 
@@ -148,17 +197,19 @@ def test_cost_none_unknown_model(mock_runway):
 def test_aspect_ratio_alias(mock_runway):
     """Standard 'aspect_ratio' param is mapped to 'ratio' via normalize_params."""
     provider, client = mock_runway
-    # normalize_params maps aspect_ratio → ratio
-    params = provider.normalize_params({"aspect_ratio": "16:9"})
+    # normalize_params maps aspect_ratio → ratio. Runway's native ratio is a
+    # pixel-dimension string (e.g. "1280:720"), not a colon aspect ratio.
+    params = provider.normalize_params({"aspect_ratio": "1280:720"})
     step = Step(
         provider="runway",
         model="gen4_turbo",
         prompt="test",
         params=params,
+        inputs=_IMAGE_INPUT,
     )
     provider.submit(step)
     call_kwargs = client.image_to_video.create.call_args[1]
-    assert call_kwargs["ratio"] == "16:9"
+    assert call_kwargs["ratio"] == "1280:720"
 
 
 def test_invalid_aspect_ratio_alias_raises(mock_runway):
@@ -238,4 +289,6 @@ class TestRunwayCompliance(ProviderComplianceTests):
         return provider
 
     def make_step(self):
-        return Step(provider="runway", model="gen4_turbo", prompt="test prompt")
+        return Step(
+            provider="runway", model="gen4_turbo", prompt="test prompt", inputs=_IMAGE_INPUT
+        )
