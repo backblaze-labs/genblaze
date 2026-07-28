@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-24 -->
+<!-- last_verified: 2026-07-28 -->
 # Feature: LLM Calls
 
 Thin standalone wrappers around OpenAI, Google Gemini, and GMICloud chat /
@@ -33,6 +33,8 @@ chat(
     max_tokens: int | None = None,
     api_key: str | None = None,
     client: Any = None,        # escape hatch
+    retry_on_rate_limit: bool = False,   # openai / google only — see "Rate limits" below
+    retry_policy: RetryPolicy | None = None,
     **kwargs,
 ) -> ChatResponse
 ```
@@ -55,6 +57,32 @@ Compose with a media step manually:
 description = chat("gpt-4o", prompt="A cinematic sunset").text
 pipe = Pipeline("hero").step(SoraProvider(), model="sora-2", prompt=description)
 ```
+
+## Rate limits
+
+**These helpers do not retry by default.** A 429 raises immediately — the
+`ProviderError` carries a parsed `retry_after` hint (seconds), but callers
+must act on it themselves. At archive scale (e.g. many vision calls over
+video frames) this is the common case, not an edge case.
+
+For `genblaze_openai.chat`/`achat` and `genblaze_google.chat`/`achat`, pass
+`retry_on_rate_limit=True` to opt in to a bounded wait-and-retry loop that
+honors the server's `Retry-After` hint (falling back to exponential backoff
+with jitter when no hint is present):
+
+```python
+from genblaze_openai import chat
+
+# Retries up to RetryPolicy()'s default 6 attempts, honoring each 429's
+# `Retry-After` hint before raising.
+resp = chat("gpt-4o-mini", messages=frame_messages, retry_on_rate_limit=True)
+```
+
+Pass a `genblaze_core.providers.retry.RetryPolicy` via `retry_policy=` to tune
+the attempt cap or backoff timing (passing `retry_policy=` alone, without
+`retry_on_rate_limit=True`, also opts in). `achat()` accepts the same kwargs —
+the retry wait happens inside the worker thread `achat` already runs in, so it
+never blocks the event loop.
 
 ## Limits (v1)
 
