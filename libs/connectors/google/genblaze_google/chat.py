@@ -236,10 +236,11 @@ def chat(
         project: GCP project for Vertex AI auth (mutually exclusive with api_key).
         location: GCP region for Vertex AI.
         client: Pre-built `google.genai.Client` — escape hatch for tests.
-        retry_on_rate_limit: When ``True``, a 429 wait-and-retry using the
-            server's ``Retry-After`` hint (falling back to exponential backoff)
-            instead of raising immediately. Off by default — existing callers
-            see no behavior change. See ``docs/features/llm-calls.md``.
+        retry_on_rate_limit: When ``True``, waits and retries on a 429 using
+            the server's ``Retry-After`` hint (falling back to exponential
+            backoff) instead of raising immediately. Off by default —
+            existing callers see no behavior change. See
+            ``docs/features/llm-calls.md``.
         retry_policy: Optional ``RetryPolicy`` controlling attempt cap / backoff
             when ``retry_on_rate_limit=True`` (or passed on its own to opt in
             implicitly). Defaults to ``RetryPolicy()`` (6 attempts).
@@ -249,6 +250,10 @@ def chat(
         ProviderError: With a classified `error_code` for any SDK exception.
             Re-raised once retries (if enabled) are exhausted.
     """
+    # retry_policy alone (without the bool flag) also opts in — see the
+    # retry_policy docstring above.
+    retry_managed = retry_on_rate_limit or retry_policy is not None
+
     own_client = client is None
     if own_client:
         try:
@@ -257,10 +262,22 @@ def chat(
             raise ProviderError(
                 "google-genai package not installed. Run: pip install google-genai"
             ) from exc
+        ckwargs: dict[str, Any] = {}
+        if retry_managed:
+            # We already retry via call_with_rate_limit_retry below; disable
+            # the SDK's own internal retry (default up to 5 attempts) so
+            # RetryPolicy.max_attempts stays authoritative instead of being
+            # multiplied by a second, invisible retry layer underneath it.
+            # `genai.types` (not a fresh `from google.genai import types`) so
+            # this works off the already-imported `genai` module — matters for
+            # tests that stub `sys.modules["google"]` without a real
+            # `google.genai` submodule to resolve independently.
+            ckwargs["http_options"] = genai.types.HttpOptions(
+                retry_options=genai.types.HttpRetryOptions(attempts=1)
+            )
         if project:
-            client = genai.Client(vertexai=True, project=project, location=location)
+            client = genai.Client(vertexai=True, project=project, location=location, **ckwargs)
         else:
-            ckwargs: dict[str, Any] = {}
             if api_key:
                 ckwargs["api_key"] = api_key
             client = genai.Client(**ckwargs)
@@ -295,7 +312,8 @@ def chat(
             ) from exc
 
     try:
-        if retry_on_rate_limit or retry_policy is not None:
+        # retry_policy= alone opts in implicitly, even without retry_on_rate_limit=True.
+        if retry_managed:
             raw = call_with_rate_limit_retry(_invoke, policy=retry_policy)
         else:
             raw = _invoke()

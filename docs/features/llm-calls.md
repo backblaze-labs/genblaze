@@ -144,21 +144,30 @@ the attempt cap or backoff timing (passing `retry_policy=` alone, without
 only *narrow* retry here — e.g. `RetryPolicy.disabled()` turns retry off
 entirely — it cannot broaden retry to other error codes; this loop only ever
 acts on `RATE_LIMIT`, by design, regardless of what `retryable_codes` contains.
-`achat()` accepts the same kwargs — the retry wait happens inside the worker
-thread `achat` already runs in, so it never blocks the event loop.
+
+When `chat()` creates its own client (no `client=` passed) and retry is
+opted in, the OpenAI/Gemini SDK's own internal retry is disabled
+(`max_retries=0` / a single-attempt `HttpRetryOptions`) so `RetryPolicy.max_attempts`
+is the only retry budget in effect — otherwise the SDK would retry underneath
+this loop and multiply the effective attempt count. If you pass your own
+`client=`, its retry configuration is untouched; configure it yourself to match.
 
 **Known limits of this opt-in loop:**
 
-- **Bounded but not tiny — and only at this layer.** Worst case here is
-  `(max_attempts - 1) * MAX_RETRY_AFTER_SEC` — with the default policy (6
-  attempts, 120s cap), that's up to ~10 minutes if a misbehaving upstream
-  returns the maximum `Retry-After` hint on every attempt. For
-  `genblaze_openai`, the OpenAI SDK client also retries transient errors on
-  its own (`max_retries=2` by default) *underneath* this loop, so the actual
-  worst case is higher than the bound above; pass `client=openai.OpenAI(max_retries=0)`
-  if you want this loop's bound to be exact. Pass a tighter
-  `retry_policy=RetryPolicy(max_attempts=2)` if the documented bound is
-  already unacceptable for your call site.
+- **Bounded but not tiny.** Worst case here is `(max_attempts - 1) *
+  MAX_RETRY_AFTER_SEC`, *plus* each attempt's own HTTP `timeout=` — with the
+  default policy (6 attempts, 120s cap) that's up to ~10 minutes from backoff
+  alone, and higher still if attempts themselves stall close to `timeout=`
+  before failing. Pass a tighter `retry_policy=RetryPolicy(max_attempts=2)`
+  and/or a smaller `timeout=` if that ceiling is unacceptable for your call site.
+- **`achat()` occupies a thread-pool worker for the whole wait.** `asyncio.to_thread`
+  runs on Python's shared default `ThreadPoolExecutor` (capped around
+  `min(32, os.cpu_count() + 4)` workers, process-wide). A retrying
+  `achat(retry_on_rate_limit=True)` call holds its worker — sleeping, not just
+  computing — for as long as the loop above, so a burst of concurrent retrying
+  calls can exhaust that pool and stall unrelated `to_thread` work elsewhere in
+  the process. Bound how many `achat()` calls run concurrently (e.g. an
+  `asyncio.Semaphore`) rather than firing an unbounded number at once.
 - **Not a rate limiter.** This is a per-call retry wrapper, not a shared
   token-bucket / queue-level limiter. Many concurrent callers hitting the same
   TPM ceiling all see the same server `Retry-After` hint and wake in lockstep,

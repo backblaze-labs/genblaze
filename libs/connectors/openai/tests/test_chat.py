@@ -265,6 +265,47 @@ def test_internally_created_client_closed_once_across_retries(monkeypatch):
     created_clients[0].close.assert_called_once()
 
 
+def test_own_client_disables_sdk_retry_when_genblaze_manages_it(monkeypatch):
+    """When genblaze creates its own client AND retry is genblaze-managed, the
+    SDK's internal retry must be disabled (`max_retries=0`) — otherwise the SDK
+    would retry underneath `call_with_rate_limit_retry` and `RetryPolicy.max_attempts`
+    wouldn't be authoritative, multiplying rate-limited traffic (#221 panel review)."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    fake_openai = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.chat.completions.create.side_effect = ProviderError(
+            "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+        )
+        created_clients.append(c)
+        return c
+
+    fake_openai.OpenAI.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+    with pytest.raises(ProviderError):
+        chat("gpt-4o", prompt="hi", api_key="sk-test", retry_policy=RetryPolicy.disabled())
+
+    assert fake_openai.OpenAI.call_args.kwargs["max_retries"] == 0
+    # RetryPolicy.disabled() -> genblaze doesn't retry either -> exactly one SDK call.
+    assert created_clients[0].chat.completions.create.call_count == 1
+
+
+def test_own_client_keeps_default_sdk_retry_when_retry_not_opted_in(monkeypatch):
+    """Default (opt-out) path must not touch `max_retries` — no behavior change
+    for existing callers who rely on the SDK's own retry behavior."""
+    fake_openai = MagicMock()
+    fake_openai.OpenAI.return_value.chat.completions.create.return_value = _mock_completion()
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+    chat("gpt-4o", prompt="hi", api_key="sk-test")
+
+    assert "max_retries" not in fake_openai.OpenAI.call_args.kwargs
+
+
 def test_base_url_forwarded_to_sdk(monkeypatch):
     fake_openai = MagicMock()
     fake_openai.OpenAI.return_value.chat.completions.create.return_value = _mock_completion()
