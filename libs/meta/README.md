@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-28 -->
+<!-- last_verified: 2026-08-01 -->
 # genblaze
 
 Umbrella metapackage for genblaze — a provider-agnostic SDK for AI media generation with built-in provenance (manifests, SHA-256 hashing, B2/S3 durable storage).
@@ -26,6 +26,20 @@ pip install "genblaze[all]"
 # Optional: Parquet-backed manifest sink (ParquetSink)
 pip install "genblaze[parquet]"
 ```
+
+> **A GitHub Release tag (e.g. `v0.7.0`) is not a `genblaze` version — don't pin `genblaze==<wave tag>`.**
+> The tag names a CHANGELOG *wave*; every package in that wave versions independently, so
+> wave tags and the umbrella's PyPI versions are separate sequences that happen to look
+> alike. A pin on a wave tag either:
+> - **fails outright** (no such version was published), or
+> - **resolves silently to an unrelated umbrella build from a different wave** — no
+>   error, just stale code (e.g. `genblaze==0.4.0` on PyPI predates the `v0.4.0` wave).
+>
+> Pin the exact umbrella version instead (from that wave's "Released package versions"
+> list in its [release notes](https://github.com/backblaze-labs/genblaze/releases)) — but
+> note the umbrella pins ranges (e.g. `genblaze-core>=0.3.8,<0.4`), not exact versions, so
+> even that isn't fully reproducible on its own. For a locked install, generate a lockfile
+> (`pip freeze`, `uv lock`, or a constraints file) once your stack works.
 
 ## Import
 
