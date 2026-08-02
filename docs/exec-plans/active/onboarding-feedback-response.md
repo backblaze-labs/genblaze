@@ -103,7 +103,7 @@ findings, ranked by how broken they are:
   nonexistent umbrella extra); `genblaze-cli[index]`/`[parquet]` above is
   still open, tracked separately.
 
-### A3 — Version compatibility table (feedback item 1, no GitHub tracking issue yet)
+### A3 — Version compatibility table (feedback item 1, tracked in #254)
 
 - Current state: umbrella `genblaze==0.4.0` ships with `genblaze-core==0.3.2`
   and `genblaze-s3==0.3.2`. Agents installing `genblaze==0.3.2` from public
@@ -139,13 +139,13 @@ findings, ranked by how broken they are:
   fix into `RELEASING.md`; added a `genblaze` (umbrella) version field to the
   bug report issue template. Republishing the v0.5.0/v0.6.0/v0.7.0 GitHub
   Release bodies from the corrected CHANGELOG slices (with a dated edit
-  marker, since these are already-published artifacts) is drafted but not yet
-  applied — pending review; `v0.4.0`'s live release already carries an
-  ad-hoc, pre-existing note covering this and was not re-touched. This is
+  marker, since these are already-published artifacts) is applied; `v0.4.0`'s
+  live release already carried an ad-hoc, pre-existing note covering this and
+  was not re-touched. #244 is closed; #250 is closed with the remaining
+  compatibility-table work split into #254. This item (#244/#250 fix) is
   docs-only and scoped to the umbrella/wave-tag confusion — the full "Version
   compatibility" table mapping umbrella → core → s3 → every connector floor,
-  and Gate 1's clean-venv verification, are still open and have no dedicated
-  tracking issue yet.
+  and Gate 1's clean-venv verification, remain open in #254.
 
 ### A4 — Python 3.11+ install preamble (#9)
 
