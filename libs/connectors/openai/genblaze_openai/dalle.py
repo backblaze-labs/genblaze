@@ -318,10 +318,10 @@ def _resolve_local_file(url: str, extra_root: Path | None) -> Path:
     return resolved
 
 
+# Derived from _FORMAT_TO_MEDIA/_FORMAT_TO_EXT above so the png/jpeg/webp
+# triple has one source of truth instead of a third parallel copy.
 _MEDIA_TYPE_TO_EXT: dict[str, str] = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/webp": ".webp",
+    media_type: _FORMAT_TO_EXT[fmt] for fmt, media_type in _FORMAT_TO_MEDIA.items()
 }
 
 
