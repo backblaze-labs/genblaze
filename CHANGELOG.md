@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
 
+### genblaze-gmicloud
+
+- **Fixed** every GMI Cloud audio model (TTS and music) was unreachable —
+  the `gmi-audio-tts` and `gmi-audio-music` families' `param_allowlist`
+  didn't include the API's required `text`/`lyrics` fields, so every request
+  400'd with "Required parameter is missing" before it reached GMI. `prompt`
+  now aliases to `text` for TTS and to `lyrics` for music, matching the same
+  `prompt=` idiom every other modality uses (#251).
+
 ## [0.7.0] - 2026-07-28
 
 Bug-fix wave with one new opt-in feature and one new provider. Closes a

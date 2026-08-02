@@ -77,6 +77,17 @@ class TestAudioFamilyResolution:
         assert match.spec.extras.get("is_music") is True
         assert match.spec.model_id == "minimax-music-2.5"
 
+    def test_music_family_allowlists_lyrics_aliased_from_prompt(self) -> None:
+        """#251: GMI's music endpoint requires ``lyrics``, not ``prompt`` —
+        the allowlist must carry it and ``prompt`` must alias onto it, or
+        every music request 400s with "lyrics (Required parameter is
+        missing)" before it ever reaches GMI's servers."""
+        provider = GMICloudAudioProvider(api_key="test")
+        match = provider._models.match_family("MiniMax-Music-2.5")
+        assert match is not None
+        assert "lyrics" in (match.spec.param_allowlist or set())
+        assert match.spec.param_aliases.get("prompt") == "lyrics"
+
     def test_tts_routes_to_tts_family(self) -> None:
         provider = GMICloudAudioProvider(api_key="test")
         # Mix PascalCase + lowercase to prove both casings match.
@@ -89,6 +100,17 @@ class TestAudioFamilyResolution:
             assert match is not None, slug
             assert match.family.name == "gmi-audio-tts", slug
             assert match.spec.model_id == expected_wire, slug
+
+    def test_tts_family_allowlists_text_aliased_from_prompt(self) -> None:
+        """#251: GMI's TTS endpoint requires ``text``, not ``prompt`` —
+        the allowlist must carry it and ``prompt`` must alias onto it, or
+        every TTS request 400s with "text (Required parameter is missing)"
+        before it ever reaches GMI's servers."""
+        provider = GMICloudAudioProvider(api_key="test")
+        match = provider._models.match_family("minimax-tts-speech-2.6-turbo")
+        assert match is not None
+        assert "text" in (match.spec.param_allowlist or set())
+        assert match.spec.param_aliases.get("prompt") == "text"
 
 
 class TestImageFamilyResolution:

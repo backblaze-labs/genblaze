@@ -237,6 +237,61 @@ def test_voice_aliased_to_voice_id(provider):
     assert "voice" not in result
 
 
+def test_tts_prompt_aliased_to_text(provider):
+    """#251: TTS models need ``text``, not ``prompt`` — GMI 400s with
+    "text (Required parameter is missing)" otherwise. ``prompt`` is the
+    idiom every other modality uses, so it must alias through."""
+    step = Step(
+        provider="gmicloud-audio",
+        model="minimax-tts-speech-2.6-turbo",
+        prompt="Handmade ceramic mug, thrown and glazed by hand.",
+    )
+    result = provider.prepare_payload(step)
+    assert result["text"] == "Handmade ceramic mug, thrown and glazed by hand."
+    assert "prompt" not in result
+
+
+def test_music_prompt_aliased_to_lyrics(provider):
+    """#251: music models need ``lyrics``, not ``prompt`` — GMI 400s with
+    "lyrics (Required parameter is missing)" otherwise."""
+    step = Step(
+        provider="gmicloud-audio",
+        model="MiniMax-Music-2.5",
+        prompt="Verse one, about summer nights.",
+    )
+    result = provider.prepare_payload(step)
+    assert result["lyrics"] == "Verse one, about summer nights."
+    assert "prompt" not in result
+
+
+def test_tts_submit_forwards_text_in_payload(provider):
+    """End-to-end: the aliased ``text`` key (not ``prompt``) reaches the
+    outgoing HTTP request body for a TTS model."""
+    step = Step(
+        provider="gmicloud-audio",
+        model="minimax-tts-speech-2.6-turbo",
+        prompt="Hello world",
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert body["payload"]["text"] == "Hello world"
+    assert "prompt" not in body["payload"]
+
+
+def test_music_submit_forwards_lyrics_in_payload(provider):
+    """End-to-end: the aliased ``lyrics`` key (not ``prompt``) reaches the
+    outgoing HTTP request body for a music model."""
+    step = Step(
+        provider="gmicloud-audio",
+        model="MiniMax-Music-2.5",
+        prompt="Verse one, about summer nights.",
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    assert body["payload"]["lyrics"] == "Verse one, about summer nights."
+    assert "prompt" not in body["payload"]
+
+
 def test_prepare_payload_is_idempotent_for_normalized_params(provider):
     step = Step(
         provider="gmicloud-audio",
