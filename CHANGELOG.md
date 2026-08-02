@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** misplaced keyword arguments to `Pipeline.run` / `Pipeline.arun`
+  now raise a clear `TypeError` naming the bad keys, instead of a confusing
+  failure deeper in the call stack (P1-03).
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
