@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
+- **Fixed** `PromptTemplate("A {animal}")` now accepts the template
+  positionally instead of raising `TypeError: BaseModel.__init__() takes 1
+  positional argument but 2 were given`. The positional spelling is the one
+  shipped in `examples/batch_with_templates.py`, so the example crashed on its
+  first `PromptTemplate` line. The keyword form is unchanged, and passing both
+  raises `TypeError`.
 
 ## [0.7.0] - 2026-07-28
 
