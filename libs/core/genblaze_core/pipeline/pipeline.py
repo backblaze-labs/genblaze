@@ -146,6 +146,39 @@ def _resolve_raise_on_failure(
 _BATCH_MAX_CONCURRENCY_DEFAULT = 5
 
 
+# Pipeline options that live on the constructor or a builder method rather than
+# on a run entry point. Passing one to run()/arun()/batch_run()/abatch_run()
+# raised a bare "unexpected keyword argument", which names neither the right
+# call site nor the right spelling — the only way out was to read the source.
+# Each value completes the sentence "... — <hint>."
+#
+# Names that ARE real parameters of a given entry point never reach this table:
+# Python binds them normally, so they are never collected into **unsupported.
+# That is why ``max_concurrency`` can be listed here — it only fires on run(),
+# the one entry point that does not take it.
+_MISPLACED_RUN_KWARGS: dict[str, str] = {
+    "cache": "caching is configured on the pipeline: .cache(StepCache(...))",
+    "config": "per-run config is set with .config({...})",
+    "metadata": (
+        "run metadata is set with .metadata(key=value); for step metadata use "
+        ".step(..., metadata={...})"
+    ),
+    "tracer": "a tracer is attached with .tracer(...) or Pipeline(..., tracer=...)",
+    "preflight": ("preflight is toggled with .preflight(False) or Pipeline(..., preflight=False)"),
+    "tenant_id": "the tenant is set on the pipeline: Pipeline(..., tenant_id=...)",
+    "project_id": "the project is set on the pipeline: Pipeline(..., project_id=...)",
+    "chain": "chaining is set on the pipeline: Pipeline(..., chain=...)",
+    "moderation": "moderation is set on the pipeline: Pipeline(..., moderation=...)",
+    "structured_log": (
+        "structured logging is set on the pipeline: Pipeline(..., structured_log=...)"
+    ),
+    "max_concurrency": (
+        "run() is sequential; use arun()/abatch_run() for concurrency, or set the "
+        "default with Pipeline(..., max_concurrency=...)"
+    ),
+}
+
+
 def _resolve_batch_max_concurrency(max_concurrency: int | None) -> int:
     """Resolve ``batch_run()``'s ``max_concurrency``, warning only when the
     caller explicitly overrides the silent sequential default (issue #83).
@@ -517,6 +550,23 @@ class Pipeline(Runnable[None, PipelineResult]):
                 "RunnableConfig does not support 'tenant_id'. Set the tenant on "
                 "the pipeline instead: Pipeline(..., tenant_id=...) (see #68)."
             )
+
+    @staticmethod
+    def _reject_unsupported_run_kwargs(method: str, kwargs: dict[str, Any]) -> None:
+        """Reject unknown keyword arguments to a run entry point.
+
+        Python's own error for a misplaced option (``run(cache=...)``) is
+        ``got an unexpected keyword argument 'cache'`` — correct but a dead
+        end, because pipeline configuration is split across the constructor,
+        the fluent builders, and the run entry points with no rule the caller
+        can guess. For the options in ``_MISPLACED_RUN_KWARGS`` the error now
+        names the call site that does work; everything else keeps CPython's
+        exact wording so existing expectations still match.
+        """
+        for name in kwargs:
+            base = f"Pipeline.{method}() got an unexpected keyword argument {name!r}"
+            hint = _MISPLACED_RUN_KWARGS.get(name)
+            raise TypeError(f"{base} — {hint}." if hint else base)
 
     def config(self, cfg: RunnableConfig) -> Pipeline:
         self._reject_config_tenant(cfg)
@@ -1914,6 +1964,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
         _owns_sink: bool = True,
+        **unsupported: Any,
     ) -> PipelineResult:
         """Execute all steps synchronously and return a PipelineResult.
 
@@ -1946,9 +1997,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                 synchronous side-effect alongside (e.g., metrics).
 
         Raises:
+            TypeError: If an unknown keyword argument is passed. Options that
+                belong on the constructor or a builder (``cache``, ``config``,
+                ``tracer``, …) get an error naming the call site that works.
             GenblazeError: If no steps have been added to the pipeline.
             GenblazeError: If pipeline_timeout is exceeded.
         """
+        self._reject_unsupported_run_kwargs("run", unsupported)
         if not self._steps:
             msg = "Pipeline has no steps. Add steps with .step() before calling .run()."
             raise GenblazeError(msg)
@@ -2145,6 +2200,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
         _owns_sink: bool = True,
+        **unsupported: Any,
     ) -> PipelineResult:
         """Execute steps asynchronously and return a PipelineResult.
 
@@ -2175,9 +2231,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                 :meth:`astream` consumers.
 
         Raises:
+            TypeError: If an unknown keyword argument is passed — see
+                :meth:`run`.
             GenblazeError: If no steps have been added to the pipeline.
             GenblazeError: If pipeline_timeout is exceeded.
         """
+        self._reject_unsupported_run_kwargs("arun", unsupported)
         if not self._steps:
             msg = "Pipeline has no steps. Add steps with .step() before calling .arun()."
             raise GenblazeError(msg)
@@ -2707,6 +2766,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_progress: Any = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
+        **unsupported: Any,
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (sync).
 
@@ -2738,9 +2798,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             on_progress: Optional callback fired during provider poll loops.
             pipeline_timeout: End-to-end timeout in seconds for each pipeline.
             on_step_complete: Optional callback fired after each step completes.
+
+        Raises:
+            TypeError: If an unknown keyword argument is passed — see
+                :meth:`run`.
         """
         import copy
 
+        self._reject_unsupported_run_kwargs("batch_run", unsupported)
         self._validate_batch_args(prompts, items)
         # Validates >= 1 and warns once if the caller explicitly asked for
         # concurrency this sequential sync path can't provide (#83). The
@@ -2819,6 +2884,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_progress: Any = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
+        **unsupported: Any,
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (async).
 
@@ -2826,12 +2892,15 @@ class Pipeline(Runnable[None, PipelineResult]):
         must be supplied; see :meth:`batch_run` for the semantic difference.
 
         Raises:
+            TypeError: If an unknown keyword argument is passed — see
+                :meth:`run`.
             GenblazeError: If ``max_concurrency < 1`` — a non-positive value
                 would otherwise build a ``asyncio.Semaphore`` no task can ever
                 acquire, hanging forever instead of failing fast (issue #83).
         """
         import copy
 
+        self._reject_unsupported_run_kwargs("abatch_run", unsupported)
         self._validate_batch_args(prompts, items)
         if max_concurrency < 1:
             raise GenblazeError(f"max_concurrency must be >= 1, got {max_concurrency}")
