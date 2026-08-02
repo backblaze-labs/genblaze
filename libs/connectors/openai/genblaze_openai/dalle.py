@@ -318,7 +318,26 @@ def _resolve_local_file(url: str, extra_root: Path | None) -> Path:
     return resolved
 
 
-def _download_https_to_temp(url: str, timeout: float) -> Path:
+_MEDIA_TYPE_TO_EXT: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+}
+
+
+def _suffix_for_media_type(media_type: str | None) -> str:
+    """Map a declared MIME type to the temp-file suffix ``_download_https_to_temp``
+    should use.
+
+    The OpenAI client's multipart upload infers ``Content-Type`` from the temp
+    filename, not the actual bytes. An unrecognized/missing media type falls
+    back to ``.png`` (an OpenAI-accepted type) rather than a made-up extension
+    that would 400 upstream as ``application/octet-stream`` (#253).
+    """
+    return _MEDIA_TYPE_TO_EXT.get((media_type or "").lower(), ".png")
+
+
+def _download_https_to_temp(url: str, timeout: float, suffix: str = ".png") -> Path:
     """Download an https:// URL to a temp file. SSRF-checked with DNS pinning.
 
     Uses ``open_pinned_https_connection`` which connects to the validated pinned
@@ -329,6 +348,14 @@ def _download_https_to_temp(url: str, timeout: float) -> Path:
     Note: outbound connections bypass HTTP(S)_PROXY / NO_PROXY env vars by
     design — see ``open_pinned_https_connection`` for rationale.
 
+    ``suffix`` should reflect the source's declared media type (see
+    ``_suffix_for_media_type``) — the OpenAI client infers the upload's
+    Content-Type from this filename, so a wrong/unrecognized suffix (the
+    previous hardcoded ``.img``) makes ``/v1/images/edits`` reject the
+    request as ``application/octet-stream`` (#253). Callers that don't
+    upload the result back to OpenAI (e.g. fetching our own generated-image
+    CDN URL) can rely on the ``.png`` default.
+
     Caller is responsible for unlinking the returned temp file.
     """
     parsed = urlparse(url)
@@ -337,7 +364,7 @@ def _download_https_to_temp(url: str, timeout: float) -> Path:
         path = f"{path}?{parsed.query}"
     host = parsed.hostname or ""
 
-    fd, tmp = tempfile.mkstemp(suffix=".img")
+    fd, tmp = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     tmp_path = Path(tmp)
     conn = None
@@ -566,7 +593,8 @@ class DalleProvider(SyncProvider):
             if parsed.scheme == "file":
                 local.append(_resolve_local_file(asset.url, self._output_dir))
             else:
-                tmp = _download_https_to_temp(asset.url, self._http_timeout)
+                suffix = _suffix_for_media_type(asset.media_type)
+                tmp = _download_https_to_temp(asset.url, self._http_timeout, suffix=suffix)
                 temps.append(tmp)
                 local.append(tmp)
         return local, temps
