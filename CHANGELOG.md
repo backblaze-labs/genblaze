@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
+  first access, and `RunnableConfig` is available directly from
+  `genblaze_core` (#55).
+
 ## [0.7.0] - 2026-07-28
 
 Bug-fix wave with one new opt-in feature and one new provider. Closes a
