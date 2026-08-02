@@ -18,7 +18,13 @@ and closes a `verify --fetch` SSRF gap.
 
 This heading is the release **wave** name and the git tag (`v0.7.0`);
 individual PyPI package versions move independently and are listed below (the
-umbrella `genblaze` package is `0.4.5`).
+umbrella `genblaze` package is `0.4.5`). Wave tags and the umbrella's PyPI
+versions are separate sequences that happen to look alike — don't pin
+`genblaze==0.7.0`. A pin on a wave tag either fails outright or, worse,
+resolves silently to an unrelated umbrella build from a different wave (e.g.
+`genblaze==0.4.0` on PyPI predates the `v0.4.0` wave). Pin the exact umbrella
+version above, or a lockfile for full reproducibility (the umbrella pins
+ranges, not exact versions, for its own dependencies).
 
 ### Released package versions
 
@@ -195,7 +201,13 @@ verification of output assets against the manifest's committed digests.
 
 This heading is the release **wave** name and the git tag (`v0.6.0`); individual
 PyPI package versions move independently and are listed below (the umbrella
-`genblaze` package is `0.4.4`).
+`genblaze` package is `0.4.4`). Wave tags and the umbrella's PyPI versions are
+separate sequences that happen to look alike — don't pin `genblaze==0.6.0`. A
+pin on a wave tag either fails outright or, worse, resolves silently to an
+unrelated umbrella build from a different wave (e.g. `genblaze==0.4.0` on
+PyPI predates the `v0.4.0` wave). Pin the exact umbrella version above, or a
+lockfile for full reproducibility (the umbrella pins ranges, not exact
+versions, for its own dependencies).
 
 ### Released package versions
 
@@ -495,6 +507,16 @@ on the openai SDK 2.x, Google Veo on Vertex AI). Highlights: the ReDoS guard's
 heuristic now always runs, manifests load tolerantly while `verify()` stays the
 enforcement boundary, `ParquetSink` writes are index-backed and resink-correct,
 stream emitters are per-instance, and a batch of connector patch-republishes.
+
+This heading is the release **wave** name and the git tag (`v0.5.0`); individual
+PyPI package versions move independently and are listed below (the umbrella
+`genblaze` package is `0.4.3`). Wave tags and the umbrella's PyPI versions are
+separate sequences that happen to look alike — don't pin `genblaze==0.5.0`. A
+pin on a wave tag either fails outright or, worse, resolves silently to an
+unrelated umbrella build from a different wave (e.g. `genblaze==0.4.0` on
+PyPI predates the `v0.4.0` wave). Pin the exact umbrella version above, or a
+lockfile for full reproducibility (the umbrella pins ranges, not exact
+versions, for its own dependencies).
 
 ### Released package versions
 
@@ -912,6 +934,17 @@ stream emitters are per-instance, and a batch of connector patch-republishes.
 Security hardening (SSRF, URL-only asset verification), two new providers
 (Hume Octave TTS, AssemblyAI STT), and a batch of connector patch-republishes
 to update the `genblaze-core>=0.3.4` floor.
+
+This heading is the release **wave** name and the git tag (`v0.4.0`); individual
+PyPI package versions move independently and are listed below (the umbrella
+`genblaze` package is `0.4.1`, after the patch republish noted below). Wave
+tags and the umbrella's PyPI versions are separate sequences that happen to
+look alike — don't pin `genblaze==0.4.0`. That version *is* real and installs
+without error, which is the dangerous case: it's this wave's original wheel,
+published before the `0.4.1` patch republish fixed the connector floors, so
+it silently ships with the older, unfixed pins. Pin `genblaze==0.4.1` (this
+wave's actual umbrella), or a lockfile for full reproducibility (the umbrella
+pins ranges, not exact versions, for its own dependencies).
 
 ### Released package versions
 

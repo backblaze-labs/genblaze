@@ -103,7 +103,7 @@ findings, ranked by how broken they are:
   nonexistent umbrella extra); `genblaze-cli[index]`/`[parquet]` above is
   still open, tracked separately.
 
-### A3 — Version compatibility table (#1)
+### A3 — Version compatibility table (feedback item 1, no GitHub tracking issue yet)
 
 - Current state: umbrella `genblaze==0.4.0` ships with `genblaze-core==0.3.2`
   and `genblaze-s3==0.3.2`. Agents installing `genblaze==0.3.2` from public
@@ -124,6 +124,28 @@ findings, ranked by how broken they are:
     is a single-line ≤512-char summary and won't render Markdown. Verify
     rendering by running `twine check dist/*` against a locally built wheel
     before publish.
+- **Partially addressed (2026-08-01, #244/#250):** added a "don't pin
+  `genblaze==<wave tag>`" callout to root `README.md` and to
+  `libs/meta/README.md` (the PyPI long_description); added the same warning
+  (in tense-independent wording, so it doesn't decay into a false claim as the
+  umbrella version advances) to the `## [0.4.0]`, `## [0.5.0]`, `## [0.6.0]`,
+  and `## [0.7.0]` `CHANGELOG.md` wave headers — `0.4.0` because
+  `genblaze==0.4.0` is the one wave tag that actually resolves silently to a
+  stale pre-republish wheel, which three independent reviewers flagged as the
+  gap in the first draft of this fix. `CHANGELOG.md` is the single source the
+  GitHub Release bodies are now generated from (see next item). Fixed
+  `prepare-release`'s and `release-check`'s `--notes-from-tag` (root cause of
+  v0.5.0/v0.6.0 shipping bodies with just the tag message) and mirrored the
+  fix into `RELEASING.md`; added a `genblaze` (umbrella) version field to the
+  bug report issue template. Republishing the v0.5.0/v0.6.0/v0.7.0 GitHub
+  Release bodies from the corrected CHANGELOG slices (with a dated edit
+  marker, since these are already-published artifacts) is drafted but not yet
+  applied — pending review; `v0.4.0`'s live release already carries an
+  ad-hoc, pre-existing note covering this and was not re-touched. This is
+  docs-only and scoped to the umbrella/wave-tag confusion — the full "Version
+  compatibility" table mapping umbrella → core → s3 → every connector floor,
+  and Gate 1's clean-venv verification, are still open and have no dedicated
+  tracking issue yet.
 
 ### A4 — Python 3.11+ install preamble (#9)
 

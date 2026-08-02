@@ -80,7 +80,12 @@ Before cutting a release, verify on `main`:
 2. **CHANGELOG is cut.** The `[Unreleased]` section is empty; a new
    `## [X.Y.Z] - YYYY-MM-DD` section lists every package version change
    under "Released package versions" (the exact text `prepare_release.py`
-   emits).
+   emits). The section's intro must include the "wave vs. package version"
+   paragraph (see the `## [0.7.0]` entry for the current wording) — the
+   GitHub Release body is generated verbatim from this slice (see below), so
+   this is the only place that warning needs to be written for *release
+   notes*; the root `README.md` and `libs/meta/README.md` carry their own
+   copies for readers who never open a release page.
 3. **TS types are current.** `make ts-types` produces no diff. (CI's
    `ts-types-check` job already enforces this on every push, but the
    release workflow re-runs it as a defense in depth.)
@@ -116,7 +121,20 @@ Triggered two ways:
    git push origin v0.3.0
    ```
 2. Create a GitHub Release on that tag. Paste the CHANGELOG slice for
-   this version as the body.
+   this version as the body — **do not** use `gh release create --notes-from-tag`;
+   it repeats the annotated tag's one-line message (`Release 0.3.0`) instead of
+   the CHANGELOG content, which is how v0.5.0 and v0.6.0 originally shipped
+   with just the tag message as their entire body (#250). Extract the slice
+   and pass it via `--notes-file`:
+   ```bash
+   awk '/^## \[0.3.0\]/{p=1} p&&/^## \[/&&!/^## \[0.3.0\]/{exit} p' CHANGELOG.md \
+     > /tmp/release-notes-0.3.0.md
+   if test -s /tmp/release-notes-0.3.0.md; then
+     gh release create v0.3.0 --title "0.3.0" --notes-file /tmp/release-notes-0.3.0.md
+   else
+     echo "empty slice — check the wave heading; release NOT created" >&2
+   fi
+   ```
 3. Publishing the Release fires the `Release` workflow.
 
 The workflow then runs:
