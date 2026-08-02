@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
+- **Changed** the run entry points (`run`, `arun`, `batch_run`, `abatch_run`)
+  now raise a `TypeError` that names the call site that works when a
+  constructor- or builder-level option is passed to them. `run(cache=...)`
+  previously produced a bare `got an unexpected keyword argument 'cache'`,
+  which named neither where caching is configured nor how to spell it;
+  it now adds `— caching is configured on the pipeline:
+  `.cache(StepCache(...))`. Covers `cache`, `config`, `metadata`, `tracer`,
+  `preflight`, `tenant_id`, `project_id`, `chain`, `moderation`,
+  `structured_log`, and `max_concurrency` (the last only on `run()`, the one
+  entry point that does not take it). Genuinely unknown names keep CPython's
+  exact wording.
 
 ## [0.7.0] - 2026-07-28
 
