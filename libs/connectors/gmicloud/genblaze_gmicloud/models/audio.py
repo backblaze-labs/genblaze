@@ -3,13 +3,15 @@
 Three families distinguished by upstream payload contract:
 
 * ``gmi-audio-tts`` — text-to-speech models (ElevenLabs, MiniMax-TTS,
-  Inworld). Standard audio surface with ``voice``→``voice_id`` aliasing.
+  Inworld). Standard audio surface with ``voice``→``voice_id`` and
+  ``prompt``→``text`` aliasing (GMI's TTS payload requires ``text``, #251).
 * ``gmi-audio-clone`` — voice-clone models (MiniMax-Voice-Clone). Adds
   expressive controls (pitch, emotion, speed, stability, similarity)
   and routes chain-input audio to ``reference_audio``.
 * ``gmi-audio-music`` — music generation (MiniMax-Music). Adds
-  style_weight, duration_seconds, tempo. Stereo output via
-  ``extras["is_music"]=True``.
+  style_weight, duration_seconds, tempo, plus ``prompt``→``lyrics``
+  aliasing (GMI's music payload requires ``lyrics``, #251). Stereo output
+  via ``extras["is_music"]=True``.
 
 Every audio slug currently shipped by GMI was flagged ``suspected_dead``
 in the 2026-04 reconciliation — those slugs are preserved in each
@@ -40,8 +42,19 @@ _AUDIO_BASE = ParamSurface.for_modality(Modality.AUDIO).with_aliases(voice="voic
 # Voice clone variants accept a reference audio plus expressive controls.
 _VOICE_CLONE = _AUDIO_BASE.extend("pitch", "emotion", "speed", "stability", "similarity")
 
-# Music models accept style hints + per-second duration controls.
-_MUSIC = _AUDIO_BASE.extend("style_weight", "duration_seconds", "tempo")
+# Music models accept style hints + per-second duration controls. GMI's music
+# endpoint requires the lyrics payload key as ``lyrics``, not ``prompt`` —
+# alias it so a music step takes the same ``prompt=`` every other modality
+# uses (#251).
+_MUSIC = _AUDIO_BASE.extend("style_weight", "duration_seconds", "tempo").with_aliases(
+    prompt="lyrics"
+)
+
+# TTS models follow the MiniMax/Inworld convention of a ``text`` payload key
+# rather than ``prompt`` — GMI's image/video endpoints happen to accept
+# ``prompt`` directly, but the audio endpoints don't. Alias it so a TTS step
+# takes the same ``prompt=`` every other modality uses (#251).
+_TTS = _AUDIO_BASE.with_aliases(prompt="text")
 
 
 _ENVELOPE = {"envelope_key": "payload"}
@@ -122,7 +135,7 @@ _GMI_AUDIO_TTS_FAMILY = ModelFamily(
         model_id="*",
         modality=Modality.AUDIO,
         extras={**_ENVELOPE, "is_music": False},
-        **_AUDIO_BASE.build(),
+        **_TTS.build(),
     ),
     description="GMICloud text-to-speech (ElevenLabs, MiniMax-TTS, Inworld families).",
     example_slugs=(
