@@ -16,6 +16,8 @@ permissions:
 
 jobs:
   lint:
+    # Policy: Dependabot PRs run no CI (skip every job). See also security.yml.
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     # Runs ruff directly rather than `make lint` (which also runs `make
     # deptry`): deptry needs the full workspace installed, so it gets its own
     # `deptry` job below. Local `make lint` therefore covers more than this
@@ -38,6 +40,7 @@ jobs:
       - run: ruff format --check libs/ cli/ examples/
 
   ts-types:
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     # Drift guard for libs/spec/ts/genblaze.d.ts. Fails if a schema changed
     # without `make ts-types` being run. See libs/spec/README.md.
     runs-on: ubuntu-latest
@@ -60,6 +63,7 @@ jobs:
         run: npx --yes -p typescript@5.4 tsc --noEmit --strict --skipLibCheck libs/spec/ts/genblaze.d.ts
 
   typecheck:
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -107,6 +111,7 @@ jobs:
           fi
 
   deptry:
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     # Dependency hygiene gate. `pip check` proves the installed set has no
     # conflicting/missing transitive deps; `make deptry` proves every package
     # declares what it imports — the replicate/httpx clean-install crash class
@@ -134,6 +139,7 @@ jobs:
         run: make deptry
 
   build:
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     # Smoke-build every published package on every PR so packaging
     # regressions (e.g. broken hatch dynamic-version sources, missing
     # README, malformed classifiers) are caught here, not at release
@@ -172,6 +178,7 @@ jobs:
           fi
 
   test:
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:

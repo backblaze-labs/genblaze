@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   zizmor:
+    # Policy: Dependabot PRs run no CI (see ci.yml). Push + schedule still run.
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     name: zizmor (GitHub Actions security audit)
     runs-on: ubuntu-latest
     permissions:
