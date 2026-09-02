@@ -43,7 +43,7 @@ jobs:
       - name: Upload SARIF to code scanning
         # Skip on fork PRs: GITHUB_TOKEN can't be granted security-events: write there (zizmor still runs above).
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v3
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
         with:
           sarif_file: zizmor.sarif
           category: zizmor
