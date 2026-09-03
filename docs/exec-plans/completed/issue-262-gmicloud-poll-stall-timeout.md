@@ -1,7 +1,7 @@
 <!-- last_verified: 2026-09-03 -->
 # Issue 262: Seedance 2.0 requests in agent pipeline intermittently get infinitely stalled while returning "dispatched" status
 
-> **Status: PLAN (not yet implemented).** Placed here at the user's request. Branch `issue/262-gmicloud-poll-stall-timeout`.
+> **Status: IMPLEMENTED.** Branch `issue/262-gmicloud-poll-stall-timeout` (commit `6ee33b3`). gmicloud suite green (265 passed, 8 pre-existing skips); full-repo `make test` not yet re-run cleanly on this branch.
 
 ## Problem
 
@@ -44,7 +44,7 @@ Add a **connector-enforced maximum polling ceiling** to `GMICloudBase` so a wedg
 
    Because the loop calls `poll()` through `_retry_phase`, a `TIMEOUT`-coded raise is retried at most `max_attempts` times (default 6, `poll_transient_retries=5 + 1`) — the ceiling stays breached across those attempts, so it deterministically exhausts the budget and propagates as a **terminal `FAILED` step** with `error_code=TIMEOUT`. `TIMEOUT` is in `RETRYABLE_ERROR_CODES`, so Samsar (or genblaze step-retry) can re-drive it — exactly what the issue asks for. Termination is bounded by `max_attempts`, **not** by the caller's `timeout`, which is the whole point.
 
-3. **`GMICloudVideoProvider.__init__`** and the image/audio provider `__init__`s (`provider.py`, `image.py`, `audio.py`): thread the new `max_poll_seconds` kwarg through to `super().__init__` so it's configurable per provider (default inherited).
+3. **Provider constructors** — no change needed. `GMICloudVideoProvider`, `GMICloudImageProvider`, and `GMICloudAudioProvider` define **no** `__init__` of their own; they inherit `GMICloudBase.__init__`, so adding `max_poll_seconds` to the base automatically exposes it on all three (`GMICloudVideoProvider(max_poll_seconds=...)` works out of the box). `image.py` / `audio.py` were therefore **not** edited.
 
 4. **Defensive `fetch_output` hardening** (`provider.py:85-126`): today the failure branch only matches `("failed", "cancelled")`; any other non-`success` status that somehow reaches fetch produces a vague `"completed but no video URL found"`. Change the guard to raise a clear terminal error for **any status that is not `success`** (carrying the status), so fetch can never silently mis-handle an unexpected state. Low-risk belt-and-suspenders; the ceiling means fetch is normally only reached on a genuine terminal status.
 
@@ -57,18 +57,19 @@ Reused, not reinvented: core's `_poll_cache_lock` thread-safe-dict idiom (`base.
 Low–moderate; connector-scoped, no core or public-API-signature-breaking change (new kwarg is keyword-only with a default).
 
 - The ceiling changes observable behaviour: a job that previously hung "forever" now fails at ~`max_poll_seconds`. This is the intended fix; 1800s is well beyond normal Seedance completion, so legitimate jobs are unaffected.
-- New per-instance state (`_poll_first_seen`) is bounded — entries are cleared on terminal status and on ceiling breach; keys are distinct prediction ids. Mutations are lock-guarded, matching the existing poll-cache concurrency contract, so fan-out (threads / `to_thread`) is safe.
+- New per-instance state (`_poll_first_seen`) is bounded — entries are cleared on a terminal poll, with a FIFO cap (`_POLL_FIRST_SEEN_MAX = 512`) as the backstop for ids that only ever end via the ceiling. The entry is deliberately **not** cleared on ceiling breach: the core poll phase retries `poll()` a bounded number of times, and each retry must still see the deadline blown so the retry budget drains and the step terminates — clearing on breach would reset the clock and re-hang. Mutations are lock-guarded, matching the existing poll-cache concurrency contract, so fan-out (threads / `to_thread`) is safe.
 - `estimated_seconds=30.0` on submit (`_base.py:265`) still delays the first poll — unchanged, and negligible against the ceiling.
 
-## Files to Modify
+## Files Modified
 
 | File | Change |
 | --- | --- |
-| `libs/connectors/gmicloud/genblaze_gmicloud/_base.py` | Add `max_poll_seconds` param + lock-guarded `_poll_first_seen`; enforce the stall ceiling in `poll()` |
-| `libs/connectors/gmicloud/genblaze_gmicloud/provider.py` | Thread `max_poll_seconds` through `GMICloudVideoProvider.__init__`; harden `fetch_output` non-`success` handling |
-| `libs/connectors/gmicloud/genblaze_gmicloud/image.py`, `audio.py` | Thread `max_poll_seconds` through their `__init__`s |
-| `libs/connectors/gmicloud/tests/test_gmicloud_provider.py` | New tests (below), following the file's `MagicMock`-response convention |
+| `libs/connectors/gmicloud/genblaze_gmicloud/_base.py` | Add `max_poll_seconds` param (default 1800s) + lock-guarded `_poll_first_seen`; enforce the stall ceiling in `poll()` via `_enforce_poll_deadline` / `_clear_poll_deadline` |
+| `libs/connectors/gmicloud/genblaze_gmicloud/provider.py` | Harden `fetch_output` to fail on any non-`success` status |
+| `libs/connectors/gmicloud/tests/test_gmicloud_provider.py` | 7 new tests, following the file's `MagicMock`-response convention |
 | `libs/connectors/gmicloud/README.md` | Document `max_poll_seconds` |
+
+**Not modified:** `image.py` / `audio.py` — neither defines its own `__init__`, so `max_poll_seconds` reaches `GMICloudImageProvider` / `GMICloudAudioProvider` automatically through the inherited `GMICloudBase.__init__` (no per-subclass threading required).
 
 No production behaviour outside gmicloud changes. No version bump / CHANGELOG entry unless this ships in a release wave (per RELEASING.md / CONTRIBUTING.md).
 
