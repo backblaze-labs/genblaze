@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/ffumero/Desktop/dev/genblaze/.codex/hooks/auto-format.sh'",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
