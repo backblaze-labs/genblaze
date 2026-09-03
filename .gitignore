@@ -79,3 +79,5 @@ CLAUDE.local.md
 *.tmp
 *.bak
 *.log
+.pre-pr-check/
+pre-pr-check-findings-batch-*.md
