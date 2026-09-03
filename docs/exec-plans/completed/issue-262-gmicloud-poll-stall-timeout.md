@@ -1,7 +1,7 @@
 <!-- last_verified: 2026-09-03 -->
 # Issue 262: Seedance 2.0 requests in agent pipeline intermittently get infinitely stalled while returning "dispatched" status
 
-> **Status: IMPLEMENTED.** Branch `issue/262-gmicloud-poll-stall-timeout` (commit `6ee33b3`). gmicloud suite green (265 passed, 8 pre-existing skips); full-repo `make test` not yet re-run cleanly on this branch.
+> **Status: IMPLEMENTED & VERIFIED.** Branch `issue/262-gmicloud-poll-stall-timeout`. gmicloud suite green (265 passed, 8 pre-existing skips) and the full-repo `make test` gate passes (exit 0, every package green — core 2144 passed, all connectors/cli/meta/tools passing; the 7 new stall/ceiling tests among them).
 
 ## Problem
 
@@ -101,4 +101,6 @@ ruff format --check libs/connectors/gmicloud/
 make test
 ```
 
-Manual sanity: temporarily set `max_poll_seconds` small and confirm a stubbed always-`processing` request produces a terminal `FAILED` step with `error_code=timeout` and an actionable message, rather than hanging.
+**Result:** the 7 new tests fail against unmodified production code (red) and pass after the fix (green); `pytest tests/ -q -rs` in gmicloud → `265 passed, 8 skipped`; `ruff check` / `ruff format --check` on the touched Python files → clean; the full-repo `make test` gate → **exit 0, all packages passing** (core `2144 passed`, gmicloud `265 passed`, every other connector / cli / meta / tools green).
+
+Manual sanity: temporarily set `max_poll_seconds` small and confirm a stubbed always-`processing` request produces a terminal `FAILED` step with `error_code=timeout` and an actionable message, rather than hanging — verified end-to-end (a `timeout=3600` caller config that previously polled forever now fails at the ceiling).
