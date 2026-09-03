@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
+- **Fixed** `import genblaze_core.testing` no longer requires `pytest`. The
+  mock providers moved to the pytest-free `genblaze_core.mocks` in 0.3.5, but
+  `genblaze_core.testing` kept a module-level `import pytest` for
+  `ProviderComplianceTests` — so the documented re-export path
+  (`from genblaze_core.testing import MockVideoProvider`, used by the
+  zero-API-key quickstart in `libs/core/README.md`) still failed with
+  `ModuleNotFoundError: No module named 'pytest'` on a clean
+  `pip install genblaze-core`. `pytest` is now imported inside the four
+  compliance-harness methods that use it (P1-01).
 
 ## [0.7.0] - 2026-07-28
 

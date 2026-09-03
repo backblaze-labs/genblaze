@@ -38,8 +38,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-import pytest
-
+# NOTE: ``pytest`` is deliberately NOT imported at module level. It is a dev
+# dependency, not a runtime one, so a top-level import made
+# ``from genblaze_core.testing import MockProvider`` fail with
+# ``ModuleNotFoundError: No module named 'pytest'`` on a clean
+# ``pip install genblaze-core`` — breaking the re-export promise below and the
+# zero-API-key quickstart in ``libs/core/README.md``. Only
+# ``ProviderComplianceTests`` needs pytest, and it only ever runs *under*
+# pytest, so each method that needs it imports it locally.
+#
 # Re-export pytest-free mock classes for backward compatibility.
 # Callers importing from genblaze_core.testing continue to work unchanged;
 # callers who want no pytest dep should import from genblaze_core.mocks instead.
@@ -163,6 +170,8 @@ class ProviderComplianceTests(ABC):
 
     def test_sync_provider_generate_is_sufficient(self) -> None:
         """SyncProvider subclasses only need generate() for full lifecycle."""
+        import pytest
+
         provider = self.make_provider()
         if not isinstance(provider, SyncProvider):
             pytest.skip("Not a SyncProvider")
@@ -182,6 +191,8 @@ class ProviderComplianceTests(ABC):
 
     def test_audio_providers_populate_audio_metadata(self) -> None:
         """Audio providers must populate AudioMetadata on audio assets."""
+        import pytest
+
         provider = self.make_provider()
         caps = provider.get_capabilities()
         if caps is None or not caps.supported_modalities:
@@ -201,6 +212,8 @@ class ProviderComplianceTests(ABC):
 
     def test_chain_input_urls_validated(self) -> None:
         """Providers with accepts_chain_input must reject unsafe URLs."""
+        import pytest
+
         from genblaze_core.exceptions import ProviderError
         from genblaze_core.models.asset import Asset
 
@@ -282,6 +295,8 @@ class ProviderComplianceTests(ABC):
 
         To waive, set ``expects_cost = False`` on the subclass and note why.
         """
+        import pytest
+
         if not self.expects_cost:
             pytest.skip("Provider opts out of cost tracking (expects_cost=False)")
         provider = self.make_provider()
