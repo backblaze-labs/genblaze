@@ -31,7 +31,7 @@ dependencies = [
     # ``TypeError: ... unexpected keyword argument 'speech_models'`` before the
     # request ever leaves the process. Bounded below 1.0 so a future major
     # can't silently reshape these call sites.
-    "assemblyai>=0.45,<1",
+    "assemblyai>=0.45,<2",
 ]
 
 [project.urls]
