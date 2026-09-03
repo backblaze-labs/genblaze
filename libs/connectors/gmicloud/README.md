@@ -179,6 +179,25 @@ for step in run.steps:
         print(f"failed ({step.error_code}): {step.error}")
 ```
 
+### Stalled requests never hang forever
+
+GMICloud can occasionally leave a request wedged in `queued`/`processing`
+indefinitely (seen under heavy parallel fan-out). To guarantee every step
+reaches a terminal state — so an agent can retry rather than stall — each queue
+provider enforces a `max_poll_seconds` ceiling (default **1800s / 30 min**). A
+request that stays non-terminal past the ceiling fails with
+`error_code == ProviderErrorCode.TIMEOUT`, independent of the per-step `timeout`
+you pass to `.run()`:
+
+```python
+# Raise the ceiling for unusually long jobs, or pass None to disable it and
+# rely solely on the pipeline's own timeout.
+provider = GMICloudVideoProvider(max_poll_seconds=3600)  # 1 hour
+```
+
+Because the failure is a `TIMEOUT`, it's retryable — re-drive the step (or the
+run) to submit a fresh request.
+
 ## Documentation
 
 - **Main repo**: https://github.com/backblaze-labs/genblaze
