@@ -42,7 +42,7 @@ dev = [
 chat = [
     # <3: bounded-major convention (#61); matches the cap the openai
     # connector (genblaze-openai) uses for the same package.
-    "openai>=1.0,<3",
+    "openai>=1.0,<4",
 ]
 
 [project.entry-points."genblaze.providers"]
