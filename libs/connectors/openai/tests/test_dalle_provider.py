@@ -410,6 +410,24 @@ def test_output_format_jpeg_sets_jpg_suffix(mock_b64_dalle):
     assert result.assets[0].url.endswith(".jpg")
 
 
+def test_persist_image_bytes_uses_local_file_url_helper(mock_b64_dalle):
+    """Regression guard for #252: output asset URLs must be built via the
+    shared ``local_file_url`` (``Path.as_uri()``) helper, not a hand-rolled
+    ``f"file://{quote(...)}"`` — the latter mis-parses on Windows because the
+    drive letter's colon lands in the URL's netloc instead of the path. This
+    pins the *call site*, not just the helper (already covered in
+    libs/core/tests/unit/test_utils.py), so a future revert to inline string
+    building is caught here too."""
+    provider, _, _ = mock_b64_dalle
+    with patch(
+        "genblaze_openai.dalle.local_file_url", return_value="file:///sentinel.png"
+    ) as mock_helper:
+        step = Step(provider="openai-dalle", model="gpt-image-1", prompt="x")
+        result = provider.generate(step)
+    mock_helper.assert_called_once()
+    assert result.assets[0].url == "file:///sentinel.png"
+
+
 def test_output_compression_out_of_range_rejected(mock_b64_dalle):
     provider, _, _ = mock_b64_dalle
     step = Step(
@@ -730,6 +748,82 @@ class TestDownloadHttpsToTemp:
                 _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
 
         conn.close.assert_called()
+
+    def test_default_suffix_is_a_recognized_image_extension(self):
+        """Regression for #253: the old hardcoded '.img' suffix made the OpenAI
+        client infer Content-Type: application/octet-stream on upload, which
+        /v1/images/edits rejects. The default must be an extension OpenAI's
+        multipart Content-Type sniffing recognizes."""
+        conn = _make_dalle_conn(status=200, body=b"imagedata")
+        with patch(_DALLE_CONN_PATCH, return_value=conn):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            result = _download_https_to_temp("https://oai.example.com/img.png", timeout=5.0)
+        try:
+            assert result.suffix != ".img"
+            assert result.suffix == ".png"
+        finally:
+            result.unlink(missing_ok=True)
+
+    @pytest.mark.parametrize("suffix", [".png", ".jpg", ".webp"])
+    def test_explicit_suffix_is_honored(self, suffix):
+        """Callers that know the declared media type can request the matching
+        suffix so the temp filename's extension truthfully reflects the bytes."""
+        conn = _make_dalle_conn(status=200, body=b"imagedata")
+        with patch(_DALLE_CONN_PATCH, return_value=conn):
+            from genblaze_openai.dalle import _download_https_to_temp
+
+            result = _download_https_to_temp(
+                "https://oai.example.com/img", timeout=5.0, suffix=suffix
+            )
+        try:
+            assert result.suffix == suffix
+        finally:
+            result.unlink(missing_ok=True)
+
+
+# --- media_type -> temp-file suffix mapping (#253) ---
+
+
+@pytest.mark.parametrize(
+    ("media_type", "expected_suffix"),
+    [
+        ("image/png", ".png"),
+        ("image/jpeg", ".jpg"),
+        ("image/webp", ".webp"),
+        ("image/PNG", ".png"),  # case-insensitive
+        ("image/gif", ".png"),  # unrecognized -> safe fallback
+        (None, ".png"),  # absent -> safe fallback
+        ("", ".png"),
+    ],
+)
+def test_suffix_for_media_type(media_type, expected_suffix):
+    from genblaze_openai.dalle import _suffix_for_media_type
+
+    assert _suffix_for_media_type(media_type) == expected_suffix
+
+
+def test_edit_https_input_downloaded_with_media_type_suffix(mock_b64_dalle):
+    """End-to-end regression for #253: an https:// edit input's declared
+    Asset.media_type must drive the downloaded temp file's suffix, so the
+    OpenAI client's multipart upload infers a real Content-Type instead of
+    application/octet-stream."""
+    provider, client, _ = mock_b64_dalle
+    from genblaze_core.models.asset import Asset as _Asset
+
+    conn = _make_dalle_conn(status=200, body=b"remote-jpeg-bytes")
+    step = Step(
+        provider="openai-dalle",
+        model="gpt-image-2",
+        prompt="edit remote source",
+        inputs=[_Asset(url="https://cdn.example.com/product.jpg", media_type="image/jpeg")],
+    )
+    with patch(_DALLE_CONN_PATCH, return_value=conn):
+        provider.generate(step)
+
+    kwargs = client.images.edit.call_args.kwargs
+    uploaded = kwargs["image"]
+    assert uploaded.name.endswith(".jpg")
 
 
 # --- Compliance harness ---

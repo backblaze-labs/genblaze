@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `README.md`); `package.json` itself gains the new `devDependencies`/
   `scripts` fields used for local regeneration.
 
+### genblaze-openai
+
+- **Fixed** `DalleProvider` image edits from an `https://` reference image
+  (e.g. a presigned object-storage URL) always failed upstream with
+  `unsupported mimetype`. The download's temp file was named with a fixed
+  `.img` suffix, so the OpenAI client inferred `Content-Type:
+  application/octet-stream` instead of the source's real type. The suffix
+  is now derived from the input `Asset.media_type` (falling back to `.png`)
+  (#253).
+
 ## [0.7.0] - 2026-07-28
 
 Bug-fix wave with one new opt-in feature and one new provider. Closes a
