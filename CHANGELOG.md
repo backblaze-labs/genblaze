@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `README.md`); `package.json` itself gains the new `devDependencies`/
   `scripts` fields used for local regeneration.
 
+### genblaze-gmicloud
+
+- **Fixed** the video poll loop is now bounded by a `max_poll_seconds`
+  ceiling. A request stuck reporting `dispatched` previously polled forever,
+  wedging the pipeline with no way to recover; it now fails the step with a
+  timeout once the ceiling is passed. The ceiling is tracked per prediction
+  id and cleared on a terminal status, and can be disabled by passing
+  `None` (#262).
+
 ## [0.7.0] - 2026-07-28
 
 Bug-fix wave with one new opt-in feature and one new provider. Closes a
