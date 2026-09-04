@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import sys
 import types
 from typing import Any
@@ -173,3 +174,57 @@ def test_provider_invoke_uses_step_span() -> None:
     step = Step(provider="mock", model="m", prompt="p")
     result = provider.invoke(step)
     assert result.status == StepStatus.SUCCEEDED
+
+
+def test_library_logger_silent_without_app_config() -> None:
+    """genblaze.* loggers must not fall through to logging.lastResort.
+
+    Run in a fresh interpreter — pytest's own logging plugin installs
+    handlers that would mask the real bug (#46) if checked in-process.
+    With no application logging configured, a genblaze.* warning must
+    produce zero stderr output.
+    """
+    script = (
+        "from genblaze_core import Pipeline, Modality;"
+        "from genblaze_core.testing import MockVideoProvider;"
+        "Pipeline('demo').step(MockVideoProvider(), model='mock-v1', prompt='x',"
+        "modality=Modality.VIDEO).run(progress=False, raise_on_failure=False)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-W", "ignore::DeprecationWarning", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == "", (
+        f"expected no stderr output with no logging configured, got: {result.stderr!r}"
+    )
+
+
+def test_library_logger_visible_after_basic_config() -> None:
+    """An application that opts in via logging.basicConfig() still sees warnings.
+
+    Guards against the NullHandler fix (#46) over-suppressing: the handler
+    must stop the lastResort fallback without blocking propagation to a
+    handler the application installed itself.
+    """
+    script = (
+        "import logging;"
+        "logging.basicConfig(level=logging.WARNING);"
+        "from genblaze_core import Pipeline, Modality;"
+        "from genblaze_core.testing import MockVideoProvider;"
+        "Pipeline('demo').step(MockVideoProvider(), model='mock-v2', prompt='x',"
+        "modality=Modality.VIDEO).run(progress=False, raise_on_failure=False)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-W", "ignore::DeprecationWarning", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "genblaze.pipeline" in result.stderr, (
+        f"expected the warning to reach the app's configured handler, got: {result.stderr!r}"
+    )
+    assert "preflight.unknown" in result.stderr
