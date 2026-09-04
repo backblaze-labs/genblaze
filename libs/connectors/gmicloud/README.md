@@ -167,6 +167,45 @@ GMICloud surfaces five related names; they look interchangeable but come from di
 
 The `GMI_` env prefix is short on purpose; the class / import / PyPI names use the full `gmicloud` for precision and to leave room for future `genblaze-gmi*` packages if needed.
 
+## Checking whether a slug is real
+
+`provider.validate_model(slug)` grades whether a model slug is usable. GMICloud
+has no `GET /models` catalog endpoint, so most slugs — Seedream, Gemini-Flash,
+FLUX-Kontext, Reve create, Bria fibo, and any new model GMI adds — are checked
+with the same empty-payload probe used by the connector's specialized model
+families: `POST /requests` with an empty payload; a `404` means the slug is
+gone, a `400`/`2xx` means it's callable.
+
+- `OK_AUTHORITATIVE` — the probe confirms the slug exists in GMICloud's
+  catalog. This is **not** an entitlement check: a handful of GMI models
+  (`seededit-3-0-i2i-250628` today) exist in the catalog but 404 "you do not
+  have access" on a real submit for accounts without extra entitlement —
+  `validate_model()` re-grades those known slugs to `OK_PROVISIONAL` instead
+  of over-claiming. If you hit an access 404 on a slug that validated
+  `OK_AUTHORITATIVE`, verify catalog access at https://console.gmicloud.ai/.
+- `NOT_FOUND` — the probe returned a 404; `Pipeline` preflight raises before
+  spending any credit.
+- `UNKNOWN_PERMISSIVE` — the probe was inconclusive (auth error, rate limit,
+  5xx) or transiently unreachable; the slug passes through untouched and
+  liveness is unverified.
+
+Note the probe does create an entry in your GMICloud account's request-audit
+log (even on a rejected payload). A `LIVE`/`DEAD` (i.e. `OK_AUTHORITATIVE`
+or `NOT_FOUND`) verdict is cached, bounding a given slug to at most one
+probe per provider instance per hour. An `UNKNOWN_PERMISSIVE` verdict
+(auth error, rate limit, 5xx) is deliberately **not** cached — a transient
+upstream failure re-probes on the next `validate_model()` call rather than
+being stuck reading as inconclusive for the rest of the cache window — so a
+slug stuck at `UNKNOWN` can probe more often than once an hour. If your
+pipeline holds separate `GMICloudImageProvider` / `GMICloudVideoProvider` /
+`GMICloudAudioProvider` instances, each maintains its own cache, so the same
+slug can probe once per instance.
+
+`ModelRegistry.get(slug)` is a different question — it returns the parameter
+shape to use for a slug, not whether the slug exists. It returns a usable spec
+for *any* string via the permissive fallback, so it is never a substitute for
+`validate_model()`.
+
 ## Reading outputs safely
 
 `step.assets[0]` is only valid when the step succeeded. Always check `step.status` first — especially in fan-out runs where one step may fail and others succeed:
@@ -178,6 +217,25 @@ for step in run.steps:
     elif step.status == "failed":
         print(f"failed ({step.error_code}): {step.error}")
 ```
+
+### Stalled requests never hang forever
+
+GMICloud can occasionally leave a request wedged in `queued`/`processing`
+indefinitely (seen under heavy parallel fan-out). To guarantee every step
+reaches a terminal state — so an agent can retry rather than stall — each queue
+provider enforces a `max_poll_seconds` ceiling (default **1800s / 30 min**). A
+request that stays non-terminal past the ceiling fails with
+`error_code == ProviderErrorCode.TIMEOUT`, independent of the per-step `timeout`
+you pass to `.run()`:
+
+```python
+# Raise the ceiling for unusually long jobs, or pass None to disable it and
+# rely solely on the pipeline's own timeout.
+provider = GMICloudVideoProvider(max_poll_seconds=3600)  # 1 hour
+```
+
+Because the failure is a `TIMEOUT`, it's retryable — re-drive the step (or the
+run) to submit a fresh request.
 
 ## Documentation
 

@@ -81,3 +81,5 @@ CLAUDE.local.md
 *.log
 .pre-pr-check/
 pre-pr-check-findings-batch-*.md
+# Node (libs/spec type-generation toolchain)
+node_modules/

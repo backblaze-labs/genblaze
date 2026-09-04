@@ -60,10 +60,12 @@ Vertex AI auth instead:
 provider = VeoProvider(project="my-gcp-project", location="us-central1")
 ```
 
-Vertex returns generated video bytes inline (no Files API on Vertex), so
-`fetch_output()` saves them to a local file and exposes a `file://` asset —
-pass `output_dir` to control where those files land (default: system temp),
-same as `ImagenProvider` below.
+Both auth modes materialize the generated video to a local `file://` asset, so
+`ObjectStorageSink` can upload it to B2 without Google credentials in the sink.
+Vertex returns the bytes inline (no Files API on Vertex); the Gemini API path
+downloads them from the Files API — either way `fetch_output()` writes a local
+file and exposes a `file://` asset. Pass `output_dir` to control where those
+files land (default: system temp), same as `ImagenProvider` below.
 
 ## Quickstart — Imagen 4 text-to-image
 
