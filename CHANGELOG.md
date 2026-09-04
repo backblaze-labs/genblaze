@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
+- **Fixed** library loggers no longer write to stderr by default; a
+  `NullHandler` on the `genblaze` namespace root hands the decision back to
+  the consuming application, which opts in via its own handlers (#46).
 
 ### Internal
 
