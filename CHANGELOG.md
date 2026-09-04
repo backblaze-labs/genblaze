@@ -82,13 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failing mid-run; a slug the probe confirms live grades authoritative
   (#248).
 
-### genblaze-google
-
-- **Fixed** README and `examples/imagen_pipeline.py` quickstarts referenced
-  the delisted `imagen-3.0-*` slugs, which now 404 at preflight for every
-  new user; updated to the catalog-listed `imagen-4.0-*` slugs, documented
-  the entitlement caveat, and documented the previously-unlisted
-  `GeminiImageProvider` as the no-entitlement alternative (#233).
 
 ## [0.7.0] - 2026-07-28
 
