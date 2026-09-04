@@ -70,7 +70,6 @@ site/
 # Claude Code — local/ephemeral
 .claude/settings.local.json
 .claude/worktrees/
-.pre-pr-check/
 CLAUDE.local.md
 
 # Hypothesis test cache
@@ -81,5 +80,7 @@ CLAUDE.local.md
 *.bak
 *.log
 
+# pre-pr-check run history (audit trail, not tracked)
+.pre-pr-check/
 # Node (libs/spec type-generation toolchain)
 node_modules/
