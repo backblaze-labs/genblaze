@@ -678,17 +678,29 @@ class BaseProvider(Runnable[Step, Step]):
         Outcomes (see ``ValidationOutcome``):
 
         * ``OK_AUTHORITATIVE`` — user-registered, NATIVE-discovery-confirmed,
-          or family probe returned LIVE.
+          or a probe (family-level, or the registry's ``fallback_probe`` when
+          no family matched) returned LIVE.
         * ``OK_PROVISIONAL`` — family-matched but liveness unverifiable.
           Pipeline preflight emits a WARN and proceeds.
-        * ``UNKNOWN_PERMISSIVE`` — no family match; permissive fallback applies.
-        * ``NOT_FOUND`` — discovery says absent or probe returned DEAD.
-          Pipeline preflight raises before any wire calls.
+        * ``UNKNOWN_PERMISSIVE`` — no family match, no ``fallback_probe``
+          configured (or the probe returned UNKNOWN); permissive fallback
+          applies.
+        * ``NOT_FOUND`` — discovery says absent, or a probe (family-level or
+          fallback) returned DEAD. Pipeline preflight raises before any wire
+          calls.
+
+        A positive outcome (``OK_AUTHORITATIVE`` / ``OK_PROVISIONAL``) means
+        the slug is known to exist — it does **not** mean this account is
+        entitled to call it. A probe can only observe what the upstream API
+        reveals before an entitlement check runs (see connectors' own
+        gating overrides, e.g. GMICloud's ``_entitlement_gated_slugs``).
 
         For ``DiscoverySupport.NATIVE`` providers, this method may issue
         a single discovery fetch (subject to TTL and single-flight). For
         ``PARTIAL`` / ``NONE``, it may invoke a family-level ``probe()``
-        when present. ``refresh=True`` forces a fresh discovery snapshot.
+        when present, or the registry's ``fallback_probe`` when no family
+        matched and one is configured. ``refresh=True`` forces a fresh
+        discovery snapshot or re-probe.
         """
         # First pass: non-network — return immediately if we already know.
         result = self._models.validate(model_id, discovery_support=self.discovery_support)
@@ -761,6 +773,62 @@ class BaseProvider(Runnable[Step, Step]):
                     detail="upstream probe returned DEAD",
                 )
             # UNKNOWN: fall through to provisional answer below.
+
+        # No family matched at all (the permissive-fallback case). Connectors
+        # without a full catalog can still opt in to a liveness check here —
+        # ``fallback_probe`` is the liveness counterpart to the registry's
+        # ``fallback`` param-shape spec. Without this, every slug the
+        # fallback covers (a provider's mainline models, as well as
+        # fabricated ones) grades identically as UNKNOWN_PERMISSIVE, with no
+        # way to tell "this account can call this" from "this string looks
+        # plausible" (#248).
+        elif match is None and self._models._fallback_probe is not None:
+            # ``resolve_canonical`` is cheap and non-network (no fetch, no
+            # wire call) — it only ever differs from ``model_id`` here when
+            # ``get()`` resolved through the user-spec or alias layer to
+            # something other than the permissive fallback (family
+            # resolution was already ruled out above by ``match is None``).
+            # That means ``model_id`` is a (possibly deprecated) alias for a
+            # genuine USER-registered spec that ``ModelRegistry.validate()``
+            # missed — it only checks ``_user`` by exact key, not through
+            # ``_alias_index``. Treat it exactly as validating the canonical
+            # slug directly would: USER is documented as "strongest signal
+            # regardless of provider class" and must never be handed to a
+            # probe under the alias's literal (and often non-wire) string
+            # (#248 review).
+            canonical = self._models.resolve_canonical(model_id)
+            if canonical != model_id:
+                return ValidationResult.ok_authoritative(ValidationSource.USER)
+            # Gating on UNKNOWN_PERMISSIVE (not just ``match is None``) is
+            # the second half of that same protection: it excludes a plain
+            # USER exact-match slug under ``refresh=True`` — such a result
+            # is already OK_AUTHORITATIVE/USER, never UNKNOWN_PERMISSIVE, so
+            # this branch leaves it untouched and ``return result`` below
+            # preserves it instead of letting the probe overrule it.
+            if result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE:
+                # The pre-probe ``result.detail`` may carry "known_unstable"
+                # for a registry-level unstable slug that matched no family
+                # (the orphan case). Preserve it on the LIVE path for the
+                # same reason as the family-probe branch above; NOT_FOUND
+                # speaks for itself on DEAD.
+                fallback_unstable_detail = result.detail
+                probe_result = self._cached_probe(
+                    self._models._fallback_probe, model_id, refresh=refresh
+                )
+                if probe_result is LiveProbeResult.LIVE:
+                    return ValidationResult.ok_authoritative(
+                        ValidationSource.PROBE,
+                        detail=(
+                            fallback_unstable_detail
+                            or "fallback probe: slug matched no family pattern"
+                        ),
+                    )
+                if probe_result is LiveProbeResult.DEAD:
+                    return ValidationResult.not_found(
+                        ValidationSource.PROBE,
+                        detail="upstream fallback probe returned DEAD",
+                    )
+                # UNKNOWN: fall through to permissive answer below.
 
         return result
 

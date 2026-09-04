@@ -316,4 +316,8 @@ def build_video_registry() -> ModelRegistry:
         ),
         fallback=_FALLBACK,
         unstable_slugs=_UNSTABLE_SLUGS,
+        # See ``build_image_registry()`` for why unmatched slugs need a
+        # liveness probe (#248): without one, a real GMI video slug and a
+        # fabricated one both grade UNKNOWN_PERMISSIVE.
+        fallback_probe=empty_payload_request_probe,
     )

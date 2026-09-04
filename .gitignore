@@ -79,3 +79,6 @@ CLAUDE.local.md
 *.tmp
 *.bak
 *.log
+
+# Pre-PR check run history (local audit trail, never committed)
+.pre-pr-check/
