@@ -51,7 +51,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "20"
+          cache: "npm"
+          cache-dependency-path: libs/spec/package-lock.json
       - name: Regenerate TS types
+        # generate-types.sh installs the pinned toolchain via `npm ci
+        # --ignore-scripts` from the committed lockfile — no unpinned `npx`,
+        # no lifecycle scripts. See #270.
         run: make ts-types
       - name: Verify no drift
         run: |
@@ -60,7 +65,9 @@ jobs:
             exit 1
           fi
       - name: Type-check generated .d.ts
-        run: npx --yes -p typescript@5.4 tsc --noEmit --strict --skipLibCheck libs/spec/ts/genblaze.d.ts
+        # Uses the pinned local tsc installed by generate-types.sh above,
+        # not an unpinned `npx --yes` fetch.
+        run: libs/spec/node_modules/.bin/tsc --noEmit --strict --skipLibCheck libs/spec/ts/genblaze.d.ts
 
   typecheck:
     if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}

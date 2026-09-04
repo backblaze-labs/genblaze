@@ -80,3 +80,6 @@ CLAUDE.local.md
 *.tmp
 *.bak
 *.log
+
+# Node (libs/spec type-generation toolchain)
+node_modules/
