@@ -338,12 +338,24 @@ class TestValidateModelEndToEnd:
         result = provider.validate_model("pixverse-v5.6-t2v")
         assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
 
-    def test_unknown_namespace_falls_through_permissive(self) -> None:
-        """A slug that doesn't match any family AND no probe attached
-        falls through to UNKNOWN_PERMISSIVE — preflight emits a one-time
-        WARN and proceeds."""
-        # Audio families don't cover lowercase slugs; this passes through.
+    def test_unknown_namespace_probed_via_fallback_probe(self) -> None:
+        """A slug that doesn't match any family is no longer a silent
+        UNKNOWN_PERMISSIVE — the registry's fallback_probe (#248) runs the
+        same empty-payload check the specialized families use, so a 404
+        grades NOT_FOUND instead of carrying no signal at all."""
+        # Audio families don't cover lowercase slugs; this used to pass
+        # through untouched. Now the fallback probe answers it.
         provider = _provider_with_probe_status(GMICloudAudioProvider, status=404)
+        result = provider.validate_model("totally-unknown-tts-slug")
+        assert result.outcome is ValidationOutcome.NOT_FOUND
+        assert result.source is ValidationSource.PROBE
+
+    def test_unknown_namespace_unknown_probe_status_stays_permissive(self) -> None:
+        """When the fallback probe itself can't tell (auth/rate-limit/5xx),
+        the unmatched slug still falls through to UNKNOWN_PERMISSIVE — the
+        fallback probe only sharpens the LIVE/DEAD cases, not the
+        already-inconclusive ones."""
+        provider = _provider_with_probe_status(GMICloudAudioProvider, status=500)
         result = provider.validate_model("totally-unknown-tts-slug")
         assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
 
@@ -505,13 +517,23 @@ class TestPreflightOptOut:
 
 class TestUnstableSlugSurfaces:
     """0.3.2 cleanup: the only remaining ``unstable_slug`` is the orphan
-    ``vidu-q1`` (no family, registry-level). It surfaces as
-    ``UNKNOWN_PERMISSIVE`` + ``known_unstable`` via the fallback path —
-    there's no family probe to upgrade it to ``OK_AUTHORITATIVE``."""
+    ``vidu-q1`` (no family, registry-level). Since #248 wired a
+    ``fallback_probe`` onto the video registry, an orphan unstable slug is
+    now probed too — LIVE upgrades it to ``OK_AUTHORITATIVE`` while
+    preserving the ``known_unstable`` hint (ops still want the flag even
+    though the slug currently answers); DEAD would grade ``NOT_FOUND``."""
 
-    def test_orphan_unstable_slug_surfaces_known_unstable(self) -> None:
-        http = _http_with_status(400)  # LIVE — irrelevant; no family probe runs
+    def test_orphan_unstable_slug_live_preserves_known_unstable(self) -> None:
+        http = _http_with_status(400)  # LIVE via the fallback probe
         provider = GMICloudVideoProvider(api_key="test", http_client=http)
         result = provider.validate_model("vidu-q1")
-        assert result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE
+        assert result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+        assert result.source is ValidationSource.PROBE
         assert "known_unstable" in (result.detail or "")
+
+    def test_orphan_unstable_slug_dead_not_found(self) -> None:
+        http = _http_with_status(404)  # DEAD via the fallback probe
+        provider = GMICloudVideoProvider(api_key="test", http_client=http)
+        result = provider.validate_model("vidu-q1")
+        assert result.outcome is ValidationOutcome.NOT_FOUND
+        assert result.source is ValidationSource.PROBE

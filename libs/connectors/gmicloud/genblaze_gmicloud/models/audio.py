@@ -159,4 +159,8 @@ def build_audio_registry() -> ModelRegistry:
             _GMI_AUDIO_TTS_FAMILY,
         ),
         fallback=_FALLBACK,
+        # See ``build_image_registry()`` for why unmatched slugs need a
+        # liveness probe (#248): without one, a real GMI audio slug and a
+        # fabricated one both grade UNKNOWN_PERMISSIVE.
+        fallback_probe=empty_payload_request_probe,
     )

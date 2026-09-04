@@ -39,6 +39,7 @@ from genblaze_core.providers.family import (
     MAX_USER_FAMILIES,
     DiscoverySupport,
     FamilyMatch,
+    FamilyProbe,
     ModelFamily,
 )
 from genblaze_core.providers.pricing import PricingStrategy
@@ -80,6 +81,15 @@ class ModelRegistry:
             list).
         strict_params: If True, unknown keys raise instead of being silently
             dropped when an allowlist is set.
+        fallback_probe: Optional liveness probe consulted by
+            ``BaseProvider.validate_model()`` for slugs that match no
+            ``ModelFamily`` (the fallback path). The liveness counterpart to
+            ``fallback`` — that spec governs param shape for unmatched
+            slugs, this probe (when set) governs whether ``validate_model()``
+            can grade them ``OK_AUTHORITATIVE``/``NOT_FOUND`` instead of
+            always falling through to ``UNKNOWN_PERMISSIVE``. ``None``
+            (default) preserves today's behavior: unmatched slugs are never
+            probed.
     """
 
     def __init__(
@@ -90,6 +100,7 @@ class ModelRegistry:
         discovery_cache: _DiscoveryCache | None = None,
         unstable_slugs: Iterable[str] = (),
         strict_params: bool = False,
+        fallback_probe: FamilyProbe | None = None,
     ) -> None:
         if len(provider_families) > MAX_PROVIDER_FAMILIES:
             raise ValueError(
@@ -123,6 +134,7 @@ class ModelRegistry:
         # every request would re-log indefinitely).
         self._warned_canonical_rewrite: set[tuple[str, str]] = set()
         self._fallback = fallback
+        self._fallback_probe = fallback_probe
         self._strict = strict_params
         self._lock = threading.RLock()
         self._rebuild_alias_index()
@@ -243,6 +255,7 @@ class ModelRegistry:
                 # Pass the unioned set; the constructor will re-union with
                 # family.unstable_examples (idempotent — frozenset union).
                 unstable_slugs=self._unstable_slugs,
+                fallback_probe=self._fallback_probe,
             )
             # Carry the user layer over. ``extend`` performs a single bulk
             # write under its own lock and does one alias-index rebuild —
@@ -277,6 +290,12 @@ class ModelRegistry:
         → deprecated alias → fallback. Emits ``DeprecationWarning`` when the
         lookup resolves via a ``deprecated_aliases`` entry. Never returns
         ``None``.
+
+        **Not an existence check.** ``fallback`` is a catch-all spec (its
+        ``model_id`` is typically ``"*"``), so ``get()`` returns a usable
+        ``ModelSpec`` for any string, including one nobody registered and
+        that no upstream model actually answers to. Use ``validate_model()``
+        to ask whether a slug is real.
         """
         spec = self._user.get(model_id)
         if spec is not None:
