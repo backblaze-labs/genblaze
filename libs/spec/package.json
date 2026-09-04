@@ -29,5 +29,13 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "generate": "scripts/generate-types.sh",
+    "typecheck": "tsc --noEmit --strict --skipLibCheck ts/genblaze.d.ts"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "15.0.4",
+    "typescript": "5.4.5"
   }
 }
