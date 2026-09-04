@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published file contents (`ts/genblaze.d.ts`, `schemas/**/*.json`,
   `README.md`); `package.json` itself gains the new `devDependencies`/
   `scripts` fields used for local regeneration.
+- **Fixed** `BaseProvider` subclasses now fail loudly at construction with a
+  `TypeError` if `super().__init__()` never ran — most commonly because the
+  subclass was decorated with `@dataclass`, whose generated `__init__` silently
+  replaces the inherited one. Previously this produced a half-initialized
+  provider that constructed fine and then failed confusingly inside
+  `invoke()`/`ainvoke()` with an `AttributeError` naming an unrelated private
+  attribute (#261).
 
 ## [0.7.0] - 2026-07-28
 
