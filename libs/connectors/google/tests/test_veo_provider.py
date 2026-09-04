@@ -295,6 +295,148 @@ def test_fetch_output_gemini_multiple_videos_no_collision(tmp_path, mock_google)
         assert Path(urlparse(asset.url).path).read_bytes()
 
 
+# --- Path-traversal / cross-job overwrite hardening (issue #284) ---
+
+
+@pytest.mark.parametrize(
+    "bad_step_id",
+    [
+        "../../../../tmp/pwned",
+        "/tmp/pwned",  # noqa: S108 — attacker-controlled payload, never used as a real path
+        "not-a-uuid",
+    ],
+)
+def test_fetch_output_vertex_rejects_invalid_step_id(tmp_path, mock_google, bad_step_id):
+    """A non-UUID step_id (traversal, absolute path, or junk) must be
+    rejected before any write happens — it must never let the output escape
+    output_dir (issue #284)."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(
+        provider="google-veo",
+        model="veo-2.0-generate-001",
+        prompt="a sunset",
+        step_id=bad_step_id,
+    )
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_vertex_operation()
+    provider.poll(pred_id)
+
+    with pytest.raises(ProviderError):
+        provider.fetch_output(pred_id, step)
+    # Nothing must have been written outside output_dir, and output_dir itself
+    # must stay empty.
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "bad_step_id",
+    [
+        "../../../../tmp/pwned",
+        "/tmp/pwned",  # noqa: S108 — attacker-controlled payload, never used as a real path
+        "not-a-uuid",
+    ],
+)
+def test_fetch_output_gemini_rejects_invalid_step_id(tmp_path, mock_google, bad_step_id):
+    """Same invalid-step_id containment check on the Gemini download branch."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(
+        provider="google-veo",
+        model="veo-2.0-generate-001",
+        prompt="a sunset",
+        step_id=bad_step_id,
+    )
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_gemini_operation()
+    provider.poll(pred_id)
+
+    with pytest.raises(ProviderError):
+        provider.fetch_output(pred_id, step)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_output_refuses_to_follow_symlink(tmp_path, mock_google):
+    """If a symlink is pre-planted at the would-be output path, the write must
+    refuse rather than follow it and overwrite the symlink's target."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+
+    secret_target = tmp_path.parent / "secret.mp4"
+    secret_target.write_bytes(b"do-not-touch")
+    symlink_path = tmp_path / f"{step.step_id}_0.mp4"
+    symlink_path.symlink_to(secret_target)
+
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_vertex_operation()
+    provider.poll(pred_id)
+
+    with pytest.raises(ProviderError):
+        provider.fetch_output(pred_id, step)
+    assert secret_target.read_bytes() == b"do-not-touch"
+
+
+def test_fetch_output_refuses_to_overwrite_existing_file(tmp_path, mock_google):
+    """A pre-existing regular file at the target path must not be clobbered."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+
+    existing = tmp_path / f"{step.step_id}_0.mp4"
+    existing.write_bytes(b"pre-existing-content")
+
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_vertex_operation()
+    provider.poll(pred_id)
+
+    with pytest.raises(ProviderError):
+        provider.fetch_output(pred_id, step)
+    assert existing.read_bytes() == b"pre-existing-content"
+
+
+def test_fetch_output_gemini_refuses_to_follow_symlink(tmp_path, mock_google):
+    """Same symlink refusal on the Gemini download branch (mirrors the Vertex
+    case): fetch_output must not follow a pre-planted symlink at the target
+    path."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+
+    secret_target = tmp_path.parent / "secret-gemini.mp4"
+    secret_target.write_bytes(b"do-not-touch")
+    symlink_path = tmp_path / f"{step.step_id}_0.mp4"
+    symlink_path.symlink_to(secret_target)
+
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_gemini_operation()
+    provider.poll(pred_id)
+
+    with pytest.raises(ProviderError):
+        provider.fetch_output(pred_id, step)
+    assert secret_target.read_bytes() == b"do-not-touch"
+
+
+def test_fetch_output_gemini_refuses_to_overwrite_existing_file(tmp_path, mock_google):
+    """Same no-overwrite protection on the Gemini download branch (mirrors the
+    Vertex case): a pre-existing file at the target path must not be
+    clobbered."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+
+    existing = tmp_path / f"{step.step_id}_0.mp4"
+    existing.write_bytes(b"pre-existing-content")
+
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_gemini_operation()
+    provider.poll(pred_id)
+
+    with pytest.raises(ProviderError):
+        provider.fetch_output(pred_id, step)
+    assert existing.read_bytes() == b"pre-existing-content"
+
+
 def test_fetch_output_error_raises(mock_google):
     provider, client = mock_google
     step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="bad")

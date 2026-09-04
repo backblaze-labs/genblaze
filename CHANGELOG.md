@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads the generated video to a local file and exposes a `file://` asset
   URL — matching the Vertex path — instead of leaving a credentialed Files API
   URI that `ObjectStorageSink`/B2 could not fetch unauthenticated (#263).
+- **Security** `VeoProvider` no longer interpolates an unvalidated `step_id`
+  into the local output filename. A `Step` built or deserialized with a
+  caller-supplied `step_id` containing `../` traversal or an absolute path
+  could previously escape the configured `output_dir` and, following an
+  existing symlink, silently overwrite another job's output or any
+  process-writable file. `step_id` is now validated as a UUID, the resolved
+  path is verified to stay under `output_dir`, and the write refuses to follow
+  symlinks or clobber an existing file — on both the Vertex and Gemini auth
+  paths (#284).
 
 ### genblaze-core
 
