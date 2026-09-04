@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -189,13 +190,68 @@ class VeoProvider(GoogleClientMixin, BaseProvider):
         (issue #263). When ``output_dir`` is set, index by loop position
         (matches ImagenProvider) so ``number_of_videos > 1`` doesn't collide
         on one path; otherwise fall back to a unique tempfile.
+
+        ``step.step_id`` only *defaults* to a UUID (``Step.step_id`` is a
+        plain ``str``) — a ``Step`` built or deserialized with an explicit
+        ``step_id`` could otherwise carry ``../`` traversal or an absolute
+        path straight into the filename (issue #284). Parse it as a UUID and
+        build the name from the canonical parsed value, then verify the
+        result still resolves directly under ``output_dir``, so a crafted
+        ``step_id`` can't escape the configured directory.
         """
         if self._output_dir:
             self._output_dir.mkdir(parents=True, exist_ok=True)
-            return self._output_dir / f"{step.step_id}_{i}.mp4"
+            try:
+                parsed_id = uuid.UUID(step.step_id)
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ProviderError(
+                    f"Invalid step_id for video output path: {step.step_id!r}",
+                    error_code=ProviderErrorCode.INVALID_INPUT,
+                ) from exc
+            candidate = self._output_dir / f"{parsed_id}_{i}.mp4"
+            resolved_dir = self._output_dir.resolve()
+            if candidate.resolve().parent != resolved_dir:
+                raise ProviderError(
+                    "Resolved video output path escapes output_dir",
+                    error_code=ProviderErrorCode.INVALID_INPUT,
+                )
+            return candidate
         fd, tmp = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         return Path(tmp)
+
+    @staticmethod
+    def _write_new_video_file(path: Path, data: bytes, *, exclusive: bool = True) -> None:
+        """Write ``data`` to ``path`` without following symlinks or overwriting.
+
+        Used instead of ``Path.write_bytes`` for video output: that call
+        follows existing symlinks and silently overwrites the resolved
+        target, which combined with an attacker-controlled ``step_id`` is the
+        cross-job overwrite in issue #284. ``O_EXCL`` refuses a pre-existing
+        name (file or symlink); ``O_NOFOLLOW`` refuses to traverse a symlink.
+
+        ``exclusive=False`` is for the tempfile-fallback path only: ``mkstemp``
+        has already atomically created that (exclusively-ours) file, so
+        ``O_EXCL`` would reject the very path it just made.
+
+        ``O_NOFOLLOW`` is POSIX-only (unavailable on Windows) — read via
+        ``getattr`` so this degrades to "no symlink guard on this platform"
+        instead of an unhandled ``AttributeError`` that would break video
+        output entirely there.
+        """
+        flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= os.O_CREAT | os.O_EXCL if exclusive else 0
+        try:
+            fd = os.open(path, flags, 0o600)
+        except OSError as exc:
+            raise ProviderError(
+                f"Refusing to write video output to {path}: {exc}",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            ) from exc
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
 
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         """Start a video generation operation."""
@@ -288,7 +344,9 @@ class VeoProvider(GoogleClientMixin, BaseProvider):
                     # a file:// asset, matching the local-output convention
                     # used by ImagenProvider / DecartVideoProvider.
                     out_path = self._video_output_path(step, i)
-                    out_path.write_bytes(video_bytes)
+                    self._write_new_video_file(
+                        out_path, video_bytes, exclusive=bool(self._output_dir)
+                    )
                     video_uri = local_file_url(out_path.resolve())
                 elif getattr(video, "uri", None):
                     # Gemini Developer API mode: the asset lives behind a
@@ -310,7 +368,9 @@ class VeoProvider(GoogleClientMixin, BaseProvider):
                     )
                     if not video_bytes:
                         raise ProviderError("Veo Gemini download returned no video bytes")
-                    out_path.write_bytes(video_bytes)
+                    self._write_new_video_file(
+                        out_path, video_bytes, exclusive=bool(self._output_dir)
+                    )
                     video_uri = local_file_url(out_path.resolve())
 
                 if video_uri:
