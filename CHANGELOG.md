@@ -38,6 +38,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider that constructed fine and then failed confusingly inside
   `invoke()`/`ainvoke()` with an `AttributeError` naming an unrelated private
   attribute (#261).
+- **Added** `ModelRegistry(fallback_probe=...)` — an optional liveness probe
+  connectors can attach for slugs that match no `ModelFamily`. Previously
+  `validate_model()` only ever consulted a probe when a family pattern
+  matched, so any slug covered only by the permissive fallback (a
+  connector's mainline models included) graded `UNKNOWN_PERMISSIVE`
+  regardless of whether it was real or fabricated. `fallback_probe` is the
+  liveness counterpart to the existing `fallback` param-shape spec; it is
+  opt-in and defaults to `None`, so registries that don't configure it are
+  unaffected (#248).
+
+### genblaze-gmicloud
+
+- **Fixed** `validate_model()` now probes slugs that match none of the
+  connector's specialized model families (Seedream, Gemini-Flash,
+  FLUX-Kontext, Reve create, Bria fibo, and any new GMI model) using the
+  same empty-payload probe the specialized families already use. Previously
+  these slugs — including a connector's actual production models — graded
+  identically to a fabricated slug (`unknown_permissive`, no signal). A slug
+  the probe confirms dead now raises at `Pipeline` preflight instead of
+  failing mid-run; a slug the probe confirms live grades authoritative
+  (#248).
 
 ## [0.7.0] - 2026-07-28
 

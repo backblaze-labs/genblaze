@@ -83,3 +83,5 @@ CLAUDE.local.md
 
 # Node (libs/spec type-generation toolchain)
 node_modules/
+# Pre-PR check run history (local audit trail, never committed)
+.pre-pr-check/
