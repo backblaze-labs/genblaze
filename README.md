@@ -70,7 +70,7 @@ pip install genblaze-cli             # CLI: extract, verify, replay, index
 
 # Provider adapters
 pip install genblaze-openai          # OpenAI: Sora, DALL-E / gpt-image, TTS, chat
-pip install genblaze-google          # Google: Veo, Imagen, chat
+pip install genblaze-google          # Google: Veo, Imagen, Gemini-image, chat
 pip install genblaze-nvidia          # NVIDIA NIM: Cosmos, SDXL/FLUX, Fugatto, Riva, chat
 pip install genblaze-gmicloud        # GMICloud: video, image, audio, chat (request queue)
 pip install genblaze-runway          # Runway Gen video
@@ -165,7 +165,7 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 | **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS / Music | `chat()` — Llama, DeepSeek, Qwen |
 | **NVIDIA NIM** | Cosmos 1.0 / 2.0 (diffusion, text2world / video2world) | SDXL, SD 3.5, FLUX.1, FLUX.2 | Fugatto, Riva TTS, Maxine | `chat()` — Nemotron, Llama, Mistral, Qwen, Phi |
 | **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS | `chat()` — GPT-4o / GPT-4.1 / o-series |
-| **Google** | Veo | Imagen | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
+| **Google** | Veo | Imagen, Gemini-image | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
 | **Runway** | Gen-4 Turbo | — | — | — |
 | **Luma** | Dream Machine | — | — | — |
 | **Decart** | Lucy | Lucy | — | — |
@@ -187,7 +187,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | GMICloud | `GMI_API_KEY` | [console.gmicloud.ai](https://console.gmicloud.ai/) |
 | NVIDIA NIM (Cosmos, SDXL/FLUX, Fugatto, chat) | `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/) |
 | OpenAI (Sora, DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
-| Google (Veo, Imagen) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
+| Google (Veo, Imagen, Gemini-image) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | Runway (Gen video) | `RUNWAYML_API_SECRET` | [dev.runwayml.com](https://dev.runwayml.com/) |
 | Luma (Dream Machine) | `LUMAAI_API_KEY` | [lumalabs.ai/dream-machine/api](https://lumalabs.ai/dream-machine/api) |
 | Decart (Lucy) | `DECART_API_KEY` | [platform.decart.ai](https://platform.decart.ai/) |
