@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
 
+### Internal
+
+- **Security** hardened the `@genblaze/spec` TypeScript type-generation
+  toolchain against npm supply-chain attacks (#270): `generate-types.sh` now
+  installs `json-schema-to-typescript`/`typescript` via `npm ci
+  --ignore-scripts` from a new committed `libs/spec/package-lock.json`
+  instead of an unpinned `npx --yes` fetch, and the release workflow's
+  `publish-npm` job (which holds `id-token: write`) no longer installs or
+  executes any npm package — type generation moved to a new low-privilege
+  `build-npm-types` job whose verified output is handed to `publish-npm` as
+  a build artifact, and now sets `NPM_CONFIG_IGNORE_SCRIPTS=true` for the
+  whole job. No change to the generated `genblaze.d.ts` or to the tarball's
+  published file contents (`ts/genblaze.d.ts`, `schemas/**/*.json`,
+  `README.md`); `package.json` itself gains the new `devDependencies`/
+  `scripts` fields used for local regeneration.
+
 ## [0.7.0] - 2026-07-28
 
 Bug-fix wave with one new opt-in feature and one new provider. Closes a
