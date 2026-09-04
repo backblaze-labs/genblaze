@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
+- **Fixed** `BaseProvider` subclasses now fail loudly at construction with a
+  `TypeError` if `super().__init__()` never ran — most commonly because the
+  subclass was decorated with `@dataclass`, whose generated `__init__` silently
+  replaces the inherited one. Previously this produced a half-initialized
+  provider that constructed fine and then failed confusingly inside
+  `invoke()`/`ainvoke()` with an `AttributeError` naming an unrelated private
+  attribute (#261).
 - **Fixed** library loggers no longer write to stderr by default; a
   `NullHandler` on the `genblaze` namespace root hands the decision back to
   the consuming application, which opts in via its own handlers (#46).
