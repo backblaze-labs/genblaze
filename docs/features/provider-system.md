@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-09-03 -->
 # Feature: Provider System
 
 ## Purpose
@@ -109,13 +109,13 @@ gates against.
 Connectors as of 0.3.0:
 
 - `NATIVE`: OpenAI (TTS / DALL-E / Sora), ElevenLabs TTS, Replicate, NVIDIA chat
-- `PARTIAL`: NVIDIA generative endpoints (audio / video / image), GMICloud, Google (Veo / Imagen)
+- `PARTIAL`: NVIDIA generative endpoints (audio / video / image), GMICloud, Google (`VeoProvider` / `ImagenProvider` / `GeminiImageProvider`)
 - `NONE`: Decart, Runway, Luma, Stability-Audio, ElevenLabs SFX, LMNT, Hume, AssemblyAI
 
 ## Error Deduplication
 Each connector family shares a single error mapper module:
 - `genblaze_openai._errors.map_openai_error` (DALL-E, Sora, TTS)
-- `genblaze_google._errors.map_google_error` (Veo, Imagen)
+- `genblaze_google._errors.map_google_error` (`VeoProvider`, `ImagenProvider`, `GeminiImageProvider`)
 - `genblaze_elevenlabs._errors.map_elevenlabs_error` (TTS, SFX)
 - `genblaze_gmicloud._errors.map_gmicloud_error` (Kling video)
 

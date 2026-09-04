@@ -86,3 +86,5 @@ node_modules/
 # Pre-PR check run history (local audit trail, never committed)
 # pre-pr-check run history (audit trail, not tracked)
 .pre-pr-check/
+.pre-pr-check/
+pre-pr-check-findings-batch-*.md
