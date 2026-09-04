@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
+- **Fixed** `BaseProvider` subclasses now fail loudly at construction with a
+  `TypeError` if `super().__init__()` never ran — most commonly because the
+  subclass was decorated with `@dataclass`, whose generated `__init__` silently
+  replaces the inherited one. Previously this produced a half-initialized
+  provider that constructed fine and then failed confusingly inside
+  `invoke()`/`ainvoke()` with an `AttributeError` naming an unrelated private
+  attribute (#261).
+- **Fixed** library loggers no longer write to stderr by default; a
+  `NullHandler` on the `genblaze` namespace root hands the decision back to
+  the consuming application, which opts in via its own handlers (#46).
 - **Added** `ModelRegistry(fallback_probe=...)` — an optional liveness probe
   connectors can attach for slugs that match no `ModelFamily`. Previously
   `validate_model()` only ever consulted a probe when a family pattern
@@ -22,8 +32,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opt-in and defaults to `None`, so registries that don't configure it are
   unaffected (#248).
 
+### Internal
+
+- **Security** hardened the `@genblaze/spec` TypeScript type-generation
+  toolchain against npm supply-chain attacks (#270): `generate-types.sh` now
+  installs `json-schema-to-typescript`/`typescript` via `npm ci
+  --ignore-scripts` from a new committed `libs/spec/package-lock.json`
+  instead of an unpinned `npx --yes` fetch, and the release workflow's
+  `publish-npm` job (which holds `id-token: write`) no longer installs or
+  executes any npm package — type generation moved to a new low-privilege
+  `build-npm-types` job whose verified output is handed to `publish-npm` as
+  a build artifact, and now sets `NPM_CONFIG_IGNORE_SCRIPTS=true` for the
+  whole job. No change to the generated `genblaze.d.ts` or to the tarball's
+  published file contents (`ts/genblaze.d.ts`, `schemas/**/*.json`,
+  `README.md`); `package.json` itself gains the new `devDependencies`/
+  `scripts` fields used for local regeneration.
+
 ### genblaze-gmicloud
 
+- **Fixed** the video poll loop is now bounded by a `max_poll_seconds`
+  ceiling. A request stuck reporting `dispatched` previously polled forever,
+  wedging the pipeline with no way to recover; it now fails the step with a
+  timeout once the ceiling is passed. The ceiling is tracked per prediction
+  id and cleared on a terminal status, and can be disabled by passing
+  `None` (#262).
 - **Fixed** `validate_model()` now probes slugs that match none of the
   connector's specialized model families (Seedream, Gemini-Flash,
   FLUX-Kontext, Reve create, Bria fibo, and any new GMI model) using the
