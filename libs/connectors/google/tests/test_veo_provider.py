@@ -26,6 +26,18 @@ def _make_pending_operation():
     return SimpleNamespace(done=False, name="op-123", error=None, response=None)
 
 
+def _make_completed_gemini_operation(count: int = 1):
+    """Gemini Developer API mode: videos come back as Files API references
+    (``uri`` set, no inline ``video_bytes``). fetch_output must download each
+    to a local file and expose a ``file://`` asset (issue #263)."""
+    videos = [
+        SimpleNamespace(uri=f"https://storage.googleapis.com/video/out-{i}.mp4", video_bytes=None)
+        for i in range(count)
+    ]
+    response = SimpleNamespace(generated_videos=[SimpleNamespace(video=v) for v in videos])
+    return SimpleNamespace(done=True, name="op-123", error=None, response=response)
+
+
 def _make_completed_vertex_operation(count: int = 1):
     """Vertex AI mode: video bytes come back inline, no Files API ``uri``."""
     videos = [
@@ -61,7 +73,20 @@ def mock_google():
     mock_client = MagicMock()
     mock_client.models.generate_videos.return_value = _make_pending_operation()
     mock_client.operations.get.return_value = _make_completed_operation()
-    mock_client.files.download.return_value = None
+
+    # Mirror the real SDK's byte-returning ``download(file=video)``: it returns
+    # the bytes AND sets ``video.video_bytes`` as a side effect (google/genai/
+    # files.py). ``destination=`` is deliberately NOT used — it only exists on
+    # google-genai >= 2.21.0, but the connector supports >= 1.0 (issue #263).
+    def _download_returns_bytes(*, file, **kwargs):
+        assert "destination" not in kwargs, (
+            "fetch_output must not pass destination= (needs google-genai>=2.21)"
+        )
+        data = f"fake-mp4-bytes::{getattr(file, 'uri', '')}".encode()
+        file.video_bytes = data  # side effect the real SDK performs
+        return data
+
+    mock_client.files.download.side_effect = _download_returns_bytes
 
     with patch.dict(
         "sys.modules",
@@ -104,6 +129,10 @@ def test_poll_returns_true_when_done(mock_google):
 
 
 def test_fetch_output_attaches_asset(mock_google):
+    """Gemini Developer API mode: the credentialed Files API URI must be
+    downloaded to a local file and exposed as a file:// asset, so
+    ObjectStorageSink/B2 can upload it without Google auth (issue #263).
+    It must NOT leak the storage.googleapis.com URI downstream."""
     provider, client = mock_google
     step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
     pred_id = provider.submit(step)
@@ -113,9 +142,17 @@ def test_fetch_output_attaches_asset(mock_google):
 
     result = provider.fetch_output(pred_id, step)
     assert len(result.assets) == 1
-    assert result.assets[0].media_type == "video/mp4"
-    _host = urlparse(result.assets[0].url).hostname or ""
-    assert _host == "storage.googleapis.com" or _host.endswith(".storage.googleapis.com")
+    asset = result.assets[0]
+    assert asset.media_type == "video/mp4"
+    assert asset.url.startswith("file://"), (
+        "must materialize a local file:// asset, not a Files URI"
+    )
+    # Bytes were downloaded and written to a real local file. The download must
+    # NOT pass destination= — that arg only exists on google-genai>=2.21, but the
+    # connector supports >=1.0, so passing it would TypeError on older releases.
+    client.files.download.assert_called_once()
+    assert "destination" not in client.files.download.call_args.kwargs
+    assert Path(urlparse(asset.url).path).read_bytes()
 
 
 def test_poll_wraps_bare_operation_name_string(mock_google):
@@ -197,6 +234,65 @@ def test_fetch_output_vertex_multiple_videos_no_collision(tmp_path, mock_google)
     for asset in result.assets:
         path = urlparse(asset.url).path
         assert Path(path).read_bytes()  # each file actually has its own bytes
+
+
+def test_fetch_output_gemini_downloads_to_file_url(tmp_path, mock_google):
+    """Gemini mode with output_dir set: stream the Files API download to an
+    indexed local file and expose a file:// asset (issue #263)."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_gemini_operation()
+    provider.poll(pred_id)
+
+    result = provider.fetch_output(pred_id, step)
+    assert len(result.assets) == 1
+    asset = result.assets[0]
+    assert asset.url.startswith("file://")
+    assert asset.media_type == "video/mp4"
+    out_file = tmp_path / f"{step.step_id}_0.mp4"
+    assert out_file.exists() and out_file.read_bytes()
+    # Version-safe download: no destination= (google-genai>=1.0 compatibility).
+    assert "destination" not in client.files.download.call_args.kwargs
+
+
+def test_fetch_output_gemini_no_output_dir(mock_google):
+    """Gemini mode without a configured output_dir falls back to a unique
+    tempfile, still exposing a file:// asset."""
+    provider, client = mock_google
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_gemini_operation()
+    provider.poll(pred_id)
+
+    result = provider.fetch_output(pred_id, step)
+    asset = result.assets[0]
+    assert asset.url.startswith("file://")
+    assert Path(urlparse(asset.url).path).read_bytes()
+
+
+def test_fetch_output_gemini_multiple_videos_no_collision(tmp_path, mock_google):
+    """number_of_videos > 1 in Gemini mode must download each video to its own
+    file — no collision on a single output path (mirrors the Vertex case)."""
+    provider, client = mock_google
+    provider._output_dir = tmp_path
+    step = Step(
+        provider="google-veo",
+        model="veo-2.0-generate-001",
+        prompt="a sunset",
+        params={"number_of_videos": "2"},
+    )
+    pred_id = provider.submit(step)
+    client.operations.get.return_value = _make_completed_gemini_operation(count=2)
+    provider.poll(pred_id)
+
+    result = provider.fetch_output(pred_id, step)
+    assert len(result.assets) == 2
+    urls = {asset.url for asset in result.assets}
+    assert len(urls) == 2, "each video must get a distinct file:// path"
+    for asset in result.assets:
+        assert Path(urlparse(asset.url).path).read_bytes()
 
 
 def test_fetch_output_error_raises(mock_google):
@@ -411,7 +507,8 @@ class TestVeoCompliance(ProviderComplianceTests):
         mock_client = MagicMock()
         mock_client.models.generate_videos.return_value = _make_pending_operation()
         mock_client.operations.get.return_value = _make_completed_operation()
-        mock_client.files.download.return_value = None
+        # Gemini path: download returns bytes (no destination=); see fixture.
+        mock_client.files.download.return_value = b"fake-mp4-bytes"
         provider = VeoProvider(api_key="test-key")
         provider._client = mock_client
         return provider

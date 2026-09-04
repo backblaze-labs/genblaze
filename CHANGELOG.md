@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-google
+
+- **Fixed** Veo on the Gemini Developer API (`api_key` / `GEMINI_API_KEY`) now
+  downloads the generated video to a local file and exposes a `file://` asset
+  URL — matching the Vertex path — instead of leaving a credentialed Files API
+  URI that `ObjectStorageSink`/B2 could not fetch unauthenticated (#263).
+
 ### genblaze-core
 
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
