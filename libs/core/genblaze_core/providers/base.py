@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import warnings
-from abc import abstractmethod
+from abc import ABCMeta, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -315,7 +315,69 @@ def validate_chain_input_url(
             )
 
 
-class BaseProvider(Runnable[Step, Step]):
+#: Private identity sentinel — see ``_ProviderInitGuardMeta``. Deliberately not
+#: a plain ``bool``: a bool default (e.g. ``_base_init_done = True``) is a
+#: one-line accidental or naive bypass for a subclass/dataclass field of the
+#: same name. Checking identity against this module-private object doesn't
+#: make bypass impossible (a subclass could still import and assign this
+#: exact object), but it rules out the accidental collision and raises the
+#: bar to a deliberate act.
+_BASE_INIT_TOKEN = object()
+
+
+class _ProviderInitGuardMeta(ABCMeta):
+    """Fails construction loudly when a subclass never ran ``BaseProvider.__init__``.
+
+    ``@dataclass`` on a provider subclass replaces the inherited ``__init__``
+    with a generated one, so ``BaseProvider.__init__`` silently never runs and
+    the instance is missing attributes (``_poll_cache``, ``_retry_policy_override``,
+    etc.). That surfaces later as a confusing ``AttributeError`` deep inside
+    ``invoke()``, naming a private attribute the caller never wrote.
+
+    This can't be caught in ``__init_subclass__``: that hook runs while the
+    ``class`` statement's body is being built, but ``@dataclass`` is a
+    decorator applied to the class object *afterward* — so at
+    ``__init_subclass__`` time the class isn't a dataclass yet and has no
+    generated ``__init__``. Construction is the earliest point at which both
+    signals (``__dataclass_fields__`` on the class itself, and whether
+    ``BaseProvider.__init__`` actually ran) are reliably observable.
+    """
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+        obj = super().__call__(*args, **kwargs)
+        if getattr(obj, "_base_init_token", None) is not _BASE_INIT_TOKEN:
+            # ``__dataclass_fields__ in cls.__dict__`` (not ``is_dataclass(cls)``,
+            # which is also true when only an inherited *base* is the
+            # dataclass) — so the message names the class actually decorated,
+            # not an unrelated mixin ancestor.
+            if "__dataclass_fields__" in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} is decorated with @dataclass, which replaces "
+                    "BaseProvider.__init__ with a generated one — so BaseProvider "
+                    "never initializes its poll cache, retry policy, or preflight "
+                    "state. Providers cannot be dataclasses. Write a plain "
+                    "__init__ that calls super().__init__() instead."
+                )
+            # Deliberately does not name a specific __init__ as "the" culprit:
+            # cls.__init__ might already call super().__init__() correctly and
+            # still hit this — e.g. a base class further up the MRO is itself
+            # a @dataclass whose generated __init__ doesn't forward the call
+            # any further, so "add super().__init__() to {cls.__name__}"
+            # would be wrong advice in that case. Point at the whole chain.
+            raise TypeError(
+                f"BaseProvider.__init__ never ran for this {cls.__name__} "
+                "instance, so its poll cache, retry policy, and preflight "
+                "state were never initialized. Check every __init__ in "
+                f"{cls.__name__}'s class hierarchy — including any inherited "
+                "from a base class — and make sure each one calls "
+                "super().__init__(). A base class decorated with @dataclass "
+                "is a common cause: its generated __init__ does not forward "
+                "to BaseProvider.__init__ on its own."
+            )
+        return obj
+
+
+class BaseProvider(Runnable[Step, Step], metaclass=_ProviderInitGuardMeta):
     """Abstract base for all provider adapters.
 
     Providers implement the 3-method lifecycle:
@@ -338,6 +400,14 @@ class BaseProvider(Runnable[Step, Step]):
     """
 
     name: str = "base"
+
+    #: Sentinel read by ``_ProviderInitGuardMeta.__call__``. Class-level default
+    #: so a subclass whose ``__init__`` never ran ``super().__init__()`` reads
+    #: ``None`` here instead of raising ``AttributeError``. Set to the private
+    #: ``_BASE_INIT_TOKEN`` object as the last statement of
+    #: ``BaseProvider.__init__`` — last, so a constructor that raises partway
+    #: through still leaves this ``None``.
+    _base_init_token: object | None = None
 
     #: Per-provider declaration of upstream catalog API support. Drives
     #: ``validate_model()`` outcome semantics and the ``tools/probe_models.py``
@@ -495,6 +565,9 @@ class BaseProvider(Runnable[Step, Step]):
         # In-flight probe events keyed by slug; entry exists while a
         # probe is mid-flight, gets removed once the result is cached.
         self._probe_inflight: dict[str, threading.Event] = {}
+        # Last statement: marks this instance as fully initialized for
+        # ``_ProviderInitGuardMeta``. Keep this at the end of ``__init__``.
+        self._base_init_token = _BASE_INIT_TOKEN
 
     @property
     def retry_policy(self) -> RetryPolicy:
@@ -1825,7 +1898,20 @@ class BaseProvider(Runnable[Step, Step]):
 
                     # Step-level retry: budget from config.max_retries (caller-driven),
                     # retryable codes from the unified RetryPolicy so users tune one knob.
-                    retryable = error_code in self.retry_policy.retryable_codes
+                    # Resolving retry_policy touches instance state set up by
+                    # BaseProvider.__init__. Only re-raise the *original* exc when
+                    # that state is genuinely missing (an improperly-constructed
+                    # provider that bypassed the metaclass guard, e.g. via
+                    # object.__new__) — not for every AttributeError, which would
+                    # also swallow a genuine bug in a *correctly* constructed
+                    # provider's own retry_policy override (pre-existing behavior
+                    # for that case: propagate raw, same as before this guard).
+                    try:
+                        retryable = error_code in self.retry_policy.retryable_codes
+                    except AttributeError:
+                        if getattr(self, "_base_init_token", None) is not _BASE_INIT_TOKEN:
+                            raise exc from None
+                        raise
                     if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
                         step.error = sanitize_error(str(exc))
@@ -2009,7 +2095,16 @@ class BaseProvider(Runnable[Step, Step]):
                     if resume_prediction_id is not None:
                         retry_state.record_resume_failure()
 
-                    retryable = error_code in self.retry_policy.retryable_codes
+                    # See the matching comment in invoke() — only re-raise the
+                    # original exc if the instance genuinely bypassed the
+                    # metaclass guard; otherwise let a real provider bug in
+                    # retry_policy propagate as-is.
+                    try:
+                        retryable = error_code in self.retry_policy.retryable_codes
+                    except AttributeError:
+                        if getattr(self, "_base_init_token", None) is not _BASE_INIT_TOKEN:
+                            raise exc from None
+                        raise
                     if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
                         step.error = sanitize_error(str(exc))

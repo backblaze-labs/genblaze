@@ -70,6 +70,7 @@ site/
 # Claude Code — local/ephemeral
 .claude/settings.local.json
 .claude/worktrees/
+.pre-pr-check/
 CLAUDE.local.md
 
 # Hypothesis test cache
