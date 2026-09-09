@@ -459,7 +459,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [AGENTS.md](AGENTS.md)
 
 Part of [Backblaze Labs](https://github.com/backblaze-labs):
 
-- **[b2-mcp](https://github.com/backblaze-labs/b2-mcp)** — MCP server for Backblaze B2 Cloud Storage: a focused, safe 40-tool surface for any MCP-compatible AI client.
+- **[b2-mcp](https://github.com/backblaze-labs/b2-mcp)** — MCP server for Backblaze B2 Cloud Storage: a focused, safe set of tools for any MCP-compatible AI client.
 - **[b2-sdk-typescript](https://github.com/backblaze-labs/b2-sdk-typescript)** — Backblaze-maintained TypeScript / JavaScript SDK for B2 Cloud Storage.
 - **[b2-action](https://github.com/backblaze-labs/b2-action)** — Backblaze-maintained GitHub Action for B2 Cloud Storage.
 
