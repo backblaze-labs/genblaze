@@ -17,6 +17,7 @@ install:
 	pip install -e libs/connectors/langsmith
 	pip install -e libs/connectors/nvidia
 	pip install -e libs/connectors/assemblyai
+	pip install -e libs/connectors/atlascloud
 	pip install -e cli
 	pip install -e libs/meta
 
@@ -37,6 +38,7 @@ install-dev:
 	pip install -e "libs/connectors/langsmith[dev]"
 	pip install -e "libs/connectors/nvidia[dev]"
 	pip install -e "libs/connectors/assemblyai[dev]"
+	pip install -e "libs/connectors/atlascloud[dev]"
 	pip install -e "cli[dev]"
 	pip install -e "libs/meta[dev]"
 
@@ -57,6 +59,7 @@ test:
 	cd libs/connectors/langsmith && pytest -v
 	cd libs/connectors/nvidia && pytest -v
 	cd libs/connectors/assemblyai && pytest -v
+	cd libs/connectors/atlascloud && pytest -v
 	cd cli && pytest tests/ -v
 	cd libs/meta && pytest tests/ -v
 	pytest tools/tests/ -v

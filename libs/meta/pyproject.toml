@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze"
-version = "0.4.5"
+version = "0.4.6"
 description = "Umbrella package for genblaze — installs genblaze-core + genblaze-s3 and re-exports the core API; use extras for provider bundles"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -49,6 +49,7 @@ hume = ["genblaze-hume>=0.3.3,<0.4"]
 assemblyai = ["genblaze-assemblyai>=0.3.2,<0.4"]
 langsmith = ["genblaze-langsmith>=0.3.2,<0.4"]
 nvidia = ["genblaze-nvidia>=0.3.3,<0.4"]
+atlascloud = ["genblaze-atlascloud>=0.1.0,<0.2"]
 
 # Re-exposes genblaze-core's own `parquet` extra (ParquetSink) so
 # `pip install "genblaze[parquet]"` -- the exact incantation
@@ -63,6 +64,7 @@ parquet = ["genblaze-core[parquet]>=0.3.8,<0.4"]
 
 # Curated bundles
 video = [
+    "genblaze-atlascloud>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.5,<0.4",
     "genblaze-google>=0.3.4,<0.4",
     "genblaze-runway>=0.3.3,<0.4",
@@ -71,6 +73,7 @@ video = [
     "genblaze-nvidia>=0.3.3,<0.4",
 ]
 image = [
+    "genblaze-atlascloud>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.5,<0.4",
     "genblaze-openai>=0.3.4,<0.4",
     "genblaze-google>=0.3.4,<0.4",
@@ -85,6 +88,7 @@ audio = [
     "genblaze-nvidia>=0.3.3,<0.4",
 ]
 all = [
+    "genblaze-atlascloud>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.5,<0.4",
     "genblaze-openai>=0.3.4,<0.4",
     "genblaze-google>=0.3.4,<0.4",

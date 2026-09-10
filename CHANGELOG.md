@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze
+
+- **Added** an `atlascloud` extra and included Atlas Cloud in the `image`,
+  `video`, and `all` bundles. The umbrella package is now version `0.4.6`.
+
+### genblaze-atlascloud
+
+- **Added** an opt-in Atlas Cloud connector for asynchronous image and video
+  generation. Submission is single-attempt to avoid duplicate billable jobs;
+  prediction GET requests use bounded transient retries, and URL-bearing model
+  inputs are validated before being forwarded.
+
 ### genblaze-google
 
 - **Fixed** Veo on the Gemini Developer API (`api_key` / `GEMINI_API_KEY`) now

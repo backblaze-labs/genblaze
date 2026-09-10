@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "genblaze-atlascloud"
+version = "0.1.0"
+description = "Atlas Cloud image and video provider adapter for genblaze"
+authors = [{name = "genblaze contributors"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia",
+    "Topic :: Software Development :: Libraries",
+]
+keywords = ["genblaze", "atlascloud", "image", "video", "media", "provenance"]
+dependencies = [
+    "genblaze-core>=0.3.8,<0.4",
+    "httpx>=0.24,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/backblaze-labs/genblaze"
+Documentation = "https://github.com/backblaze-labs/genblaze"
+Repository = "https://github.com/backblaze-labs/genblaze"
+Issues = "https://github.com/backblaze-labs/genblaze/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.entry-points."genblaze.providers"]
+atlascloud = "genblaze_atlascloud:AtlasCloudProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["genblaze_atlascloud"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.deptry]
+optional_dependencies_dev_groups = ["dev"]

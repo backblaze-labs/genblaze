@@ -130,3 +130,6 @@ class TestConnectorVersionCoherence:
 
     def test_genblaze_assemblyai(self):
         self._check("genblaze_assemblyai", "genblaze-assemblyai")
+
+    def test_genblaze_atlascloud(self):
+        self._check("genblaze_atlascloud", "genblaze-atlascloud")
