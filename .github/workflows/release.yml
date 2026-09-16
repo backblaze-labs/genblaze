@@ -369,16 +369,67 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # npm publish (TypeScript types). Runs in parallel with the PyPI graph
   # because @genblaze/spec has no dependency on any Python package.
+  #
+  # Split in two (see #270): build-npm-types does the npm install +
+  # code-generation in a low-privilege job (no id-token), and publish-npm
+  # — which holds `id-token: write` for npm provenance — only downloads the
+  # already-verified artifact and calls `npm publish`. No npm install or
+  # execution of third-party code happens in the privileged job, so a
+  # compromised transitive dependency of the type generator can never reach
+  # the OIDC token or NPM_TOKEN.
   # ─────────────────────────────────────────────────────────────────────
+
+  build-npm-types:
+    # Low-privilege build: regenerate libs/spec/ts/genblaze.d.ts from the
+    # JSON Schemas and fail if it doesn't match what's committed (someone
+    # changed a schema without re-running `make ts-types`). This job never
+    # touches npm publish credentials — default permissions are read-only.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [validate-version]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # zizmor: ignore[cache-poisoning] (this job's output artifact feeds the id-token publish job — no cache: input, nothing to poison); v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Regenerate TS types from JSON Schemas
+        # Defensive — CI already runs ts-types-check on every push, but a
+        # release shouldn't trust that the committed types are still
+        # current. Regenerate, then refuse to publish if the working tree
+        # is dirty. generate-types.sh installs the pinned toolchain via
+        # `npm ci --ignore-scripts` from the committed lockfile — no
+        # unpinned `npx`, no lifecycle scripts.
+        run: make ts-types
+      - name: Verify generated types match committed
+        run: |
+          if ! git diff --exit-code libs/spec/ts/; then
+            echo "::error::libs/spec/ts/ is stale. Run 'make ts-types' locally and commit before tagging a release."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: genblaze-spec-types
+          path: libs/spec/ts/genblaze.d.ts
+          retention-days: 1
 
   publish-npm:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-version, changelog-gate, pin-parity]
+    needs: [build-npm-types, validate-version, changelog-gate, pin-parity]
     environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'npm-dryrun' || 'npm' }}
     permissions:
       contents: read
       id-token: write   # npm provenance — signed attestation that this tarball was built from this commit by this workflow.
+    env:
+      # Belt-and-suspenders (see #270): this job never installs a dependency
+      # tree, but `npm publish` itself can run package lifecycle hooks
+      # (prepublishOnly/prepack/prepare/postpublish) if @genblaze/spec's
+      # package.json ever defines one. Job-wide so no future step in this
+      # privileged job can accidentally skip it.
+      NPM_CONFIG_IGNORE_SCRIPTS: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -388,18 +439,14 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: "https://registry.npmjs.org"
-      - name: Regenerate TS types from JSON Schemas
-        # Defensive — CI already runs ts-types-check on every push, but a
-        # release shouldn't trust that the committed types are still
-        # current. Regenerate, then refuse to publish if the working tree
-        # is dirty (someone changed a schema without re-running ts-types).
-        run: make ts-types
-      - name: Verify generated types match committed
-        run: |
-          if ! git diff --exit-code libs/spec/ts/; then
-            echo "::error::libs/spec/ts/ is stale. Run 'make ts-types' locally and commit before tagging a release."
-            exit 1
-          fi
+      - name: Download verified TS types
+        # No npm install and no code generation happens in this job — the
+        # types were already regenerated and drift-checked by
+        # build-npm-types, which holds no publish credentials.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: genblaze-spec-types
+          path: libs/spec/ts/
       - name: Check if @genblaze/spec version is already published
         # Idempotent guard: npm publish hard-fails on duplicate versions
         # (no skip-existing equivalent). Pre-check via `npm view` so a

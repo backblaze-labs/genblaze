@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,6 @@ from genblaze_core.providers import (
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
-    validate_asset_url,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -61,8 +61,11 @@ class VeoProvider(GoogleClientMixin, BaseProvider):
         project: GCP project ID for Vertex AI auth (mutually exclusive with api_key).
         location: GCP region for Vertex AI (default "us-central1").
         poll_interval: Seconds between operation polls (default 10).
-        output_dir: Directory for locally-saved video files when the SDK
-            returns bytes inline (Vertex AI mode; default system temp).
+        output_dir: Directory for locally-saved video files. Both auth modes
+            materialize the generated video to a local ``file://`` asset —
+            Vertex returns bytes inline; Gemini downloads them from the Files
+            API (issue #263) — so ObjectStorageSink can upload to B2 without
+            Google auth (default: system temp).
         models: Optional custom ``ModelRegistry`` — overrides the class default.
         retry_policy: Optional retry policy override.
         probe_cache_ttl: Per-instance probe-cache TTL.
@@ -179,6 +182,77 @@ class VeoProvider(GoogleClientMixin, BaseProvider):
             return types.GenerateVideosOperation(name=prediction_id)  # type: ignore[call-arg]
         return prediction_id
 
+    def _video_output_path(self, step: Step, i: int) -> Path:
+        """Pick the local path for the ``i``-th generated video.
+
+        Shared by both auth modes so the Vertex (inline-bytes) and Gemini
+        (Files API download) paths can't drift on where the file lands
+        (issue #263). When ``output_dir`` is set, index by loop position
+        (matches ImagenProvider) so ``number_of_videos > 1`` doesn't collide
+        on one path; otherwise fall back to a unique tempfile.
+
+        ``step.step_id`` only *defaults* to a UUID (``Step.step_id`` is a
+        plain ``str``) — a ``Step`` built or deserialized with an explicit
+        ``step_id`` could otherwise carry ``../`` traversal or an absolute
+        path straight into the filename (issue #284). Parse it as a UUID and
+        build the name from the canonical parsed value, then verify the
+        result still resolves directly under ``output_dir``, so a crafted
+        ``step_id`` can't escape the configured directory.
+        """
+        if self._output_dir:
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                parsed_id = uuid.UUID(step.step_id)
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ProviderError(
+                    f"Invalid step_id for video output path: {step.step_id!r}",
+                    error_code=ProviderErrorCode.INVALID_INPUT,
+                ) from exc
+            candidate = self._output_dir / f"{parsed_id}_{i}.mp4"
+            resolved_dir = self._output_dir.resolve()
+            if candidate.resolve().parent != resolved_dir:
+                raise ProviderError(
+                    "Resolved video output path escapes output_dir",
+                    error_code=ProviderErrorCode.INVALID_INPUT,
+                )
+            return candidate
+        fd, tmp = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        return Path(tmp)
+
+    @staticmethod
+    def _write_new_video_file(path: Path, data: bytes, *, exclusive: bool = True) -> None:
+        """Write ``data`` to ``path`` without following symlinks or overwriting.
+
+        Used instead of ``Path.write_bytes`` for video output: that call
+        follows existing symlinks and silently overwrites the resolved
+        target, which combined with an attacker-controlled ``step_id`` is the
+        cross-job overwrite in issue #284. ``O_EXCL`` refuses a pre-existing
+        name (file or symlink); ``O_NOFOLLOW`` refuses to traverse a symlink.
+
+        ``exclusive=False`` is for the tempfile-fallback path only: ``mkstemp``
+        has already atomically created that (exclusively-ours) file, so
+        ``O_EXCL`` would reject the very path it just made.
+
+        ``O_NOFOLLOW`` is POSIX-only (unavailable on Windows) — read via
+        ``getattr`` so this degrades to "no symlink guard on this platform"
+        instead of an unhandled ``AttributeError`` that would break video
+        output entirely there.
+        """
+        flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= os.O_CREAT | os.O_EXCL if exclusive else 0
+        try:
+            fd = os.open(path, flags, 0o600)
+        except OSError as exc:
+            raise ProviderError(
+                f"Refusing to write video output to {path}: {exc}",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            ) from exc
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
         """Start a video generation operation."""
         client = self._get_client()
@@ -262,32 +336,42 @@ class VeoProvider(GoogleClientMixin, BaseProvider):
             for i, gv in enumerate(response.generated_videos):
                 video = gv.video
                 video_bytes = getattr(video, "video_bytes", None)
-                video_uri: str | None
+                video_uri: str | None = None
                 if video_bytes:
                     # Vertex AI mode: video comes back inline — there's no
                     # Files API on Vertex, so client.files.download() raises
                     # ValueError there (issue #136). Save locally and expose
                     # a file:// asset, matching the local-output convention
                     # used by ImagenProvider / DecartVideoProvider.
-                    if self._output_dir:
-                        self._output_dir.mkdir(parents=True, exist_ok=True)
-                        # Index by loop position (matches ImagenProvider) so
-                        # number_of_videos > 1 doesn't collide on one path.
-                        out_path = self._output_dir / f"{step.step_id}_{i}.mp4"
-                    else:
-                        fd, tmp = tempfile.mkstemp(suffix=".mp4")
-                        os.close(fd)
-                        out_path = Path(tmp)
-                    out_path.write_bytes(video_bytes)
+                    out_path = self._video_output_path(step, i)
+                    self._write_new_video_file(
+                        out_path, video_bytes, exclusive=bool(self._output_dir)
+                    )
                     video_uri = local_file_url(out_path.resolve())
-                else:
-                    # Gemini Developer API mode: the Files API download
-                    # populates video_bytes as a side effect; the response's
-                    # public `uri` is the asset URL.
-                    client.files.download(file=video)
-                    video_uri = getattr(video, "uri", None)
-                    if video_uri:
-                        validate_asset_url(video_uri)
+                elif getattr(video, "uri", None):
+                    # Gemini Developer API mode: the asset lives behind a
+                    # credentialed Files API URI that ObjectStorageSink/B2
+                    # cannot fetch unauthenticated (issue #263). Download the
+                    # bytes and write them to a local file, exposing the same
+                    # file:// asset the Vertex path produces so the sink can
+                    # upload to B2 without any Google auth.
+                    #
+                    # Use the byte-returning download form (no ``destination=``):
+                    # ``download(file=video)`` both returns the bytes and sets
+                    # ``video.video_bytes`` as a side effect. The streaming
+                    # ``destination=`` argument was only added in google-genai
+                    # 2.21.0, but this connector supports ``google-genai>=1.0``
+                    # — passing it would ``TypeError`` on every earlier release.
+                    out_path = self._video_output_path(step, i)
+                    video_bytes = client.files.download(file=video) or getattr(
+                        video, "video_bytes", None
+                    )
+                    if not video_bytes:
+                        raise ProviderError("Veo Gemini download returned no video bytes")
+                    self._write_new_video_file(
+                        out_path, video_bytes, exclusive=bool(self._output_dir)
+                    )
+                    video_uri = local_file_url(out_path.resolve())
 
                 if video_uri:
                     vm_kwargs: dict[str, Any] = {"has_audio": has_audio}

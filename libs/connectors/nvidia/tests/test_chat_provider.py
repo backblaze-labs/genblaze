@@ -11,6 +11,8 @@ from genblaze_core.models.enums import Modality, ProviderErrorCode
 from genblaze_core.models.step import Step
 from genblaze_nvidia.chat_provider import NvidiaChatProvider
 
+MISSING_OPENAI_MSG = 'openai package not installed. Run: pip install "genblaze-nvidia[chat]"'
+
 
 def _fake_response(text: str = "ok") -> MagicMock:
     resp = MagicMock()
@@ -266,3 +268,24 @@ def test_no_api_key_raises_auth_failure(monkeypatch):
     with pytest.raises(ProviderError) as info:
         p.generate(_step("x"))
     assert info.value.error_code == ProviderErrorCode.AUTH_FAILURE
+
+
+def test_generate_raises_when_openai_missing(monkeypatch):
+    """_resolve_client() surfaces the install hint when openai is absent.
+
+    Built with no `client=`, so `_injected_client` is None and the lazy
+    `import openai` is actually attempted. A None entry in sys.modules makes
+    that import raise ImportError no matter what is installed, which keeps this
+    branch covered in CI where openai is always present.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "openai", None)
+
+    # api_key is explicit so the auth guard ahead of the import can't fire.
+    p = NvidiaChatProvider(api_key="nvapi-test")
+    with pytest.raises(ProviderError) as info:
+        p.generate(_step("x"))
+    # Equality, not `match=` — pytest's match is re.search, so it would pass on
+    # a message that merely contains the hint alongside unwanted text.
+    assert str(info.value) == MISSING_OPENAI_MSG

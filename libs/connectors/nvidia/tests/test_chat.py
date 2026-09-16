@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 from unittest.mock import MagicMock
 
 import pytest
 from genblaze_core.exceptions import ProviderError
+
+MISSING_OPENAI_MSG = 'openai package not installed. Run: pip install "genblaze-nvidia[chat]"'
 
 
 def test_chat_requires_api_key(monkeypatch):
@@ -215,13 +216,21 @@ def test_chat_explicit_base_url_overrides_env(monkeypatch):
 def test_chat_raises_when_openai_missing(monkeypatch):
     """Without openai installed and no injected client, surfaces a clear error.
 
-    Only exercises the branch when openai is not available on the system;
-    otherwise skip (the branch is un-hittable without uninstalling openai).
+    `openai` is the `[chat]` extra, not a hard dep, so this is a real user
+    state. Rather than skipping when openai happens to be installed (it always
+    is in CI, which left this branch untested), evict it from sys.modules — a
+    None entry there makes `import openai` raise ImportError regardless of what
+    is on disk. Same idiom as the langsmith and s3 connectors use.
     """
-    if importlib.util.find_spec("openai") is not None:
-        pytest.skip("openai is installed — ImportError branch not reachable")
+    import sys
+
     from genblaze_nvidia import chat
 
     monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
-    with pytest.raises(ProviderError, match="openai package"):
+    monkeypatch.setitem(sys.modules, "openai", None)
+
+    with pytest.raises(ProviderError) as info:
         chat("meta/llama-3.3-70b-instruct", prompt="hi")
+    # Equality, not `match=` — pytest's match is re.search, so it would pass on
+    # a message that merely contains the hint alongside unwanted text.
+    assert str(info.value) == MISSING_OPENAI_MSG

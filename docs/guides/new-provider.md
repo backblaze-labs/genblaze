@@ -139,6 +139,11 @@ class MyProvider(SyncProvider):
         # registry or tune retry behavior without subclassing. Always call
         # super().__init__() — it sets up poll caching, retry policy,
         # preflight gates, and the registry.
+        #
+        # Never decorate a provider class with @dataclass: the generated
+        # __init__ replaces this one, so super().__init__() never runs and
+        # the instance is missing all of the state above. Construction fails
+        # loudly with a TypeError if this happens.
         super().__init__(models=models, retry_policy=retry_policy)
         self._api_key = api_key
         self._client: Any = None
@@ -528,7 +533,10 @@ def fetch_output(self, prediction_id, step):
     ...
 ```
 
-`super().__init__()` (from §3) initializes the cache — never skip it.
+`super().__init__()` (from §3) initializes the cache — never skip it. Do not
+decorate a provider subclass with `@dataclass`: it generates its own
+`__init__` that replaces the one you wrote, so `super().__init__()` never runs
+and construction fails with a `TypeError`.
 
 ## 13. Advanced: timing hints with SubmitResult (BaseProvider only)
 
@@ -690,6 +698,7 @@ pip install -e "libs/connectors/myprovider[dev]"
 **Provider class**
 - [ ] Subclass `SyncProvider` (preferred) or `BaseProvider` (polling APIs only)
 - [ ] `super().__init__(models=models)` called in constructor
+- [ ] Provider class is **not** decorated with `@dataclass` (its generated `__init__` would replace yours and skip `super().__init__()`)
 - [ ] `get_capabilities()` declares supported modalities, inputs, models, `accepts_chain_input`
 - [ ] `normalize_params()` maps standard names (`duration`, `resolution`, `aspect_ratio`, `voice_id`, `output_format`) and is idempotent
 - [ ] `create_registry()` returns a `ModelRegistry` with per-model `pricing` strategies (or documents why it doesn't)

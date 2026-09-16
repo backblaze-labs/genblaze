@@ -88,10 +88,14 @@ function handle(ev: StreamEvent) {
 make ts-types
 ```
 
-This runs `libs/spec/scripts/generate-types.sh`, which invokes a pinned
-`json-schema-to-typescript` via `npx` and writes `ts/genblaze.d.ts`.
+This runs `libs/spec/scripts/generate-types.sh`, which installs the pinned
+`json-schema-to-typescript` and `typescript` toolchain from the committed
+`libs/spec/package-lock.json` (`npm ci --ignore-scripts` — no unpinned `npx`
+fetch, no install-time lifecycle scripts) and writes `ts/genblaze.d.ts`.
 The script is deterministic — rerunning with no schema changes produces
-a byte-identical file.
+a byte-identical file. Bumping either tool's version means updating
+`libs/spec/package.json` and regenerating `package-lock.json`
+(`cd libs/spec && npm install --package-lock-only --ignore-scripts`).
 
 ## Drift prevention
 

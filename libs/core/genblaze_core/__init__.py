@@ -1,6 +1,22 @@
 """genblaze-core — orchestration framework for media generation."""
 
+import logging
+
 from genblaze_core._version import __version__
+
+# Library convention: attach a no-op handler to the root of our logger
+# namespace so records don't fall through to logging.lastResort, which
+# writes WARNING+ to stderr for any application that hasn't configured
+# logging itself. Applications opt in via their own handlers (#46).
+#
+# Named "genblaze" (not "genblaze_core") because that is the namespace
+# every module in this package and its connectors logs under. Attached
+# here — not in the "genblaze" umbrella package at libs/meta — because
+# that umbrella is not always installed (pip install genblaze-core alone
+# is a supported path); attaching in genblaze_core covers both cases,
+# since the umbrella re-exports from genblaze_core and would otherwise
+# leave core-only installs unprotected.
+logging.getLogger("genblaze").addHandler(logging.NullHandler())
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # pipeline (primary entry point)

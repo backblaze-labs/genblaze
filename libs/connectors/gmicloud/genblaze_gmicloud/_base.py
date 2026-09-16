@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -31,6 +33,21 @@ from ._errors import map_gmicloud_error
 _DEFAULT_BASE_URL = "https://console.gmicloud.ai/api/v1/ie/requestqueue/apikey"
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "cancelled"})
+
+# Default connector-side ceiling on how long a single request may sit in a
+# non-terminal state before we fail it (#262). GMICloud occasionally leaves a
+# request wedged in ``queued``/``processing`` indefinitely; the core poll loop's
+# only backstop is the caller-supplied ``config["timeout"]``, which long video
+# runs set very large (or leave unset), so a wedged job would otherwise poll
+# forever. 30 minutes is well beyond any real Seedance/Veo/Kling completion.
+_DEFAULT_MAX_POLL_SECONDS = 1800.0
+
+# Upper bound on the ``_poll_first_seen`` deadline map so a long-lived provider
+# that accumulates many wedged/abandoned request ids can't grow it unbounded.
+# Entries are removed on a terminal poll; this FIFO cap bounds the pathological
+# case where jobs only ever fail via the ceiling. 512 dwarfs any realistic
+# in-flight fan-out.
+_POLL_FIRST_SEEN_MAX = 512
 
 
 def _is_inference_endpoint_shaped(url: str) -> bool:
@@ -133,6 +150,14 @@ class GMICloudBase(BaseProvider):
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
             Ignored when ``http_client`` is supplied.
+        max_poll_seconds: Connector-side ceiling on how long a single request
+            may remain in a non-terminal (``queued``/``processing``) state
+            before ``poll()`` fails it with a retryable ``TIMEOUT`` error
+            (default 1800). This is independent of — and a hard backstop for —
+            the caller-supplied per-step ``timeout``: a wedged upstream job
+            terminates here even when the caller set a very large or unbounded
+            ``timeout`` for long video (#262). Pass ``None`` to disable and rely
+            solely on the caller's ``timeout``.
         base_url: Override the request-queue base URL. Falls back to the
             GMI_BASE_URL env var, then the canonical production URL.
             Ignored when ``http_client`` is supplied.
@@ -173,6 +198,7 @@ class GMICloudBase(BaseProvider):
         *,
         poll_interval: float = 5.0,
         http_timeout: float = 120.0,
+        max_poll_seconds: float | None = _DEFAULT_MAX_POLL_SECONDS,
         base_url: str | None = None,
         http_client: httpx.Client | None = None,
         models: ModelRegistry | None = None,
@@ -191,6 +217,14 @@ class GMICloudBase(BaseProvider):
             probe_cache_max_entries=probe_cache_max_entries,
         )
         self.poll_interval = poll_interval
+        self._max_poll_seconds = max_poll_seconds
+        # Monotonic timestamp of the first poll seen for each in-flight
+        # prediction id, used to enforce ``max_poll_seconds``. Guarded by a
+        # lock because one provider instance is shared across a fan-out
+        # (sync ThreadPoolExecutor, or async via ``asyncio.to_thread``) — same
+        # concurrency contract as the core poll-result cache.
+        self._poll_first_seen: dict[str, float] = {}
+        self._poll_first_seen_lock = threading.Lock()
         self._api_key: str | None = api_key or os.environ.get("GMI_API_KEY")
         self._http_timeout = http_timeout
         self._base_url: str = base_url or os.environ.get("GMI_BASE_URL") or _DEFAULT_BASE_URL
@@ -264,8 +298,48 @@ class GMICloudBase(BaseProvider):
         request_id = data.get("request_id") or data.get("id")
         return SubmitResult(prediction_id=request_id, estimated_seconds=30.0)
 
+    def _clear_poll_deadline(self, key: str) -> None:
+        """Forget the stall deadline for a request that has finished polling."""
+        with self._poll_first_seen_lock:
+            self._poll_first_seen.pop(key, None)
+
+    def _enforce_poll_deadline(self, key: str, status: str) -> None:
+        """Fail a request that has sat in a non-terminal state past the ceiling.
+
+        Records the first time this ``key`` was seen (once), then raises a
+        retryable ``TIMEOUT`` ``ProviderError`` once elapsed exceeds
+        ``max_poll_seconds``. The deadline entry is deliberately *not* cleared
+        on breach: the core poll phase retries ``poll()`` a bounded number of
+        times, and each retry must see the deadline still blown so the retry
+        budget drains and the step terminates as ``FAILED`` — clearing here
+        would reset the clock and re-hang. Cleared instead on a terminal poll
+        (see ``poll``), with a FIFO cap as the backstop for abandoned ids.
+        """
+        if self._max_poll_seconds is None:
+            return
+        now = time.monotonic()
+        with self._poll_first_seen_lock:
+            first = self._poll_first_seen.get(key)
+            if first is None:
+                # FIFO-evict the oldest entry before inserting a new one so a
+                # long-lived provider can't grow the map without bound.
+                if len(self._poll_first_seen) >= _POLL_FIRST_SEEN_MAX:
+                    oldest = next(iter(self._poll_first_seen))
+                    self._poll_first_seen.pop(oldest, None)
+                self._poll_first_seen[key] = first = now
+        elapsed = now - first
+        if elapsed >= self._max_poll_seconds:
+            raise ProviderError(
+                f"GMICloud request {key} stalled in status {status!r} after "
+                f"{elapsed:.0f}s (max_poll_seconds={self._max_poll_seconds:.0f}); "
+                "upstream never reached a terminal state. Failing the step so it "
+                "can be retried.",
+                error_code=ProviderErrorCode.TIMEOUT,
+            )
+
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
         """Check if a GMICloud request is complete (shared across all modalities)."""
+        key = str(prediction_id)
         try:
             client = self._get_http_client()
             resp = client.get(f"/requests/{prediction_id}")
@@ -277,9 +351,15 @@ class GMICloudBase(BaseProvider):
                     retry_after=retry_after_from_response(resp),
                 )
             detail = resp.json()
-            if detail.get("status", "") in _TERMINAL_STATUSES:
+            status = detail.get("status", "")
+            if status in _TERMINAL_STATUSES:
+                self._clear_poll_deadline(key)
                 self._cache_poll_result(prediction_id, detail)
                 return True
+            # Non-terminal: enforce the connector-side stall ceiling so a wedged
+            # upstream job can't poll forever when the caller set a large or
+            # unbounded per-step timeout (#262).
+            self._enforce_poll_deadline(key, status)
             return False
         except ProviderError:
             raise
