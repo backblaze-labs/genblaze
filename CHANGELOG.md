@@ -95,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the probe confirms dead now raises at `Pipeline` preflight instead of
   failing mid-run; a slug the probe confirms live grades authoritative
   (#248).
+- **Fixed** every GMI Cloud audio model (TTS and music) was unreachable —
+  the `gmi-audio-tts` and `gmi-audio-music` families' `param_allowlist`
+  didn't include the API's required `text`/`lyrics` fields, so every request
+  400'd with "Required parameter is missing" before it reached GMI. `prompt`
+  now aliases to `text` for TTS and to `lyrics` for music, matching the same
+  `prompt=` idiom every other modality uses (#251).
 
 ### genblaze-openai
 
