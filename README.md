@@ -455,6 +455,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [AGENTS.md](AGENTS.md)
 
 **Adding a new provider?** Provider adapters are the highest-leverage contribution — each one expands what Genblaze pipelines can generate. The [new-provider guide](docs/guides/new-provider.md) walks through package setup, the `submit`/`poll`/`fetch_output` lifecycle, entry points, error mapping, and the compliance test harness.
 
+## Backblaze Labs ecosystem
+
+Part of [Backblaze Labs](https://github.com/backblaze-labs):
+
+- **[b2-mcp](https://github.com/backblaze-labs/b2-mcp)** — MCP server for Backblaze B2 Cloud Storage: a focused, safe set of tools for any MCP-compatible AI client.
+- **[b2-sdk-typescript](https://github.com/backblaze-labs/b2-sdk-typescript)** — Backblaze-maintained TypeScript / JavaScript SDK for B2 Cloud Storage.
+- **[b2-action](https://github.com/backblaze-labs/b2-action)** — Backblaze-maintained GitHub Action for B2 Cloud Storage.
+
 ## License
 
 [MIT](LICENSE)
