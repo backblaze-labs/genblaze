@@ -6,7 +6,7 @@
 - **genblaze-core** (`libs/core/`) — Python SDK: Pydantic v2 models, builders, canonical JSON, media handlers, sinks, pipeline, agents, observability
 - **Provider adapters** (`libs/connectors/`) — One package per provider:
   - `genblaze-openai` — OpenAI (Sora video; DALL-E + gpt-image family image generation & edits; TTS audio)
-  - `genblaze-google` — Google GenAI (Veo video, Imagen image)
+  - `genblaze-google` — Google GenAI (Veo video, Imagen / Gemini-native image)
   - `genblaze-runway` — Runway (Gen-4 Turbo video)
   - `genblaze-luma` — Luma (Dream Machine video)
   - `genblaze-decart` — Decart (Lucy video/image)
@@ -59,7 +59,7 @@
 ## External Services
 
 - **OpenAI API** — Sora video; DALL-E + gpt-image family (`gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) image generation and edits; TTS audio (`genblaze-openai`)
-- **Google GenAI API** — Veo video, Imagen image (`genblaze-google`)
+- **Google GenAI API** — Veo video, Imagen / Gemini-native image (`genblaze-google`)
 - **Runway API** — Gen-4 Turbo video (`genblaze-runway`)
 - **Luma API** — Dream Machine video (`genblaze-luma`)
 - **Decart API** — Lucy video/image (`genblaze-decart`)

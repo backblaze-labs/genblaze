@@ -139,4 +139,12 @@ def build_image_registry() -> ModelRegistry:
             _GMI_IMAGE_MINIMAL_EDIT_FAMILY,
         ),
         fallback=_FALLBACK,
+        # Everything the specialized families don't cover (Seedream,
+        # Gemini-Flash, FLUX-Kontext, Reve create, Bria fibo, and any new
+        # GMI image slug) falls through to the permissive fallback above —
+        # which previously meant validate_model() could never distinguish
+        # a real slug from a fabricated one for exactly the models most
+        # accounts actually use (#248). The same empty-payload probe the
+        # specialized families already use answers that question here too.
+        fallback_probe=empty_payload_request_probe,
     )
