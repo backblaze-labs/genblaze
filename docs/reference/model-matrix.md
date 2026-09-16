@@ -75,10 +75,10 @@ python tools/gen_model_matrix.py
 
 | Model | Modality | Pricing | Allowed params | Notes |
 |---|---|---|---|---|
-| `ElevenLabs-TTS-v3` | audio | $0.1000/asset | duration, language, negative_prompt, output_format, prompt, reference_audio, seed, voice_id | ⚠ suspected_dead |
-| `Inworld-TTS-1.5-Mini` | audio | $0.0050/asset | duration, language, negative_prompt, output_format, prompt, reference_audio, seed, voice_id | ⚠ suspected_dead |
-| `MiniMax-Music-2.5` | audio | $0.1500/asset | duration, duration_seconds, language, negative_prompt, output_format, prompt, reference_audio, seed, style_weight, tempo, voice_id | ⚠ suspected_dead |
-| `MiniMax-TTS-Speech-2.6-Turbo` | audio | $0.0600/asset | duration, language, negative_prompt, output_format, prompt, reference_audio, seed, voice_id | ⚠ suspected_dead |
+| `ElevenLabs-TTS-v3` | audio | $0.1000/asset | duration, language, negative_prompt, output_format, prompt, reference_audio, seed, text, voice_id | ⚠ suspected_dead |
+| `Inworld-TTS-1.5-Mini` | audio | $0.0050/asset | duration, language, negative_prompt, output_format, prompt, reference_audio, seed, text, voice_id | ⚠ suspected_dead |
+| `MiniMax-Music-2.5` | audio | $0.1500/asset | duration, duration_seconds, language, lyrics, negative_prompt, output_format, prompt, reference_audio, seed, style_weight, tempo, voice_id | ⚠ suspected_dead |
+| `MiniMax-TTS-Speech-2.6-Turbo` | audio | $0.0600/asset | duration, language, negative_prompt, output_format, prompt, reference_audio, seed, text, voice_id | ⚠ suspected_dead |
 | `MiniMax-Voice-Clone-Speech-2.6-HD` | audio | $0.1000/asset | duration, emotion, language, negative_prompt, output_format, pitch, prompt, reference_audio, seed, similarity, speed, stability, voice_id | ⚠ suspected_dead |
 
 ### `gmicloud-image`

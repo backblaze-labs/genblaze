@@ -100,6 +100,24 @@ def test_fetch_output_attaches_asset(mock_openai):
     assert result.assets[0].url.startswith("file://")
 
 
+def test_fetch_output_uses_local_file_url_helper(mock_openai):
+    """Regression guard for #252: the Sora video output URL must be built via
+    the shared ``local_file_url`` (``Path.as_uri()``) helper, not a hand-rolled
+    ``f"file://{quote(...)}"`` — the latter mis-parses on Windows because the
+    drive letter's colon lands in the URL's netloc instead of the path. This
+    pins the *call site*, not just the helper (already covered in
+    libs/core/tests/unit/test_utils.py), so a future revert to inline string
+    building is caught here too."""
+    provider, _ = mock_openai
+    step = Step(provider="openai-sora", model="sora-2", prompt="a sunset")
+    with patch(
+        "genblaze_openai.provider.local_file_url", return_value="file:///sentinel.mp4"
+    ) as mock_helper:
+        result = provider.fetch_output("vid-abc123", step)
+    mock_helper.assert_called_once()
+    assert result.assets[0].url == "file:///sentinel.mp4"
+
+
 def test_fetch_output_uses_download_content(mock_openai):
     """Download must go through videos.download_content, not the removed
     videos.content, and keep passing variant='video' (#127)."""

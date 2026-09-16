@@ -22,20 +22,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path is verified to stay under `output_dir`, and the write refuses to follow
   symlinks or clobber an existing file — on both the Vertex and Gemini auth
   paths (#284).
+- **Fixed** README and `examples/imagen_pipeline.py` quickstarts referenced
+  the delisted `imagen-3.0-*` slugs, which now 404 at preflight for every
+  new user; updated to the catalog-listed `imagen-4.0-*` slugs, documented
+  the entitlement caveat, and documented the previously-unlisted
+  `GeminiImageProvider` as the no-entitlement alternative (#233).
 
 ### genblaze-core
 
+- **Fixed** `PromptTemplate("A {animal}")` now accepts the template
+  positionally instead of raising `TypeError: BaseModel.__init__() takes 1
+  positional argument but 2 were given`. The positional spelling is the one
+  shipped in `examples/batch_with_templates.py`, so the example crashed on its
+  first `PromptTemplate` line. The keyword form is unchanged, and passing both
+  raises `TypeError` (P1-02).
 - **Changed** the run entry points (`run`, `arun`, `batch_run`, `abatch_run`)
   now raise a `TypeError` that names the call site that works when a
   constructor- or builder-level option is passed to them. `run(cache=...)`
   previously produced a bare `got an unexpected keyword argument 'cache'`,
   which named neither where caching is configured nor how to spell it;
   it now adds `— caching is configured on the pipeline:
-  `.cache(StepCache(...))`. Covers `cache`, `config`, `metadata`, `tracer`,
+  .cache(StepCache(...))`. Covers `cache`, `config`, `metadata`, `tracer`,
   `preflight`, `tenant_id`, `project_id`, `chain`, `moderation`,
   `structured_log`, and `max_concurrency` (the last only on `run()`, the one
   entry point that does not take it). Genuinely unknown names keep CPython's
-  exact wording.
+  exact wording (P1-03).
 - **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
   first access, and `RunnableConfig` is available directly from
   `genblaze_core` (#55).
@@ -58,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   liveness counterpart to the existing `fallback` param-shape spec; it is
   opt-in and defaults to `None`, so registries that don't configure it are
   unaffected (#248).
+- **Fixed** `import genblaze_core.testing` no longer requires `pytest`. The
+  mock providers moved to the pytest-free `genblaze_core.mocks` in 0.3.5, but
+  `genblaze_core.testing` kept a module-level `import pytest` for
+  `ProviderComplianceTests` — so the documented re-export path
+  (`from genblaze_core.testing import MockVideoProvider`, used by the
+  zero-API-key quickstart in `libs/core/README.md`) still failed with
+  `ModuleNotFoundError: No module named 'pytest'` on a clean
+  `pip install genblaze-core`. `pytest` is now imported inside the four
+  compliance-harness methods that use it (P1-01).
 
 ### Internal
 
@@ -92,7 +112,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the probe confirms dead now raises at `Pipeline` preflight instead of
   failing mid-run; a slug the probe confirms live grades authoritative
   (#248).
+- **Fixed** every GMI Cloud audio model (TTS and music) was unreachable —
+  the `gmi-audio-tts` and `gmi-audio-music` families' `param_allowlist`
+  didn't include the API's required `text`/`lyrics` fields, so every request
+  400'd with "Required parameter is missing" before it reached GMI. `prompt`
+  now aliases to `text` for TTS and to `lyrics` for music, matching the same
+  `prompt=` idiom every other modality uses (#251).
 
+### genblaze-openai
+
+- **Fixed** `DalleProvider` image edits from an `https://` reference image
+  (e.g. a presigned object-storage URL) always failed upstream with
+  `unsupported mimetype`. The download's temp file was named with a fixed
+  `.img` suffix, so the OpenAI client inferred `Content-Type:
+  application/octet-stream` instead of the source's real type. The suffix
+  is now derived from the input `Asset.media_type` (falling back to `.png`)
+  (#253).
 
 ## [0.7.0] - 2026-07-28
 
