@@ -7,15 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Fixed** `import genblaze_core.testing` no longer requires `pytest`. The
-  mock providers moved to the pytest-free `genblaze_core.mocks` in 0.3.5, but
-  `genblaze_core.testing` kept a module-level `import pytest` for
-  `ProviderComplianceTests` — so the documented re-export path
-  (`from genblaze_core.testing import MockVideoProvider`, used by the
-  zero-API-key quickstart in `libs/core/README.md`) still failed with
-  `ModuleNotFoundError: No module named 'pytest'` on a clean
-  `pip install genblaze-core`. `pytest` is now imported inside the four
-  compliance-harness methods that use it (P1-01).
 ### genblaze-google
 
 - **Fixed** Veo on the Gemini Developer API (`api_key` / `GEMINI_API_KEY`) now
@@ -61,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   liveness counterpart to the existing `fallback` param-shape spec; it is
   opt-in and defaults to `None`, so registries that don't configure it are
   unaffected (#248).
+- **Fixed** `import genblaze_core.testing` no longer requires `pytest`. The
+  mock providers moved to the pytest-free `genblaze_core.mocks` in 0.3.5, but
+  `genblaze_core.testing` kept a module-level `import pytest` for
+  `ProviderComplianceTests` — so the documented re-export path
+  (`from genblaze_core.testing import MockVideoProvider`, used by the
+  zero-API-key quickstart in `libs/core/README.md`) still failed with
+  `ModuleNotFoundError: No module named 'pytest'` on a clean
+  `pip install genblaze-core`. `pytest` is now imported inside the four
+  compliance-harness methods that use it (P1-01).
 
 ### Internal
 
