@@ -42,6 +42,21 @@ Fluent API for building and executing multi-step generative media workflows with
 - `input_from`: list[int] | int | None — Route inputs from specific prior steps by index (overrides chain mode)
 - `external_inputs`: list[Asset] | None — Seed `Step.inputs` from caller-held Assets (e.g., user-uploaded media for a multimodal first step). Mutually exclusive with `input_from`. Provider must declare `accepts_chain_input=True`.
 
+## Where each option goes
+
+Pipeline options live in three places. Passing one to the wrong place raises
+`TypeError`; for the options below the error names the call site that works.
+
+| Call site | Options |
+|---|---|
+| Constructor — `Pipeline(...)` | `name`, `tenant_id`, `project_id`, `chain`, `structured_log`, `max_concurrency`, `moderation`, `tracer`, `preflight` |
+| Builders — `pipeline.x(...)` | `.step(...)`, `.cache(StepCache(...))`, `.config({...})`, `.metadata(key=value)`, `.tracer(...)`, `.preflight(bool)` |
+| Run entry points — `.run()` / `.arun()` / `.batch_run()` / `.abatch_run()` | `sink`, `fail_fast`, `raise_on_failure`, `timeout`, `max_retries`, `on_progress`, `pipeline_timeout`, `on_step_complete` |
+
+Three run-entry-point kwargs are not universal: `progress` and `on_retry` are
+`run()`/`arun()` only, and `max_concurrency` is accepted everywhere except
+`run()`, which is always sequential.
+
 ## Step input mechanisms — when to use which
 
 | Source | Use when | Example |

@@ -82,3 +82,67 @@ def test_mock_providers_importable_without_pytest() -> None:
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "OK" in result.stdout
+
+
+def test_testing_module_importable_without_pytest() -> None:
+    """``genblaze_core.testing`` must import on a runtime-only install.
+
+    The mocks moved to the pytest-free ``genblaze_core.mocks`` in 0.3.5, but
+    ``genblaze_core.testing`` kept a module-level ``import pytest`` for
+    ``ProviderComplianceTests`` — so the documented re-export path (and the
+    zero-API-key quickstart in ``libs/core/README.md``) still died with
+    ``ModuleNotFoundError: No module named 'pytest'`` on a clean
+    ``pip install genblaze-core``. Same subprocess technique as the test
+    above: pytest is blocked, so any module-level import of it fails fast.
+    """
+    script = (
+        "import sys; sys.modules.pop('pytest', None);"
+        "sys.modules['pytest'] = None;"
+        # The line printed by libs/core/README.md's quickstart.
+        "from genblaze_core.testing import MockVideoProvider;"
+        "from genblaze_core.testing import MockProvider, MockAudioProvider;"
+        "from genblaze_core.testing import ProviderComplianceTests;"
+        "assert MockVideoProvider is not None;"
+        "assert ProviderComplianceTests is not None;"
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"genblaze_core.testing requires pytest at import.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "OK" in result.stdout
+
+
+def test_testing_module_runs_a_mock_pipeline_without_pytest() -> None:
+    """The README's zero-API-key quickstart must run end to end without pytest."""
+    script = (
+        "import sys; sys.modules.pop('pytest', None);"
+        "sys.modules['pytest'] = None;"
+        "from genblaze_core import Modality, Pipeline;"
+        "from genblaze_core.testing import MockVideoProvider;"
+        "run, manifest = ("
+        "    Pipeline('hello-genblaze')"
+        "    .step(MockVideoProvider(), model='mock-v1', prompt='a drone shot',"
+        "          modality=Modality.VIDEO)"
+        "    .run(raise_on_failure=True)"
+        ");"
+        "assert manifest.verify_hash();"
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"README quickstart fails without pytest.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "OK" in result.stdout
