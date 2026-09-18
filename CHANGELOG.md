@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### genblaze
 
 - **Added** an `atlascloud` extra and included Atlas Cloud in the `image`,
-  `video`, and `all` bundles. The umbrella package is now version `0.4.6`.
+  `video`, and `all` bundles.
 
 ### genblaze-atlascloud
 
