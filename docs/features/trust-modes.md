@@ -47,15 +47,28 @@ assert manifest.verify_hash()
 # $ genblaze verify video.mp4
 ```
 
-### Mode 2 — Authenticated integrity (roadmap)
+### Mode 2 — Authenticated integrity (experimental — `feat/mode2-ed25519-signer`)
 
-**What it would prove:** Mode 1 + only the holder of a specific signing key could have produced the manifest.
+**What it proves:** Mode 1 + only the holder of a specific signing key could have produced the manifest.
 
-**Mechanism (planned):** Pluggable `Signer` / `Verifier` interface; ship Ed25519 default. Bring-your-own-key, no PKI. The `signature` and `encryption_scheme` fields on `Manifest` are reserved (excluded from the canonical hash) for forward compatibility — adding signing in a future schema version is non-breaking.
+**Mechanism:** Optional `genblaze_core.signing` module with `Ed25519Signer` (requires `pip install 'genblaze-core[signing]'`). Signs canonical manifest JSON (excluding `signature`, `manifest_uri`, `encryption_scheme`). Store the JSON bundle in `Manifest.signature`.
 
-**When you'd want it:** Multi-tenant SaaS attribution, brand publishing, internal compliance.
+**When you'd want it:** Multi-tenant SaaS attribution, brand publishing, EU AI Act Article 50 compliance pipelines (see [ATTEST](https://github.com/backblaze-labs/genblaze/discussions)).
 
-**Status:** Not yet implemented. Open an issue if your use case needs it.
+**Status:** Implemented behind optional extra in ATTEST upstream PR. API surface:
+
+```python
+from datetime import datetime, timezone
+from genblaze_core import Manifest
+from genblaze_core.signing import Ed25519Signer, verify_signature_bundle
+
+signer = Ed25519Signer.from_env("GENBLAZE_SIGNING_KEY_HEX")
+manifest = Manifest.from_run(run)
+payload = manifest.model_dump(mode="python")
+bundle = signer.sign_manifest(payload, signed_at=datetime.now(timezone.utc).isoformat())
+manifest.signature = bundle.to_json()
+assert verify_signature_bundle(payload, bundle)
+```
 
 ### Mode 3 — Standards-verifiable (roadmap, opt-in)
 
