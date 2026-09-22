@@ -204,6 +204,109 @@ def test_mock_provider_failure_in_pipeline() -> None:
     assert result.run.status == RunStatus.FAILED
 
 
+# --- Opt-in strict input validation (min_inputs, #174) ---
+
+
+def test_mock_provider_default_min_inputs_allows_empty() -> None:
+    """Default min_inputs=0 keeps the historical permissive behavior."""
+    provider = MockProvider()
+    step = Step(provider="mock", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.inputs == []
+
+
+def test_mock_provider_min_inputs_rejects_empty_inputs() -> None:
+    """min_inputs=1 fails a step with no attached input assets.
+
+    Reproduces the bug from #174: an image-to-video step built without
+    ``external_inputs=`` sailed through the permissive default mock and only
+    failed on the first live API call.
+    """
+    provider = MockProvider(min_inputs=1)
+    step = Step(provider="mock", model="Kling-Image2Video-V2.1-Master", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.INVALID_INPUT
+    assert "at least 1" in result.error
+
+
+def test_mock_provider_min_inputs_accepts_sufficient_inputs() -> None:
+    """min_inputs is satisfied when enough Assets are attached to step.inputs."""
+    provider = MockProvider(min_inputs=1)
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="p",
+        inputs=[Asset(url="https://mock.test/in.png", media_type="image/png")],
+    )
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.SUCCEEDED
+
+
+def test_mock_provider_min_inputs_counts_reported() -> None:
+    """The error message reports both the actual and required input counts."""
+    provider = MockProvider(min_inputs=2)
+    step = Step(
+        provider="mock",
+        model="m",
+        prompt="p",
+        inputs=[Asset(url="https://mock.test/in.png", media_type="image/png")],
+    )
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.FAILED
+    assert "1 input(s)" in result.error
+    assert "at least 2" in result.error
+
+
+def test_mock_provider_min_inputs_in_pipeline_without_external_inputs() -> None:
+    """The exact repro from #174: a Pipeline step with no external_inputs=
+    now fails loudly instead of silently generating canned assets."""
+    provider = MockProvider(min_inputs=1)
+    result = (
+        Pipeline("repro").step(provider, model="Kling-Image2Video-V2.1-Master", prompt="p").run()
+    )
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.run.steps[0].error_code == ProviderErrorCode.INVALID_INPUT
+
+
+def test_mock_video_provider_min_inputs() -> None:
+    """min_inputs forwards through MockVideoProvider's **kwargs, same as MockAudioProvider."""
+    provider = MockVideoProvider(min_inputs=1)
+    step = Step(provider="mock-video", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.INVALID_INPUT
+
+
+def test_mock_provider_negative_min_inputs_is_a_noop() -> None:
+    """A negative min_inputs never trips — len(inputs) < negative is always False."""
+    provider = MockProvider(min_inputs=-1)
+    step = Step(provider="mock", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.SUCCEEDED
+
+
+def test_mock_provider_min_inputs_takes_precedence_over_should_fail() -> None:
+    """When both min_inputs and should_fail would trigger, the input-count
+    check runs first — it fires before should_fail is ever consulted."""
+    provider = MockProvider(
+        min_inputs=1, should_fail=True, error_code=ProviderErrorCode.RATE_LIMIT
+    )
+    step = Step(provider="mock", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.INVALID_INPUT
+
+
 # --- Lazy import from genblaze_core ---
 
 

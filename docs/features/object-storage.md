@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-24 -->
+<!-- last_verified: 2026-09-21 -->
 # Object Storage
 
 Upload run assets and manifests to any S3-compatible bucket. **Backblaze B2 is
@@ -137,6 +137,35 @@ storage = ObjectStorageSink(
     key_strategy=KeyStrategy.HIERARCHICAL,
 )
 ```
+
+### Uploading from a provider-configured `output_dir`
+
+`ObjectStorageSink` only transfers `file://` assets out of the system temp
+directory by default — a provider that writes elsewhere (e.g.
+`ElevenLabsTTSProvider(output_dir="work/generated")`) generates a valid
+local asset that the sink then refuses at finalization, because the local
+path falls outside the built-in allowlist. Pass `allowed_roots` to opt that
+directory in explicitly:
+
+```python
+storage = ObjectStorageSink(
+    S3StorageBackend.for_backblaze("my-bucket"),
+    allowed_roots=["work/generated"],
+)
+```
+
+Each root is resolved to an absolute path (symlinks followed) and must
+already exist as a directory; construction raises `SinkError` immediately
+for a missing directory or for a root that resolves to the filesystem root
+(`/`), since that would defeat the allowlist entirely. This is opt-in only —
+omitting `allowed_roots` keeps the existing temp-only default, so a sink
+never gains access to a wider set of local files than the caller explicitly
+grants.
+
+> **Treat `allowed_roots` as a fixed, operator-controlled setting** — set it
+> from your own deployment config, never from per-request, per-tenant, or
+> otherwise caller-controlled input. Deriving it from untrusted input would
+> let a caller widen the allowlist to arbitrary local paths.
 
 ## Key strategies
 
@@ -325,6 +354,36 @@ intermediate handling so any accidental logging stays redacted; use the
 > **`presigned_post` is intentionally deferred.** S3 POST policies return a
 > `{"url", "fields"}` shape that doesn't fit `PresignedURL`. Tracked for a
 > later phase that ships a separate `PresignedPost` value object.
+
+### Browser access to private B2 buckets
+
+A private bucket's **durable** URL (`get_durable_url`, and therefore
+`asset.url` under the default `URLPolicy.AUTO`) carries no credentials —
+loading it directly in a browser 401s. That's expected: durable URLs are
+meant to be persisted in manifests, not fetched straight from a browser
+against a private bucket. For a browser-loadable link, presign it:
+
+```python
+from genblaze_s3 import S3StorageBackend
+
+backend = S3StorageBackend.for_backblaze("my-bucket")
+key = backend.key_from_url(asset.url)  # or any known storage key
+
+# Hand this to <video src=...> / <img src=...> / fetch() — valid for 1h.
+browser_url = backend.presigned_get_url(key, expires_in=3600)
+```
+
+B2's S3-compatible endpoint rejects virtual-host-style presigns (the bucket
+as a subdomain, e.g. `https://my-bucket.s3.<region>.backblazeb2.com/...`)
+with a 403 — it only accepts **path-style** requests (the bucket in the
+path, e.g. `https://s3.<region>.backblazeb2.com/my-bucket/...`) signed with
+AWS **SigV4**. `presigned_get`/`presigned_get_url` already produce this
+shape with no extra configuration: boto3 defaults to path-style addressing
+and SigV4 signing whenever a non-AWS `endpoint_url` is set, which is exactly
+what `for_backblaze()` configures. If you build your own `boto3.client("s3",
+...)` instead of going through `S3StorageBackend`, pass
+`Config(signature_version="s3v4", s3={"addressing_style": "path"})`
+explicitly to get the same behavior.
 
 ### Sink-level `asset_url_policy`
 

@@ -79,6 +79,11 @@ re2 = ["google-re2>=1.0,<2"]
 # langsmith README). It imports pytest at module load, so it's only usable with
 # this extra installed: `pip install "genblaze-core[testing]"`.
 testing = ["pytest>=7.0"]
+# 42.0 is a conservative "recent at the time this experimental extra shipped"
+# floor, not a specific CVE/API cutoff — Ed25519 raw-key encode/decode has
+# been available since cryptography~=2.6. Revisit once Mode 2 signing is
+# declared stable. <51: bounded-major convention (#61), verified on 50.x.
+signing = ["cryptography>=42.0,<51"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -93,6 +98,7 @@ dev = [
     "jsonschema>=4.0",
     "hypothesis>=6.0",
     "httpx>=0.24,<1",
+    "cryptography>=42.0,<51",
     "opentelemetry-api>=1.20,<2",
     "google-re2>=1.0,<2",
     # Test-only since #249: JPEG/WebP embedding splices XMP bytes directly, so

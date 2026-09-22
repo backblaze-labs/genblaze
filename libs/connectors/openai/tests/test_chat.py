@@ -420,9 +420,8 @@ def test_retry_policy_alone_opts_in_without_the_flag(mock_client, monkeypatch):
     assert sleeps == [0.2]
 
 
-def test_retry_on_rate_limit_does_not_retry_other_error_codes(mock_client, monkeypatch):
-    """Only RATE_LIMIT is eligible — a content-policy error still fails fast even
-    with retries enabled."""
+def test_retry_on_rate_limit_does_not_retry_deterministic_error_codes(mock_client, monkeypatch):
+    """Deterministic codes (content policy) still fail fast even with retries enabled."""
     sleeps: list[float] = []
     monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
     mock_client.chat.completions.create.side_effect = ProviderError(
@@ -435,6 +434,23 @@ def test_retry_on_rate_limit_does_not_retry_other_error_codes(mock_client, monke
     assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
     assert mock_client.chat.completions.create.call_count == 1
     assert sleeps == []
+
+
+def test_retry_on_rate_limit_retries_server_error(mock_client, monkeypatch):
+    """A raw SDK 503 is classified SERVER_ERROR and retried under the same
+    backoff when retry is opted in (#264)."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.chat.completions.create.side_effect = [
+        RuntimeError("Error code: 503 - service unavailable"),
+        _mock_completion(),
+    ]
+
+    resp = chat("gpt-4o", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert mock_client.chat.completions.create.call_count == 2
+    assert len(sleeps) == 1
 
 
 def test_achat_retry_on_rate_limit(mock_client, monkeypatch):

@@ -39,12 +39,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new user; updated to the catalog-listed `imagen-4.0-*` slugs, documented
   the entitlement caveat, and documented the previously-unlisted
   `GeminiImageProvider` as the no-entitlement alternative (#233).
+- **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
+  `retry_policy=`) now retries a Gemini `503 UNAVAILABLE` / model-overloaded
+  error under the same backoff as a 429 instead of failing on the first
+  attempt. Requires the genblaze-core release carrying this fix (#264).
 
 ### genblaze-core
 
 - **Changed** `genblaze-core` no longer depends on Pillow at runtime, since
   JPEG/WebP embedding no longer decodes images. If your code imports `PIL`,
   declare `pillow` as your own dependency (#249).
+- **Added** `ObjectStorageSink(..., allowed_roots=[...])` to opt a
+  provider-configured `output_dir` (e.g. `ElevenLabsTTSProvider(output_dir=
+  "work/generated")`) into local-file asset transfer. Previously a valid
+  generation written outside the built-in temp-dir allowlist failed only at
+  storage finalization, after provider quota was already spent. The default
+  stays temp-only — no behavior change without opting in — and each root is
+  resolved and validated at construction (rejects a missing directory or the
+  filesystem root) so a typo'd or overly broad root fails loudly immediately
+  rather than silently widening what's readable (#247).
+- **Added** an opt-in `min_inputs` constructor kwarg on `MockProvider`
+  (`genblaze_core.testing`/`genblaze_core.mocks`). The mock previously
+  accepted any step regardless of `step.inputs`, so a pipeline step built
+  without `external_inputs=` — input media a real provider would reject —
+  passed a full contract-test suite and only failed on the first live run.
+  `MockProvider(min_inputs=1)` now raises `ProviderError(INVALID_INPUT)` when
+  `step.inputs` has fewer than the configured minimum. Default is `0`,
+  preserving existing behavior for callers who don't opt in (#174).
 - **Fixed** `PromptTemplate("A {animal}")` now accepts the template
   positionally instead of raising `TypeError: BaseModel.__init__() takes 1
   positional argument but 2 were given`. The positional spelling is the one
@@ -110,6 +131,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deprecated** `WebpHandler.embed(lossless=..., quality=...)`. Both
   configured the former re-encode; they are now ignored, emit a
   `DeprecationWarning`, and will be removed in genblaze-core 0.4.0 (#249).
+- **Changed** `call_with_rate_limit_retry` (behind the `retry_on_rate_limit=`
+  flag on the `chat()` helpers) now retries `SERVER_ERROR` (5xx, e.g. Gemini
+  `503 UNAVAILABLE`) as well as `RATE_LIMIT` by default, and honors an explicit
+  `RetryPolicy`'s full `retryable_codes` — matching `BaseProvider`'s poll/fetch
+  path. `TIMEOUT` retries only via an explicit policy, since a timed-out long
+  generation can still be billed; callers already passing an explicit
+  `RetryPolicy()` now retry `TIMEOUT` too. Pass
+  `RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))` for
+  the previous 429-only behavior (#264).
+- **Added** public ffmpeg helpers behind `FFmpegCompositor` / `FFmpegTransform`
+  for custom deterministic providers:
+  `from genblaze_core.providers import resolve_ffmpeg, resolve_input_path,
+  run_ffmpeg, get_output_path, populate_file_asset_integrity, local_file_url,
+  FFMPEG_TIMEOUT`.
+  Authors no longer re-implement the security-sensitive parts (the SSRF check
+  on `https://` inputs, presigned-URL redaction in logs and errors). As part of
+  the promotion, `get_output_path` now rejects an `ext` that is not
+  alphanumeric and a `step_id` containing `/`, `\`, `:` or NUL, so a crafted
+  value cannot write outside `output_dir`; it also accepts a `str` directory
+  and always returns an absolute path. `genblaze_core.providers._ffmpeg_utils`
+  still imports. See the "Deterministic ffmpeg provider" section of
+  `docs/guides/new-provider.md` (#195).
+- **Fixed** `SmartEmbedder`/`SidecarHandler` sidecar and pointer embed modes
+  now copy the source media to a distinct `output=` path (streamed, so it
+  shares MP4's 2 GB size ceiling rather than a smaller in-memory cap) before
+  writing the sidecar, matching the inline handlers' contract. Previously,
+  `output=` in pointer mode (or any sidecar fallback) wrote only the sidecar
+  JSON next to the requested path and reported it in `EmbedResult.path`, even
+  though no media file existed there (#238).
+
+### genblaze-s3
+
+- **Docs** clarified browser access to private B2 buckets: a durable URL
+  (`asset.url` under the default `URLPolicy.AUTO`) carries no credentials
+  and 401s in a browser by design — use `presigned_get`/`presigned_get_url`
+  instead. Added regression coverage proving those methods already emit
+  the path-style, SigV4-signed URL shape B2 requires (virtual-host-style
+  presigns 403 against B2) with no extra `boto3.Config`, since
+  `for_backblaze()`'s custom `endpoint_url` already selects that addressing
+  style by default; see `docs/features/object-storage.md` (#246).
 
 ### Internal
 
@@ -160,6 +221,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application/octet-stream` instead of the source's real type. The suffix
   is now derived from the input `Asset.media_type` (falling back to `.png`)
   (#253).
+- **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
+  `retry_policy=`) now also retries 5xx, which previously failed fast because
+  opting in disables the OpenAI SDK's own retry. Requires the genblaze-core
+  release carrying this fix (#264).
+- **Fixed** `DalleProvider.generate()` dropped the `usage` block on
+  `gpt-image-*` responses, leaving `Step.provider_payload` empty and no way
+  to reconcile actual token-based cost against the registry's pre-flight
+  estimate. Input/output/total token counts are now copied into
+  `Step.provider_payload["usage"]` before pricing runs, so a user-registered
+  usage-based pricing recipe can read them; `dall-e-2`/`dall-e-3` responses
+  carry no `usage` block and are unaffected (#240).
 
 ## [0.7.0] - 2026-07-28
 
@@ -1082,6 +1154,15 @@ versions, for its own dependencies).
   reserved `raise_on_failure` default-flip version. The skill cannot tag or
   publish; it stops at a release PR. Repo tooling only — no packaged code
   changed.
+
+### genblaze-core
+
+- **Added (experimental)** Trust Mode 2 authenticated integrity: an optional
+  `genblaze_core.signing` module (`pip install "genblaze-core[signing]"`)
+  with an `Ed25519Signer` that signs a manifest's existing `canonical_hash`
+  and a `verify_signature_bundle()` verifier. API surface may still change
+  before this is declared stable. Thanks to @Demiladepy for the original
+  contribution.
 
 ## [0.4.0] - 2026-06-25
 
