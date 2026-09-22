@@ -162,6 +162,11 @@ omitting `allowed_roots` keeps the existing temp-only default, so a sink
 never gains access to a wider set of local files than the caller explicitly
 grants.
 
+> **Treat `allowed_roots` as a fixed, operator-controlled setting** — set it
+> from your own deployment config, never from per-request, per-tenant, or
+> otherwise caller-controlled input. Deriving it from untrusted input would
+> let a caller widen the allowlist to arbitrary local paths.
+
 ## Key strategies
 
 ### HIERARCHICAL (run-grouped)

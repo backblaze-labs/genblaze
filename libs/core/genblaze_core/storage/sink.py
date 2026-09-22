@@ -421,10 +421,16 @@ class ObjectStorageSink(BaseSink):
                 ``output_dir`` (e.g. ``ElevenLabsTTSProvider(output_dir=...)``)
                 when that provider writes generated assets outside the
                 system temp directory. Each root is resolved (symlinks
-                followed) and must already exist as a directory; the
-                filesystem root itself is rejected as too broad. See
+                followed, relative paths resolved against the process's
+                current working directory) and must already exist as a
+                directory; the filesystem root itself is rejected as too
+                broad. See
                 :func:`genblaze_core.storage.transfer.AssetTransfer` for the
-                underlying allowlist check.
+                underlying allowlist check. Treat this as a fixed,
+                operator-controlled deployment setting — never derive it
+                from per-request, per-tenant, or otherwise caller-controlled
+                input, which would let an untrusted caller widen the
+                allowlist to arbitrary local paths.
 
         Raises:
             URLPolicyError: ``asset_url_policy=URLPolicy.PRESIGNED`` (rejected;

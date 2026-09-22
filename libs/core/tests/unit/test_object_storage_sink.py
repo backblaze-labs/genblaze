@@ -2082,9 +2082,19 @@ class TestAllowedRoots:
         with pytest.raises(SinkError, match="failed"):
             sink.write_run(run, manifest)
 
-    def test_allowed_roots_permits_provider_output_dir(self, tmp_path):
+    def test_allowed_roots_permits_provider_output_dir(self, tmp_path, monkeypatch):
         """Reproduces the #247 repro: output_dir passed as allowed_roots
-        lets the sink transfer an asset the provider wrote there."""
+        lets the sink transfer an asset the provider wrote there.
+
+        Empties the built-in temp-dir allowlist (mirrors
+        test_allowed_roots_still_rejects_symlink_escape) so this test
+        actually exercises the sink's allowed_roots wiring — without it,
+        pytest's tmp_path can itself resolve under the OS temp root (see
+        test_default_still_rejects_files_outside_temp), which would let
+        this asset transfer via the default allowlist alone and leave the
+        allowed_roots plumbing untested.
+        """
+        monkeypatch.setattr("genblaze_core.storage.transfer.ALLOWED_FILE_ROOTS", ())
         custom_dir = tmp_path / "generated"
         custom_dir.mkdir()
         asset_file = custom_dir / "clip.mp3"
