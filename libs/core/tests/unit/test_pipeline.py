@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -1382,6 +1383,7 @@ def test_attempt_normalizes_out_of_contract_provider_values() -> None:
     """A provider writing a negative cost or an oversized id must not abort
     the fallback chain with a validation error."""
     failed = Step(provider="p", model="m", cost_usd=-1.0, metadata={"upstream_id": "x" * 1000})
+    assert StepAttempt.from_step(Step(provider="p", model="m", cost_usd=math.inf)).cost_usd is None
     attempt = StepAttempt.from_step(failed)
     assert attempt.cost_usd is None
     assert attempt.upstream_id == "x" * 256

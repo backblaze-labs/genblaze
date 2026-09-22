@@ -172,7 +172,7 @@ export interface Step {
     [k: string]: unknown;
   };
   /**
-   * Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty. Only each attempt's model, provider and error_code enter the canonical hash. Manifests carrying this key need a reader that knows it (genblaze-core with #239 or later).
+   * Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty. Only each attempt's model, provider and error_code enter the canonical hash. Manifests carrying this key need a reader that knows it; older readers reject it as an unknown field.
    */
   failed_attempts?: StepAttempt[];
 }

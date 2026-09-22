@@ -137,7 +137,7 @@
     "failed_attempts": {
       "type": "array",
       "default": [],
-      "description": "Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty. Only each attempt's model, provider and error_code enter the canonical hash. Manifests carrying this key need a reader that knows it (genblaze-core with #239 or later).",
+      "description": "Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty. Only each attempt's model, provider and error_code enter the canonical hash. Manifests carrying this key need a reader that knows it; older readers reject it as an unknown field.",
       "items": {
         "title": "StepAttempt",
         "description": "A failed provider invocation superseded by a later attempt of the same step. Provider-level retries within one attempt are counted in retries, not listed separately.",

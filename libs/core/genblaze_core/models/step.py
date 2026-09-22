@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -106,7 +107,7 @@ class StepAttempt(BaseModel):
             error=sanitize_error(step.error) if step.error else step.error,
             error_code=step.error_code,
             upstream_id=str(upstream_id)[:_MAX_UPSTREAM_ID_LENGTH] if upstream_id else None,
-            cost_usd=cost if cost is None or cost >= 0 else None,
+            cost_usd=cost if cost is None or (math.isfinite(cost) and cost >= 0) else None,
             retries=max(step.retries, 0),
             started_at=step.started_at,
             completed_at=step.completed_at,
