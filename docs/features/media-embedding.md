@@ -79,11 +79,33 @@ bytes against a pre-embed hash and fails by design. Verify against the upstream
 artifact instead (option 1 above). See
 [trust-modes.md](trust-modes.md#asset-binding-caveat).
 
-## WebP lossless preservation
+## Byte-preserving image embedding
 
-When embedding into a lossless WebP (VP8L), the handler detects the source codec and
-preserves losslessness automatically. Callers can still override with `lossless=False`
-if a lossy re-encode is acceptable.
+PNG, JPEG, and WebP embeds never decode or re-encode the image. The handlers
+splice a metadata record into the existing container, so the compressed image
+data and every other chunk/segment (EXIF, ICC, third-party XMP) stay
+byte-identical:
+
+- **PNG** — one `iTXt` chunk (`genblaze:manifest`) after `IHDR`.
+- **JPEG** — one XMP `APP1` segment after the leading JFIF `APP0` / EXIF `APP1`
+  segments. Removing that segment yields the original file exactly.
+- **WebP** — one `XMP ` chunk appended to the RIFF container, with the `VP8X`
+  XMP flag set. A simple-format (`VP8 `/`VP8L`-only) file is first promoted to
+  the extended format by prepending a `VP8X` header; the codec chunk itself is
+  unchanged.
+
+Re-embedding replaces the previous genblaze record rather than adding a second
+one. Only packets genblaze wrote are replaced: a packet another tool merged the
+manifest into (exiftool, Lightroom) is kept, and third-party XMP is never
+dropped. A JPEG/WebP that already carries third-party XMP therefore ends up with
+two XMP packets; genblaze reads its own, but tools that honor only the first
+packet may not see the manifest. Extraction reads only XMP containers (JPEG
+`APP1` XMP segments, WebP `XMP ` chunks), so a `<mf:manifest>` string elsewhere
+in the file (EXIF, ICC, image data) is ignored.
+
+`WebpHandler.embed(lossless=..., quality=...)` is deprecated since
+genblaze-core 0.3.9 and ignored (it configured the former re-encode); it emits a
+`DeprecationWarning` and will be removed in 0.4.0.
 
 ## Atomicity
 

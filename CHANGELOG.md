@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Changed** `genblaze-core` no longer depends on Pillow at runtime, since
+  JPEG/WebP embedding no longer decodes images. If your code imports `PIL`,
+  declare `pillow` as your own dependency (#249).
 - **Added** `ObjectStorageSink(..., allowed_roots=[...])` to opt a
   provider-configured `output_dir` (e.g. `ElevenLabsTTSProvider(output_dir=
   "work/generated")`) into local-file asset transfer. Previously a valid
@@ -111,6 +114,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
+- **Fixed** JPEG and WebP embedding now splices the XMP metadata into the
+  existing container instead of decoding and re-encoding the image through
+  Pillow, matching the PNG and MP4 handlers. Previously every JPEG/WebP embed
+  silently altered pixels (lossy WebP by up to ~16% of subpixels), so the
+  delivered image no longer matched the bytes the manifest committed to.
+  JPEG gains one XMP `APP1` segment; WebP gains one `XMP ` chunk (a
+  simple-format `VP8`/`VP8L` file is promoted to extended `VP8X`). EXIF, ICC,
+  third-party XMP and the compressed image data are kept byte-for-byte,
+  re-embedding replaces the previous manifest, and files embedded by earlier
+  versions still extract. Extraction now reads only real XMP containers, so a
+  `<mf:manifest>` string planted in EXIF or other bytes can no longer shadow
+  the embedded manifest. Handlers no longer transcode, so a non-JPEG/WebP
+  source passed straight to `JpegHandler`/`WebpHandler` now raises
+  `EmbeddingError` (`SmartEmbedder` already routes by magic bytes) (#249).
+- **Deprecated** `WebpHandler.embed(lossless=..., quality=...)`. Both
+  configured the former re-encode; they are now ignored, emit a
+  `DeprecationWarning`, and will be removed in genblaze-core 0.4.0 (#249).
 - **Changed** `call_with_rate_limit_retry` (behind the `retry_on_rate_limit=`
   flag on the `chat()` helpers) now retries `SERVER_ERROR` (5xx, e.g. Gemini
   `503 UNAVAILABLE`) as well as `RATE_LIMIT` by default, and honors an explicit

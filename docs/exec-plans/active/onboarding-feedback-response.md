@@ -182,7 +182,7 @@ artifact that strictly depends on both.
     `grep -rn 'def .*\(probe\|dimension\|duration\|sha256\|mime\)' libs/core/genblaze_core/media/`
     and document findings in the design doc. The implementer must compose with
     anything found, not duplicate it.
-  - Pillow (already a core dep) for image dimensions; mutagen (existing
+  - Pillow (an optional import since #249; guard it) for image dimensions; mutagen (existing
     `[audio]` extra) for audio duration. No new extra introduced.
 - **Required design decisions (resolve in design doc before coding):**
   - **Streaming SHA-256.** `_utils.compute_sha256(data: bytes)` requires holding
