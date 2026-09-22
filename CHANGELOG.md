@@ -91,11 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
 - **Fixed** `SmartEmbedder`/`SidecarHandler` sidecar and pointer embed modes
-  now copy the source media to a distinct `output=` path before writing the
-  sidecar, matching the inline handlers' contract. Previously, `output=` in
-  pointer mode (or any sidecar fallback) wrote only the sidecar JSON next to
-  the requested path and reported it in `EmbedResult.path`, even though no
-  media file existed there (#238).
+  now copy the source media to a distinct `output=` path (streamed, so it
+  shares MP4's 2 GB size ceiling rather than a smaller in-memory cap) before
+  writing the sidecar, matching the inline handlers' contract. Previously,
+  `output=` in pointer mode (or any sidecar fallback) wrote only the sidecar
+  JSON next to the requested path and reported it in `EmbedResult.path`, even
+  though no media file existed there (#238).
 
 ### Internal
 
