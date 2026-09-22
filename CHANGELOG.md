@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Compatibility:** a manifest that recorded a fallback carries the new
   `failed_attempts` key and needs genblaze-core at this release or later to
   parse; older releases reject the unknown key (#239).
+- **Added** `ObjectStorageSink(..., allowed_roots=[...])` to opt a
+  provider-configured `output_dir` (e.g. `ElevenLabsTTSProvider(output_dir=
+  "work/generated")`) into local-file asset transfer. Previously a valid
+  generation written outside the built-in temp-dir allowlist failed only at
+  storage finalization, after provider quota was already spent. The default
+  stays temp-only — no behavior change without opting in — and each root is
+  resolved and validated at construction (rejects a missing directory or the
+  filesystem root) so a typo'd or overly broad root fails loudly immediately
+  rather than silently widening what's readable (#247).
 - **Added** an opt-in `min_inputs` constructor kwarg on `MockProvider`
   (`genblaze_core.testing`/`genblaze_core.mocks`). The mock previously
   accepted any step regardless of `step.inputs`, so a pipeline step built
@@ -111,6 +120,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
+- **Added** public ffmpeg helpers behind `FFmpegCompositor` / `FFmpegTransform`
+  for custom deterministic providers:
+  `from genblaze_core.providers import resolve_ffmpeg, resolve_input_path,
+  run_ffmpeg, get_output_path, populate_file_asset_integrity, local_file_url,
+  FFMPEG_TIMEOUT`.
+  Authors no longer re-implement the security-sensitive parts (the SSRF check
+  on `https://` inputs, presigned-URL redaction in logs and errors). As part of
+  the promotion, `get_output_path` now rejects an `ext` that is not
+  alphanumeric and a `step_id` containing `/`, `\`, `:` or NUL, so a crafted
+  value cannot write outside `output_dir`; it also accepts a `str` directory
+  and always returns an absolute path. `genblaze_core.providers._ffmpeg_utils`
+  still imports. See the "Deterministic ffmpeg provider" section of
+  `docs/guides/new-provider.md` (#195).
+- **Fixed** `SmartEmbedder`/`SidecarHandler` sidecar and pointer embed modes
+  now copy the source media to a distinct `output=` path (streamed, so it
+  shares MP4's 2 GB size ceiling rather than a smaller in-memory cap) before
+  writing the sidecar, matching the inline handlers' contract. Previously,
+  `output=` in pointer mode (or any sidecar fallback) wrote only the sidecar
+  JSON next to the requested path and reported it in `EmbedResult.path`, even
+  though no media file existed there (#238).
+
+### genblaze-s3
+
+- **Docs** clarified browser access to private B2 buckets: a durable URL
+  (`asset.url` under the default `URLPolicy.AUTO`) carries no credentials
+  and 401s in a browser by design — use `presigned_get`/`presigned_get_url`
+  instead. Added regression coverage proving those methods already emit
+  the path-style, SigV4-signed URL shape B2 requires (virtual-host-style
+  presigns 403 against B2) with no extra `boto3.Config`, since
+  `for_backblaze()`'s custom `endpoint_url` already selects that addressing
+  style by default; see `docs/features/object-storage.md` (#246).
 
 ### Internal
 

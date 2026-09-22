@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-27 -->
+<!-- last_verified: 2026-09-21 -->
 # Adding a New Provider
 
 Step-by-step guide for contributing a provider adapter to genblaze. This guide is the canonical contract — every section maps to a check the compliance harness or pipeline relies on.
@@ -217,6 +217,80 @@ class MyAsyncProvider(BaseProvider):
         return step
 ```
 
+### Deterministic ffmpeg provider
+
+Providers that transform media locally (mix, trim, freeze-frame) instead of calling an API should reuse the helpers behind `FFmpegCompositor` and `FFmpegTransform` rather than re-implementing them — they carry the input-path confinement, SSRF check, and presigned-URL redaction that hand-rolled versions tend to miss.
+
+```python
+"""Trim the first input to params["seconds"] with ffmpeg."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from genblaze_core.exceptions import ProviderError
+from genblaze_core.models.asset import Asset
+from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.models.step import Step
+from genblaze_core.providers import (
+    FFMPEG_TIMEOUT,
+    SyncProvider,
+    get_output_path,
+    local_file_url,
+    populate_file_asset_integrity,
+    resolve_ffmpeg,
+    resolve_input_path,
+    run_ffmpeg,
+)
+from genblaze_core.runnable.config import RunnableConfig
+
+
+class TrimProvider(SyncProvider):
+    name = "my-trim"
+
+    def __init__(self, output_dir: str | Path | None = None, timeout: float = FFMPEG_TIMEOUT):
+        super().__init__()
+        self._output_dir = Path(output_dir) if output_dir else None
+        self._timeout = timeout
+
+    def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
+        if not step.inputs:
+            raise ProviderError("TrimProvider needs one input asset",
+                                error_code=ProviderErrorCode.INVALID_INPUT)
+        seconds = float(step.params.get("seconds", 5))
+        ffmpeg = resolve_ffmpeg()  # raises INVALID_INPUT if not installed
+        roots = [self._output_dir] if self._output_dir else None
+        src = resolve_input_path(step.inputs[0].url, extra_roots=roots)
+        out = get_output_path(step.step_id, "mp4", self._output_dir)
+
+        # Confine what ffmpeg may open for this input: a playlist (HLS) input
+        # would otherwise make it fetch URLs/files past resolve_input_path's checks.
+        # When the input format is known, also pin the demuxer (e.g. "-f", "mp4").
+        protocols = "https,tls,tcp" if src.startswith("https://") else "file"
+
+        # One list element per argument — run_ffmpeg never uses a shell.
+        run_ffmpeg(
+            [ffmpeg, "-protocol_whitelist", protocols, "-i", src,
+             "-t", str(seconds), "-c", "copy", "-y", str(out)],
+            timeout=self._timeout,
+        )
+
+        asset = Asset(url=local_file_url(out.resolve()), media_type="video/mp4")
+        populate_file_asset_integrity(asset, out)  # sha256 + size_bytes
+        step.assets.append(asset)
+        return step
+```
+
+| Helper | Guarantees | Raises (`ProviderError`) |
+|---|---|---|
+| `resolve_ffmpeg(ffmpeg_path="ffmpeg")` | Absolute binary path via `shutil.which` | `INVALID_INPUT` if missing |
+| `resolve_input_path(url, *, extra_roots=None)` | `file://` only under temp dirs or `extra_roots`; `https://` URL-validated and SSRF-checked; result never starts with `-`. Checks the top-level URL only | `INVALID_INPUT` |
+| `run_ffmpeg(cmd, timeout=FFMPEG_TIMEOUT)` | List-args subprocess, no shell; presigned-URL query strings redacted from the DEBUG log and error text. stdout/stderr are buffered in memory — write to a file, never `pipe:1` | `TIMEOUT`, `UNKNOWN` |
+| `get_output_path(step_id, ext, output_dir)` | Absolute `output_dir/<step_id>.<ext>` (dir created) or a fresh temp file; `ext` must be alphanumeric, `step_id` free of `/`, `\`, `:` and NUL | `INVALID_INPUT` |
+| `populate_file_asset_integrity(asset, path)` | Streams the file to set `asset.sha256` and `asset.size_bytes` | `UNKNOWN` if unreadable |
+| `local_file_url(path)` | Cross-platform `file://` URL for an absolute path (see the note under §6) | — |
+
+Caveats: ffmpeg follows `https://` redirects and re-resolves DNS itself, after the SSRF check — pre-download untrusted URLs if that matters. Keep `output_dir` private to your process (not a shared world-writable directory): ffmpeg `-y` overwrites whatever sits at the output path. Build filter strings (`-vf`, `-af`, `drawtext`) from validated values only; list args prevent shell injection, not ffmpeg filter-syntax injection. Validate `params` in `normalize_params()` as usual.
+
 ## 4. Declare capabilities
 
 Override `get_capabilities()` to declare what your provider supports. This enables upfront validation in Pipeline before any API calls are made.
@@ -270,7 +344,7 @@ if step.inputs:
 
 This prevents SSRF — only `https://` and `file://` URLs are allowed.
 
-> **Local file output:** if your provider writes a local file and exposes it as a `file://` asset, build the URL with `genblaze_core._utils.local_file_url(path.resolve())` — never `f"file://{quote(str(path))}"`. `local_file_url()` uses `Path.as_uri()`, which yields the empty-netloc form (`file:///C:/...`) that parses correctly on every platform, including Windows; the hand-rolled `quote()` pattern percent-encodes the drive colon and broke every connector-produced asset on Windows (#164).
+> **Local file output:** if your provider writes a local file and exposes it as a `file://` asset, build the URL with `genblaze_core.providers.local_file_url(path.resolve())` — never `f"file://{quote(str(path))}"`. `local_file_url()` uses `Path.as_uri()`, which yields the empty-netloc form (`file:///C:/...`) that parses correctly on every platform, including Windows; the hand-rolled `quote()` pattern percent-encodes the drive colon and broke every connector-produced asset on Windows (#164).
 
 > **Shortcut:** if your provider uses a `ModelSpec` with `input_mapping` declared, call `self.prepare_payload(step, base_params=...)` instead. It runs the full ModelSpec pipeline (aliases → transformer → chain inputs → coercers → defaults → schemas → required → constraints → allowlist) **and** SSRF-validates every `step.inputs` URL automatically. See [`model-registry.md`](../features/model-registry.md) for the pipeline order.
 

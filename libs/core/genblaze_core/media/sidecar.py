@@ -4,16 +4,40 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError, ManifestError
-from genblaze_core.media.base import BaseMediaHandler, atomic_write
+from genblaze_core.media.base import MAX_MMAP_BYTES, BaseMediaHandler, atomic_write
 from genblaze_core.models.manifest import Manifest, parse_manifest
 
 if TYPE_CHECKING:
     from genblaze_core.models.policy import EmbedPolicy
+
+# Sidecar/pointer mode's output= copy is a byte-for-byte duplication, not a
+# transform, so — unlike the inline handlers, which need the full buffer in
+# memory to rewrite it — it doesn't need read_media_bytes()'s in-memory
+# buffer at all. Streaming keeps peak memory flat regardless of file size,
+# and the cap matches MAX_MMAP_BYTES (Mp4Handler's own ceiling) rather than
+# read_media_bytes()'s smaller MAX_FILE_BYTES, so this copy doesn't quietly
+# break Mp4Handler's documented ">500MB, use sidecar fallback" escape hatch
+# (#238).
+_MAX_COPY_BYTES = MAX_MMAP_BYTES
+_COPY_CHUNK_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+def _copy_media(source: Path, target: Path) -> None:
+    """Stream-copy source's bytes to target, atomically and without
+    materializing the whole file in memory."""
+    size = source.stat().st_size
+    if size > _MAX_COPY_BYTES:
+        raise EmbeddingError(
+            f"File too large for sidecar copy ({size} bytes, limit {_MAX_COPY_BYTES})"
+        )
+    with atomic_write(target) as tmp, open(source, "rb") as src_f, open(tmp, "wb") as dst_f:
+        shutil.copyfileobj(src_f, dst_f, length=_COPY_CHUNK_BYTES)
 
 
 class PointerSidecarError(EmbeddingError):
@@ -51,6 +75,18 @@ class SidecarHandler(BaseMediaHandler):
     ) -> Path:
         """Write manifest as a sidecar JSON file.
 
+        Sidecar mode never rewrites media bytes in place, but the media file
+        still must exist at the path callers get back. When ``output`` names
+        a location distinct from ``source``, the source bytes are copied
+        there first — mirroring how the inline handlers materialize
+        ``output`` — so the sidecar always sits next to real media, not a
+        pointer to nothing (#238). The copy and the sidecar write are each
+        individually atomic (temp file + rename), but not as a single
+        transaction: if the sidecar write fails after the copy succeeds, the
+        copied media is left in place without a sidecar. Callers always get
+        an exception in that case — never a false success — so this can't
+        reproduce #238's silent-lie failure mode, just a leftover file.
+
         Args:
             source: Path to the media file.
             manifest: The manifest to write.
@@ -61,13 +97,24 @@ class SidecarHandler(BaseMediaHandler):
             # _sidecar_path() coerces source to Path — kept inside the try
             # so a malformed source (e.g. embedded NUL) raises EmbeddingError
             # like any other bad-source failure, not a bare ValueError.
-            sidecar = self._sidecar_path(output or source)
-            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            source = Path(source)
+            target = Path(output) if output else source
+            # Validate/serialize before touching the filesystem — a bad
+            # policy (e.g. full-mode redaction) should fail without leaving
+            # a half-copied media file behind.
             json_str = (
                 manifest.to_embed_json(policy)
                 if policy is not None
                 else manifest.to_canonical_json()
             )
+            sidecar = self._sidecar_path(target)
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            # resolve() normalizes '..'/'.'  and relative-vs-absolute
+            # spellings of the same file without requiring `target` to
+            # exist yet, so a same-path output (the common case) is
+            # correctly treated as a no-op rather than a needless copy.
+            if target.resolve() != source.resolve():
+                _copy_media(source, target)
             with atomic_write(sidecar) as tmp:
                 tmp.write_bytes(json_str.encode("utf-8"))
             return sidecar
