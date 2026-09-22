@@ -16,7 +16,7 @@ from genblaze_core.models.enums import (
     StepStatus,
 )
 from genblaze_core.models.manifest import parse_manifest
-from genblaze_core.models.step import Step
+from genblaze_core.models.step import Step, StepAttempt
 from genblaze_core.pipeline import Pipeline, StepCache
 from genblaze_core.pipeline.result import PipelineResult
 from genblaze_core.providers.base import BaseProvider
@@ -1290,17 +1290,101 @@ def _assert_primary_attempt_recorded(result: PipelineResult) -> None:
     # Final step's own cost is the successful attempt only — failed-attempt
     # cost lives on the attempt, never folded into Step.cost_usd.
     assert step.cost_usd is None
-    # The ledger reaches the manifest and is covered by the hash.
+    # The attempt keeps the primary's own step id (what its tracer/progress
+    # events carried); the rescuing step gets a fresh one.
+    assert attempt.step_id is not None
+    assert attempt.step_id != step.step_id
     wire = result.manifest.to_canonical_json()
     assert "bad-model crashed mid-generation" in wire
     assert result.manifest.verify()
-    # Survives a wire round-trip: timestamps and enums re-hash identically.
+    # Survives a wire round-trip: timestamps and enums re-parse identically.
     reloaded = parse_manifest(json.loads(wire))
     assert reloaded.run.steps[0].failed_attempts == step.failed_attempts
     assert reloaded.verify()
-    # Tamper-evident: dropping the ledger breaks the hash.
-    reloaded.run.steps[0].failed_attempts = []
-    assert not reloaded.verify_hash()
+
+
+def _fallback_manifest_dict() -> dict:
+    provider = BilledModelErrorProvider(failing_models={"bad-model"})
+    result = (
+        Pipeline("fallback-ledger-hash")
+        .step(provider, model="bad-model", prompt="p", fallback_models=["good-model"])
+        .run(raise_on_failure=True)
+    )
+    return json.loads(result.manifest.to_canonical_json())
+
+
+def test_fallback_manifest_hash_is_deterministic_across_runs() -> None:
+    """Identical fallback runs hash identically: only model/provider/error_code
+    of each attempt enter the hash, never its timestamps, ids or cost (#239)."""
+    first, second = _fallback_manifest_dict(), _fallback_manifest_dict()
+    first_attempt = first["run"]["steps"][0]["failed_attempts"][0]
+    second_attempt = second["run"]["steps"][0]["failed_attempts"][0]
+    assert first_attempt["step_id"] != second_attempt["step_id"]
+    assert first["canonical_hash"] == second["canonical_hash"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("started_at", "2020-01-01T00:00:00Z"),
+        ("completed_at", "2020-01-01T00:00:00Z"),
+        ("error", "rewritten error text"),
+        ("cost_usd", 99.0),
+        ("retries", 7),
+        ("upstream_id", "pred-other"),
+        ("step_id", "00000000-0000-0000-0000-00000000abcd"),
+    ],
+)
+def test_attempt_operational_fields_are_not_hashed(field: str, value: Any) -> None:
+    data = _fallback_manifest_dict()
+    data["run"]["steps"][0]["failed_attempts"][0][field] = value
+    assert parse_manifest(data).verify_hash()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("model", "other-model"), ("provider", "other-provider"), ("error_code", "timeout")],
+)
+def test_attempt_provenance_fields_are_hashed(field: str, value: str) -> None:
+    """Which model/provider failed, and why, is integrity-checked."""
+    data = _fallback_manifest_dict()
+    data["run"]["steps"][0]["failed_attempts"][0][field] = value
+    assert not parse_manifest(data).verify_hash()
+
+
+def test_dropping_the_ledger_breaks_the_hash() -> None:
+    data = _fallback_manifest_dict()
+    data["run"]["steps"][0].pop("failed_attempts")
+    assert not parse_manifest(data).verify_hash()
+
+
+def test_naive_attempt_timestamp_in_foreign_manifest_does_not_crash_verify() -> None:
+    """A foreign manifest with a naive attempt timestamp must still yield a
+    verdict, not a TypeError from canonical normalization. Timestamps are not
+    hashed, so the otherwise-untouched payload still verifies."""
+    data = _fallback_manifest_dict()
+    data["run"]["steps"][0]["failed_attempts"][0]["started_at"] = "2026-01-01T00:00:00"
+    manifest = parse_manifest(data)
+    assert manifest.run.steps[0].failed_attempts[0].started_at.tzinfo is None
+    assert manifest.verify() is True
+
+
+def test_attempt_error_is_sanitized() -> None:
+    """from_step redacts credentials even when a provider returned a raw error."""
+    token = "sk-" + "a" * 32
+    failed = Step(provider="p", model="m", error=f"auth failed for {token}")
+    attempt = StepAttempt.from_step(failed)
+    assert token not in (attempt.error or "")
+    assert "[REDACTED]" in (attempt.error or "")
+
+
+def test_attempt_normalizes_out_of_contract_provider_values() -> None:
+    """A provider writing a negative cost or an oversized id must not abort
+    the fallback chain with a validation error."""
+    failed = Step(provider="p", model="m", cost_usd=-1.0, metadata={"upstream_id": "x" * 1000})
+    attempt = StepAttempt.from_step(failed)
+    assert attempt.cost_usd is None
+    assert attempt.upstream_id == "x" * 256
 
 
 def test_fallback_records_failed_primary_attempt() -> None:
@@ -1327,6 +1411,15 @@ async def test_fallback_records_failed_primary_attempt_async() -> None:
     _assert_primary_attempt_recorded(result)
 
 
+def _assert_every_prior_attempt_recorded(result: PipelineResult) -> None:
+    step = result.run.steps[0]
+    assert step.status == StepStatus.FAILED
+    assert step.model == "m3"
+    assert [a.model for a in step.failed_attempts] == ["m1", "m2"]
+    assert [a.upstream_id for a in step.failed_attempts] == ["pred-m1", "pred-m2"]
+    assert result.manifest.verify()
+
+
 def test_fallback_exhausted_records_every_prior_attempt() -> None:
     """When every model fails, the returned (last) failure lists all earlier
     failures oldest-first, so no attempt is lost on the failure path either."""
@@ -1336,12 +1429,35 @@ def test_fallback_exhausted_records_every_prior_attempt() -> None:
         .step(provider, model="m1", prompt="p", fallback_models=["m2", "m3"])
         .run(raise_on_failure=False)
     )
-    step = result.run.steps[0]
-    assert step.status == StepStatus.FAILED
-    assert step.model == "m3"
-    assert [a.model for a in step.failed_attempts] == ["m1", "m2"]
-    assert [a.upstream_id for a in step.failed_attempts] == ["pred-m1", "pred-m2"]
-    assert result.manifest.verify()
+    _assert_every_prior_attempt_recorded(result)
+
+
+@pytest.mark.asyncio
+async def test_fallback_exhausted_records_every_prior_attempt_async() -> None:
+    provider = BilledModelErrorProvider(failing_models={"m1", "m2", "m3"})
+    result = (
+        await Pipeline("fallback-ledger-exhausted-async")
+        .step(provider, model="m1", prompt="p", fallback_models=["m2", "m3"])
+        .arun(raise_on_failure=False)
+    )
+    _assert_every_prior_attempt_recorded(result)
+
+
+@pytest.mark.asyncio
+async def test_fallback_cache_strips_ledger_async(tmp_path: Path) -> None:
+    """Async path caches the rescued step without this run's ledger."""
+    cache = StepCache(tmp_path / "cache")
+    provider = BilledModelErrorProvider(failing_models={"bad-model"})
+    result = (
+        await Pipeline("fb-cache-async")
+        .cache(cache)
+        .step(provider, model="bad-model", prompt="p", fallback_models=["good-model"])
+        .arun()
+    )
+    assert len(result.run.steps[0].failed_attempts) == 1
+    cached = cache.get(Step(provider="billed-model-err", model="good-model", prompt="p"))
+    assert cached is not None
+    assert cached.failed_attempts == []
 
 
 def test_no_fallback_leaves_failed_attempts_empty() -> None:

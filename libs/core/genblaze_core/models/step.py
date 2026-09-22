@@ -34,6 +34,10 @@ _PROVIDERLESS_STEP_TYPES = frozenset({StepType.INGEST, StepType.IMPORT})
 # streaming consumers. The value is observability data, not retry authority.
 UPSTREAM_ID_KEY = "upstream_id"
 
+# Upstream ids are opaque provider job ids; the cap bounds what a hostile or
+# buggy provider can push into every manifest.
+_MAX_UPSTREAM_ID_LENGTH = 256
+
 
 class StepAttempt(BaseModel):
     """A failed provider invocation superseded by a later attempt of the same step.
@@ -43,27 +47,42 @@ class StepAttempt(BaseModel):
     replaced. Deliberately a narrow projection of Step: no prompt/params/inputs
     (identical to the final Step's) and no ``provider_payload`` (raw, unbounded,
     and the likeliest place for credentials to leak).
+
+    Only ``model``, ``provider`` and ``error_code`` enter the manifest's
+    canonical hash; the remaining fields are operational, like their Step
+    counterparts. Provider-level retries inside one attempt are counted in
+    ``retries``, not listed as separate attempts.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    step_id: str | None = Field(
+        default=None,
+        description="Step id this attempt ran under; correlates with its tracer and "
+        "progress events.",
+    )
     model: str = Field(description="Model identifier this attempt ran against.")
     provider: str | None = Field(default=None, description="Provider name.")
     error: str | None = Field(default=None, description="Sanitized error message.")
     error_code: ProviderErrorCode | None = Field(
-        default=None, description="Classified error code."
+        default=None, description="Normalized error code."
     )
     upstream_id: str | None = Field(
         default=None,
+        max_length=_MAX_UPSTREAM_ID_LENGTH,
         description="Provider prediction/job id, when the provider accepted the job "
         "before failing. None means it failed before submit returned.",
     )
     cost_usd: float | None = Field(
         default=None,
+        ge=0,
         description="Cost the provider reported for this attempt. None means unknown, "
-        "not free — a failed job may still have been billed.",
+        "not free — a failed job may still have been billed. Usually None: "
+        "providers price successful outputs only.",
     )
-    retries: int = Field(default=0, description="Provider-level retries within this attempt.")
+    retries: int = Field(
+        default=0, ge=0, description="Provider-level retries within this attempt."
+    )
     started_at: datetime | None = Field(default=None, description="Attempt start timestamp.")
     completed_at: datetime | None = Field(
         default=None, description="Attempt completion timestamp."
@@ -74,16 +93,21 @@ class StepAttempt(BaseModel):
         """Project a failed Step onto the attempt record.
 
         The error is sanitized here rather than trusted from the caller: this
-        record is written to the manifest verbatim.
+        record is written to the manifest verbatim. Out-of-contract provider
+        values are normalized rather than raised — a validation error here
+        would abort the fallback chain the record exists to describe.
         """
+        upstream_id = step.metadata.get(UPSTREAM_ID_KEY)
+        cost = step.cost_usd
         return cls(
+            step_id=step.step_id,
             model=step.model,
             provider=step.provider,
             error=sanitize_error(step.error) if step.error else step.error,
             error_code=step.error_code,
-            upstream_id=step.metadata.get(UPSTREAM_ID_KEY),
-            cost_usd=step.cost_usd,
-            retries=step.retries,
+            upstream_id=str(upstream_id)[:_MAX_UPSTREAM_ID_LENGTH] if upstream_id else None,
+            cost_usd=cost if cost is None or cost >= 0 else None,
+            retries=max(step.retries, 0),
             started_at=step.started_at,
             completed_at=step.completed_at,
         )

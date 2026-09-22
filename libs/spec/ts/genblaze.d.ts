@@ -172,7 +172,7 @@ export interface Step {
     [k: string]: unknown;
   };
   /**
-   * Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty; included in the canonical hash when present.
+   * Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty. Only each attempt's model, provider and error_code enter the canonical hash. Manifests carrying this key need a reader that knows it (genblaze-core with #239 or later).
    */
   failed_attempts?: StepAttempt[];
 }
@@ -273,9 +273,13 @@ export interface Asset {
   };
 }
 /**
- * A failed provider invocation superseded by a later attempt of the same step.
+ * A failed provider invocation superseded by a later attempt of the same step. Provider-level retries within one attempt are counted in retries, not listed separately.
  */
 export interface StepAttempt {
+  /**
+   * Step id this attempt ran under; correlates with its tracer and progress events.
+   */
+  step_id?: string | null;
   /**
    * Model identifier this attempt ran against.
    */
@@ -306,7 +310,7 @@ export interface StepAttempt {
    */
   upstream_id?: string | null;
   /**
-   * Cost the provider reported for this attempt. Null means unknown, not free: a failed job may still have been billed.
+   * Cost the provider reported for this attempt. Null means unknown, not free: a failed job may still have been billed. Usually null: providers price successful outputs only.
    */
   cost_usd?: number | null;
   /**

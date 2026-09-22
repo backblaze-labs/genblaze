@@ -137,13 +137,19 @@
     "failed_attempts": {
       "type": "array",
       "default": [],
-      "description": "Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty; included in the canonical hash when present.",
+      "description": "Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty. Only each attempt's model, provider and error_code enter the canonical hash. Manifests carrying this key need a reader that knows it (genblaze-core with #239 or later).",
       "items": {
         "title": "StepAttempt",
-        "description": "A failed provider invocation superseded by a later attempt of the same step.",
+        "description": "A failed provider invocation superseded by a later attempt of the same step. Provider-level retries within one attempt are counted in retries, not listed separately.",
         "type": "object",
         "required": ["model"],
         "properties": {
+          "step_id": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "default": null,
+            "description": "Step id this attempt ran under; correlates with its tracer and progress events."
+          },
           "model": {
             "type": "string",
             "description": "Model identifier this attempt ran against."
@@ -166,6 +172,7 @@
           },
           "upstream_id": {
             "type": ["string", "null"],
+            "maxLength": 256,
             "default": null,
             "description": "Provider prediction/job id, when the provider accepted the job before failing. Null means it failed before submit returned."
           },
@@ -173,7 +180,7 @@
             "type": ["number", "null"],
             "minimum": 0,
             "default": null,
-            "description": "Cost the provider reported for this attempt. Null means unknown, not free: a failed job may still have been billed."
+            "description": "Cost the provider reported for this attempt. Null means unknown, not free: a failed job may still have been billed. Usually null: providers price successful outputs only."
           },
           "retries": {
             "type": "integer",
