@@ -21,7 +21,8 @@ the configured queue host, which is the only host that ever receives the key.
 The connector talks to that HTTP API with httpx instead of depending on the
 ``fal-client`` SDK. Submission is single-attempt: every submit failure is
 wrapped in ``ProviderError``, so core's phase retry never repeats the POST,
-because an ambiguous failure could still be a billable generation. Status and
+because an ambiguous failure could still be a billable generation. Even
+pre-response connect failures are not retried, which keeps the rule simple. Status and
 result GETs use the provider's ``RetryPolicy`` (bounded backoff, honoring
 ``Retry-After`` and the step deadline). Step-level ``config["max_retries"]`` is
 a caller opt-in that re-runs a failed submit; leave it at 0 for strict
@@ -81,7 +82,6 @@ _TERMINAL_ERROR_CODES = frozenset(
     {
         ProviderErrorCode.CONTENT_POLICY,
         ProviderErrorCode.INVALID_INPUT,
-        ProviderErrorCode.AUTH_FAILURE,
         ProviderErrorCode.MODEL_ERROR,
     }
 )
@@ -146,6 +146,17 @@ _FAL_FAMILIES = (
     ),
 )
 _FAL_FALLBACK = ModelSpec(model_id="*", input_mapping=_FAL_INPUT_MAPPING)
+
+
+def _origin(parsed: Any) -> str | None:
+    """Normalized ``https://host[:port]`` origin of a parsed URL, or None if malformed."""
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if not parsed.hostname or parsed.username is not None:
+        return None
+    return f"https://{parsed.hostname}" + (f":{port}" if port not in (None, 443) else "")
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:
@@ -270,14 +281,19 @@ class FalProvider(BaseProvider):
         probe_cache_max_entries: int | None = None,
     ) -> None:
         parsed = urlparse(base_url)
+        try:
+            port = parsed.port
+        except ValueError:
+            port = -1
         if (
             parsed.scheme != "https"
             or not parsed.hostname
             or parsed.path.strip("/")
-            or parsed.query
-            or parsed.fragment
+            or any(c in base_url for c in "?#;")
             or parsed.username is not None
             or parsed.password is not None
+            or port == -1
+            or port == 0
         ):
             raise ValueError(
                 f"base_url must be a bare https:// origin (no path, query, fragment or "
@@ -291,7 +307,10 @@ class FalProvider(BaseProvider):
         )
         self.poll_interval = poll_interval
         self._api_key = api_key or os.getenv("FAL_KEY")
-        self._base_url = base_url.rstrip("/")
+        # Normalized origin: lowercase host, default port elided, so it compares
+        # equal to the origins fal puts in response_url.
+        port_suffix = f":{port}" if port not in (None, 443) else ""
+        self._base_url = f"https://{parsed.hostname}{port_suffix}"
         self._owns_client = http_client is None
         self._client = http_client or httpx.Client(timeout=http_timeout)
 
@@ -334,7 +353,7 @@ class FalProvider(BaseProvider):
             path = parsed.path.strip("/")
             if (
                 parsed.scheme == "https"
-                and f"https://{parsed.netloc}" == self._base_url
+                and _origin(parsed) == self._base_url
                 and not (parsed.query or parsed.fragment)
                 and _QUEUE_PATH_RE.fullmatch(path)
                 and path.endswith(f"/requests/{request_id}")
@@ -421,6 +440,14 @@ class FalProvider(BaseProvider):
         url = self._request_url(prediction_id)
         request_id = str(prediction_id).rsplit("/", 1)[-1]
         status = self._get_cached_poll_result(prediction_id)
+        if status is None:
+            # Cold cache (fetch-phase retry, concurrent resume, or a direct
+            # fetch): re-read status so a terminal error is still classified
+            # from it rather than from a retried read of the stored failure.
+            try:
+                status = self._get(f"{url}/status")
+            except Exception as exc:
+                raise self._wrap("poll", exc) from exc
         status = status if isinstance(status, dict) else {}
 
         # A failed request reports its error on the status body; classify it

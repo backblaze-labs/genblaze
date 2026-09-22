@@ -316,19 +316,36 @@ def test_key_read_from_fal_key_env(monkeypatch):
     ],
 )
 def test_untrusted_queue_urls_are_never_followed(overrides):
-    hosts: list[str] = []
-    provider = _provider(_lifecycle_handler(_IMAGE_RESULT, seen=None, submit_overrides=overrides))
-    original = provider._client.send
-
-    def recording_send(request, **kwargs):
-        hosts.append(request.url.host)
-        return original(request, **kwargs)
-
-    provider._client.send = recording_send  # type: ignore[method-assign]
-    result = provider.invoke(_step())
+    seen: list[httpx.Request] = []
+    handler = _lifecycle_handler(_IMAGE_RESULT, seen=seen, submit_overrides=overrides)
+    result = _provider(handler).invoke(_step())
     assert result.status == StepStatus.SUCCEEDED
-    assert set(hosts) == {"queue.fal.run"}
-    assert result.provider_payload["fal"]["request_id"] == _REQ
+    # Untrusted URLs are ignored: the derived queue path on the queue host is used.
+    assert [(r.method, str(r.url)) for r in seen] == [
+        ("POST", f"{_QUEUE}/fal-ai/flux/schnell"),
+        ("GET", f"{_QUEUE}/{_PID}/status"),
+        ("GET", f"{_QUEUE}/{_PID}"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("response_url", "expected"),
+    [
+        # Well-formed response_url wins over derivation (here: a sub-path app).
+        (f"{_QUEUE}/fal-ai/flux/dev/requests/{_REQ}", f"fal-ai/flux/dev/requests/{_REQ}"),
+        (
+            f"https://QUEUE.fal.run:443/fal-ai/flux/dev/requests/{_REQ}",
+            f"fal-ai/flux/dev/requests/{_REQ}",
+        ),
+        # The `.../response` shape is not a request path: fall back to derivation.
+        (f"{_QUEUE}/fal-ai/flux/dev/requests/{_REQ}/response", _PID),
+    ],
+)
+def test_response_url_is_preferred_when_well_formed(response_url, expected):
+    def handler(request):
+        return httpx.Response(200, json={"request_id": _REQ, "response_url": response_url})
+
+    assert _provider(handler).submit(_step()) == expected
 
 
 # --- poll -----------------------------------------------------------------
@@ -658,6 +675,10 @@ def test_map_fal_error(exc, code):
         "https://user:pw@queue.fal.run",
         "https://queue.fal.run/prefix",
         "queue.fal.run",
+        "https://queue.fal.run/?",
+        "https://queue.fal.run/;x",
+        "https://queue.fal.run:abc",
+        "https://queue.fal.run:0",
     ],
 )
 def test_rejects_unsafe_base_url(base_url):
@@ -749,3 +770,51 @@ class TestFalAudioCompliance(TestFalCompliance):
 
     def make_step(self):
         return _step(model="fal-ai/stable-audio", modality=Modality.AUDIO)
+
+
+def test_status_error_with_cold_cache_never_reads_the_result():
+    seen: list[httpx.Request] = []
+    handler = _lifecycle_handler(
+        _IMAGE_RESULT, seen=seen, status_extra={"error": "x", "error_type": "no_media_generated"}
+    )
+    provider = _provider(handler)
+    with pytest.raises(ProviderError) as info:
+        provider.fetch_output(_PID, _step())  # no poll(): cache is cold
+    assert info.value.error_code == ProviderErrorCode.MODEL_ERROR
+    assert [str(r.url) for r in seen] == [f"{_QUEUE}/{_PID}/status"]
+
+
+def test_fetch_retry_keeps_inference_time():
+    result_calls = 0
+
+    def handler(request):
+        nonlocal result_calls
+        if request.method == "POST":
+            return httpx.Response(200, json=_submit_body())
+        if request.url.path.endswith("/status"):
+            body = {"status": "COMPLETED", "metrics": {"inference_time": 2.0}}
+            return httpx.Response(200, json=body)
+        result_calls += 1
+        if result_calls == 1:
+            return httpx.Response(502, json={"detail": "bad gateway"})
+        return httpx.Response(200, json=_IMAGE_RESULT)
+
+    result = _provider(handler, retry_policy=_FAST_RETRY).invoke(_step())
+    assert result.status == StepStatus.SUCCEEDED
+    assert result_calls == 2
+    assert result.provider_payload["fal"]["inference_time"] == 2.0
+
+
+def test_async_invoke_submits_once_on_ambiguous_failure():
+    import asyncio
+
+    attempts = 0
+
+    def handler(request):
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("ambiguous", request=request)
+
+    result = asyncio.run(_provider(handler).ainvoke(_step()))
+    assert result.status == StepStatus.FAILED
+    assert attempts == 1

@@ -55,5 +55,5 @@ the `fal-client` SDK as a dependency.
 
 ## Verification
 
-- Connector tests: 129 passed, 4 skipped (fully mocked, via `httpx.MockTransport`).
+- Connector tests: 139 passed, 4 skipped (fully mocked, via `httpx.MockTransport`).
 - Full `make test`, `make lint`, `make typecheck`, and connector mypy: see PR.

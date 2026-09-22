@@ -66,8 +66,9 @@ Chained inputs are routed to fal's conventional `image_url`, `video_url`, and
 
 ## Reliability
 
-Submission is never retried by the provider's `RetryPolicy`, because an
-ambiguous failure can still represent a billable generation. Status and result
+Submission is never retried by the provider's `RetryPolicy`, not even after a
+connect failure, because an ambiguous failure can still represent a billable
+generation. Status and result
 GETs use that policy (bounded backoff that honors `Retry-After` and the step
 deadline) for timeouts, connection errors, 429s, and 5xx responses. Setting
 step-level `config["max_retries"]` opts in to re-running a failed submit, so
