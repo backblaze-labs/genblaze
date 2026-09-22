@@ -19,6 +19,7 @@
   - `genblaze-nvidia` — NVIDIA NIM / build.nvidia.com (video, image, audio, chat)
   - `genblaze-assemblyai` — AssemblyAI (speech-to-text / transcription → TEXT output)
   - `genblaze-atlascloud` — Atlas Cloud (asynchronous image and video generation)
+  - `genblaze-fal` — fal.ai (image, video, audio via the fal queue API)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
@@ -72,6 +73,7 @@
 - **GMICloud API** — Video, image, audio via request queue (`genblaze-gmicloud`)
 - **AssemblyAI API** — Speech-to-text / transcription → TEXT transcript (`genblaze-assemblyai`)
 - **Atlas Cloud API** — Asynchronous image and video generation (`genblaze-atlascloud`)
+- **fal.ai queue API** — Image, video, and audio generation across the fal catalog (`genblaze-fal`)
 - All accessed via lazy SDK imports — no runtime dependency unless the connector is used
 
 ## Trust Boundaries

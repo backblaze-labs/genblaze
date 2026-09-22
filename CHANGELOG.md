@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Added** an `atlascloud` extra and included Atlas Cloud in the `image`,
   `video`, and `all` bundles.
+- **Added** a `fal` extra and included fal.ai in the `image`, `video`,
+  `audio`, and `all` bundles.
 
 ### genblaze-atlascloud
 
@@ -18,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation. Submission is single-attempt to avoid duplicate billable jobs;
   prediction GET requests use bounded transient retries, and URL-bearing model
   inputs are validated before being forwarded.
+
+### genblaze-fal
+
+- **Added** an opt-in fal.ai connector that reaches fal's image, video, and
+  audio catalog through its queue API over plain HTTP. Ships starter defaults
+  for FLUX, Wan video, and Stable Audio; any other endpoint id passes through.
+  Submission is single-attempt to avoid duplicate billable jobs, and status
+  and result GETs use the provider's bounded `RetryPolicy`. URL-bearing
+  inputs are validated before being forwarded, `FAL_KEY` is sent only to the
+  queue host, and checkpointed request ids can be resumed from any process
+  (#267).
 
 ### genblaze-google
 

@@ -50,6 +50,7 @@ assemblyai = ["genblaze-assemblyai>=0.3.2,<0.4"]
 langsmith = ["genblaze-langsmith>=0.3.2,<0.4"]
 nvidia = ["genblaze-nvidia>=0.3.3,<0.4"]
 atlascloud = ["genblaze-atlascloud>=0.1.0,<0.2"]
+fal = ["genblaze-fal>=0.1.0,<0.2"]
 
 # Re-exposes genblaze-core's own `parquet` extra (ParquetSink) so
 # `pip install "genblaze[parquet]"` -- the exact incantation
@@ -65,6 +66,7 @@ parquet = ["genblaze-core[parquet]>=0.3.8,<0.4"]
 # Curated bundles
 video = [
     "genblaze-atlascloud>=0.1.0,<0.2",
+    "genblaze-fal>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.5,<0.4",
     "genblaze-google>=0.3.4,<0.4",
     "genblaze-runway>=0.3.3,<0.4",
@@ -74,12 +76,14 @@ video = [
 ]
 image = [
     "genblaze-atlascloud>=0.1.0,<0.2",
+    "genblaze-fal>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.5,<0.4",
     "genblaze-openai>=0.3.4,<0.4",
     "genblaze-google>=0.3.4,<0.4",
     "genblaze-nvidia>=0.3.3,<0.4",
 ]
 audio = [
+    "genblaze-fal>=0.1.0,<0.2",
     "genblaze-elevenlabs>=0.3.3,<0.4",
     "genblaze-lmnt>=0.3.3,<0.4",
     "genblaze-hume>=0.3.3,<0.4",
@@ -89,6 +93,7 @@ audio = [
 ]
 all = [
     "genblaze-atlascloud>=0.1.0,<0.2",
+    "genblaze-fal>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.5,<0.4",
     "genblaze-openai>=0.3.4,<0.4",
     "genblaze-google>=0.3.4,<0.4",
