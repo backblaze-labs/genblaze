@@ -24,11 +24,6 @@ keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "
 
 dependencies = [
     "pydantic>=2.0,<3",
-    # <12: bounded-major convention (cf. pydantic<3, urllib3<3 below) — caps
-    # below the next major past the currently-verified 11.x release so a
-    # future Pillow major can't silently land breaking changes at resolve
-    # time (#61).
-    "pillow>=10.0,<13",
     # urllib3 is imported unguarded at module load in storage/transfer.py
     # (the shared PoolManager backing AssetTransfer's presigned-URL streaming),
     # and storage/__init__ imports transfer eagerly — so `import
@@ -100,6 +95,9 @@ dev = [
     "httpx>=0.24,<1",
     "opentelemetry-api>=1.20,<2",
     "google-re2>=1.0,<2",
+    # Test-only since #249: JPEG/WebP embedding splices XMP bytes directly, so
+    # Pillow is used only to build image fixtures. <13: bounded-major (#61).
+    "pillow>=10.0,<13",
 ]
 
 [tool.hatch.build.targets.wheel]

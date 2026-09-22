@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Changed** `genblaze-core` no longer depends on Pillow at runtime, since
+  JPEG/WebP embedding no longer decodes images. If your code imports `PIL`,
+  declare `pillow` as your own dependency (#249).
 - **Fixed** `PromptTemplate("A {animal}")` now accepts the template
   positionally instead of raising `TypeError: BaseModel.__init__() takes 1
   positional argument but 2 were given`. The positional spelling is the one
