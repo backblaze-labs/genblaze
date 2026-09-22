@@ -140,6 +140,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application/octet-stream` instead of the source's real type. The suffix
   is now derived from the input `Asset.media_type` (falling back to `.png`)
   (#253).
+- **Fixed** `DalleProvider.generate()` dropped the `usage` block on
+  `gpt-image-*` responses, leaving `Step.provider_payload` empty and no way
+  to reconcile actual token-based cost against the registry's pre-flight
+  estimate. Input/output/total token counts are now copied into
+  `Step.provider_payload["usage"]` before pricing runs, so a user-registered
+  usage-based pricing recipe can read them; `dall-e-2`/`dall-e-3` responses
+  carry no `usage` block and are unaffected (#240).
 
 ## [0.7.0] - 2026-07-28
 
