@@ -337,6 +337,44 @@ def _suffix_for_media_type(media_type: str | None) -> str:
     return _MEDIA_TYPE_TO_EXT.get((media_type or "").lower(), ".png")
 
 
+# gpt-image's Usage model is 2 levels deep (input_tokens_details /
+# output_tokens_details). This bounds recursion well above that so a
+# malformed or adversarial response can't provoke a stack overflow —
+# mirrors the depth guard genblaze_core.canonical._normalize.normalize()
+# uses for the same reason.
+_MAX_USAGE_DEPTH = 10
+
+
+def _jsonable_usage(value: Any, _depth: int = 0) -> Any:
+    """Recursively collapse an SDK usage value into JSON-safe plain types.
+
+    gpt-image-* responses carry a pydantic ``Usage`` model with nested
+    submodels for input/output token breakdowns (``input_tokens_details``,
+    ``output_tokens_details``). This also accepts an already-plain dict
+    (e.g. a replayed fixture) and lightweight test doubles like
+    ``SimpleNamespace`` that only set the fields they need, so
+    ``Step.provider_payload["usage"]`` is always a plain, serializable dict
+    regardless of how the caller shaped the response (#240).
+
+    ``_depth`` is an internal recursion counter — callers should never pass
+    it explicitly. Past ``_MAX_USAGE_DEPTH`` this gives up normalizing
+    further and falls back to ``repr()`` rather than raising, since usage
+    capture is best-effort enrichment and must never fail the image
+    generation it's attached to.
+    """
+    if _depth >= _MAX_USAGE_DEPTH:
+        return repr(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {k: _jsonable_usage(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_usage(v, _depth + 1) for v in value]
+    if hasattr(value, "__dict__"):
+        return {k: _jsonable_usage(v, _depth + 1) for k, v in vars(value).items()}
+    return value
+
+
 def _download_https_to_temp(url: str, timeout: float, suffix: str = ".png") -> Path:
     """Download an https:// URL to a temp file. SSRF-checked with DNS pinning.
 
@@ -613,7 +651,14 @@ class DalleProvider(SyncProvider):
         return tmp, tmp
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
-        """Generate or edit image(s). Routes by ``step.inputs`` presence."""
+        """Generate or edit image(s). Routes by ``step.inputs`` presence.
+
+        gpt-image-* responses report token usage (input/output/total, plus
+        nested per-type breakdowns); the full block is copied verbatim into
+        ``step.provider_payload["usage"]`` for cost reconciliation against the
+        registry's pre-flight estimate. dall-e-2/3 responses carry no
+        ``usage`` block, so the key is simply absent for those models.
+        """
         client = self._get_client()
         spec = _MODELS.get(step.model, _DEFAULT_SPEC)
         _validate_params(step, spec)
@@ -680,6 +725,14 @@ class DalleProvider(SyncProvider):
             step.assets.append(
                 Asset(url=uri, media_type=media_type, sha256=sha256, size_bytes=size)
             )
+
+        # gpt-image-* reports token usage for cost reconciliation; dall-e-2/3
+        # responses have no ``usage`` block. Set before pricing so a
+        # user-registered usage-based recipe (docs/reference/pricing-recipes.md)
+        # can read it via PricingContext.provider_payload.
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            step.provider_payload["usage"] = _jsonable_usage(usage)
 
         self._apply_registry_pricing(step)
         return step

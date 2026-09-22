@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-15 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -168,13 +168,18 @@ from genblaze_core.testing import MockProvider
 from genblaze_core.models.enums import ProviderErrorCode
 
 provider = MockProvider(should_fail=True, error_code=ProviderErrorCode.RATE_LIMIT)
+
+# Opt-in strict input validation — catches steps built without
+# external_inputs= that a real provider would reject (e.g. an
+# image-to-video model called with no input image attached)
+strict = MockProvider(min_inputs=1)
 ```
 
-See `MockProvider` for full options: `assets`, `latency`, `cost_usd`, `should_fail`, `error_code`.
+See `MockProvider` for full options: `assets`, `latency`, `cost_usd`, `should_fail`, `error_code`, `min_inputs`.
 
 ## Verification
 - Test files: `libs/core/tests/unit/test_pipeline.py`, `libs/core/tests/unit/test_mock_providers.py`, `libs/core/tests/integration/test_pipeline_embed_roundtrip.py`
-- Required cases: single step, multi-step, tuple unpacking, cache hit, cache miss, cache clear, arun, arun with cache, fail_fast, empty pipeline guard, embed roundtrip
+- Required cases: single step, multi-step, tuple unpacking, cache hit, cache miss, cache clear, arun, arun with cache, fail_fast, empty pipeline guard, embed roundtrip, MockProvider min_inputs validation
 - Quick verify: `cd libs/core && pytest tests/unit/test_pipeline.py -v`
 - Full verify: `make test`
 - Pass criteria: all pipeline tests green, PipelineResult fields populated

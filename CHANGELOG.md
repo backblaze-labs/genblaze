@@ -42,6 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Added** `ObjectStorageSink(..., allowed_roots=[...])` to opt a
+  provider-configured `output_dir` (e.g. `ElevenLabsTTSProvider(output_dir=
+  "work/generated")`) into local-file asset transfer. Previously a valid
+  generation written outside the built-in temp-dir allowlist failed only at
+  storage finalization, after provider quota was already spent. The default
+  stays temp-only — no behavior change without opting in — and each root is
+  resolved and validated at construction (rejects a missing directory or the
+  filesystem root) so a typo'd or overly broad root fails loudly immediately
+  rather than silently widening what's readable (#247).
+- **Added** an opt-in `min_inputs` constructor kwarg on `MockProvider`
+  (`genblaze_core.testing`/`genblaze_core.mocks`). The mock previously
+  accepted any step regardless of `step.inputs`, so a pipeline step built
+  without `external_inputs=` — input media a real provider would reject —
+  passed a full contract-test suite and only failed on the first live run.
+  `MockProvider(min_inputs=1)` now raises `ProviderError(INVALID_INPUT)` when
+  `step.inputs` has fewer than the configured minimum. Default is `0`,
+  preserving existing behavior for callers who don't opt in (#174).
 - **Fixed** `PromptTemplate("A {animal}")` now accepts the template
   positionally instead of raising `TypeError: BaseModel.__init__() takes 1
   positional argument but 2 were given`. The positional spelling is the one
@@ -103,6 +120,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and always returns an absolute path. `genblaze_core.providers._ffmpeg_utils`
   still imports. See the "Deterministic ffmpeg provider" section of
   `docs/guides/new-provider.md` (#195).
+- **Fixed** `SmartEmbedder`/`SidecarHandler` sidecar and pointer embed modes
+  now copy the source media to a distinct `output=` path (streamed, so it
+  shares MP4's 2 GB size ceiling rather than a smaller in-memory cap) before
+  writing the sidecar, matching the inline handlers' contract. Previously,
+  `output=` in pointer mode (or any sidecar fallback) wrote only the sidecar
+  JSON next to the requested path and reported it in `EmbedResult.path`, even
+  though no media file existed there (#238).
+
+### genblaze-s3
+
+- **Docs** clarified browser access to private B2 buckets: a durable URL
+  (`asset.url` under the default `URLPolicy.AUTO`) carries no credentials
+  and 401s in a browser by design — use `presigned_get`/`presigned_get_url`
+  instead. Added regression coverage proving those methods already emit
+  the path-style, SigV4-signed URL shape B2 requires (virtual-host-style
+  presigns 403 against B2) with no extra `boto3.Config`, since
+  `for_backblaze()`'s custom `endpoint_url` already selects that addressing
+  style by default; see `docs/features/object-storage.md` (#246).
 
 ### Internal
 
@@ -153,6 +188,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application/octet-stream` instead of the source's real type. The suffix
   is now derived from the input `Asset.media_type` (falling back to `.png`)
   (#253).
+- **Fixed** `DalleProvider.generate()` dropped the `usage` block on
+  `gpt-image-*` responses, leaving `Step.provider_payload` empty and no way
+  to reconcile actual token-based cost against the registry's pre-flight
+  estimate. Input/output/total token counts are now copied into
+  `Step.provider_payload["usage"]` before pricing runs, so a user-registered
+  usage-based pricing recipe can read them; `dall-e-2`/`dall-e-3` responses
+  carry no `usage` block and are unaffected (#240).
 
 ## [0.7.0] - 2026-07-28
 
