@@ -44,12 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fixed** a step rescued by `fallback_models` no longer erases the failed
   primary from provenance. Each superseded failure is now recorded, oldest
-  first, in the new `Step.failed_attempts` list (`StepAttempt`: model,
-  provider, sanitized error, error code, upstream prediction id, cost,
+  first, in the new `Step.failed_attempts` list (`StepAttempt`: step id,
+  model, provider, sanitized error, error code, upstream prediction id, cost,
   retries, timestamps), on both `run()` and `arun()`. The field is omitted
-  from serialization when empty, so existing manifests keep their
-  `canonical_hash` and stay readable by older releases. Failed-attempt cost
-  is reported per attempt and is not added to `Step.cost_usd` (#239).
+  from serialization when empty, so manifests without a fallback keep their
+  `canonical_hash` byte-for-byte. Only each attempt's `model`, `provider` and
+  `error_code` enter the hash, so identical runs still hash identically.
+  Failed-attempt cost is reported per attempt (usually `None`: providers
+  price successes only) and is not added to `Step.cost_usd`.
+  **Compatibility:** a manifest that recorded a fallback carries the new
+  `failed_attempts` key and needs genblaze-core at this release or later to
+  parse; older releases reject the unknown key (#239).
+- **Added** an opt-in `min_inputs` constructor kwarg on `MockProvider`
+  (`genblaze_core.testing`/`genblaze_core.mocks`). The mock previously
+  accepted any step regardless of `step.inputs`, so a pipeline step built
+  without `external_inputs=` — input media a real provider would reject —
+  passed a full contract-test suite and only failed on the first live run.
+  `MockProvider(min_inputs=1)` now raises `ProviderError(INVALID_INPUT)` when
+  `step.inputs` has fewer than the configured minimum. Default is `0`,
+  preserving existing behavior for callers who don't opt in (#174).
 - **Fixed** `PromptTemplate("A {animal}")` now accepts the template
   positionally instead of raising `TypeError: BaseModel.__init__() takes 1
   positional argument but 2 were given`. The positional spelling is the one
@@ -148,6 +161,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application/octet-stream` instead of the source's real type. The suffix
   is now derived from the input `Asset.media_type` (falling back to `.png`)
   (#253).
+- **Fixed** `DalleProvider.generate()` dropped the `usage` block on
+  `gpt-image-*` responses, leaving `Step.provider_payload` empty and no way
+  to reconcile actual token-based cost against the registry's pre-flight
+  estimate. Input/output/total token counts are now copied into
+  `Step.provider_payload["usage"]` before pricing runs, so a user-registered
+  usage-based pricing recipe can read them; `dall-e-2`/`dall-e-3` responses
+  carry no `usage` block and are unaffected (#240).
 
 ## [0.7.0] - 2026-07-28
 
