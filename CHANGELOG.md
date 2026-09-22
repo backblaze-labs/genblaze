@@ -90,8 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
-- **Added** the ffmpeg helpers behind `FFmpegCompositor` / `FFmpegTransform`
-  are now public for custom deterministic providers:
+- **Added** public ffmpeg helpers behind `FFmpegCompositor` / `FFmpegTransform`
+  for custom deterministic providers:
   `from genblaze_core.providers import resolve_ffmpeg, resolve_input_path,
   run_ffmpeg, get_output_path, populate_file_asset_integrity, local_file_url,
   FFMPEG_TIMEOUT`.
