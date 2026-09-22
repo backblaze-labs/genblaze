@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-openai"
-version = "0.3.4"
+version = "0.3.5"
 description = "OpenAI provider adapters for genblaze (Sora, DALL-E, TTS)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -25,8 +25,9 @@ dependencies = [
     # >=0.3.8: this connector imports call_with_rate_limit_retry, added to
     # genblaze-core in 0.3.8 -- a >=0.3.7 floor would let pip resolve this
     # package against the still-published 0.3.7 core and fail with
-    # ImportError at `import genblaze_openai`.
-    "genblaze-core>=0.3.8,<0.4",
+    # ImportError at `import genblaze_openai`. >=0.3.9: chat(retry_on_rate_limit=True)
+    # retries 5xx only with 0.3.9's call_with_rate_limit_retry (#264).
+    "genblaze-core>=0.3.9,<0.4",
     # <4: bounded-major convention (#61). The documented floor (1.0) predates
     # the SDK's current major line; openai resolves to 3.x today (verified
     # against 3.17.0), so the cap sits one major past what's verified.

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-22
+
+Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
+fal.ai), experimental Mode 2 Ed25519 manifest signing, and a failed-attempt
+ledger that keeps fallback history in the manifest. JPEG and WebP embedding
+now splices XMP metadata byte-for-byte, so content binding holds for every
+image format. `chat()` opt-in backoff now also covers transient 5xx
+responses, `ObjectStorageSink` can upload from a provider's `output_dir`, the
+ffmpeg helpers are public for custom deterministic providers, and
+`MockProvider` gains opt-in input validation.
+
+Upgrade notes: `genblaze-core` no longer installs Pillow; declare `pillow`
+yourself if you import `PIL`. Manifests that recorded a fallback carry
+`failed_attempts` and need a reader at `genblaze-core` 0.3.9 or later.
+
+This heading is the release **wave** name and the git tag (`v0.8.0`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.6`). Wave tags and the umbrella's PyPI
+versions are separate sequences that happen to look alike — don't pin
+`genblaze==0.8.0`. A pin on a wave tag either fails outright or, worse,
+resolves silently to an unrelated umbrella build from a different wave (e.g.
+`genblaze==0.4.0` on PyPI predates the `v0.4.0` wave). Pin the exact umbrella
+version above, or a lockfile for full reproducibility (the umbrella pins
+ranges, not exact versions, for its own dependencies).
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.5 → **0.4.6**
+- `genblaze-core` 0.3.8 → **0.3.9**
+- `genblaze-cli` 0.3.6 → **0.3.7**
+- `genblaze-s3` 0.3.6 → **0.3.7**
+- `genblaze-atlascloud` **0.1.0** (new)
+- `genblaze-fal` **0.1.0** (new)
+- `genblaze-assemblyai` 0.3.2 → **0.3.3**
+- `genblaze-gmicloud` 0.3.5 → **0.3.6**
+- `genblaze-google` 0.3.4 → **0.3.5**
+- `genblaze-nvidia` 0.3.3 → **0.3.4**
+- `genblaze-openai` 0.3.4 → **0.3.5**
+- `genblaze-runway` 0.3.3 → **0.3.4**
+- `@genblaze/spec` 0.4.0 → **0.4.1**
+
 ### genblaze
 
 - **Added** an `atlascloud` extra and included Atlas Cloud in the `image`,
@@ -34,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-google
 
+- **Changed** requires `genblaze-core>=0.3.9` so the widened `chat()` retry
+  scope (#264) is always present.
 - **Fixed** Veo on the Gemini Developer API (`api_key` / `GEMINI_API_KEY`) now
   downloads the generated video to a local file and exposes a `file://` asset
   URL — matching the Vertex path — instead of leaving a credentialed Files API
@@ -240,6 +283,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-openai
 
+- **Changed** requires `genblaze-core>=0.3.9` so the widened `chat()` retry
+  scope (#264) is always present. The `openai` SDK cap widened to `<4`;
+  verified against 3.17.0 (#274).
 - **Fixed** `DalleProvider` image edits from an `https://` reference image
   (e.g. a presigned object-storage URL) always failed upstream with
   `unsupported mimetype`. The download's temp file was named with a fixed
@@ -258,6 +304,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Step.provider_payload["usage"]` before pricing runs, so a user-registered
   usage-based pricing recipe can read them; `dall-e-2`/`dall-e-3` responses
   carry no `usage` block and are unaffected (#240).
+
+### genblaze-assemblyai
+
+- **Changed** the `assemblyai` SDK cap widened to `<2`; verified against
+  1.5.5 (#274).
+
+### genblaze-nvidia
+
+- **Changed** the `[chat]` extra's `openai` cap widened to `<4`; verified
+  against 3.17.0 (#274).
+
+### genblaze-runway
+
+- **Changed** the `runwayml` SDK cap widened to `<6` (#243).
+
+### genblaze-cli
+
+- **Changed** requires `genblaze-core>=0.3.9`.
 
 ## [0.7.0] - 2026-07-28
 
