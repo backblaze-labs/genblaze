@@ -1,4 +1,11 @@
-"""Shared ffmpeg utilities for compositor and transform providers."""
+"""Shared ffmpeg utilities for deterministic (local ffmpeg) providers.
+
+Used by the built-in ``FFmpegCompositor`` / ``FFmpegTransform`` and public API
+for third-party providers via ``genblaze_core.providers`` (#195). The stable
+subset is ``FFMPEG_TIMEOUT``, ``resolve_ffmpeg``, ``resolve_input_path``,
+``run_ffmpeg``, ``get_output_path`` and ``populate_file_asset_integrity``;
+underscored names here are implementation details.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlparse, urlsplit, urlunsplit
 from urllib.request import url2pathname
@@ -25,7 +33,17 @@ logger = logging.getLogger("genblaze.ffmpeg")
 
 
 def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
-    """Resolve the ffmpeg binary path; raise if not installed."""
+    """Resolve the ffmpeg binary to an absolute path via ``shutil.which``.
+
+    Args:
+        ffmpeg_path: Binary name looked up on ``PATH``, or an explicit path.
+
+    Returns:
+        The resolved executable path — use it as ``cmd[0]`` for ``run_ffmpeg``.
+
+    Raises:
+        ProviderError: ``INVALID_INPUT`` when ffmpeg is not installed/executable.
+    """
     resolved = shutil.which(ffmpeg_path)
     if resolved is None:
         raise ProviderError(
@@ -36,11 +54,30 @@ def resolve_ffmpeg(ffmpeg_path: str = "ffmpeg") -> str:
     return resolved
 
 
-def resolve_input_path(url: str, *, extra_roots: list[Path] | None = None) -> str:
-    """Resolve an asset URL to a path/URL suitable for ffmpeg input.
+def resolve_input_path(url: str, *, extra_roots: Sequence[str | Path] | None = None) -> str:
+    """Resolve and validate an asset URL for use as an ffmpeg ``-i`` argument.
 
-    Supports file:// (validated to be under temp or extra_roots) and
-    https:// (validated and passed directly to ffmpeg).
+    * ``file://`` — resolved (symlinks and ``..`` collapsed) and accepted only
+      under the system temp dirs or one of ``extra_roots``.
+    * ``https://`` — URL-validated and SSRF-checked (private/loopback/IMDS hosts
+      rejected), then returned unchanged for ffmpeg to fetch. ffmpeg follows
+      redirects and re-resolves DNS itself, which this check cannot re-validate;
+      pre-download untrusted URLs if that matters to you.
+
+    The result is always an absolute path or an ``https://`` URL, so it can never
+    be misread by ffmpeg as a ``-flag``. Only the top-level URL is checked: a
+    playlist input (HLS ``#EXTM3U``) can make ffmpeg open further URLs/files, so
+    put ``-protocol_whitelist`` (and ``-f <format>`` when known) before ``-i``
+    for untrusted inputs.
+
+    Args:
+        url: The input asset URL (typically ``step.inputs[i].url``).
+        extra_roots: Additional directories ``file://`` inputs may live under,
+            e.g. the provider's ``output_dir``.
+
+    Raises:
+        ProviderError: ``INVALID_INPUT`` for disallowed paths, unsupported
+            schemes, or URLs failing validation/SSRF checks.
     """
     parsed = urlparse(url)
     if parsed.scheme == "file":
@@ -49,7 +86,7 @@ def resolve_input_path(url: str, *, extra_roots: list[Path] | None = None) -> st
         resolved = Path(raw_path).resolve()
         allowed = list(_ALLOWED_FILE_ROOTS)
         if extra_roots:
-            allowed.extend(r.resolve() for r in extra_roots)
+            allowed.extend(Path(r).resolve() for r in extra_roots)
         if not any(resolved.is_relative_to(root) for root in allowed):
             raise ProviderError(
                 f"file:// URL outside allowed directories: {resolved}. "
@@ -121,9 +158,27 @@ def _redact_urls_in_text(text: str) -> str:
 
 def run_ffmpeg(
     cmd: list[str],
-    timeout: float = 120,
+    timeout: float = FFMPEG_TIMEOUT,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run an ffmpeg command with timeout and error handling."""
+    """Run an ffmpeg command as an argument list (never through a shell).
+
+    Presigned-URL query strings are redacted from the DEBUG command log and from
+    the stderr excerpt in raised errors; the executed command is unchanged.
+
+    Args:
+        cmd: Full argument vector, ``cmd[0]`` being the binary from
+            ``resolve_ffmpeg``. Pass each argument as its own element.
+        timeout: Seconds before the process is killed.
+
+    Returns:
+        The completed process. stdout/stderr are buffered in memory, so write
+        output to a file path (``get_output_path``), never ``pipe:1``.
+
+    Raises:
+        ProviderError: ``TIMEOUT`` on timeout; ``UNKNOWN`` when the process
+            cannot start or exits non-zero (message holds up to 500 chars of
+            redacted stderr).
+    """
     # The command actually executed (`cmd`) is untouched; only the DEBUG log
     # line is redacted (#75 — presigned URL query strings must not reach logs).
     logger.debug("Running ffmpeg: %s", _redact_cmd_for_log(cmd))
@@ -155,18 +210,63 @@ def run_ffmpeg(
     return result
 
 
-def get_output_path(step_id: str, ext: str, output_dir: Path | None) -> Path:
-    """Determine output file path for an ffmpeg operation."""
+# Extensions are interpolated into both the output_dir filename and the mkstemp
+# suffix; alphanumerics only keeps "../x" or "a/b" from escaping the directory.
+_SAFE_EXT_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def get_output_path(step_id: str, ext: str, output_dir: str | Path | None) -> Path:
+    """Return the output file path for an ffmpeg operation.
+
+    With ``output_dir``, returns the absolute ``output_dir / f"{step_id}.{ext}"``
+    (creating the directory; an existing file is overwritten by ffmpeg ``-y``, so
+    don't use a shared world-writable directory). Without it, creates an empty
+    temp file via ``mkstemp`` and returns its path.
+
+    Args:
+        step_id: Filename stem, normally ``step.step_id`` (a UUID). Must be a
+            single path component — no ``/``, ``\\``, ``:`` or NUL. Unused for
+            temp files.
+        ext: Extension without the dot (e.g. ``"mp4"``); alphanumeric only.
+        output_dir: Destination directory, or ``None`` for the system temp dir.
+
+    Raises:
+        ProviderError: ``INVALID_INPUT`` when ``step_id`` or ``ext`` could
+            produce a path outside the destination directory.
+    """
+    if not _SAFE_EXT_RE.fullmatch(ext):
+        raise ProviderError(
+            f"Invalid output ext {ext!r}: use alphanumerics only, without a leading dot.",
+            error_code=ProviderErrorCode.INVALID_INPUT,
+        )
     if output_dir:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return output_dir / f"{step_id}.{ext}"
+        # Block separators rather than whitelisting: a user-set step_id like
+        # "intro clip" is a legitimate filename and worked before #195. ':' is a
+        # Windows drive ("D:evil" escapes the dir) / NTFS alternate data stream.
+        if not step_id or any(c in step_id for c in ("/", "\\", ":", "\x00")):
+            raise ProviderError(
+                f"Invalid step_id {step_id!r} for an output filename: "
+                "it must be non-empty and contain no '/', '\\', ':' or NUL.",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
+        # Absolute so a relative dir can't yield "-x.mp4" / "pipe:..." that ffmpeg
+        # would parse as a flag or protocol; absolute() keeps symlinks as given.
+        out_dir = Path(output_dir).absolute()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / f"{step_id}.{ext}"
     fd, tmp = tempfile.mkstemp(suffix=f".{ext}")
     os.close(fd)
     return Path(tmp)
 
 
 def populate_file_asset_integrity(asset: Asset, path: Path) -> None:
-    """Populate ``asset.sha256`` and ``asset.size_bytes`` from a local file."""
+    """Stream ``path`` to set ``asset.sha256`` (hex) and ``asset.size_bytes``.
+
+    Reads in 1 MiB chunks, so memory stays flat for large outputs.
+
+    Raises:
+        ProviderError: ``UNKNOWN`` when the file cannot be read.
+    """
     digest = hashlib.sha256()
     size = 0
     try:

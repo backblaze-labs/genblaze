@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from pathlib import PureWindowsPath
+import tempfile
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -39,6 +40,13 @@ class TestResolveInputPath:
         f.write_bytes(b"fake")
         result = resolve_input_path(f"file://{f}", extra_roots=[custom])
         assert result == str(f.resolve())
+
+    def test_file_url_with_str_extra_roots(self, tmp_path):
+        custom = tmp_path / "custom"
+        custom.mkdir()
+        f = custom / "clip.mp4"
+        f.write_bytes(b"fake")
+        assert resolve_input_path(f"file://{f}", extra_roots=[str(custom)]) == str(f.resolve())
 
     @patch("genblaze_core._utils.socket.getaddrinfo")
     def test_https_url_validated(self, mock_dns):
@@ -256,3 +264,90 @@ class TestGetOutputPath:
         path = get_output_path("step-123", "mp4", output_dir=out)
         assert path == out / "step-123.mp4"
         assert out.is_dir()
+
+    @pytest.mark.parametrize(
+        "step_id", ["../escape", "a/b", "a\\b", "a\x00b", "", "D:evil", "a:ads"]
+    )
+    def test_rejects_unsafe_step_id(self, tmp_path, step_id):
+        """step_id is interpolated into a filename; separators must not escape output_dir."""
+        with pytest.raises(ProviderError, match="step_id"):
+            get_output_path(step_id, "mp4", output_dir=tmp_path)
+
+    @pytest.mark.parametrize("ext", ["", "mp4/../x", ".mp4", "m p4", "mp4\x00"])
+    def test_rejects_unsafe_ext(self, tmp_path, ext):
+        with pytest.raises(ProviderError, match="ext"):
+            get_output_path("step-123", ext, output_dir=tmp_path)
+
+    def test_rejects_unsafe_ext_without_output_dir(self, tmp_path, monkeypatch):
+        """The temp-file branch validates too — mkstemp would honor a '/' in the suffix."""
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        with pytest.raises(ProviderError, match="ext"):
+            get_output_path("step-123", "../mp4", output_dir=None)
+        assert list(tmp_path.iterdir()) == []  # rejected before mkstemp
+
+    def test_accepts_str_output_dir(self, tmp_path):
+        path = get_output_path("step-123", "mp4", output_dir=str(tmp_path / "out"))
+        assert path == tmp_path / "out" / "step-123.mp4"
+
+    def test_relative_output_dir_yields_absolute_path(self, tmp_path, monkeypatch):
+        """A relative dir must not yield '-x.mp4' / 'pipe:...' that ffmpeg parses as a flag."""
+        monkeypatch.chdir(tmp_path)
+        path = get_output_path("-x", "mp4", output_dir=Path("."))
+        assert path.is_absolute()
+        assert path.parent == tmp_path.absolute()
+
+    @pytest.mark.parametrize("step_id", ["intro clip", "..", "-flag", "v1.2"])
+    def test_accepts_single_component_step_id(self, tmp_path, step_id):
+        """Non-separator ids stay valid (backward compat) and never leave output_dir."""
+        path = get_output_path(step_id, "mp4", output_dir=tmp_path)
+        assert path.parent == tmp_path
+
+    def test_accepts_uuid_step_id(self, tmp_path):
+        from genblaze_core._utils import new_id
+
+        sid = new_id()
+        assert get_output_path(sid, "wav", output_dir=tmp_path) == tmp_path / f"{sid}.wav"
+
+
+class TestPublicSurface:
+    """#195 — the helpers are public API via ``genblaze_core.providers``."""
+
+    NAMES = (
+        "FFMPEG_TIMEOUT",
+        "get_output_path",
+        "populate_file_asset_integrity",
+        "resolve_ffmpeg",
+        "resolve_input_path",
+        "run_ffmpeg",
+    )
+
+    def test_exported_from_providers_package(self):
+        import genblaze_core.providers as providers
+        from genblaze_core.providers import _ffmpeg_utils
+
+        for name in self.NAMES:
+            assert name in providers.__all__, name
+            # Same object — the private module stays the single implementation.
+            assert getattr(providers, name) is getattr(_ffmpeg_utils, name), name
+
+    def test_redaction_internals_stay_private(self):
+        import genblaze_core.providers as providers
+
+        for name in ("_redact_url_query", "_redact_cmd_for_log", "_redact_urls_in_text"):
+            assert not hasattr(providers, name)
+
+    def test_local_file_url_exported(self):
+        from genblaze_core import _utils
+        from genblaze_core.providers import local_file_url
+
+        assert local_file_url is _utils.local_file_url
+
+    def test_run_ffmpeg_default_timeout_is_ffmpeg_timeout(self):
+        from genblaze_core.providers import FFMPEG_TIMEOUT, run_ffmpeg
+
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+        with patch(
+            "genblaze_core.providers._ffmpeg_utils.subprocess.run", return_value=ok
+        ) as mock_run:
+            run_ffmpeg(["ffmpeg", "-version"])
+        assert mock_run.call_args.kwargs["timeout"] == FFMPEG_TIMEOUT
