@@ -29,6 +29,7 @@ CORE_IMPORTS = (
 ALL_EXTRA_PACKAGE_IMPORTS = (
     ("genblaze-atlascloud", "genblaze_atlascloud"),
     ("genblaze-fal", "genblaze_fal"),
+    ("genblaze-muapi", "genblaze_muapi"),
     ("genblaze-gmicloud", "genblaze_gmicloud"),
     ("genblaze-openai", "genblaze_openai"),
     ("genblaze-google", "genblaze_google"),
