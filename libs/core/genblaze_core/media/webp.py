@@ -149,10 +149,15 @@ def _embed_xmp_chunk(data: bytes, xmp: bytes) -> bytearray:
             f"Unsupported WebP layout: first chunk {fourcc.decode('ascii', 'replace')!r}"
         )
 
+    written = 2 if fourcc == b"VP8X" else 3  # header chunk(s) + our XMP chunk
     for fourcc, start, payload_start, payload_end, end in chunks:
         if fourcc == b"XMP " and _is_own_packet(data, payload_start, payload_end):
             continue
+        written += 1
         out += view[start:end]
+    # Refuse output that extract() would reject, rather than writing an unreadable file.
+    if written > _MAX_CHUNKS:
+        raise EmbeddingError(f"Malformed WebP: more than {_MAX_CHUNKS} chunks after embedding")
     out += _chunk(b"XMP ", xmp)
     riff_size = len(out) - 8
     if riff_size > _MAX_RIFF_SIZE:

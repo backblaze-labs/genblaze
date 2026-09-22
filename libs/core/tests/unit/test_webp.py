@@ -419,3 +419,16 @@ def test_webp_embed_pads_odd_length_xmp(
     with Image.open(tmp_webp) as im:
         im.load()
     assert WebpHandler().extract(tmp_webp).canonical_hash == manifest.canonical_hash
+
+
+def test_webp_embed_refuses_output_over_chunk_cap(
+    tmp_path: Path, sample_manifest: Manifest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Embed must not write a file extract() would reject for too many chunks."""
+    from genblaze_core.media import webp
+
+    src = tmp_path / "many.webp"
+    Image.new("RGB", (8, 8)).save(src, "WEBP")  # simple format: 1 chunk
+    monkeypatch.setattr(webp, "_MAX_CHUNKS", 2)  # input passes; output would be 3
+    with pytest.raises(EmbeddingError, match="after embedding"):
+        WebpHandler().embed(src, sample_manifest)

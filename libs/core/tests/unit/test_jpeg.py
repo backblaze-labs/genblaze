@@ -427,3 +427,27 @@ def test_jpeg_embed_without_app0_goes_right_after_soi(
     JpegHandler().embed(src, sample_manifest)
 
     assert src.read_bytes() == original[:2] + _own_segment(sample_manifest) + original[2:]
+
+
+def test_build_xmp_bytes_are_pinned() -> None:
+    """Re-embed recognizes packets older versions wrote by exact bytes, so the
+    packet layout (incl. the legacy double-encoded BOM) must never drift."""
+    assert _build_xmp('{"a":"<&>"}') == (
+        b'<?xpacket begin="\xc3\xaf\xc2\xbb\xc2\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"'
+        b' xmlns:mf="https://github.com/backblaze-labs/genblaze/ns/1.0/">'
+        b'<rdf:Description rdf:about="">'
+        b'<mf:manifest>{"a":"&lt;&amp;&gt;"}</mf:manifest>'
+        b"</rdf:Description></rdf:RDF></x:xmpmeta>"
+        b'<?xpacket end="w"?>'
+    )
+
+
+def test_jpeg_embed_rejects_non_jpeg_source(
+    tmp_png: Path, tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """No transcoding: a PNG handed to the JPEG handler fails instead of
+    being silently re-encoded (SmartEmbedder routes by magic bytes)."""
+    with pytest.raises(EmbeddingError, match="Not a valid JPEG"):
+        JpegHandler().embed(tmp_png, sample_manifest, output=tmp_path / "out.jpg")

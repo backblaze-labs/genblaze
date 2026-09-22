@@ -101,7 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-embedding replaces the previous manifest, and files embedded by earlier
   versions still extract. Extraction now reads only real XMP containers, so a
   `<mf:manifest>` string planted in EXIF or other bytes can no longer shadow
-  the embedded manifest (#249).
+  the embedded manifest. Handlers no longer transcode, so a non-JPEG/WebP
+  source passed straight to `JpegHandler`/`WebpHandler` now raises
+  `EmbeddingError` (`SmartEmbedder` already routes by magic bytes) (#249).
 - **Deprecated** `WebpHandler.embed(lossless=..., quality=...)`. Both
   configured the former re-encode; they are now ignored, emit a
   `DeprecationWarning`, and will be removed in genblaze-core 0.4.0 (#249).
