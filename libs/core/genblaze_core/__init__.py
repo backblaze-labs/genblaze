@@ -142,11 +142,17 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "UnverifiedAssetError": ("genblaze_core.exceptions", "UnverifiedAssetError"),
     "SinkError": ("genblaze_core.exceptions", "SinkError"),
     "WebhookError": ("genblaze_core.exceptions", "WebhookError"),
+    "SigningError": ("genblaze_core.exceptions", "SigningError"),
     # webhooks
     "WebhookNotifier": ("genblaze_core.webhooks.notifier", "WebhookNotifier"),
     "WebhookConfig": ("genblaze_core.webhooks.notifier", "WebhookConfig"),
     "WebhookEvent": ("genblaze_core.webhooks.notifier", "WebhookEvent"),
     "WebhookSink": ("genblaze_core.webhooks.sink", "WebhookSink"),
+    # signing (Mode 2 — optional extra)
+    "Ed25519Signer": ("genblaze_core.signing.ed25519", "Ed25519Signer"),
+    "ManifestSigner": ("genblaze_core.signing.base", "ManifestSigner"),
+    "SignatureBundle": ("genblaze_core.signing.base", "SignatureBundle"),
+    "verify_signature_bundle": ("genblaze_core.signing.ed25519", "verify_signature_bundle"),
 }
 
 __all__ = [*_LAZY_IMPORTS.keys(), "__version__"]
