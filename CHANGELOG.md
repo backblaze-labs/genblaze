@@ -42,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Added** `ObjectStorageSink(..., allowed_roots=[...])` to opt a
+  provider-configured `output_dir` (e.g. `ElevenLabsTTSProvider(output_dir=
+  "work/generated")`) into local-file asset transfer. Previously a valid
+  generation written outside the built-in temp-dir allowlist failed only at
+  storage finalization, after provider quota was already spent. The default
+  stays temp-only — no behavior change without opting in — and each root is
+  resolved and validated at construction (rejects a missing directory or the
+  filesystem root) so a typo'd or overly broad root fails loudly immediately
+  rather than silently widening what's readable (#247).
 - **Fixed** `PromptTemplate("A {animal}")` now accepts the template
   positionally instead of raising `TypeError: BaseModel.__init__() takes 1
   positional argument but 2 were given`. The positional spelling is the one
@@ -90,6 +99,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
+
+### genblaze-s3
+
+- **Docs** clarified browser access to private B2 buckets: a durable URL
+  (`asset.url` under the default `URLPolicy.AUTO`) carries no credentials
+  and 401s in a browser by design — use `presigned_get`/`presigned_get_url`
+  instead. Added regression coverage proving those methods already emit
+  the path-style, SigV4-signed URL shape B2 requires (virtual-host-style
+  presigns 403 against B2) with no extra `boto3.Config`, since
+  `for_backblaze()`'s custom `endpoint_url` already selects that addressing
+  style by default; see `docs/features/object-storage.md` (#246).
 
 ### Internal
 
