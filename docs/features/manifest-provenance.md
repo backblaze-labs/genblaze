@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Manifest Provenance
 
 ## Purpose
@@ -61,6 +61,7 @@ are version-keyed:
 
 - `_RUN_HASH_EXCLUDE` — run_id, status, created_at, started_at, completed_at, idempotency_key, parent_run_id
 - `_STEP_HASH_EXCLUDE` — step_id, run_id, status, error, error_code, retries, cost_usd, started_at, completed_at, provider_payload, step_index
+- `_ATTEMPT_HASH_FIELDS` — an allowlist, not an exclusion set, and applied at every supported schema version (including the ≤ 1.3 legacy policy). Each `Step.failed_attempts` entry (#239) is replaced by exactly `{"model", "provider", "error_code"}` — missing values as `null`, `error_code` as its enum string, list order preserved (oldest first, never sorted). An absent or empty `failed_attempts` is removed from the step payload entirely, so manifests without a fallback hash exactly as before the field existed. Which model failed, where, and why is integrity-checked — the attempt's `error_code` is hashed on purpose even though `Step.error_code` is not — while the attempt's `step_id`, timestamps, `error`, `cost_usd`, `retries` and `upstream_id` stay out of the hash. Changing the allowlist changes hashes and requires a new `_SCHEMA_HASH_POLICIES` entry. Manifests that carry `failed_attempts` still declare schema 1.5 but need a reader that knows the key; older genblaze-core releases reject it as an unknown Step field.
 - `_ASSET_HASH_EXCLUDE` — asset_id, url. Schema 1.6 Python read support keeps an explicit `asset_integrity=url_only_unverified` marker plus a canonicalized `unverified_asset_url` for assets without `sha256`. The URL form strips known presign credential/expiry parameters and fragments while retaining resource-identifying query parameters. Schema versions 1.4 and 1.5 preserve the previous URL-stripping rules for backwards verification, and the SDK plus published language-neutral spec continue to write/declare schema 1.5 during rollout.
 - Schema versions ≤ 1.3 used the legacy exclusion set (random IDs were included in the hash)
 - Unsupported schema versions are rejected with an upgrade-required parse error instead of inheriting the latest hash policy.

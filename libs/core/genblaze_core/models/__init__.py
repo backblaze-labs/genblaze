@@ -27,7 +27,7 @@ from genblaze_core.models.manifest import Manifest, ManifestVerification, parse_
 from genblaze_core.models.policy import EmbedPolicy
 from genblaze_core.models.prompt_template import PromptTemplate
 from genblaze_core.models.run import Run
-from genblaze_core.models.step import Step
+from genblaze_core.models.step import Step, StepAttempt
 
 __all__ = [
     "Asset",
@@ -58,6 +58,7 @@ __all__ = [
     "Run",
     "RunStatus",
     "Step",
+    "StepAttempt",
     "StepStatus",
     "StepType",
 ]

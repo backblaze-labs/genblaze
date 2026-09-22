@@ -46,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** a step rescued by `fallback_models` no longer erases the failed
+  primary from provenance. Each superseded failure is now recorded, oldest
+  first, in the new `Step.failed_attempts` list (`StepAttempt`: step id,
+  model, provider, sanitized error, error code, upstream prediction id, cost,
+  retries, timestamps), on both `run()` and `arun()`. The field is omitted
+  from serialization when empty, so manifests without a fallback keep their
+  `canonical_hash` byte-for-byte. Only each attempt's `model`, `provider` and
+  `error_code` enter the hash, so identical runs still hash identically.
+  Failed-attempt cost is reported per attempt (usually `None`: providers
+  price successes only) and is not added to `Step.cost_usd`.
+  **Compatibility:** a manifest that recorded a fallback carries the new
+  `failed_attempts` key and needs genblaze-core at this release or later to
+  parse; older releases reject the unknown key (#239).
 - **Changed** `genblaze-core` no longer depends on Pillow at runtime, since
   JPEG/WebP embedding no longer decodes images. If your code imports `PIL`,
   declare `pillow` as your own dependency (#249).

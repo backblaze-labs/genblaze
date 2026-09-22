@@ -61,6 +61,14 @@ _ASSET_HASH_EXCLUDE = frozenset(
         # assets cannot collapse to the same canonical payload.
     }
 )
+# Step.failed_attempts (#239) is hashed as an allowlist projection: which
+# model/provider failed and why (error_code — hashed here on purpose even
+# though Step.error_code is not) is provenance and stays integrity-checked;
+# the rest of each attempt (step_id, timestamps, error text, cost, retries,
+# upstream_id) is operational, so identical fallback runs hash identically.
+# An allowlist keeps future StepAttempt fields out of the hash by default.
+# Changing it changes hashes: add a new _SCHEMA_HASH_POLICIES entry first.
+_ATTEMPT_HASH_FIELDS = ("model", "provider", "error_code")
 _UNHASHED_ASSET_MARKER = "url_only_unverified"
 _UNHASHED_ASSET_URL_FIELD = "unverified_asset_url"
 
@@ -205,6 +213,11 @@ def _hash_payload(schema_version: str, run: Run) -> dict:
     for step in run_data.get("steps", []):
         for key in step_exclude:
             step.pop(key, None)
+        if "failed_attempts" in step:
+            step["failed_attempts"] = [
+                {key: attempt.get(key) for key in _ATTEMPT_HASH_FIELDS}
+                for attempt in step["failed_attempts"]
+            ]
         if not use_legacy:
             for asset in step.get("assets", []):
                 _strip_asset_for_hash(asset, mark_unhashed=mark_unhashed_assets)
