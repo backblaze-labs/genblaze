@@ -39,7 +39,7 @@ from genblaze_core.models.enums import (
 )
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.prompt_template import PromptTemplate
-from genblaze_core.models.step import Step
+from genblaze_core.models.step import Step, StepAttempt
 from genblaze_core.observability.events import (
     PipelineCompletedEvent,
     PipelineFailedEvent,
@@ -1295,6 +1295,26 @@ class Pipeline(Runnable[None, PipelineResult]):
         }
         return step
 
+    @staticmethod
+    def _should_fallback(ps: _PipelineStep, result: Step) -> bool:
+        """Fallback models are tried only when the primary failed with MODEL_ERROR."""
+        return (
+            result.status == StepStatus.FAILED
+            and result.error_code == ProviderErrorCode.MODEL_ERROR
+            and bool(ps.fallback_models)
+        )
+
+    def _build_fallback_step(self, ps: _PipelineStep, step: Step, fb_model: str) -> Step:
+        """Build the Step for one fallback attempt — shared by sync/async paths."""
+        logger.info("Falling back from %s to %s", step.model, fb_model)
+        fb_step = self._build_step(ps, step.inputs or None)
+        fb_step.model = fb_model
+        # .update(), not reassignment — fb_step.metadata already carries caller
+        # metadata= and the _input_from graph key from _build_step(); replacing
+        # it wholesale would silently drop both on a fallback retry (#53).
+        fb_step.metadata.update({"fallback_from": step.model, "fallback_model": fb_model})
+        return fb_step
+
     def _try_fallback_models(
         self,
         ps: _PipelineStep,
@@ -1305,34 +1325,23 @@ class Pipeline(Runnable[None, PipelineResult]):
     ) -> tuple[Step, Step]:
         """Try fallback models on MODEL_ERROR. Returns (result, cache_key_step).
 
-        Used by the sync _execute_step path. The async path inlines its own
-        version because ainvoke requires await.
+        Every superseded failure is kept on the returned Step's
+        ``failed_attempts`` so its error, timing, upstream id and cost stay in
+        the manifest (#239). Used by the sync _execute_step path; the async
+        path mirrors this loop because ainvoke requires await.
         """
+        if not self._should_fallback(ps, result):
+            return result, step
         cache_key_step = step
-        if (
-            result.status == StepStatus.FAILED
-            and result.error_code == ProviderErrorCode.MODEL_ERROR
-            and ps.fallback_models
-        ):
-            original_model = step.model
-            for fb_model in ps.fallback_models:
-                logger.info("Falling back from %s to %s", step.model, fb_model)
-                fb_step = self._build_step(ps, step.inputs or None)
-                fb_step.model = fb_model
-                # .update(), not reassignment — fb_step.metadata already
-                # carries caller metadata= and the _input_from graph key from
-                # _build_step(); replacing it wholesale would silently drop
-                # both on a fallback retry (#53).
-                fb_step.metadata.update(
-                    {
-                        "fallback_from": original_model,
-                        "fallback_model": fb_model,
-                    }
-                )
-                result = invoke_fn(fb_step, config)
-                if result.status == StepStatus.SUCCEEDED:
-                    cache_key_step = fb_step
-                    break
+        attempts: list[StepAttempt] = []
+        for fb_model in ps.fallback_models:
+            attempts.append(StepAttempt.from_step(result))
+            fb_step = self._build_fallback_step(ps, step, fb_model)
+            result = invoke_fn(fb_step, config)
+            if result.status == StepStatus.SUCCEEDED:
+                cache_key_step = fb_step
+                break
+        result.failed_attempts = attempts
         return result, cache_key_step
 
     def _post_step(
@@ -1360,7 +1369,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(result, mod_result, "post")
 
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
-            self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
+            # The failed-attempt ledger belongs to this run: a later cache hit
+            # never re-ran (or re-paid for) those attempts.
+            cached = result
+            if result.failed_attempts:
+                cached = result.model_copy(update={"failed_attempts": []})
+            self._cache.put(cache_key_step, cached, tenant_id=self._tenant_id)
 
         if result.status == StepStatus.FAILED and result.error:
             # Providers usually sanitize their own failures. This pipeline
@@ -1466,30 +1480,18 @@ class Pipeline(Runnable[None, PipelineResult]):
         try:
             result = await ps.provider.ainvoke(step, config)
 
-            # Fallback loop (inlined because ainvoke requires await)
+            # Mirrors _try_fallback_models (inlined because ainvoke requires await).
             cache_key_step = step
-            if (
-                result.status == StepStatus.FAILED
-                and result.error_code == ProviderErrorCode.MODEL_ERROR
-                and ps.fallback_models
-            ):
-                original_model = step.model
+            if self._should_fallback(ps, result):
+                attempts: list[StepAttempt] = []
                 for fb_model in ps.fallback_models:
-                    logger.info("Falling back from %s to %s", step.model, fb_model)
-                    fb_step = self._build_step(ps, step.inputs or None)
-                    fb_step.model = fb_model
-                    # .update(), not reassignment — see the sync fallback
-                    # path (_try_fallback_models) for why (#53).
-                    fb_step.metadata.update(
-                        {
-                            "fallback_from": original_model,
-                            "fallback_model": fb_model,
-                        }
-                    )
+                    attempts.append(StepAttempt.from_step(result))
+                    fb_step = self._build_fallback_step(ps, step, fb_model)
                     result = await ps.provider.ainvoke(fb_step, config)
                     if result.status == StepStatus.SUCCEEDED:
                         cache_key_step = fb_step
                         break
+                result.failed_attempts = attempts
 
             # Async post-moderation — run before shared _post_step
             if (

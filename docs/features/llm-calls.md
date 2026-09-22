@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-28 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: LLM Calls
 
 Thin standalone wrappers around OpenAI, Google Gemini, and GMICloud chat /
@@ -128,34 +128,60 @@ video frames) this is the common case, not an edge case.
 For `genblaze_openai.chat`/`achat` and `genblaze_google.chat`/`achat`, pass
 `retry_on_rate_limit=True` to opt in to a bounded wait-and-retry loop that
 honors the server's `Retry-After` hint (falling back to exponential backoff
-with jitter when no hint is present):
+with jitter when no hint is present). Despite the name, the loop retries
+transient server-side failures too: by default `RATE_LIMIT` (429) and
+`SERVER_ERROR` (5xx, e.g. Gemini `503 UNAVAILABLE` / model overloaded). The
+flag name is kept for compatibility:
 
 ```python
 from genblaze_openai import chat
 
-# Retries up to RetryPolicy()'s default 6 attempts, honoring each 429's
-# `Retry-After` hint before raising.
+# Retries 429 / 5xx up to 6 attempts, honoring any `Retry-After` hint
+# before raising.
 resp = chat("gpt-4o-mini", messages=frame_messages, retry_on_rate_limit=True)
 ```
 
 Pass a `genblaze_core.providers.retry.RetryPolicy` via `retry_policy=` to tune
 the attempt cap or backoff timing (passing `retry_policy=` alone, without
-`retry_on_rate_limit=True`, also opts in). `retry_policy.retryable_codes` can
-only *narrow* retry here — e.g. `RetryPolicy.disabled()` turns retry off
-entirely — it cannot broaden retry to other error codes; this loop only ever
-acts on `RATE_LIMIT`, by design, regardless of what `retryable_codes` contains.
+`retry_on_rate_limit=True`, also opts in). An explicit policy's
+`retryable_codes` is honored as-is, like on `BaseProvider`'s poll/fetch path —
+so a plain `RetryPolicy()` also retries `TIMEOUT`. Codes outside the set
+(including `UNKNOWN`, e.g. an OpenAI `APIConnectionError`, which the SDK
+would otherwise have retried itself) fail fast; keep
+`AUTH_FAILURE`/`INVALID_INPUT`/`CONTENT_POLICY` out of any custom set. For
+429-only retry, narrow the set; `RetryPolicy.disabled()` turns retry off
+entirely:
+
+```python
+from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers.retry import RetryPolicy
+
+rate_limit_only = RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))
+resp = chat("gemini-2.5-flash", prompt="hi", retry_policy=rate_limit_only)
+```
+
+**Billing.** A 429 or 5xx returns no completion, so retrying it is safe.
+`TIMEOUT` is excluded by default because it is not: a client-side timeout on a
+long non-streaming generation (reasoning models, large `max_tokens`, the
+OpenAI helper's 60s default `timeout=`) tends to recur for the same payload
+while the server keeps generating — and billing — each abandoned attempt, so
+retrying it can mean up to `max_attempts` billed generations. Opt in with an
+explicit `retry_policy=RetryPolicy()` only if resilience matters more.
 
 When `chat()` creates its own client (no `client=` passed) and retry is
 opted in, the OpenAI/Gemini SDK's own internal retry is disabled
 (`max_retries=0` / a single-attempt `HttpRetryOptions`) so `RetryPolicy.max_attempts`
 is the only retry budget in effect — otherwise the SDK would retry underneath
 this loop and multiply the effective attempt count. If you pass your own
-`client=`, its retry configuration is untouched; configure it yourself to match.
+`client=`, its retry configuration is untouched: a default `openai.OpenAI()`
+(`max_retries=2`) retries 429/5xx itself, so attempts multiply (up to 3 × 6).
+Construct it with `max_retries=0` when opting in here.
 
 **Known limits of this opt-in loop:**
 
 - **Bounded but not tiny.** Worst case here is `(max_attempts - 1) *
-  MAX_RETRY_AFTER_SEC`, *plus* each attempt's own HTTP `timeout=` — with the
+  MAX_RETRY_AFTER_SEC`, *plus* `max_attempts` × each attempt's own HTTP
+  `timeout=` (which dominates if `TIMEOUT` is in your policy) — with the
   default policy (6 attempts, 120s cap) that's up to ~10 minutes from backoff
   alone, and higher still if attempts themselves stall close to `timeout=`
   before failing. Pass a tighter `retry_policy=RetryPolicy(max_attempts=2)`
@@ -173,7 +199,9 @@ this loop and multiply the effective attempt count. If you pass your own
   TPM ceiling all see the same server `Retry-After` hint and wake in lockstep,
   which can immediately re-trip the limit. For sustained, high-concurrency
   archive runs, pace calls externally (e.g. a semaphore or a queue) in addition
-  to (not instead of) `retry_on_rate_limit=True`.
+  to (not instead of) `retry_on_rate_limit=True`. The same applies to 5xx: during
+  an upstream brownout (e.g. Gemini overloaded) every opted-in caller retries
+  into it, up to `max_attempts` × normal load.
 
 ## Limits (v1)
 
