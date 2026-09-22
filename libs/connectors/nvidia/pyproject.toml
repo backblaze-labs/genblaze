@@ -40,7 +40,7 @@ dev = [
     "pytest>=7.0",
 ]
 chat = [
-    # <3: bounded-major convention (#61); matches the cap the openai
+    # <4: bounded-major convention (#61); matches the cap the openai
     # connector (genblaze-openai) uses for the same package.
     "openai>=1.0,<4",
 ]
