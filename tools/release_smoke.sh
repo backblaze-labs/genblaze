@@ -57,6 +57,7 @@ PACKAGES=(
     "libs/connectors/assemblyai"
     "libs/connectors/atlascloud"
     "libs/connectors/fal"
+    "libs/connectors/muapi"
     "cli"
     "libs/meta"
 )

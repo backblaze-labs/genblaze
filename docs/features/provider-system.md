@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-09-21 -->
+<!-- last_verified: 2026-09-22 -->
 # Feature: Provider System
 
 ## Purpose
@@ -116,7 +116,7 @@ gates against.
 
 Connectors as of 0.3.0:
 
-- `NATIVE`: OpenAI (TTS / DALL-E / Sora), ElevenLabs TTS, Replicate, NVIDIA chat
+- `NATIVE`: OpenAI (TTS / DALL-E / Sora), ElevenLabs TTS, Replicate, NVIDIA chat, MuAPI media catalog
 - `PARTIAL`: NVIDIA generative endpoints (audio / video / image), GMICloud, Google (`VeoProvider` / `ImagenProvider` / `GeminiImageProvider`)
 - `NONE`: Decart, Runway, Luma, Stability-Audio, ElevenLabs SFX, LMNT, Hume, AssemblyAI
 
@@ -126,6 +126,7 @@ Each connector family shares a single error mapper module:
 - `genblaze_google._errors.map_google_error` (`VeoProvider`, `ImagenProvider`, `GeminiImageProvider`)
 - `genblaze_elevenlabs._errors.map_elevenlabs_error` (TTS, SFX)
 - `genblaze_gmicloud._errors.map_gmicloud_error` (Kling video)
+- `genblaze_muapi._errors.map_muapi_error` (MuAPI media lifecycle)
 
 ## Poll Result Caching
 

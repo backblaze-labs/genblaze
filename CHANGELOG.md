@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze
+- Added the opt-in `muapi` connector extra and included MuAPI in the curated
+  `video`, `image`, `audio`, and `all` bundles.
+
+### genblaze-muapi
+- Added a native-discovery asynchronous connector for MuAPI's image, video,
+  and audio catalog, including hosted-output validation and reported-cost
+  capture.
+
 ## [0.8.0] - 2026-09-22
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
