@@ -5,9 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
-from genblaze_core._utils import new_id
+from genblaze_core._utils import new_id, sanitize_error
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import (
     RETRYABLE_ERROR_CODES,
@@ -26,6 +33,60 @@ _PROVIDERLESS_STEP_TYPES = frozenset({StepType.INGEST, StepType.IMPORT})
 # Metadata key used to surface provider prediction/job ids to progress and
 # streaming consumers. The value is observability data, not retry authority.
 UPSTREAM_ID_KEY = "upstream_id"
+
+
+class StepAttempt(BaseModel):
+    """A failed provider invocation superseded by a later attempt of the same step.
+
+    Recorded when ``fallback_models`` moves a step from one model to the next,
+    so the manifest keeps the provenance and cost of work the final Step
+    replaced. Deliberately a narrow projection of Step: no prompt/params/inputs
+    (identical to the final Step's) and no ``provider_payload`` (raw, unbounded,
+    and the likeliest place for credentials to leak).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(description="Model identifier this attempt ran against.")
+    provider: str | None = Field(default=None, description="Provider name.")
+    error: str | None = Field(default=None, description="Sanitized error message.")
+    error_code: ProviderErrorCode | None = Field(
+        default=None, description="Classified error code."
+    )
+    upstream_id: str | None = Field(
+        default=None,
+        description="Provider prediction/job id, when the provider accepted the job "
+        "before failing. None means it failed before submit returned.",
+    )
+    cost_usd: float | None = Field(
+        default=None,
+        description="Cost the provider reported for this attempt. None means unknown, "
+        "not free — a failed job may still have been billed.",
+    )
+    retries: int = Field(default=0, description="Provider-level retries within this attempt.")
+    started_at: datetime | None = Field(default=None, description="Attempt start timestamp.")
+    completed_at: datetime | None = Field(
+        default=None, description="Attempt completion timestamp."
+    )
+
+    @classmethod
+    def from_step(cls, step: Step) -> StepAttempt:
+        """Project a failed Step onto the attempt record.
+
+        The error is sanitized here rather than trusted from the caller: this
+        record is written to the manifest verbatim.
+        """
+        return cls(
+            model=step.model,
+            provider=step.provider,
+            error=sanitize_error(step.error) if step.error else step.error,
+            error_code=step.error_code,
+            upstream_id=step.metadata.get(UPSTREAM_ID_KEY),
+            cost_usd=step.cost_usd,
+            retries=step.retries,
+            started_at=step.started_at,
+            completed_at=step.completed_at,
+        )
 
 
 class Step(BaseModel):
@@ -78,6 +139,30 @@ class Step(BaseModel):
         default=None, description="Position in run (0-based). Set by RunBuilder."
     )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata.")
+    failed_attempts: list[StepAttempt] = Field(
+        default_factory=list,
+        description=(
+            "Earlier failed attempts this step superseded (fallback chain), oldest "
+            "first. The step itself is the final attempt. Omitted from "
+            "serialization when empty."
+        ),
+    )
+
+    # No return annotation on purpose: pydantic derives the serialization JSON
+    # schema from it, and any annotation (dict/Any) would collapse Step's
+    # schema to an opaque object for consumers such as FastAPI response models.
+    @model_serializer(mode="wrap")
+    def _omit_empty_failed_attempts(self, handler: SerializerFunctionWrapHandler):  # type: ignore[no-untyped-def]
+        """Drop ``failed_attempts`` from the dump when empty.
+
+        Keeps the canonical hash of attempt-free steps byte-identical to
+        manifests written before the field existed, and keeps those manifests
+        readable by older releases whose Step rejects unknown keys.
+        """
+        data: dict[str, Any] = handler(self)
+        if not self.failed_attempts:
+            data.pop("failed_attempts", None)
+        return data
 
     @model_validator(mode="after")
     def _validate_provider_required_for_generative_steps(self) -> Step:

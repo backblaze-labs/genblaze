@@ -171,6 +171,10 @@ export interface Step {
   metadata?: {
     [k: string]: unknown;
   };
+  /**
+   * Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty; included in the canonical hash when present.
+   */
+  failed_attempts?: StepAttempt[];
 }
 /**
  * A generated media asset within a step.
@@ -267,6 +271,56 @@ export interface Asset {
   metadata?: {
     [k: string]: unknown;
   };
+}
+/**
+ * A failed provider invocation superseded by a later attempt of the same step.
+ */
+export interface StepAttempt {
+  /**
+   * Model identifier this attempt ran against.
+   */
+  model: string;
+  /**
+   * Provider name.
+   */
+  provider?: string | null;
+  /**
+   * Sanitized error message.
+   */
+  error?: string | null;
+  /**
+   * Normalized error code.
+   */
+  error_code?:
+    | "timeout"
+    | "rate_limit"
+    | "auth_failure"
+    | "invalid_input"
+    | "model_error"
+    | "server_error"
+    | "content_policy"
+    | "unknown"
+    | null;
+  /**
+   * Provider prediction/job id, when the provider accepted the job before failing. Null means it failed before submit returned.
+   */
+  upstream_id?: string | null;
+  /**
+   * Cost the provider reported for this attempt. Null means unknown, not free: a failed job may still have been billed.
+   */
+  cost_usd?: number | null;
+  /**
+   * Provider-level retries within this attempt.
+   */
+  retries?: number;
+  /**
+   * Attempt start timestamp.
+   */
+  started_at?: string | null;
+  /**
+   * Attempt completion timestamp.
+   */
+  completed_at?: string | null;
 }
 
 /**

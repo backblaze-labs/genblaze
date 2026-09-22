@@ -14,6 +14,7 @@ depend on parity with Pydantic serialization.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jsonschema
@@ -31,7 +32,7 @@ from genblaze_core.models.enums import (
 from genblaze_core.models.manifest import SCHEMA_VERSION, Manifest
 from genblaze_core.models.policy import EmbedPolicy
 from genblaze_core.models.run import Run
-from genblaze_core.models.step import Step
+from genblaze_core.models.step import Step, StepAttempt
 from genblaze_core.observability.events import (
     AgentCompletedEvent,
     AgentIterationEvaluatedEvent,
@@ -182,6 +183,39 @@ def test_asset_roundtrip_validates():
 def test_step_roundtrip_validates():
     step = Step(provider="mock", model="mock-v1", prompt="hello")
     _validator_for("step.schema.json").validate(step.model_dump(mode="json"))
+
+
+def _step_attempt_schema() -> dict:
+    return _load("step.schema.json")["properties"]["failed_attempts"]["items"]
+
+
+def test_step_attempt_schema_matches_model():
+    """StepAttempt is inlined under Step.failed_attempts — same parity rules
+    as the top-level models: identical field set, closed object, and the same
+    error_code enum as Step (#239)."""
+    schema = _step_attempt_schema()
+    assert set(StepAttempt.model_fields) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
+    assert all(spec.get("description") for spec in schema["properties"].values())
+    sch_codes = set(schema["properties"]["error_code"]["enum"]) - {None}
+    assert sch_codes == {e.value for e in ProviderErrorCode}
+
+
+def test_step_with_failed_attempts_roundtrip_validates():
+    attempt = StepAttempt(
+        model="primary-v1",
+        provider="mock",
+        error="primary unavailable",
+        error_code=ProviderErrorCode.MODEL_ERROR,
+        upstream_id="pred-1",
+        cost_usd=0.01,
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+    )
+    step = Step(provider="mock", model="fallback-v2", failed_attempts=[attempt])
+    dumped = step.model_dump(mode="json")
+    _validator_for("step.schema.json").validate(dumped)
+    assert Step.model_validate(dumped).failed_attempts == [attempt]
 
 
 def test_run_roundtrip_validates():

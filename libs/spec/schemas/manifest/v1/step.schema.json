@@ -133,6 +133,69 @@
       "type": "object",
       "additionalProperties": true,
       "default": {}
+    },
+    "failed_attempts": {
+      "type": "array",
+      "default": [],
+      "description": "Earlier failed attempts this step superseded (fallback chain), oldest first. The step itself is the final attempt. Omitted from serialization when empty; included in the canonical hash when present.",
+      "items": {
+        "title": "StepAttempt",
+        "description": "A failed provider invocation superseded by a later attempt of the same step.",
+        "type": "object",
+        "required": ["model"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model identifier this attempt ran against."
+          },
+          "provider": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "Provider name."
+          },
+          "error": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "Sanitized error message."
+          },
+          "error_code": {
+            "type": ["string", "null"],
+            "enum": ["timeout", "rate_limit", "auth_failure", "invalid_input", "model_error", "server_error", "content_policy", "unknown", null],
+            "default": null,
+            "description": "Normalized error code."
+          },
+          "upstream_id": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "Provider prediction/job id, when the provider accepted the job before failing. Null means it failed before submit returned."
+          },
+          "cost_usd": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "default": null,
+            "description": "Cost the provider reported for this attempt. Null means unknown, not free: a failed job may still have been billed."
+          },
+          "retries": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Provider-level retries within this attempt."
+          },
+          "started_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "default": null,
+            "description": "Attempt start timestamp."
+          },
+          "completed_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "default": null,
+            "description": "Attempt completion timestamp."
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

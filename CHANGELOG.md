@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-core
 
+- **Fixed** a step rescued by `fallback_models` no longer erases the failed
+  primary from provenance. Each superseded failure is now recorded, oldest
+  first, in the new `Step.failed_attempts` list (`StepAttempt`: model,
+  provider, sanitized error, error code, upstream prediction id, cost,
+  retries, timestamps), on both `run()` and `arun()`. The field is omitted
+  from serialization when empty, so existing manifests keep their
+  `canonical_hash` and stay readable by older releases. Failed-attempt cost
+  is reported per attempt and is not added to `Step.cost_usd` (#239).
 - **Fixed** `PromptTemplate("A {animal}")` now accepts the template
   positionally instead of raising `TypeError: BaseModel.__init__() takes 1
   positional argument but 2 were given`. The positional spelling is the one

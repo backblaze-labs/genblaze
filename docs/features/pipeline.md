@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-15 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -109,6 +109,7 @@ chain-input compatibility) run inline. `run()` behavior is unchanged (sync
 - Cache stores only successful steps — failed steps are not cached
 - Exception-raising tasks in `_gather_fail_fast` → captured as FAILED steps (not dropped), preserving the `step_id` already announced via that step's `step.started` event so cancelled/errored steps correlate correctly with their own stream events
 - Model fallback: on `MODEL_ERROR`, tries each `fallback_models` entry; records `fallback_from`/`fallback_model` in step metadata. Cache stores successful fallback results under the fallback model's key (not the original), so a later run with the fallback model as primary gets a cache hit
+- Fallback attempt ledger: every failure a fallback supersedes is kept, oldest first, in `Step.failed_attempts` (a list of `StepAttempt`: `model`, `provider`, sanitized `error`, `error_code`, `upstream_id`, `cost_usd`, `retries`, `started_at`, `completed_at`) on the step the run returns — the rescued success, or the last failure when every model fails. `run.steps` stays one Step per pipeline step. The list is omitted from serialization when empty, so manifests without fallbacks keep their pre-existing `canonical_hash`; when present it is part of the hashed payload, making the ledger tamper-evident. Attempts carry no `provider_payload`, prompt, or params. Cost: `Step.cost_usd` is the final attempt's cost only; failed-attempt cost is never folded in, so all-in spend is `(step.cost_usd or 0) + sum(a.cost_usd or 0 for a in step.failed_attempts)`. `cost_usd=None` on an attempt means unknown, not free. Cached fallback results drop the ledger — a later cache hit did not re-run those attempts
 - `batch_run` / `abatch_run`: each prompt gets independent pipeline execution. `abatch_run`'s `max_concurrency` genuinely limits parallel runs (validated `>= 1`, else `GenblazeError`). `batch_run` always executes sequentially — `max_concurrency` is validated but otherwise inert; an explicit value warns (`UserWarning`) and points at `abatch_run`, since provider/sink instances are shared across batch clones and not guaranteed thread-safe under real concurrent execution
 - `pipeline_timeout` raises `PipelineTimeoutError` when wall-clock time exceeds limit (checked before each step, not mid-step)
 - `on_step_complete` fires for both succeeded and failed steps; for concurrent `arun()`, fires after all steps complete

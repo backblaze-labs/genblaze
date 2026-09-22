@@ -75,6 +75,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "parse_manifest": ("genblaze_core.models.manifest", "parse_manifest"),
     "Run": ("genblaze_core.models.run", "Run"),
     "Step": ("genblaze_core.models.step", "Step"),
+    "StepAttempt": ("genblaze_core.models.step", "StepAttempt"),
     "Asset": ("genblaze_core.models.asset", "Asset"),
     "AudioMetadata": ("genblaze_core.models.asset", "AudioMetadata"),
     "Track": ("genblaze_core.models.asset", "Track"),

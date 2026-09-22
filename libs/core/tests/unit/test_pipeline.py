@@ -1,5 +1,6 @@
 """Tests for Pipeline API."""
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from genblaze_core.models.enums import (
     RunStatus,
     StepStatus,
 )
+from genblaze_core.models.manifest import parse_manifest
 from genblaze_core.models.step import Step
 from genblaze_core.pipeline import Pipeline, StepCache
 from genblaze_core.pipeline.result import PipelineResult
@@ -1239,6 +1241,120 @@ def test_fallback_cache_keys_correct(tmp_path: Path) -> None:
     cached = cache.get(good_step)
     assert cached is not None
     assert cached.status == StepStatus.SUCCEEDED
+    # A later cache hit did not fail a primary, so it must not inherit this
+    # run's failed-attempt ledger (#239).
+    assert cached.failed_attempts == []
+
+
+class BilledModelErrorProvider(ModelErrorProvider):
+    """Accepts the job upstream, bills it, then fails it with MODEL_ERROR.
+
+    Mirrors the costly case in #239: a failure after submit still carries an
+    upstream prediction id and a charge.
+    """
+
+    name = "billed-model-err"
+
+    def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
+        self.invoked_models.append(step.model)
+        return f"pred-{step.model}"
+
+    def fetch_output(self, prediction_id: Any, step: Step) -> Step:
+        if step.model in self.failing_models:
+            from genblaze_core.exceptions import ProviderError
+
+            step.cost_usd = 0.04
+            raise ProviderError(
+                f"{step.model} crashed mid-generation",
+                error_code=ProviderErrorCode.MODEL_ERROR,
+            )
+        return super().fetch_output(prediction_id, step)
+
+
+def _assert_primary_attempt_recorded(result: PipelineResult) -> None:
+    assert len(result.run.steps) == 1
+    step = result.run.steps[0]
+    assert step.status == StepStatus.SUCCEEDED
+    assert step.model == "good-model"
+    assert len(step.failed_attempts) == 1
+    attempt = step.failed_attempts[0]
+    assert attempt.model == "bad-model"
+    assert attempt.provider == "billed-model-err"
+    assert attempt.error_code == ProviderErrorCode.MODEL_ERROR
+    assert "bad-model crashed mid-generation" in (attempt.error or "")
+    assert attempt.upstream_id == "pred-bad-model"
+    assert attempt.cost_usd == 0.04
+    assert attempt.started_at is not None
+    assert attempt.completed_at is not None
+    assert attempt.started_at <= attempt.completed_at
+    # Final step's own cost is the successful attempt only — failed-attempt
+    # cost lives on the attempt, never folded into Step.cost_usd.
+    assert step.cost_usd is None
+    # The ledger reaches the manifest and is covered by the hash.
+    wire = result.manifest.to_canonical_json()
+    assert "bad-model crashed mid-generation" in wire
+    assert result.manifest.verify()
+    # Survives a wire round-trip: timestamps and enums re-hash identically.
+    reloaded = parse_manifest(json.loads(wire))
+    assert reloaded.run.steps[0].failed_attempts == step.failed_attempts
+    assert reloaded.verify()
+    # Tamper-evident: dropping the ledger breaks the hash.
+    reloaded.run.steps[0].failed_attempts = []
+    assert not reloaded.verify_hash()
+
+
+def test_fallback_records_failed_primary_attempt() -> None:
+    """A rescued step keeps the failed primary's error, timing, upstream id and
+    cost in Step.failed_attempts instead of silently discarding them (#239)."""
+    provider = BilledModelErrorProvider(failing_models={"bad-model"})
+    result = (
+        Pipeline("fallback-ledger")
+        .step(provider, model="bad-model", prompt="p", fallback_models=["good-model"])
+        .run(raise_on_failure=True)
+    )
+    _assert_primary_attempt_recorded(result)
+
+
+@pytest.mark.asyncio
+async def test_fallback_records_failed_primary_attempt_async() -> None:
+    """Async sibling — the async path shares the fallback loop logic (#239)."""
+    provider = BilledModelErrorProvider(failing_models={"bad-model"})
+    result = (
+        await Pipeline("fallback-ledger-async")
+        .step(provider, model="bad-model", prompt="p", fallback_models=["good-model"])
+        .arun()
+    )
+    _assert_primary_attempt_recorded(result)
+
+
+def test_fallback_exhausted_records_every_prior_attempt() -> None:
+    """When every model fails, the returned (last) failure lists all earlier
+    failures oldest-first, so no attempt is lost on the failure path either."""
+    provider = BilledModelErrorProvider(failing_models={"m1", "m2", "m3"})
+    result = (
+        Pipeline("fallback-ledger-exhausted")
+        .step(provider, model="m1", prompt="p", fallback_models=["m2", "m3"])
+        .run(raise_on_failure=False)
+    )
+    step = result.run.steps[0]
+    assert step.status == StepStatus.FAILED
+    assert step.model == "m3"
+    assert [a.model for a in step.failed_attempts] == ["m1", "m2"]
+    assert [a.upstream_id for a in step.failed_attempts] == ["pred-m1", "pred-m2"]
+    assert result.manifest.verify()
+
+
+def test_no_fallback_leaves_failed_attempts_empty() -> None:
+    """Steps that never fall back carry no ledger and serialize without it."""
+    provider = ModelErrorProvider(failing_models=set())
+    result = (
+        Pipeline("no-fallback-ledger")
+        .step(provider, model="good-model", prompt="p", fallback_models=["other"])
+        .run(raise_on_failure=True)
+    )
+    step = result.run.steps[0]
+    assert step.failed_attempts == []
+    assert "failed_attempts" not in step.model_dump()
 
 
 # --- Pipeline timeout and on_step_complete tests ---
