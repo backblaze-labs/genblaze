@@ -247,8 +247,17 @@ class RetryPolicy:
         return None
 
 
+# Codes the chat loop retries when the caller passes no ``policy``. TIMEOUT is
+# left out on purpose: a client-side timeout on a long non-streaming generation
+# tends to recur for the same payload while the server keeps generating (and
+# billing) each abandoned attempt. Pass an explicit ``RetryPolicy()`` to opt in.
+_CHAT_DEFAULT_RETRYABLE_CODES: frozenset[ProviderErrorCode] = frozenset(
+    {ProviderErrorCode.RATE_LIMIT, ProviderErrorCode.SERVER_ERROR}
+)
+
+
 def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | None = None) -> _T:
-    """Run ``fn()``, retrying on rate-limited ``ProviderError`` per ``policy`` (#221).
+    """Run ``fn()``, retrying transient ``ProviderError`` codes per ``policy`` (#221, #264).
 
     Backs the opt-in ``retry_on_rate_limit=`` flag on the standalone
     ``chat()``/``achat()`` convenience helpers (``genblaze_openai.chat``,
@@ -259,23 +268,28 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
     ``BaseProvider``'s pipeline retry loop (``RetryPolicy.compute_delay`` —
     server hint wins when present, else exponential backoff with jitter).
 
-    Narrowed to ``ProviderErrorCode.RATE_LIMIT`` — this helper exists to fix
-    429 backoff specifically, not to become a general retry wrapper for the
-    convenience helpers — but still defers to ``policy.should_retry`` (which
-    checks both ``policy.retryable_codes`` membership and the ``max_attempts``
-    budget) rather than hardcoding the attempt-cap check. A caller who passes
-    a ``policy`` with ``RATE_LIMIT`` excluded from ``retryable_codes`` (e.g.
-    ``RetryPolicy.disabled()``) gets no retry, same as they would on the
-    ``BaseProvider`` pipeline path. Any other exception (including other
-    ``ProviderError`` codes) propagates on the first attempt.
+    Defers entirely to ``policy.should_retry`` (``retryable_codes`` membership
+    plus the ``max_attempts`` budget), so an explicit ``RetryPolicy`` means the
+    same thing here as on ``BaseProvider``'s poll/fetch path. With no
+    ``policy`` the loop retries ``RATE_LIMIT`` and ``SERVER_ERROR`` (e.g.
+    Gemini 503 UNAVAILABLE) — see ``_CHAT_DEFAULT_RETRYABLE_CODES`` for why
+    ``TIMEOUT`` needs an explicit ``RetryPolicy()``. Narrow via
+    ``RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))``
+    for 429-only behavior, or ``RetryPolicy.disabled()`` for none. Codes
+    outside the set — including ``UNKNOWN`` — and non-``ProviderError``
+    exceptions propagate on the first attempt.
 
-    Bounded worst case: total wait is at most ``(max_attempts - 1) *
-    MAX_RETRY_AFTER_SEC`` — with the default policy (6 attempts), up to ~10
-    minutes if a misbehaving upstream returns the maximum ``Retry-After`` hint
-    on every attempt. There's no wall-clock deadline gate (unlike
-    ``BaseProvider``'s pipeline retry, which bails out once a step's overall
-    ``timeout`` would be exceeded) — this is a single, unscheduled call with no
-    equivalent deadline to check against. Pass a tighter ``policy`` (e.g.
+    Unlike ``BaseProvider`` submit (which skips post-response retry because a
+    billed async job may already exist), a 429/5xx on a synchronous chat call
+    returns no completion, so re-issuing it is safe.
+
+    Bounded worst case: wall clock is at most ``max_attempts`` request
+    timeouts plus ``(max_attempts - 1) * MAX_RETRY_AFTER_SEC`` of waits — with
+    6 attempts, ~10 minutes of waits alone if a misbehaving upstream returns
+    the maximum ``Retry-After`` hint every time. There's no wall-clock deadline
+    gate (unlike ``BaseProvider``'s pipeline retry, which bails out once a
+    step's overall ``timeout`` would be exceeded) — this is a single,
+    unscheduled call with no equivalent deadline to check against. Pass a tighter ``policy`` (e.g.
     ``max_attempts=2``) if that worst case is unacceptable for your call site.
 
     Synchronous by design: callers on the async path (``achat``) already run
@@ -287,30 +301,29 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
         fn: Zero-arg callable to invoke. Should raise ``ProviderError`` (with
             ``error_code``/``retry_after`` set) on failure.
         policy: Controls the attempt cap, retryable-code set, and backoff
-            timing. Defaults to ``RetryPolicy()`` (6 attempts, ``Retry-After``
-            honored, exponential + full-jitter fallback when no hint is
-            present).
+            timing. Defaults to ``RetryPolicy()`` with ``retryable_codes``
+            narrowed to ``_CHAT_DEFAULT_RETRYABLE_CODES`` (6 attempts,
+            ``Retry-After`` honored, exponential + full-jitter fallback).
 
     Raises:
         ProviderError: Re-raised once attempts are exhausted, or immediately
-            if the error isn't classified as ``RATE_LIMIT`` (or the policy
-            doesn't consider ``RATE_LIMIT`` retryable). ``exc.attempts`` is
+            if its ``error_code`` isn't in ``policy.retryable_codes``. ``exc.attempts`` is
             set to the number of attempts made before re-raising, matching
             ``BaseProvider``'s pipeline retry loop.
     """
-    policy = policy or RetryPolicy()
+    policy = policy or RetryPolicy(retryable_codes=_CHAT_DEFAULT_RETRYABLE_CODES)
     attempt = 1
     while True:
         try:
             return fn()
         except ProviderError as exc:
-            if exc.error_code != ProviderErrorCode.RATE_LIMIT or not policy.should_retry(
-                exc.error_code, attempt
-            ):
+            if not policy.should_retry(exc.error_code, attempt):
                 exc.attempts = attempt
                 raise
             delay = policy.compute_delay(attempt, retry_after=exc.retry_after)
-            logger.warning("rate-limit retry %d/%d in %.1fs", attempt, policy.max_attempts, delay)
+            logger.warning(
+                "%s retry %d/%d in %.1fs", exc.error_code, attempt, policy.max_attempts, delay
+            )
             time.sleep(delay)
             attempt += 1
 

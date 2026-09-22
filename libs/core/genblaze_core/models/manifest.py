@@ -298,14 +298,26 @@ class Manifest(BaseModel):
         m.compute_hash()
         return m
 
+    def recompute_canonical_hash(self) -> str:
+        """Return the canonical hash for this manifest's current content.
+
+        Unlike :meth:`compute_hash`, this does not mutate
+        ``self.canonical_hash`` — it's the read-only half shared by
+        :meth:`verify_hash` and by Mode 2 signing
+        (``genblaze_core.signing``), which must sign/verify the manifest's
+        *actual* current canonical hash without side effects on the object
+        being checked.
+        """
+        payload = _hash_payload(self.schema_version, self.run)
+        return canonical_hash(payload)
+
     def compute_hash(self) -> str:
         """Compute and set the canonical hash from provenance-relevant run data.
 
         Operational fields (status, timestamps, errors, provider_payload)
         are excluded so the hash is a stable provenance identifier.
         """
-        payload = _hash_payload(self.schema_version, self.run)
-        self.canonical_hash = canonical_hash(payload)
+        self.canonical_hash = self.recompute_canonical_hash()
         return self.canonical_hash
 
     def assert_writable_schema(self) -> None:
@@ -339,8 +351,7 @@ class Manifest(BaseModel):
 
     def verify_hash(self) -> bool:
         """Verify only that ``canonical_hash`` matches the canonical payload."""
-        payload = _hash_payload(self.schema_version, self.run)
-        return self.canonical_hash == canonical_hash(payload)
+        return self.canonical_hash == self.recompute_canonical_hash()
 
     def output_asset_ids_missing_sha256(self) -> list[str]:
         """Return output asset IDs missing or carrying malformed sha256."""
