@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from genblaze_core._utils import MAX_MANIFEST_BYTES
 from genblaze_core.exceptions import EmbeddingError, ManifestError
-from genblaze_core.media.base import BaseMediaHandler, atomic_write
+from genblaze_core.media.base import BaseMediaHandler, atomic_write, read_media_bytes
 from genblaze_core.models.manifest import Manifest, parse_manifest
 
 if TYPE_CHECKING:
@@ -51,6 +51,13 @@ class SidecarHandler(BaseMediaHandler):
     ) -> Path:
         """Write manifest as a sidecar JSON file.
 
+        Sidecar mode never rewrites media bytes in place, but the media file
+        still must exist at the path callers get back. When ``output`` names
+        a location distinct from ``source``, the source bytes are copied
+        there first — mirroring how the inline handlers materialize
+        ``output`` — so the sidecar always sits next to real media, not a
+        pointer to nothing (#238).
+
         Args:
             source: Path to the media file.
             manifest: The manifest to write.
@@ -61,13 +68,25 @@ class SidecarHandler(BaseMediaHandler):
             # _sidecar_path() coerces source to Path — kept inside the try
             # so a malformed source (e.g. embedded NUL) raises EmbeddingError
             # like any other bad-source failure, not a bare ValueError.
-            sidecar = self._sidecar_path(output or source)
-            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            source = Path(source)
+            target = Path(output) if output else source
+            # Validate/serialize before touching the filesystem — a bad
+            # policy (e.g. full-mode redaction) should fail without leaving
+            # a half-copied media file behind.
             json_str = (
                 manifest.to_embed_json(policy)
                 if policy is not None
                 else manifest.to_canonical_json()
             )
+            sidecar = self._sidecar_path(target)
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            # resolve() normalizes '..'/'.'  and relative-vs-absolute
+            # spellings of the same file without requiring `target` to
+            # exist yet, so a same-path output (the common case) is
+            # correctly treated as a no-op rather than a needless copy.
+            if target.resolve() != source.resolve():
+                with atomic_write(target) as tmp:
+                    tmp.write_bytes(read_media_bytes(source))
             with atomic_write(sidecar) as tmp:
                 tmp.write_bytes(json_str.encode("utf-8"))
             return sidecar
