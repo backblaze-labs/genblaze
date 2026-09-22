@@ -146,6 +146,63 @@ def test_embed_pointer_mode_preserves_verifiability(tmp_path: Path) -> None:
     assert manifest.verify()
 
 
+def test_embed_pointer_mode_distinct_output_creates_media(tmp_path: Path) -> None:
+    """Regression for #238: pointer mode + output= pointing at a distinct
+    path used to report EmbedResult.path as if the media existed there,
+    when only the pointer sidecar was ever written."""
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+    out = tmp_path / "redacted.png"
+
+    manifest = _make_manifest()
+    manifest.manifest_uri = "https://example.com/manifests/abc.json"
+
+    embedder = SmartEmbedder()
+    policy = EmbedPolicy(embed_mode="pointer")
+    result = embedder.embed(png, manifest, output=out, policy=policy)
+
+    assert result.method == "pointer"
+    assert result.path == out
+    assert result.path.exists(), "EmbedResult.path must point at real media"
+    assert result.sidecar_path is not None
+    assert result.sidecar_path.exists()
+
+
+def test_embed_pointer_mode_source_only_path_exists(tmp_path: Path) -> None:
+    """Source-only pointer calls (no output=) must also report an existing
+    path — the degenerate case of the #238 contract."""
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+
+    manifest = _make_manifest()
+    manifest.manifest_uri = "https://example.com/manifests/abc.json"
+
+    embedder = SmartEmbedder()
+    policy = EmbedPolicy(embed_mode="pointer")
+    result = embedder.embed(png, manifest, policy=policy)
+
+    assert result.path == png
+    assert result.path.exists()
+
+
+def test_embed_sidecar_fallback_distinct_output_creates_media(tmp_path: Path) -> None:
+    """The non-pointer sidecar fallback (no format handler, or a failed
+    inline embed) shares the same underlying SidecarHandler — it has the
+    same #238 exposure for a distinct output= and must also materialize
+    real media there."""
+    src = tmp_path / "test.mp4"
+    src.write_bytes(b"fake video data")
+    out = tmp_path / "renamed.mp4"
+
+    embedder = SmartEmbedder()
+    result = embedder.embed(src, _make_manifest(), output=out)
+
+    assert result.method == "sidecar"
+    assert result.path == out
+    assert result.path.exists()
+    assert result.path.read_bytes() == src.read_bytes()
+
+
 def test_sniff_mime_routes_misnamed_file(tmp_path: Path) -> None:
     """A PNG-named file containing JPEG bytes should dispatch to JpegHandler."""
     from genblaze_core.media.embedder import guess_mime, sniff_mime
