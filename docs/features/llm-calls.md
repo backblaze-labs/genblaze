@@ -146,7 +146,8 @@ the attempt cap or backoff timing (passing `retry_policy=` alone, without
 `retry_on_rate_limit=True`, also opts in). An explicit policy's
 `retryable_codes` is honored as-is, like on `BaseProvider`'s poll/fetch path —
 so a plain `RetryPolicy()` also retries `TIMEOUT`. Codes outside the set
-(including `UNKNOWN`, e.g. an OpenAI `APIConnectionError`) fail fast; keep
+(including `UNKNOWN`, e.g. an OpenAI `APIConnectionError`, which the SDK
+would otherwise have retried itself) fail fast; keep
 `AUTH_FAILURE`/`INVALID_INPUT`/`CONTENT_POLICY` out of any custom set. For
 429-only retry, narrow the set; `RetryPolicy.disabled()` turns retry off
 entirely:

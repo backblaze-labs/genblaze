@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
   `retry_policy=`) now retries a Gemini `503 UNAVAILABLE` / model-overloaded
   error under the same backoff as a 429 instead of failing on the first
-  attempt. Requires the genblaze-core release carrying #264.
+  attempt. Requires the genblaze-core release carrying this fix (#264).
 
 ### genblaze-core
 
@@ -99,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `503 UNAVAILABLE`) as well as `RATE_LIMIT` by default, and honors an explicit
   `RetryPolicy`'s full `retryable_codes` — matching `BaseProvider`'s poll/fetch
   path. `TIMEOUT` retries only via an explicit policy, since a timed-out long
-  generation can still be billed. Pass
+  generation can still be billed; callers already passing an explicit
+  `RetryPolicy()` now retry `TIMEOUT` too. Pass
   `RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))` for
   the previous 429-only behavior (#264).
 
@@ -155,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
   `retry_policy=`) now also retries 5xx, which previously failed fast because
   opting in disables the OpenAI SDK's own retry. Requires the genblaze-core
-  release carrying #264.
+  release carrying this fix (#264).
 
 ## [0.7.0] - 2026-07-28
 
