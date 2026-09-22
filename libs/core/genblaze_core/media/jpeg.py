@@ -12,7 +12,9 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import struct
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from genblaze_core._utils import MAX_MANIFEST_BYTES
@@ -28,10 +30,18 @@ from genblaze_core.models.manifest import Manifest, parse_manifest
 XMP_NS = "genblaze"
 MAX_XMP_BYTES = 60 * 1024  # 60KB size guard
 
-# Opening tag of the genblaze manifest element; its presence marks an XMP
-# packet (JPEG APP1 segment or WebP ``XMP `` chunk) as ours.
-MANIFEST_TAG = b"<mf:manifest>"
+_MANIFEST_TAG = b"<mf:manifest>"
 _MANIFEST_END_TAG = b"</mf:manifest>"
+_XMP_PACKET_PREFIX = (
+    b'<?xpacket begin="\xc3\xaf\xc2\xbb\xc2\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+    b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+    b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"'
+    b' xmlns:mf="https://github.com/backblaze-labs/genblaze/ns/1.0/">'
+    b'<rdf:Description rdf:about="">' + _MANIFEST_TAG
+)
+_XMP_PACKET_SUFFIX = (
+    _MANIFEST_END_TAG + b"</rdf:Description></rdf:RDF></x:xmpmeta>" + b'<?xpacket end="w"?>'
+)
 
 # Standard XMP-in-JPEG namespace header (XMP spec part 3, §1.1.3).
 _XMP_APP1_HEADER = b"http://ns.adobe.com/xap/1.0/\x00"
@@ -42,82 +52,139 @@ _APP0, _APP1, _SOS, _EOI = 0xE0, 0xE1, 0xDA, 0xD9
 _STANDALONE_MARKERS = frozenset({0x01, *range(0xD0, 0xD8)})
 # Segment length is a u16 that counts its own 2 bytes.
 _MAX_SEGMENT_PAYLOAD = 0xFFFF - 2
+# Real headers carry tens of segments (ICC alone may span up to 255 APP2s);
+# the cap bounds CPU on hostile files made of millions of tiny markers.
+_MAX_HEADER_SEGMENTS = 65536
+_NOT_FF = re.compile(rb"[^\xff]")
 
 
 def _build_xmp(manifest_json: str) -> bytes:
     """Build an XMP packet containing the manifest JSON (XML-escaped)."""
     # XML-escape manifest JSON to prevent tag injection from prompt content
     escaped = html.escape(manifest_json, quote=False)
-    xmp = (
-        '<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-        f'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"'
-        f' xmlns:mf="https://github.com/backblaze-labs/genblaze/ns/1.0/">'
-        f'<rdf:Description rdf:about="">'
-        f"<mf:manifest>{escaped}</mf:manifest>"
-        f"</rdf:Description>"
-        f"</rdf:RDF>"
-        f"</x:xmpmeta>"
-        '<?xpacket end="w"?>'
-    )
-    return xmp.encode("utf-8")
+    return _XMP_PACKET_PREFIX + escaped.encode("utf-8") + _XMP_PACKET_SUFFIX
 
 
-def _split_segments(data: bytes) -> tuple[list[tuple[int, bytes, bytes]], int]:
-    """Split a JPEG into header segments and the offset of the first SOS.
+def _is_own_packet(data: bytes, start: int, end: int) -> bool:
+    """True if ``data[start:end]`` is exactly a packet ``_build_xmp`` wrote.
 
-    Returns ``([(marker, verbatim_bytes, payload), ...], sos_offset)``.
-    ``verbatim_bytes`` includes any 0xFF fill bytes and the marker/length
-    fields, so concatenating them (after SOI) reproduces the header exactly.
-    Everything from ``sos_offset`` on — scan headers, entropy-coded data,
-    further tables for progressive scans, EOI, trailers — is never parsed.
+    Only these are replaced on re-embed. A packet another tool merged our
+    manifest into (exiftool, Lightroom) also carries third-party properties,
+    so it is kept rather than silently dropped.
     """
-    if data[:2] != _SOI:
+    return (
+        end - start >= len(_XMP_PACKET_PREFIX) + len(_XMP_PACKET_SUFFIX)
+        and data.startswith(_XMP_PACKET_PREFIX, start)
+        and data.endswith(_XMP_PACKET_SUFFIX, start, end)
+    )
+
+
+def _manifest_from_packets(data: bytes, packets: Iterable[tuple[int, int]], source: Path) -> str:
+    """Return the XML-unescaped manifest JSON from the XMP packets given.
+
+    ``packets`` are ``(start, end)`` offsets of real XMP containers (JPEG
+    APP1 payloads, WebP ``XMP `` chunks) — never arbitrary file bytes, so a
+    ``<mf:manifest>`` string planted in EXIF, ICC or image data can't shadow
+    the embedded one. A packet genblaze wrote wins over one a third-party
+    tool merged our manifest into; otherwise the first match is used.
+    """
+    saw_xmp = False
+    fallback: tuple[int, int] | None = None
+    for start, end in packets:
+        saw_xmp = True
+        if _is_own_packet(data, start, end):
+            return _decode_manifest(data, start, end, source)
+        if fallback is None and data.find(_MANIFEST_TAG, start, end) != -1:
+            fallback = (start, end)
+    if fallback is not None:
+        return _decode_manifest(data, *fallback, source)
+    if saw_xmp:
+        raise EmbeddingError(f"No genblaze manifest in any XMP packet in {source}")
+    raise EmbeddingError(f"No XMP data found in {source}")
+
+
+def _decode_manifest(data: bytes, start: int, end: int, source: Path) -> str:
+    """Decode the ``<mf:manifest>`` element inside ``data[start:end]``.
+
+    Manifest content is XML-escaped, so it can't contain the end tag.
+    """
+    tag = data.find(_MANIFEST_TAG, start, end)
+    content_start = tag + len(_MANIFEST_TAG)
+    content_end = data.find(_MANIFEST_END_TAG, content_start, end)
+    if content_end == -1:
+        raise EmbeddingError(f"Malformed XMP in {source}: unterminated <mf:manifest>")
+    if content_end - content_start > MAX_MANIFEST_BYTES:
+        raise EmbeddingError(
+            f"Embedded manifest exceeds size limit "
+            f"({content_end - content_start} > {MAX_MANIFEST_BYTES} bytes)"
+        )
+    try:
+        raw = data[content_start:content_end].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise EmbeddingError(f"Malformed XMP in {source}: manifest is not UTF-8") from exc
+    return html.unescape(raw)
+
+
+def _iter_segments(data: bytes) -> Iterator[tuple[int, int, int, int]]:
+    """Yield ``(marker, start, payload_start, end)`` for each header segment.
+
+    ``data[start:end]`` is the verbatim segment including any 0xFF fill bytes
+    and the marker/length fields. The last item is the first SOS, yielded as
+    ``(_SOS, start, start, start)``: everything from there on — scan headers,
+    entropy-coded data, progressive-scan tables, EOI, trailers — is never
+    parsed. Offsets (not slices) keep memory flat on large files.
+    """
+    if not data.startswith(_SOI):
         raise EmbeddingError("Not a valid JPEG (missing SOI marker)")
-    segments: list[tuple[int, bytes, bytes]] = []
     pos = 2
     size = len(data)
-    while True:
+    for _ in range(_MAX_HEADER_SEGMENTS):
         if pos >= size or data[pos] != 0xFF:
             raise EmbeddingError(f"Malformed JPEG: expected marker at offset {pos}")
         start = pos
-        while pos < size and data[pos] == 0xFF:  # optional fill bytes
-            pos += 1
-        if pos >= size:
+        match = _NOT_FF.search(data, pos)  # skip optional fill bytes at C speed
+        if match is None:
             raise EmbeddingError("Truncated JPEG: marker runs past end of file")
+        pos = match.start()
         marker = data[pos]
         pos += 1
         if marker == _SOS:
-            return segments, start
+            yield _SOS, start, start, start
+            return
         if marker == _EOI:
             raise EmbeddingError("Malformed JPEG: no image scan (SOS) before EOI")
         if marker == 0x00:
             raise EmbeddingError(f"Malformed JPEG: stuffed byte outside scan at offset {start}")
         if marker in _STANDALONE_MARKERS:
-            segments.append((marker, data[start:pos], b""))
+            yield marker, start, pos, pos
             continue
         if pos + 2 > size:
             raise EmbeddingError("Truncated JPEG: segment length runs past end of file")
-        length = struct.unpack(">H", data[pos : pos + 2])[0]
+        length = struct.unpack_from(">H", data, pos)[0]
         if length < 2 or pos + length > size:
             raise EmbeddingError(f"Truncated JPEG segment 0xFF{marker:02X} at offset {start}")
-        segments.append((marker, data[start : pos + length], data[pos + 2 : pos + length]))
+        yield marker, start, pos + 2, pos + length
         pos += length
+    raise EmbeddingError(f"Malformed JPEG: more than {_MAX_HEADER_SEGMENTS} header segments")
 
 
-def _is_genblaze_app1(marker: int, payload: bytes) -> bool:
-    return marker == _APP1 and payload.startswith(_XMP_APP1_HEADER) and MANIFEST_TAG in payload
+def _xmp_packets(data: bytes) -> Iterator[tuple[int, int]]:
+    """Yield ``(start, end)`` of the XMP packet in each standard-XMP APP1."""
+    for marker, _, payload_start, end in _iter_segments(data):
+        if marker == _APP1 and data.startswith(_XMP_APP1_HEADER, payload_start, end):
+            yield payload_start + len(_XMP_APP1_HEADER), end
 
 
-def _embed_xmp_segment(data: bytes, xmp: bytes) -> bytes:
+def _embed_xmp_segment(data: bytes, xmp: bytes) -> bytearray:
     """Return JPEG bytes with one genblaze XMP APP1 segment spliced in.
 
-    Existing genblaze segments (including ones written by the legacy Pillow
-    path) are dropped so re-embed replaces. The new segment goes after the
-    leading APP0 (JFIF/JFXX) and EXIF APP1 run — both specs require those to
-    sit directly after SOI — and ahead of everything else.
+    Segments genblaze wrote (including via the legacy Pillow path) are
+    dropped so re-embed replaces. The new segment goes after the leading
+    APP0 (JFIF/JFXX) and EXIF APP1 run — both specs require those directly
+    after SOI — and ahead of everything else, so it is the first XMP packet.
     """
     payload = _XMP_APP1_HEADER + xmp
+    # Defence in depth: MAX_XMP_BYTES already keeps callers well below this.
     if len(payload) > _MAX_SEGMENT_PAYLOAD:
         raise EmbeddingError(
             f"XMP packet too large for one JPEG APP1 segment "
@@ -125,54 +192,29 @@ def _embed_xmp_segment(data: bytes, xmp: bytes) -> bytes:
         )
     new_segment = b"\xff" + bytes([_APP1]) + struct.pack(">H", len(payload) + 2) + payload
 
-    segments, sos_offset = _split_segments(data)
+    view = memoryview(data)
     out = bytearray(_SOI)
     inserted = False
-    for marker, raw, seg_payload in segments:
-        if _is_genblaze_app1(marker, seg_payload):
+    for marker, start, payload_start, end in _iter_segments(data):
+        if marker == _SOS:
+            if not inserted:
+                out += new_segment
+            out += view[start:]
+            break
+        if (
+            marker == _APP1
+            and data.startswith(_XMP_APP1_HEADER, payload_start, end)
+            and _is_own_packet(data, payload_start + len(_XMP_APP1_HEADER), end)
+        ):
             continue
         leading = marker == _APP0 or (
-            marker == _APP1 and seg_payload.startswith(_EXIF_APP1_HEADER)
+            marker == _APP1 and data.startswith(_EXIF_APP1_HEADER, payload_start, end)
         )
         if not inserted and not leading:
             out += new_segment
             inserted = True
-        out += raw
-    if not inserted:
-        out += new_segment
-    out += data[sos_offset:]
-    return bytes(out)
-
-
-def _scan_xmp_for_manifest(data: bytes, source: Path) -> str:
-    """Return the XML-unescaped manifest JSON from the genblaze XMP element.
-
-    JPEG/WebP files can carry several XMP packets — Photoshop, Lightroom or
-    any other tool may have written its own before genblaze embedded — and
-    third-party packets don't always carry an ``<?xpacket end?>`` wrapper.
-    Searching for the ``<mf:manifest>`` element directly (rather than
-    walking packet boundaries) finds ours wherever it sits, in one linear
-    pass. Manifest content is XML-escaped, so it can't contain the end tag.
-    """
-    start = data.find(MANIFEST_TAG)
-    if start == -1:
-        if b"<x:xmpmeta" in data:
-            raise EmbeddingError(f"No genblaze manifest in any XMP packet in {source}")
-        raise EmbeddingError(f"No XMP data found in {source}")
-    content_start = start + len(MANIFEST_TAG)
-    end = data.find(_MANIFEST_END_TAG, content_start)
-    if end == -1:
-        raise EmbeddingError(f"Malformed XMP in {source}: unterminated <mf:manifest>")
-    if end - content_start > MAX_MANIFEST_BYTES:
-        raise EmbeddingError(
-            f"Embedded manifest exceeds size limit "
-            f"({end - content_start} > {MAX_MANIFEST_BYTES} bytes)"
-        )
-    try:
-        raw = data[content_start:end].decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise EmbeddingError(f"Malformed XMP in {source}: manifest is not UTF-8") from exc
-    return html.unescape(raw)
+        out += view[start:end]
+    return out
 
 
 class JpegHandler(BaseMediaHandler):
@@ -209,7 +251,7 @@ class JpegHandler(BaseMediaHandler):
         try:
             source = Path(source)
             data = read_media_bytes(source)
-            manifest_json = _scan_xmp_for_manifest(data, source)
+            manifest_json = _manifest_from_packets(data, _xmp_packets(data), source)
             return parse_manifest(json.loads(manifest_json))
         except EmbeddingError:
             raise

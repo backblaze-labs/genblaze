@@ -91,8 +91,17 @@ byte-identical:
   unchanged.
 
 Re-embedding replaces the previous genblaze record rather than adding a second
-one. `WebpHandler.embed(lossless=..., quality=...)` is deprecated and ignored
-(it configured the former re-encode) and emits a `DeprecationWarning`.
+one. Only packets genblaze wrote are replaced: a packet another tool merged the
+manifest into (exiftool, Lightroom) is kept, and third-party XMP is never
+dropped. A JPEG/WebP that already carries third-party XMP therefore ends up with
+two XMP packets; genblaze reads its own, but tools that honor only the first
+packet may not see the manifest. Extraction reads only XMP containers (JPEG
+`APP1` XMP segments, WebP `XMP ` chunks), so a `<mf:manifest>` string elsewhere
+in the file (EXIF, ICC, image data) is ignored.
+
+`WebpHandler.embed(lossless=..., quality=...)` is deprecated since
+genblaze-core 0.3.9 and ignored (it configured the former re-encode); it emits a
+`DeprecationWarning` and will be removed in 0.4.0.
 
 ## Atomicity
 

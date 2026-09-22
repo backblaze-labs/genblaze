@@ -99,8 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simple-format `VP8`/`VP8L` file is promoted to extended `VP8X`). EXIF, ICC,
   third-party XMP and the compressed image data are kept byte-for-byte,
   re-embedding replaces the previous manifest, and files embedded by earlier
-  versions still extract. `WebpHandler.embed(lossless=..., quality=...)` is
-  now a deprecated no-op that emits `DeprecationWarning` (#249).
+  versions still extract. Extraction now reads only real XMP containers, so a
+  `<mf:manifest>` string planted in EXIF or other bytes can no longer shadow
+  the embedded manifest (#249).
+- **Deprecated** `WebpHandler.embed(lossless=..., quality=...)`. Both
+  configured the former re-encode; they are now ignored, emit a
+  `DeprecationWarning`, and will be removed in genblaze-core 0.4.0 (#249).
 
 ### Internal
 

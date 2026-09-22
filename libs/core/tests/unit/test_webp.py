@@ -340,3 +340,82 @@ def test_webp_embed_rejects_oversized_manifest(
     with pytest.raises(EmbeddingError, match="too large"):
         WebpHandler().embed(tmp_webp, sample_manifest)
     assert tmp_webp.read_bytes() == original
+
+
+def _planted_element(manifest: Manifest) -> bytes:
+    return (
+        b"<mf:manifest>"
+        + manifest.to_canonical_json().replace("<", "&lt;").encode()
+        + b"</mf:manifest>"
+    )
+
+
+@pytest.mark.parametrize("fourcc", [b"EXIF", b"ZZZZ"])
+def test_webp_extract_ignores_manifest_planted_outside_xmp(
+    tmp_path: Path, sample_manifest: Manifest, fourcc: bytes
+) -> None:
+    """A ``<mf:manifest>`` string in a non-XMP chunk (ahead of ours, since
+    ours is appended last) must not shadow the embedded manifest."""
+    base = tmp_path / "base.webp"
+    Image.new("RGB", (8, 8)).save(base, "WEBP", exif=Image.Exif())  # VP8X + EXIF
+    chunks = _chunks(base.read_bytes())
+    planted = _planted_element(_other_manifest("planted"))
+    pad = b"\x00" * (len(planted) & 1)
+    body = b"".join(raw for _, raw in chunks) + fourcc + struct.pack("<I", len(planted))
+    src = tmp_path / "planted.webp"
+    src.write_bytes(_riff(body + planted + pad))
+
+    WebpHandler().embed(src, sample_manifest)
+
+    assert WebpHandler().extract(src).canonical_hash == sample_manifest.canonical_hash
+
+
+def test_webp_reembed_keeps_merged_third_party_packet(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """A packet another tool merged our manifest into is kept on re-embed,
+    and the packet genblaze wrote wins on extract even though it's last."""
+    merged = _build_xmp(sample_manifest.to_canonical_json()).replace(
+        b"<mf:manifest>", b"<dc:creator>Alice</dc:creator><mf:manifest>"
+    )
+    src = tmp_path / "merged.webp"
+    Image.new("RGB", (8, 8)).save(src, "WEBP", xmp=merged)
+
+    second = _other_manifest("second")
+    WebpHandler().embed(src, second)
+
+    assert b"<dc:creator>Alice</dc:creator>" in src.read_bytes()
+    assert WebpHandler().extract(src).canonical_hash == second.canonical_hash
+
+
+def test_webp_embed_preserves_trailing_bytes(tmp_path: Path, sample_manifest: Manifest) -> None:
+    base = tmp_path / "base.webp"
+    Image.new("RGB", (8, 8)).save(base, "WEBP", exif=Image.Exif())
+    original = base.read_bytes()
+    src = tmp_path / "trailer.webp"
+    src.write_bytes(original + b"TRAILER")
+
+    WebpHandler().embed(src, sample_manifest)
+    after = src.read_bytes()
+
+    assert after.endswith(b"TRAILER")
+    assert _strip_genblaze(after[: -len(b"TRAILER")]) == original
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_webp_embed_pads_odd_length_xmp(
+    tmp_webp: Path, sample_manifest: Manifest, extra: int
+) -> None:
+    """Both XMP payload parities produce a valid, word-aligned RIFF."""
+    manifest = sample_manifest
+    for i in range(8):  # find a manifest whose packet length has the wanted parity
+        manifest = _other_manifest("p" * i)
+        if len(_build_xmp(manifest.to_canonical_json())) % 2 == extra:
+            break
+    assert len(_build_xmp(manifest.to_canonical_json())) % 2 == extra
+    WebpHandler().embed(tmp_webp, manifest)
+
+    _chunks(tmp_webp.read_bytes())  # asserts RIFF size and chunk framing
+    with Image.open(tmp_webp) as im:
+        im.load()
+    assert WebpHandler().extract(tmp_webp).canonical_hash == manifest.canonical_hash

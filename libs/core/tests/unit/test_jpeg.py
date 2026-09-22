@@ -96,13 +96,13 @@ def test_jpeg_extract_walks_past_foreign_xmp(tmp_path: Path, sample_manifest: Ma
         b"</rdf:RDF></x:xmpmeta>"
         b'<?xpacket end="w"?>'
     )
-    # Insert the foreign packet ahead of the existing genblaze packet.
-    genblaze_pos = original.find(b"<x:xmpmeta")
-    assert genblaze_pos != -1
-    spliced = original[:genblaze_pos] + foreign + original[genblaze_pos:]
-    src.write_bytes(spliced)
+    # Insert the foreign packet as its own XMP APP1 segment ahead of ours.
+    genblaze_pos = next(s for s, m, e in _segments(original) if _is_genblaze(original, s, m, e))
+    payload = _XMP_HEADER + foreign
+    segment = b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
+    src.write_bytes(original[:genblaze_pos] + segment + original[genblaze_pos:])
 
-    # Walking scan finds the genblaze packet despite the foreign one being first.
+    # Extraction finds the genblaze packet despite the foreign one being first.
     extracted = handler.extract(src)
     assert extracted.canonical_hash == sample_manifest.canonical_hash
 
@@ -345,3 +345,85 @@ def test_jpeg_extract_rejects_bad_xmp(tmp_path: Path, xmp: bytes, match: str) ->
     Image.new("RGB", (8, 8)).save(src, "JPEG", xmp=xmp)
     with pytest.raises(EmbeddingError, match=match):
         JpegHandler().extract(src)
+
+
+def _own_segment(manifest: Manifest) -> bytes:
+    """The exact APP1 segment the handler writes for ``manifest``."""
+    payload = _XMP_HEADER + _build_xmp(manifest.to_canonical_json())
+    return b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
+
+
+def _exif_with_description(text: str) -> Image.Exif:
+    exif = Image.Exif()
+    exif[0x010E] = text  # ImageDescription
+    return exif
+
+
+def test_jpeg_extract_ignores_manifest_planted_outside_xmp(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """A ``<mf:manifest>`` string in EXIF (ahead of our segment) must not
+    shadow the embedded manifest — extraction reads XMP segments only."""
+    planted = _other_manifest("planted")
+    src = tmp_path / "planted.jpg"
+    exif = _exif_with_description(
+        "<mf:manifest>" + planted.to_canonical_json().replace("<", "&lt;") + "</mf:manifest>"
+    )
+    Image.new("RGB", (16, 16)).save(src, "JPEG", exif=exif)
+
+    JpegHandler().embed(src, sample_manifest)
+
+    assert JpegHandler().extract(src).canonical_hash == sample_manifest.canonical_hash
+
+
+def test_jpeg_reembed_keeps_merged_third_party_packet(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """A packet another tool merged our manifest into carries its own
+    properties; re-embed must keep it and the fresh segment must win."""
+    merged = _build_xmp(sample_manifest.to_canonical_json()).replace(
+        b"<mf:manifest>", b"<dc:creator>Alice</dc:creator><mf:manifest>"
+    )
+    src = tmp_path / "merged.jpg"
+    Image.new("RGB", (16, 16)).save(src, "JPEG", xmp=merged)
+
+    second = _other_manifest("second")
+    JpegHandler().embed(src, second)
+    after = src.read_bytes()
+
+    assert b"<dc:creator>Alice</dc:creator>" in after
+    assert JpegHandler().extract(src).canonical_hash == second.canonical_hash
+
+
+def test_jpeg_embed_preserves_fill_bytes_and_trailing_data(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    """0xFF fill bytes before a marker and bytes after EOI survive verbatim."""
+    base = tmp_path / "base.jpg"
+    Image.new("RGB", (8, 8)).save(base, "JPEG")
+    data = base.read_bytes()
+    original = data[:2] + b"\xff\xff" + data[2:] + b"TRAILER"  # fill before APP0
+    src = tmp_path / "fill.jpg"
+    src.write_bytes(original)
+
+    JpegHandler().embed(src, sample_manifest)
+    after = src.read_bytes()
+
+    assert after.replace(_own_segment(sample_manifest), b"", 1) == original
+    assert JpegHandler().extract(src).canonical_hash == sample_manifest.canonical_hash
+
+
+def test_jpeg_embed_without_app0_goes_right_after_soi(
+    tmp_path: Path, sample_manifest: Manifest
+) -> None:
+    base = tmp_path / "base.jpg"
+    Image.new("RGB", (8, 8)).save(base, "JPEG")
+    data = base.read_bytes()
+    app0_end = 4 + struct.unpack(">H", data[4:6])[0]
+    original = data[:2] + data[app0_end:]  # drop the JFIF APP0
+    src = tmp_path / "noapp0.jpg"
+    src.write_bytes(original)
+
+    JpegHandler().embed(src, sample_manifest)
+
+    assert src.read_bytes() == original[:2] + _own_segment(sample_manifest) + original[2:]
