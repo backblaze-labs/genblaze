@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Media Embedding
 
 ## Purpose
@@ -34,7 +34,11 @@ Embed provenance manifests directly into media files (PNG, JPEG, WebP, MP4, MP3,
 
 ## Outputs
 - Modified media file with embedded manifest (inline) or `.json` sidecar
-- `EmbedResult` with `method` ("inline" or "sidecar"), `path`, `sidecar_path`
+- `EmbedResult` with `method` ("inline", "sidecar", "pointer", or "none"), `path`, `sidecar_path`
+- In sidecar/pointer modes, `path` always points at an existing media file: if
+  `output=` names a location distinct from the source, the source bytes are
+  copied there (same atomic-write contract as the inline handlers) before the
+  sidecar is written alongside it (#238)
 
 ## Flow
 - `SmartEmbedder` checks MIME type → selects handler via `get_handler()`
@@ -85,7 +89,13 @@ if a lossy re-encode is acceptable.
 
 All inline embed paths (PNG, JPEG, WebP, MP4, MP3, WAV) and the sidecar handler use
 atomic temp-file + `os.replace` writes. A crash mid-embed leaves the source file
-intact; partial writes never overwrite the original.
+intact; partial writes never overwrite the original. This includes the sidecar
+handler's source-to-`output` copy when `output=` names a distinct path — copied
+via streaming I/O (not `read_media_bytes()`) so it shares MP4's 2 GB ceiling
+rather than the smaller 500 MB in-memory cap. The copy and the sidecar JSON
+write are each atomic individually but not as one transaction: if the sidecar
+write fails after the copy succeeds, the copied media is left without a
+sidecar. Callers always get an exception in that case, never a false success.
 
 ## Verification
 - Test files: `libs/core/tests/unit/test_png.py`, `test_jpeg.py`, `test_webp.py`, `test_mp4.py`, `test_mp3.py`, `test_wav.py`, `test_aac_handler.py`, `test_flac_handler.py`, `test_sidecar.py`, `test_embedder.py`, `libs/core/tests/golden/test_png_roundtrip.py`

@@ -670,6 +670,136 @@ def test_gpt_image_2_pricing_none_by_default(mock_b64_dalle):
     assert result.cost_usd is None
 
 
+# --- gpt-image usage payload (#240) ---
+
+
+def test_usage_recorded_from_sdk_object(mock_b64_dalle):
+    """gpt-image-* responses carry a pydantic Usage model exposing
+    model_dump(). Regression test for #240 — usage must survive into
+    provider_payload instead of being silently dropped."""
+    provider, client, _ = mock_b64_dalle
+    b64 = base64.b64encode(b"fake-image-bytes").decode()
+    usage = MagicMock()
+    usage.model_dump.return_value = {
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "total_tokens": 46,
+        "input_tokens_details": {"image_tokens": 0, "text_tokens": 12},
+    }
+    client.images.generate.return_value = SimpleNamespace(
+        data=[SimpleNamespace(b64_json=b64, url=None)], usage=usage
+    )
+    step = Step(provider="openai-dalle", model="gpt-image-1", prompt="x")
+    result = provider.generate(step)
+    assert result.provider_payload["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "total_tokens": 46,
+        "input_tokens_details": {"image_tokens": 0, "text_tokens": 12},
+    }
+    usage.model_dump.assert_called_once_with(mode="json")
+
+
+def test_usage_recorded_from_dict_shaped_response(mock_b64_dalle):
+    """Usage may already be a plain dict (e.g. a replayed fixture)."""
+    provider, client, _ = mock_b64_dalle
+    b64 = base64.b64encode(b"fake-image-bytes").decode()
+    client.images.generate.return_value = SimpleNamespace(
+        data=[SimpleNamespace(b64_json=b64, url=None)],
+        usage={"input_tokens": 5, "output_tokens": 10, "total_tokens": 15},
+    )
+    step = Step(provider="openai-dalle", model="gpt-image-1", prompt="x")
+    result = provider.generate(step)
+    assert result.provider_payload["usage"] == {
+        "input_tokens": 5,
+        "output_tokens": 10,
+        "total_tokens": 15,
+    }
+
+
+def test_usage_recorded_from_namespace_object(mock_b64_dalle):
+    """A bare attribute object without model_dump (e.g. a lightweight test
+    double) still normalizes into a plain dict."""
+    provider, client, _ = mock_b64_dalle
+    b64 = base64.b64encode(b"fake-image-bytes").decode()
+    client.images.generate.return_value = SimpleNamespace(
+        data=[SimpleNamespace(b64_json=b64, url=None)],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=34, total_tokens=46),
+    )
+    step = Step(provider="openai-dalle", model="gpt-image-2", prompt="x")
+    result = provider.generate(step)
+    assert result.provider_payload["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "total_tokens": 46,
+    }
+
+
+def test_usage_absent_for_dalle3(mock_dalle):
+    """dall-e-2/3 responses have no usage block — provider_payload stays
+    free of a "usage" key rather than storing None or an empty dict."""
+    provider, _ = mock_dalle
+    step = Step(provider="openai-dalle", model="dall-e-3", prompt="a cat")
+    result = provider.generate(step)
+    assert "usage" not in result.provider_payload
+
+
+def test_usage_recorded_on_edit_route(mock_b64_dalle):
+    """Usage extraction applies to /images/edits too, not just /generations."""
+    provider, client, out_dir = mock_b64_dalle
+    input_file = out_dir / "input.png"
+    input_file.write_bytes(b"fake-input-png")
+    b64 = base64.b64encode(b"fake-image-bytes").decode()
+    client.images.edit.return_value = SimpleNamespace(
+        data=[SimpleNamespace(b64_json=b64, url=None)],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3),
+    )
+    from genblaze_core.models.asset import Asset as _Asset
+
+    step = Step(
+        provider="openai-dalle",
+        model="gpt-image-2",
+        prompt="make it blue",
+        inputs=[_Asset(url=f"file://{input_file}", media_type="image/png")],
+    )
+    result = provider.generate(step)
+    assert result.provider_payload["usage"] == {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "total_tokens": 3,
+    }
+
+
+def test_jsonable_usage_recurses_into_lists():
+    """A list-valued usage field (not currently emitted by OpenAI, but not
+    ruled out for a future field) is recursed into rather than passed
+    through as opaque, non-JSON-guaranteed objects."""
+    from genblaze_openai.dalle import _jsonable_usage
+
+    usage = {"breakdown": [SimpleNamespace(kind="text", tokens=3)]}
+    assert _jsonable_usage(usage) == {"breakdown": [{"kind": "text", "tokens": 3}]}
+
+
+def test_jsonable_usage_depth_guard_stops_pathological_recursion():
+    """A malformed/adversarial deeply-nested usage value can't provoke a
+    stack overflow — normalization gives up past _MAX_USAGE_DEPTH and falls
+    back to repr() rather than raising, since usage capture must never fail
+    the image generation it's attached to."""
+    from genblaze_openai.dalle import _MAX_USAGE_DEPTH, _jsonable_usage
+
+    # Build a chain nested well past the depth cap.
+    node: dict = {}
+    innermost = node
+    for _ in range(_MAX_USAGE_DEPTH + 5):
+        innermost["next"] = {}
+        innermost = innermost["next"]
+    innermost["leaf"] = "value"
+
+    result = _jsonable_usage(node)  # must not raise RecursionError
+    # Beyond the cap, normalization stops and falls back to a plain repr.
+    assert isinstance(result, dict)
+
+
 # --- _download_https_to_temp SSRF tests ---
 
 

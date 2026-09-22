@@ -29,9 +29,9 @@ dependencies = [
     # speech model on TranscriptionConfig's plural ``speech_models`` field,
     # which the SDK only added in 0.45.0 — 0.40.0–0.44.3 raise
     # ``TypeError: ... unexpected keyword argument 'speech_models'`` before the
-    # request ever leaves the process. Bounded below 1.0 so a future major
-    # can't silently reshape these call sites.
-    "assemblyai>=0.45,<1",
+    # request ever leaves the process. Bounded below 2.0 so a future major
+    # can't silently reshape these call sites; verified against 1.5.5.
+    "assemblyai>=0.45,<2",
 ]
 
 [project.urls]

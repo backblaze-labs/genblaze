@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-09-03 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Provider System
 
 ## Purpose
@@ -16,6 +16,13 @@ Pluggable adapter pattern for generative AI APIs with standardized lifecycle, er
 - `BaseProvider.invoke(step)` — Orchestrate lifecycle with error handling and retry
 - `validate_asset_url(url)` — HTTPS-only URL validation for API response URLs
 - `validate_chain_input_url(url)` — Validates chain input URLs; allows `file://` (local outputs) and `https://`
+- ffmpeg helpers for deterministic providers (`from genblaze_core.providers import ...`; recipe in [new-provider guide](../guides/new-provider.md#deterministic-ffmpeg-provider)):
+  - `resolve_ffmpeg(ffmpeg_path="ffmpeg")` — locate the binary; `ProviderError(INVALID_INPUT)` if missing
+  - `resolve_input_path(url, *, extra_roots=None)` — `file://` confined to temp dirs + `extra_roots`; `https://` SSRF-checked (top-level URL only — use `-protocol_whitelist` for untrusted inputs)
+  - `run_ffmpeg(cmd, timeout=FFMPEG_TIMEOUT)` — list-args subprocess (no shell); presigned-URL queries redacted from logs and error text; output buffered in memory, so write to a file
+  - `get_output_path(step_id, ext, output_dir)` — `output_dir/<step_id>.<ext>` or a temp file; rejects path-escaping `step_id`/`ext`
+  - `populate_file_asset_integrity(asset, path)` — streams the file into `asset.sha256` / `asset.size_bytes`
+  - `local_file_url(path)` — cross-platform `file://` URL for an output file
 
 ## Provider Types
 
@@ -32,6 +39,7 @@ Pluggable adapter pattern for generative AI APIs with standardized lifecycle, er
 ## Canonical Files
 - Provider base: `libs/core/genblaze_core/providers/base.py`
 - FFmpegCompositor: `libs/core/genblaze_core/providers/compositor.py`
+- ffmpeg helpers: `libs/core/genblaze_core/providers/_ffmpeg_utils.py` (public via `genblaze_core.providers`)
 - Compliance tests: `libs/core/genblaze_core/testing.py`
 - Replicate adapter: `libs/connectors/replicate/genblaze_replicate/provider.py`
 - New provider guide: `docs/guides/new-provider.md`
