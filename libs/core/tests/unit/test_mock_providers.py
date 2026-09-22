@@ -275,6 +275,38 @@ def test_mock_provider_min_inputs_in_pipeline_without_external_inputs() -> None:
     assert result.run.steps[0].error_code == ProviderErrorCode.INVALID_INPUT
 
 
+def test_mock_video_provider_min_inputs() -> None:
+    """min_inputs forwards through MockVideoProvider's **kwargs, same as MockAudioProvider."""
+    provider = MockVideoProvider(min_inputs=1)
+    step = Step(provider="mock-video", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.INVALID_INPUT
+
+
+def test_mock_provider_negative_min_inputs_is_a_noop() -> None:
+    """A negative min_inputs never trips — len(inputs) < negative is always False."""
+    provider = MockProvider(min_inputs=-1)
+    step = Step(provider="mock", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.SUCCEEDED
+
+
+def test_mock_provider_min_inputs_takes_precedence_over_should_fail() -> None:
+    """When both min_inputs and should_fail would trigger, the input-count
+    check runs first — it fires before should_fail is ever consulted."""
+    provider = MockProvider(
+        min_inputs=1, should_fail=True, error_code=ProviderErrorCode.RATE_LIMIT
+    )
+    step = Step(provider="mock", model="m", prompt="p")
+    result = provider.invoke(step)
+
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.INVALID_INPUT
+
+
 # --- Lazy import from genblaze_core ---
 
 
