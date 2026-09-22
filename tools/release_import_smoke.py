@@ -28,6 +28,7 @@ CORE_IMPORTS = (
 # is added without a matching import smoke target.
 ALL_EXTRA_PACKAGE_IMPORTS = (
     ("genblaze-atlascloud", "genblaze_atlascloud"),
+    ("genblaze-fal", "genblaze_fal"),
     ("genblaze-gmicloud", "genblaze_gmicloud"),
     ("genblaze-openai", "genblaze_openai"),
     ("genblaze-google", "genblaze_google"),
@@ -73,7 +74,7 @@ SENSITIVE_ENV_NAME_RE = re.compile(
     r"(?:"
     r"API|AUTH|AZURE|B2_|BACKBLAZE|CREDENTIAL|GCP|GITHUB|GOOGLE|KEY|NPM|OPENAI|"
     r"PASSWORD|PYPI|SECRET|TOKEN|TWINE|AWS|ANTHROPIC|ASSEMBLYAI|ELEVEN|GMI|"
-    r"ATLAS|HUME|LANGSMITH|LMNT|LUMA|NVIDIA|REPLICATE|RUNWAY|STABILITY"
+    r"ATLAS|FAL_|HUME|LANGSMITH|LMNT|LUMA|NVIDIA|REPLICATE|RUNWAY|STABILITY"
     r")",
     re.IGNORECASE,
 )

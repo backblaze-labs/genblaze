@@ -56,6 +56,7 @@ PACKAGES=(
     "libs/connectors/nvidia"
     "libs/connectors/assemblyai"
     "libs/connectors/atlascloud"
+    "libs/connectors/fal"
     "cli"
     "libs/meta"
 )

@@ -83,6 +83,7 @@ pip install genblaze-lmnt            # LMNT fast TTS
 pip install genblaze-hume            # Hume AI Octave TTS
 pip install genblaze-assemblyai      # AssemblyAI speech-to-text / transcription
 pip install genblaze-atlascloud      # Atlas Cloud image and video generation
+pip install genblaze-fal             # fal.ai image, video, and audio generation
 ```
 
 Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`.
@@ -199,6 +200,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | Hume (Octave TTS) | `HUME_API_KEY` | [platform.hume.ai](https://platform.hume.ai/) |
 | AssemblyAI (speech-to-text) | `ASSEMBLYAI_API_KEY` | [assemblyai.com/app/api-keys](https://www.assemblyai.com/app/api-keys) |
 | Atlas Cloud (image, video) | `ATLASCLOUD_API_KEY` | [atlascloud.ai/console/api-keys](https://www.atlascloud.ai/console/api-keys) |
+| fal.ai (image, video, audio) | `FAL_KEY` | [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys) |
 
 **Example — one provider + B2 storage:**
 
