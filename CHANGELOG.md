@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new user; updated to the catalog-listed `imagen-4.0-*` slugs, documented
   the entitlement caveat, and documented the previously-unlisted
   `GeminiImageProvider` as the no-entitlement alternative (#233).
+- **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
+  `retry_policy=`) now retries a Gemini `503 UNAVAILABLE` / model-overloaded
+  error under the same backoff as a 429 instead of failing on the first
+  attempt (#264).
 
 ### genblaze-core
 
@@ -90,6 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
+- **Fixed** `call_with_rate_limit_retry` (behind the `retry_on_rate_limit=`
+  flag on the `chat()` helpers) now honors the full `RetryPolicy.retryable_codes`
+  instead of retrying `RATE_LIMIT` only, so the default policy also retries
+  `SERVER_ERROR` (e.g. Gemini `503 UNAVAILABLE`) and `TIMEOUT` — matching
+  `BaseProvider`'s poll/fetch path. Deterministic codes still fail fast; pass
+  `RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))` for
+  the previous 429-only behavior (#264).
 
 ### Internal
 
@@ -140,6 +151,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application/octet-stream` instead of the source's real type. The suffix
   is now derived from the input `Asset.media_type` (falling back to `.png`)
   (#253).
+- **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
+  `retry_policy=`) now also retries 5xx and timeouts per `RetryPolicy`,
+  restoring the transient-error retry the OpenAI SDK performs by default
+  (which the opt-in disables to avoid double retry) (#264).
 
 ## [0.7.0] - 2026-07-28
 

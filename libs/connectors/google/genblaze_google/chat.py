@@ -236,14 +236,16 @@ def chat(
         project: GCP project for Vertex AI auth (mutually exclusive with api_key).
         location: GCP region for Vertex AI.
         client: Pre-built `google.genai.Client` — escape hatch for tests.
-        retry_on_rate_limit: When ``True``, waits and retries on a 429 using
-            the server's ``Retry-After`` hint (falling back to exponential
-            backoff) instead of raising immediately. Off by default —
-            existing callers see no behavior change. See
-            ``docs/features/llm-calls.md``.
-        retry_policy: Optional ``RetryPolicy`` controlling attempt cap / backoff
-            when ``retry_on_rate_limit=True`` (or passed on its own to opt in
-            implicitly). Defaults to ``RetryPolicy()`` (6 attempts).
+        retry_on_rate_limit: When ``True``, waits and retries transient
+            failures — 429 plus, under the default policy, 5xx
+            (``SERVER_ERROR``) and ``TIMEOUT`` — using the server's
+            ``Retry-After`` hint (falling back to exponential backoff)
+            instead of raising immediately. Name kept for compatibility.
+            Off by default. See ``docs/features/llm-calls.md``.
+        retry_policy: Optional ``RetryPolicy`` controlling attempt cap,
+            retryable codes, and backoff when ``retry_on_rate_limit=True``
+            (or passed on its own to opt in implicitly). Defaults to
+            ``RetryPolicy()`` (6 attempts).
         **kwargs: Extra keys merged into the `generation_config`.
 
     Raises:

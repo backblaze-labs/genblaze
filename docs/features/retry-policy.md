@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-17 -->
+<!-- last_verified: 2026-09-21 -->
 # Retry Policy
 
 `RetryPolicy` is the user-tunable knob for how `BaseProvider` retries transient
@@ -24,6 +24,13 @@ provider = SoraProvider(retry_policy=RetryPolicy.conservative())
 
 If you're not sure, leave the default. The default policy was chosen to match
 the pre-class behavior of `BaseProvider.poll_transient_retries=5`.
+
+The same policy also drives the opt-in retry loop on the standalone
+`genblaze_openai.chat` / `genblaze_google.chat` helpers
+(`retry_on_rate_limit=True` or `retry_policy=`): every code in
+`retryable_codes` is retried there too, so a Gemini `503 UNAVAILABLE`
+(`SERVER_ERROR`) retries under the default policy. See
+[LLM Calls → Rate limits](llm-calls.md#rate-limits).
 
 ## The seven knobs
 

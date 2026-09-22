@@ -478,9 +478,8 @@ def test_retry_policy_alone_opts_in_without_the_flag(mock_client, monkeypatch):
     assert sleeps == [0.2]
 
 
-def test_retry_on_rate_limit_does_not_retry_other_error_codes(mock_client, monkeypatch):
-    """Only RATE_LIMIT is eligible — a content-policy error still fails fast even
-    with retries enabled."""
+def test_retry_on_rate_limit_does_not_retry_deterministic_error_codes(mock_client, monkeypatch):
+    """Deterministic codes (content policy) still fail fast even with retries enabled."""
     sleeps: list[float] = []
     monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
     mock_client.models.generate_content.side_effect = ProviderError(
@@ -493,6 +492,51 @@ def test_retry_on_rate_limit_does_not_retry_other_error_codes(mock_client, monke
     assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
     assert mock_client.models.generate_content.call_count == 1
     assert sleeps == []
+
+
+def test_retry_on_rate_limit_retries_gemini_503_unavailable(mock_client, monkeypatch):
+    """A raw SDK 503 UNAVAILABLE (model overloaded) is classified SERVER_ERROR and
+    retried under the same backoff when retry is opted in (#264)."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        RuntimeError("503 UNAVAILABLE. The model is overloaded. Please try again later."),
+        _mock_response(),
+    ]
+
+    resp = chat(
+        "gemini-2.5-flash",
+        prompt="hi",
+        client=mock_client,
+        retry_on_rate_limit=True,
+        retry_policy=RetryPolicy(jitter="none", initial_backoff_sec=0.25),
+    )
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+    assert sleeps == [0.25]  # no Retry-After on the 503 — computed backoff used
+
+
+def test_retry_on_rate_limit_503_raises_after_attempt_cap(mock_client, monkeypatch):
+    """A persistent 503 surfaces as SERVER_ERROR once the attempt budget is spent."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    mock_client.models.generate_content.side_effect = RuntimeError("503 UNAVAILABLE")
+
+    with pytest.raises(ProviderError) as exc:
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            client=mock_client,
+            retry_policy=RetryPolicy(max_attempts=2),
+        )
+
+    assert exc.value.error_code == ProviderErrorCode.SERVER_ERROR
+    assert exc.value.attempts == 2
+    assert mock_client.models.generate_content.call_count == 2
 
 
 def test_achat_retry_on_rate_limit(mock_client, monkeypatch):

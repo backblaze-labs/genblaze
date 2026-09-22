@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-28 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: LLM Calls
 
 Thin standalone wrappers around OpenAI, Google Gemini, and GMICloud chat /
@@ -128,22 +128,41 @@ video frames) this is the common case, not an edge case.
 For `genblaze_openai.chat`/`achat` and `genblaze_google.chat`/`achat`, pass
 `retry_on_rate_limit=True` to opt in to a bounded wait-and-retry loop that
 honors the server's `Retry-After` hint (falling back to exponential backoff
-with jitter when no hint is present):
+with jitter when no hint is present). Despite the name, the loop retries every
+code in the policy's `retryable_codes` — by default `RATE_LIMIT` (429),
+`SERVER_ERROR` (5xx, e.g. Gemini `503 UNAVAILABLE` / model overloaded), and
+`TIMEOUT` — the same transient set `BaseProvider` retries on poll/fetch. The
+flag name is kept for compatibility:
 
 ```python
 from genblaze_openai import chat
 
-# Retries up to RetryPolicy()'s default 6 attempts, honoring each 429's
-# `Retry-After` hint before raising.
+# Retries 429 / 5xx / timeouts up to RetryPolicy()'s default 6 attempts,
+# honoring any `Retry-After` hint before raising.
 resp = chat("gpt-4o-mini", messages=frame_messages, retry_on_rate_limit=True)
 ```
 
 Pass a `genblaze_core.providers.retry.RetryPolicy` via `retry_policy=` to tune
 the attempt cap or backoff timing (passing `retry_policy=` alone, without
-`retry_on_rate_limit=True`, also opts in). `retry_policy.retryable_codes` can
-only *narrow* retry here — e.g. `RetryPolicy.disabled()` turns retry off
-entirely — it cannot broaden retry to other error codes; this loop only ever
-acts on `RATE_LIMIT`, by design, regardless of what `retryable_codes` contains.
+`retry_on_rate_limit=True`, also opts in). `retry_policy.retryable_codes` is
+honored as-is: deterministic codes (`AUTH_FAILURE`, `INVALID_INPUT`,
+`CONTENT_POLICY`, `MODEL_ERROR`) and `UNKNOWN` always fail fast. For 429-only
+retry, narrow the set; `RetryPolicy.disabled()` turns retry off entirely:
+
+```python
+from genblaze_core.models.enums import ProviderErrorCode
+from genblaze_core.providers.retry import RetryPolicy
+
+rate_limit_only = RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))
+resp = chat("gemini-2.5-flash", prompt="hi", retry_policy=rate_limit_only)
+```
+
+**Billing.** A failed chat call returns no completion, and retrying 5xx and
+timeouts is what the OpenAI SDK does by default (and what google-genai's
+`HttpRetryOptions` does when enabled) — the loop disables that SDK retry and
+takes it over, see below. The residual case is a client-side `TIMEOUT` where the
+server finished generating after the client gave up; drop `TIMEOUT` from
+`retryable_codes` if a possible duplicate charge matters more than resilience.
 
 When `chat()` creates its own client (no `client=` passed) and retry is
 opted in, the OpenAI/Gemini SDK's own internal retry is disabled

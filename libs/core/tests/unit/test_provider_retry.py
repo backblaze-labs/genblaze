@@ -1044,8 +1044,8 @@ def test_call_with_rate_limit_retry_raises_after_max_attempts(mock_sleep) -> Non
 
 
 @patch("genblaze_core.providers.retry.time.sleep")
-def test_call_with_rate_limit_retry_ignores_non_rate_limit_codes(mock_sleep) -> None:
-    """Only RATE_LIMIT is retried — every other code (and bare exceptions) fails fast."""
+def test_call_with_rate_limit_retry_fails_fast_on_deterministic_codes(mock_sleep) -> None:
+    """Codes outside the policy's retryable set (here CONTENT_POLICY) fail fast."""
     from genblaze_core.exceptions import ProviderError
     from genblaze_core.providers.retry import call_with_rate_limit_retry
 
@@ -1056,6 +1056,64 @@ def test_call_with_rate_limit_retry_ignores_non_rate_limit_codes(mock_sleep) -> 
         call_with_rate_limit_retry(fn)
 
     assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
+    mock_sleep.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "code", [ProviderErrorCode.SERVER_ERROR, ProviderErrorCode.TIMEOUT], ids=lambda c: c.value
+)
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_retries_transient_policy_codes(mock_sleep, code) -> None:
+    """Default policy's transient codes (e.g. Gemini 503 UNAVAILABLE -> SERVER_ERROR)
+    are retried, matching BaseProvider's poll/fetch path (#264)."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import call_with_rate_limit_retry
+
+    calls = [ProviderError("503 UNAVAILABLE", error_code=code, retry_after=1.5), "ok"]
+
+    def fn():
+        result = calls.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    assert call_with_rate_limit_retry(fn) == "ok"
+    mock_sleep.assert_called_once_with(1.5)
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_policy_can_narrow_to_rate_limit(mock_sleep) -> None:
+    """A policy whose retryable_codes is {RATE_LIMIT} restores 429-only retry (#264)."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import RetryPolicy, call_with_rate_limit_retry
+
+    def fn():
+        raise ProviderError("500", error_code=ProviderErrorCode.SERVER_ERROR)
+
+    policy = RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))
+    with pytest.raises(ProviderError) as exc:
+        call_with_rate_limit_retry(fn, policy=policy)
+
+    assert exc.value.attempts == 1
+    mock_sleep.assert_not_called()
+
+
+@patch("genblaze_core.providers.retry.time.sleep")
+def test_call_with_rate_limit_retry_does_not_retry_unclassified_errors(mock_sleep) -> None:
+    """UNKNOWN and non-ProviderError exceptions propagate on the first attempt."""
+    from genblaze_core.exceptions import ProviderError
+    from genblaze_core.providers.retry import call_with_rate_limit_retry
+
+    def unknown():
+        raise ProviderError("??", error_code=ProviderErrorCode.UNKNOWN)
+
+    def bare():
+        raise ValueError("boom")
+
+    with pytest.raises(ProviderError):
+        call_with_rate_limit_retry(unknown)
+    with pytest.raises(ValueError):
+        call_with_rate_limit_retry(bare)
     mock_sleep.assert_not_called()
 
 

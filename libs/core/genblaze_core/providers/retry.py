@@ -248,7 +248,7 @@ class RetryPolicy:
 
 
 def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | None = None) -> _T:
-    """Run ``fn()``, retrying on rate-limited ``ProviderError`` per ``policy`` (#221).
+    """Run ``fn()``, retrying transient ``ProviderError`` codes per ``policy`` (#221, #264).
 
     Backs the opt-in ``retry_on_rate_limit=`` flag on the standalone
     ``chat()``/``achat()`` convenience helpers (``genblaze_openai.chat``,
@@ -259,15 +259,24 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
     ``BaseProvider``'s pipeline retry loop (``RetryPolicy.compute_delay`` —
     server hint wins when present, else exponential backoff with jitter).
 
-    Narrowed to ``ProviderErrorCode.RATE_LIMIT`` — this helper exists to fix
-    429 backoff specifically, not to become a general retry wrapper for the
-    convenience helpers — but still defers to ``policy.should_retry`` (which
-    checks both ``policy.retryable_codes`` membership and the ``max_attempts``
-    budget) rather than hardcoding the attempt-cap check. A caller who passes
-    a ``policy`` with ``RATE_LIMIT`` excluded from ``retryable_codes`` (e.g.
-    ``RetryPolicy.disabled()``) gets no retry, same as they would on the
-    ``BaseProvider`` pipeline path. Any other exception (including other
-    ``ProviderError`` codes) propagates on the first attempt.
+    Defers entirely to ``policy.should_retry`` (``retryable_codes`` membership
+    plus the ``max_attempts`` budget), so ``RetryPolicy`` means the same thing
+    here as on ``BaseProvider``'s poll/fetch path. With the default policy that
+    is ``RATE_LIMIT``, ``SERVER_ERROR`` (e.g. Gemini 503 UNAVAILABLE), and
+    ``TIMEOUT`` — the same transient classes the OpenAI SDK retries by default
+    and google-genai's ``HttpRetryOptions`` targets (the helpers disable that
+    SDK-internal retry when this loop owns it). Narrow via
+    ``RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))``
+    for 429-only behavior, or ``RetryPolicy.disabled()`` for none.
+    Deterministic codes (``AUTH_FAILURE``, ``INVALID_INPUT``,
+    ``CONTENT_POLICY``, ``MODEL_ERROR``), ``UNKNOWN``, and non-``ProviderError``
+    exceptions propagate on the first attempt.
+
+    Unlike ``BaseProvider`` submit (which skips post-response retry because a
+    billed async job may already exist), a failed synchronous chat call
+    returns no completion, so re-issuing it matches SDK retry semantics. The
+    residual risk is a ``TIMEOUT`` where the server finished generating after
+    the client gave up; narrow ``retryable_codes`` if that matters.
 
     Bounded worst case: total wait is at most ``(max_attempts - 1) *
     MAX_RETRY_AFTER_SEC`` — with the default policy (6 attempts), up to ~10
@@ -293,8 +302,7 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
 
     Raises:
         ProviderError: Re-raised once attempts are exhausted, or immediately
-            if the error isn't classified as ``RATE_LIMIT`` (or the policy
-            doesn't consider ``RATE_LIMIT`` retryable). ``exc.attempts`` is
+            if its ``error_code`` isn't in ``policy.retryable_codes``. ``exc.attempts`` is
             set to the number of attempts made before re-raising, matching
             ``BaseProvider``'s pipeline retry loop.
     """
@@ -304,13 +312,13 @@ def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | No
         try:
             return fn()
         except ProviderError as exc:
-            if exc.error_code != ProviderErrorCode.RATE_LIMIT or not policy.should_retry(
-                exc.error_code, attempt
-            ):
+            if not policy.should_retry(exc.error_code, attempt):
                 exc.attempts = attempt
                 raise
             delay = policy.compute_delay(attempt, retry_after=exc.retry_after)
-            logger.warning("rate-limit retry %d/%d in %.1fs", attempt, policy.max_attempts, delay)
+            logger.warning(
+                "%s retry %d/%d in %.1fs", exc.error_code, attempt, policy.max_attempts, delay
+            )
             time.sleep(delay)
             attempt += 1
 
