@@ -90,6 +90,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
+- **Fixed** JPEG and WebP embedding now splices the XMP metadata into the
+  existing container instead of decoding and re-encoding the image through
+  Pillow, matching the PNG and MP4 handlers. Previously every JPEG/WebP embed
+  silently altered pixels (lossy WebP by up to ~16% of subpixels), so the
+  delivered image no longer matched the bytes the manifest committed to.
+  JPEG gains one XMP `APP1` segment; WebP gains one `XMP ` chunk (a
+  simple-format `VP8`/`VP8L` file is promoted to extended `VP8X`). EXIF, ICC,
+  third-party XMP and the compressed image data are kept byte-for-byte,
+  re-embedding replaces the previous manifest, and files embedded by earlier
+  versions still extract. `WebpHandler.embed(lossless=..., quality=...)` is
+  now a deprecated no-op that emits `DeprecationWarning` (#249).
 
 ### Internal
 

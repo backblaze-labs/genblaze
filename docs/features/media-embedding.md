@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Media Embedding
 
 ## Purpose
@@ -75,11 +75,24 @@ bytes against a pre-embed hash and fails by design. Verify against the upstream
 artifact instead (option 1 above). See
 [trust-modes.md](trust-modes.md#asset-binding-caveat).
 
-## WebP lossless preservation
+## Byte-preserving image embedding
 
-When embedding into a lossless WebP (VP8L), the handler detects the source codec and
-preserves losslessness automatically. Callers can still override with `lossless=False`
-if a lossy re-encode is acceptable.
+PNG, JPEG, and WebP embeds never decode or re-encode the image. The handlers
+splice a metadata record into the existing container, so the compressed image
+data and every other chunk/segment (EXIF, ICC, third-party XMP) stay
+byte-identical:
+
+- **PNG** — one `iTXt` chunk (`genblaze:manifest`) after `IHDR`.
+- **JPEG** — one XMP `APP1` segment after the leading JFIF `APP0` / EXIF `APP1`
+  segments. Removing that segment yields the original file exactly.
+- **WebP** — one `XMP ` chunk appended to the RIFF container, with the `VP8X`
+  XMP flag set. A simple-format (`VP8 `/`VP8L`-only) file is first promoted to
+  the extended format by prepending a `VP8X` header; the codec chunk itself is
+  unchanged.
+
+Re-embedding replaces the previous genblaze record rather than adding a second
+one. `WebpHandler.embed(lossless=..., quality=...)` is deprecated and ignored
+(it configured the former re-encode) and emits a `DeprecationWarning`.
 
 ## Atomicity
 
