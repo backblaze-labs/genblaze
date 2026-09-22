@@ -6,19 +6,26 @@ fal serves its whole model catalog behind one asynchronous queue API
 - submit: ``POST https://queue.fal.run/{model_id}`` with
   ``Authorization: Key $FAL_KEY``; the body is the model's input JSON. The
   response carries ``request_id``, ``status_url`` and ``response_url``.
-- poll: ``GET status_url`` → ``{"status": "IN_QUEUE" | "IN_PROGRESS" |
-  "COMPLETED", ...}``.
-- fetch: ``GET response_url`` → the model-specific output JSON (``images``,
+- poll: ``GET {request}/status`` → ``{"status": "IN_QUEUE" | "IN_PROGRESS" |
+  "COMPLETED", ...}``; a failed request is ``COMPLETED`` with ``error`` /
+  ``error_type``.
+- fetch: ``GET {request}`` → the model-specific output JSON (``images``,
   ``video``, ``audio_file``, ...), or an error body for a failed request.
 
-The connector talks to that HTTP API with httpx instead of depending on the
-``fal-client`` SDK. Submission is deliberately single-attempt: a transport
-failure after a POST is ambiguous, and submitting again could create a second
-billable generation. Only the idempotent GETs retry, and that is bounded.
+``{request}`` is ``https://queue.fal.run/{owner}/{app}/requests/{request_id}``,
+the shape fal returns as ``response_url``. The prediction id is that path
+relative to the queue host, so it is self-describing: a checkpointed id can be
+polled from any process via ``resume()``, and both URLs are always rebuilt on
+the configured queue host, which is the only host that ever receives the key.
 
-The API key is sent only in the ``Authorization`` header, and only to the
-configured queue host; queue URLs returned by fal are checked before any
-credentialed request follows them.
+The connector talks to that HTTP API with httpx instead of depending on the
+``fal-client`` SDK. Submission is single-attempt: every submit failure is
+wrapped in ``ProviderError``, so core's phase retry never repeats the POST,
+because an ambiguous failure could still be a billable generation. Status and
+result GETs use the provider's ``RetryPolicy`` (bounded backoff, honoring
+``Retry-After`` and the step deadline). Step-level ``config["max_retries"]`` is
+a caller opt-in that re-runs a failed submit; leave it at 0 for strict
+at-most-once submission.
 """
 
 from __future__ import annotations
@@ -26,7 +33,6 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
-import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -47,30 +53,38 @@ from genblaze_core.providers import (
     validate_asset_url,
     validate_chain_input_url,
 )
+from genblaze_core.providers.base import classify_api_error
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
 
-from ._errors import describe_fal_error, map_fal_error
+from ._errors import describe_fal_error, map_fal_error, map_fal_error_type
 
 _DEFAULT_BASE_URL = "https://queue.fal.run"
 
-# fal endpoint ids are ``owner/app[/sub/path]``. Every segment must start with
-# an alphanumeric, which rules out ``..`` traversal and empty segments; ``?``
-# and ``#`` are excluded so a model id can never smuggle query parameters such
-# as ``fal_webhook`` (which would ship the output to a third-party URL).
-_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+$")
+# One URL path segment. Starting with an alphanumeric rules out ``..`` and
+# empty segments; ``?``, ``#``, ``%`` and ``@`` are excluded so an id can never
+# smuggle query params such as ``fal_webhook`` (which would ship the output to
+# a third-party URL) or alter the target host.
+_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+# fal endpoint ids: ``owner/app[/sub/path]``.
+_MODEL_ID_RE = re.compile(rf"{_SEGMENT}(?:/{_SEGMENT})+")
+# Prediction ids: ``[namespace/]owner/app/requests/{request_id}``.
+_QUEUE_PATH_RE = re.compile(rf"(?:{_SEGMENT}/){{2,3}}requests/{_SEGMENT}")
+# fal-client's namespaced app ids (``workflows/owner/app``), which keep one
+# extra leading segment in the queue path.
+_APP_NAMESPACES = frozenset({"workflows", "comfy"})
 
-# Documented queue states; only COMPLETED is terminal (a failed request is
-# COMPLETED with an ``error`` field, and its response_url returns the error).
+# Documented queue states; only COMPLETED is terminal.
 _COMPLETED = "COMPLETED"
-
-# Transient GET failures worth a bounded retry. Status and result reads are
-# idempotent, so retrying them can never duplicate a billable job.
-_TRANSIENT_GET_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
-_RETRYABLE_GET_STATUSES = frozenset({429, 502, 503})
-
-# Bounds the request-id → queue-URL map when callers abandon jobs (timeouts).
-_MAX_TRACKED_REQUESTS = 1024
+# Codes a terminal request failure keeps; anything else becomes MODEL_ERROR.
+_TERMINAL_ERROR_CODES = frozenset(
+    {
+        ProviderErrorCode.CONTENT_POLICY,
+        ProviderErrorCode.INVALID_INPUT,
+        ProviderErrorCode.AUTH_FAILURE,
+        ProviderErrorCode.MODEL_ERROR,
+    }
+)
 
 # fal's convention for file inputs is ``*_url`` / ``*_urls``; the bare media
 # names cover models that follow the generic ``image``/``video``/``audio`` shape.
@@ -156,13 +170,30 @@ def _validate_input_url(url: str) -> None:
         )
 
 
-def _validate_url_params(payload: dict[str, Any]) -> None:
-    for key, value in payload.items():
-        if key not in _URL_PARAM_NAMES and not key.endswith(_URL_PARAM_SUFFIXES):
-            continue
-        for item in value if isinstance(value, (list, tuple)) else (value,):
-            if isinstance(item, str) and item:
-                _validate_input_url(item)
+def _is_url_param(key: Any) -> bool:
+    name = str(key).lower()
+    return name in _URL_PARAM_NAMES or name.endswith(_URL_PARAM_SUFFIXES)
+
+
+def _validate_url_params(value: Any, *, url_slot: bool = False) -> None:
+    """Validate every string under a URL-bearing key, at any nesting depth.
+
+    Nested inputs (``loras: [{"path": ...}]``, ``reference_images: [{"image_url":
+    ...}]``) are walked too; a string counts as a URL input when its nearest
+    enclosing key names a URL slot.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _validate_url_params(item, url_slot=_is_url_param(key))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_url_params(item, url_slot=url_slot)
+    elif url_slot and isinstance(value, str) and value:
+        _validate_input_url(value)
+
+
+def _truthy_flag(value: Any) -> bool:
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "1"))
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -170,16 +201,18 @@ def _int_or_none(value: Any) -> int | None:
 
 
 def _media_type(file: dict[str, Any], url: str, key_kind: str | None, fallback: str | None) -> str:
-    """Pick an asset MIME type: fal content_type → key/extension → modality."""
+    """Pick an asset MIME type: fal content_type → output key/extension → modality."""
     content_type = file.get("content_type")
     if isinstance(content_type, str) and "/" in content_type:
         content_type = content_type.split(";", 1)[0].strip().lower()
         if content_type != "application/octet-stream":
             return content_type
-    kind = key_kind or fallback
     guessed = mimetypes.guess_type(urlparse(url).path)[0]
-    if guessed and (kind is None or guessed.startswith(f"{kind}/")):
+    # A known output key constrains the kind; otherwise the extension is the
+    # better signal than the step's modality (e.g. a PNG thumbnail on a video).
+    if guessed and (key_kind is None or guessed.startswith(f"{key_kind}/")):
         return guessed
+    kind = key_kind or fallback
     return _DEFAULT_MEDIA_TYPES.get(kind or "", "application/octet-stream")
 
 
@@ -208,12 +241,12 @@ class FalProvider(BaseProvider):
         api_key: fal API key. Defaults to ``FAL_KEY``.
         base_url: Queue origin. Defaults to ``https://queue.fal.run``.
         poll_interval: Initial seconds between status polls.
-        poll_get_retries: Bounded retries for transient status/result GETs.
         http_timeout: Per-request HTTP timeout in seconds.
-        http_client: Optional injected client, primarily for tests.
+        http_client: Optional injected client, primarily for tests. The caller
+            owns its lifecycle; ``close()`` only closes an internal client.
         models: Optional custom model registry.
-        retry_policy: Optional core retry policy. The default has one attempt so
-            the core never repeats a potentially billable POST.
+        retry_policy: Optional core retry policy for status/result GETs. Submit
+            is never retried by it.
     """
 
     name = "fal"
@@ -229,7 +262,6 @@ class FalProvider(BaseProvider):
         *,
         base_url: str = _DEFAULT_BASE_URL,
         poll_interval: float = 2.0,
-        poll_get_retries: int = 2,
         http_timeout: float = 60.0,
         http_client: httpx.Client | None = None,
         models: ModelRegistry | None = None,
@@ -237,27 +269,36 @@ class FalProvider(BaseProvider):
         probe_cache_ttl: float | None = None,
         probe_cache_max_entries: int | None = None,
     ) -> None:
-        if poll_get_retries < 0:
-            raise ValueError("poll_get_retries must be >= 0")
         parsed = urlparse(base_url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise ValueError(f"base_url must be an absolute https:// URL, got {base_url!r}")
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.path.strip("/")
+            or parsed.query
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError(
+                f"base_url must be a bare https:// origin (no path, query, fragment or "
+                f"credentials), got {base_url!r}"
+            )
         super().__init__(
             models=models,
-            retry_policy=retry_policy or RetryPolicy(max_attempts=1),
+            retry_policy=retry_policy,
             probe_cache_ttl=probe_cache_ttl,
             probe_cache_max_entries=probe_cache_max_entries,
         )
         self.poll_interval = poll_interval
-        self.poll_get_retries = poll_get_retries
         self._api_key = api_key or os.getenv("FAL_KEY")
         self._base_url = base_url.rstrip("/")
-        self._queue_host = parsed.hostname
+        self._owns_client = http_client is None
         self._client = http_client or httpx.Client(timeout=http_timeout)
-        # request_id → (status_url, response_url) from the submit response.
-        # fal derives these from the app id, not the full endpoint path, so
-        # they are taken from fal rather than rebuilt.
-        self._requests: dict[str, tuple[str, str]] = {}
+
+    def close(self) -> None:
+        """Release the internal HTTP client's pool; no-op for an injected client."""
+        if self._owns_client:
+            self._client.close()
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -278,59 +319,44 @@ class FalProvider(BaseProvider):
             )
         return {"Authorization": f"Key {self._api_key}", "Accept": "application/json"}
 
-    def _trusted_queue_url(self, url: Any, field: str, request_id: str) -> str:
-        """Accept a fal-returned URL only if it points back at the queue host."""
-        if not isinstance(url, str) or not url:
-            raise ProviderError(
-                f"fal submit response for request {request_id} is missing {field}",
-                error_code=ProviderErrorCode.SERVER_ERROR,
-            )
-        parsed = urlparse(url)
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != self._queue_host
-            or parsed.username is not None
-            or parsed.port not in (None, 443)
-        ):
-            raise ProviderError(
-                f"fal returned {field} outside {self._queue_host} for request "
-                f"{request_id}; refusing to send credentials to it",
-                error_code=ProviderErrorCode.SERVER_ERROR,
-            )
-        return url
+    def _queue_path(self, data: dict[str, Any], model: str, request_id: str) -> str:
+        """Derive the self-describing prediction id for a submitted request.
 
-    def _track(self, request_id: str, urls: tuple[str, str]) -> None:
-        if len(self._requests) >= _MAX_TRACKED_REQUESTS:
-            self._requests.pop(next(iter(self._requests)), None)
-        self._requests[request_id] = urls
+        Uses fal's ``response_url`` when it is a well-formed request path on the
+        configured queue host; otherwise falls back to fal-client's documented
+        derivation from the endpoint id (``[namespace/]owner/app``). Either way
+        the returned URL is never followed as-is, so a hostile or malformed
+        URL in the response cannot redirect the key.
+        """
+        response_url = data.get("response_url")
+        if isinstance(response_url, str):
+            parsed = urlparse(response_url)
+            path = parsed.path.strip("/")
+            if (
+                parsed.scheme == "https"
+                and f"https://{parsed.netloc}" == self._base_url
+                and not (parsed.query or parsed.fragment)
+                and _QUEUE_PATH_RE.fullmatch(path)
+                and path.endswith(f"/requests/{request_id}")
+            ):
+                return path
+        parts = model.split("/")
+        app_len = 3 if parts[0] in _APP_NAMESPACES and len(parts) >= 3 else 2
+        return f"{'/'.join(parts[:app_len])}/requests/{request_id}"
 
-    def _urls_for(self, request_id: Any) -> tuple[str, str]:
-        urls = self._requests.get(str(request_id))
-        if urls is None:
+    def _request_url(self, prediction_id: Any) -> str:
+        """Rebuild the request URL on the trusted queue host from a prediction id."""
+        path = str(prediction_id)
+        if not _QUEUE_PATH_RE.fullmatch(path):
             raise ProviderError(
-                f"unknown fal request {request_id!r}: queue URLs are tracked by the "
-                "FalProvider instance that submitted it; poll or resume with that instance",
+                f"Invalid fal prediction id {path!r}; expected "
+                "'owner/app/requests/<request_id>' as returned by submit()",
                 error_code=ProviderErrorCode.INVALID_INPUT,
             )
-        return urls
+        return f"{self._base_url}/{path}"
 
-    def _get_json(self, url: str) -> dict[str, Any]:
-        """GET with bounded retries on transient failures only."""
-        attempt = 0
-        while True:
-            try:
-                response = self._client.get(url, headers=self._headers())
-            except _TRANSIENT_GET_ERRORS:
-                if attempt >= self.poll_get_retries:
-                    raise
-            else:
-                if (
-                    response.status_code not in _RETRYABLE_GET_STATUSES
-                    or attempt >= self.poll_get_retries
-                ):
-                    return _json_object(response)
-            time.sleep(min(0.25 * (2**attempt), 1.0))
-            attempt += 1
+    def _get(self, url: str) -> dict[str, Any]:
+        return _json_object(self._client.get(url, headers=self._headers()))
 
     @staticmethod
     def _wrap(phase: str, exc: Exception) -> ProviderError:
@@ -346,45 +372,44 @@ class FalProvider(BaseProvider):
     # --- lifecycle ----------------------------------------------------------
 
     def submit(self, step: Step, config: RunnableConfig | None = None) -> Any:
-        """Enqueue exactly one fal request; this method never retries."""
-        if not _MODEL_ID_RE.match(step.model):
+        """Enqueue exactly one fal request; returns the queue-path prediction id."""
+        if not _MODEL_ID_RE.fullmatch(step.model):
             raise ProviderError(
                 f"Invalid fal model id {step.model!r}; expected an endpoint id such as "
                 "'fal-ai/flux/schnell'",
                 error_code=ProviderErrorCode.INVALID_INPUT,
             )
-        payload = self.prepare_payload(step)
-        if payload.get("sync_mode"):
-            raise ProviderError(
-                "sync_mode returns inline data URIs instead of hosted media; remove it "
-                "so fal outputs can be recorded as asset URLs",
-                error_code=ProviderErrorCode.INVALID_INPUT,
-            )
-        _validate_url_params(payload)
         headers = self._headers()
         try:
+            payload = self.prepare_payload(step)
+            if _truthy_flag(payload.get("sync_mode")):
+                raise ProviderError(
+                    "sync_mode returns inline data URIs instead of hosted media; remove it "
+                    "so fal outputs can be recorded as asset URLs",
+                    error_code=ProviderErrorCode.INVALID_INPUT,
+                )
+            _validate_url_params(payload)
             data = _json_object(
                 self._client.post(f"{self._base_url}/{step.model}", headers=headers, json=payload)
             )
+        except ProviderError:
+            raise
         except Exception as exc:
+            # Wrapping every failure (including pre-response ones) is what keeps
+            # core's submit phase from ever re-sending the POST.
             raise self._wrap("submit", exc) from exc
         request_id = data.get("request_id")
-        if not isinstance(request_id, str) or not request_id:
+        if not isinstance(request_id, str) or not re.fullmatch(_SEGMENT, request_id):
             raise ProviderError(
-                "fal submit response did not include a request_id",
+                f"fal submit response did not include a usable request_id: {request_id!r}",
                 error_code=ProviderErrorCode.SERVER_ERROR,
             )
-        status_url = self._trusted_queue_url(data.get("status_url"), "status_url", request_id)
-        response_url = self._trusted_queue_url(
-            data.get("response_url"), "response_url", request_id
-        )
-        self._track(request_id, (status_url, response_url))
-        return request_id
+        return self._queue_path(data, step.model, request_id)
 
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
-        status_url, _ = self._urls_for(prediction_id)
+        url = f"{self._request_url(prediction_id)}/status"
         try:
-            data = self._get_json(status_url)
+            data = self._get(url)
         except Exception as exc:
             raise self._wrap("poll", exc) from exc
         if str(data.get("status", "")).upper() == _COMPLETED:
@@ -393,11 +418,30 @@ class FalProvider(BaseProvider):
         return False
 
     def fetch_output(self, prediction_id: Any, step: Step) -> Step:
-        _, response_url = self._urls_for(prediction_id)
+        url = self._request_url(prediction_id)
+        request_id = str(prediction_id).rsplit("/", 1)[-1]
+        status = self._get_cached_poll_result(prediction_id)
+        status = status if isinstance(status, dict) else {}
+
+        # A failed request reports its error on the status body; classify it
+        # there instead of re-reading (and retrying) a stored error response.
+        error = status.get("error")
+        if error:
+            error_type = status.get("error_type")
+            error_type = error_type if isinstance(error_type, str) else None
+            code = map_fal_error_type(error_type) or classify_api_error(str(error))
+            # The request is terminal, and fal already re-queues runner failures
+            # server-side, so a transient-looking code (timeout / server error)
+            # would only make core re-read the same stored failure.
+            if code not in _TERMINAL_ERROR_CODES:
+                code = ProviderErrorCode.MODEL_ERROR
+            label = f"{error_type}: " if error_type else ""
+            raise ProviderError(
+                f"fal request {request_id} failed: {label}{str(error)[:500]}", error_code=code
+            )
+
         try:
-            # A failed request answers response_url with its error body, which
-            # carries the machine-readable type map_fal_error needs.
-            result = self._get_json(response_url)
+            result = self._get(url)
         except Exception as exc:
             raise self._wrap("output fetch", exc) from exc
 
@@ -405,7 +449,14 @@ class FalProvider(BaseProvider):
         assets: list[Asset] = []
         for key, file in _output_files(result):
             url = file["url"]
-            validate_asset_url(url)
+            try:
+                validate_asset_url(url)
+            except ProviderError as exc:
+                raise ProviderError(
+                    f"fal request {request_id} returned an unusable output URL "
+                    f"(only hosted https:// media is recorded): {url[:80]!r}",
+                    error_code=ProviderErrorCode.MODEL_ERROR,
+                ) from exc
             media_type = _media_type(file, url, _OUTPUT_KEY_KINDS.get(key), fallback_kind)
             size = _int_or_none(file.get("file_size"))
             assets.append(
@@ -420,18 +471,17 @@ class FalProvider(BaseProvider):
             )
         if not assets:
             raise ProviderError(
-                f"fal request {prediction_id} completed without media outputs",
+                f"fal request {request_id} completed without media outputs",
                 error_code=ProviderErrorCode.MODEL_ERROR,
             )
-        step.assets.extend(assets)
 
-        payload: dict[str, Any] = {"request_id": str(prediction_id)}
-        status = self._get_cached_poll_result(prediction_id) or {}
-        inference_time = (status.get("metrics") or {}).get("inference_time")
-        if isinstance(inference_time, (int, float)):
+        payload: dict[str, Any] = {"request_id": request_id}
+        metrics = status.get("metrics")
+        inference_time = metrics.get("inference_time") if isinstance(metrics, dict) else None
+        if isinstance(inference_time, (int, float)) and not isinstance(inference_time, bool):
             payload["inference_time"] = inference_time
         if _int_or_none(result.get("seed")) is not None:
             payload["seed"] = result["seed"]
+        step.assets.extend(assets)
         step.provider_payload = {"fal": payload}
-        self._requests.pop(str(prediction_id), None)
         return step

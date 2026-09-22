@@ -53,24 +53,34 @@ Chained inputs are routed to fal's conventional `image_url`, `video_url`, and
 ## Inputs and safety
 
 - URL-bearing inputs (`image`, `video`, `audio`, and any `*_url` / `*_urls`
-  param) must be `https://` URLs or inline `data:` URIs. Local `file://`
-  paths are rejected because fal cannot read them. Upload them (for example to
-  B2) first.
+  param, at any nesting depth) must be `https://` URLs or inline `data:` URIs.
+  Local `file://` paths are rejected because fal cannot read them. Upload them
+  (for example to B2) first. Private-network https hosts are not blocked,
+  because fal's servers, not yours, fetch these URLs.
 - `sync_mode` is rejected because it returns inline data instead of hosted
   media URLs.
 - The API key is sent only in the `Authorization` header, and only to the
-  configured queue host. It never appears in step params, provider payloads,
-  or manifests.
+  configured queue host. Status and result URLs are always rebuilt on that
+  host and never taken verbatim from a response. The key never appears in step
+  params, provider payloads, or manifests.
 
 ## Reliability
 
-Submission is never retried automatically, because an ambiguous failure can
-still represent a billable generation. Status and result GETs retry transient
-failures (timeouts, connection errors, 429/502/503) a small, bounded number
-of times.
+Submission is never retried by the provider's `RetryPolicy`, because an
+ambiguous failure can still represent a billable generation. Status and result
+GETs use that policy (bounded backoff that honors `Retry-After` and the step
+deadline) for timeouts, connection errors, 429s, and 5xx responses. Setting
+step-level `config["max_retries"]` opts in to re-running a failed submit, so
+leave it at 0 when duplicate generations are unacceptable.
 
-Status and result URLs are tracked by the `FalProvider` instance that
-submitted the request, so `resume()` must use that same instance.
+A failed generation is terminal on fal's side, since fal already re-queues
+runner failures. It is reported as `CONTENT_POLICY`, `INVALID_INPUT`, or
+`MODEL_ERROR` with fal's `error_type` in the message, and is never retried.
+
+The prediction id is the request's queue path
+(`fal-ai/flux/requests/<request_id>`), so a checkpointed id can be passed to
+`resume()` from any process. Call `close()` to release the internal HTTP
+client.
 
 ## License
 

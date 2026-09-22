@@ -11,6 +11,7 @@ from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset, AudioMetadata
 from genblaze_core.models.enums import Modality, ProviderErrorCode, StepStatus
 from genblaze_core.models.step import Step
+from genblaze_core.providers import RetryPolicy
 from genblaze_core.testing import ProviderComplianceTests
 from genblaze_fal import FalProvider
 from genblaze_fal._errors import map_fal_error
@@ -18,6 +19,10 @@ from genblaze_fal._errors import map_fal_error
 _KEY = "fal-test-key-123"
 _QUEUE = "https://queue.fal.run"
 _REQ = "764cabcf-b745-4b3e-ae38-1200304cf45b"
+# Self-describing prediction id: the request path relative to the queue host.
+_PID = f"fal-ai/flux/requests/{_REQ}"
+# Zero-delay core retry policy so retry tests run instantly.
+_FAST_RETRY = RetryPolicy(max_attempts=3, initial_backoff_sec=0, max_backoff_sec=0, jitter="none")
 
 
 def _urls(app: str = "fal-ai/flux", request_id: str = _REQ) -> dict[str, str]:
@@ -47,19 +52,24 @@ def _step(model: str = "fal-ai/flux/schnell", **kwargs) -> Step:
     return Step(provider="fal", model=model, **kwargs)
 
 
-def _lifecycle_handler(result: dict, *, status: str = "COMPLETED", seen: list | None = None):
+def _lifecycle_handler(
+    result: dict,
+    *,
+    status: str = "COMPLETED",
+    seen: list | None = None,
+    status_extra: dict | None = None,
+    submit_overrides: dict | None = None,
+):
     """Route submit / status / response like the fal queue does."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(request)
         if request.method == "POST":
-            return httpx.Response(200, json=_submit_body())
+            return httpx.Response(200, json=_submit_body(**(submit_overrides or {})))
         if request.url.path.endswith("/status"):
-            return httpx.Response(
-                200,
-                json={"status": status, "request_id": _REQ, "metrics": {"inference_time": 1.5}},
-            )
+            body = {"status": status, "request_id": _REQ, "metrics": {"inference_time": 1.5}}
+            return httpx.Response(200, json={**body, **(status_extra or {})})
         return httpx.Response(200, json=result)
 
     return handler
@@ -90,7 +100,7 @@ def test_submit_posts_to_queue_with_key_auth_and_returns_request_id():
         return httpx.Response(200, json=_submit_body())
 
     step = _step(params={"image_size": "square_hd", "num_images": 1}, seed=7)
-    assert _provider(handler).submit(step) == _REQ
+    assert _provider(handler).submit(step) == _PID
 
     (request,) = seen
     assert request.method == "POST"
@@ -121,6 +131,27 @@ def test_submit_is_single_attempt_on_ambiguous_transport_failure():
 
 
 @pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectError("refused"),
+        httpx.ReadTimeout("ambiguous"),
+        httpx.RemoteProtocolError("x"),
+    ],
+)
+def test_core_retry_policy_never_resends_submit(error):
+    attempts = 0
+
+    def handler(request):
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    provider = _provider(handler, retry_policy=_FAST_RETRY)
+    assert provider.invoke(_step()).status == StepStatus.FAILED
+    assert attempts == 1
+
+
+@pytest.mark.parametrize(
     "model",
     [
         "flux",  # no owner segment
@@ -130,6 +161,9 @@ def test_submit_is_single_attempt_on_ambiguous_transport_failure():
         "https://attacker.example/fal-ai/flux",
         "/fal-ai/flux",
         "fal-ai//flux",
+        "fal-ai/flux\n",
+        "fal-ai/fl%75x",
+        "user@fal-ai/flux",
     ],
 )
 def test_submit_rejects_unsafe_model_ids_before_request(model):
@@ -146,6 +180,10 @@ def test_submit_rejects_unsafe_model_ids_before_request(model):
         {"image_urls": ["https://ok.example/a.png", "http://169.254.169.254/latest"]},
         {"video_url": "file:///tmp/clip.mp4"},
         {"audio": "ftp://files.example/a.wav"},
+        {"loras": [{"path_url": "http://169.254.169.254/latest"}]},
+        {"reference_images": [{"image_url": "http://127.0.0.1/x.png"}]},
+        {"image_urls": [["http://127.0.0.1/nested.png"]]},
+        {"Image_URL": "http://127.0.0.1/mixed-case.png"},
     ],
 )
 def test_submit_rejects_unsafe_url_params_before_request(params):
@@ -188,11 +226,19 @@ def test_chain_input_routes_to_image_url_for_unknown_slug():
     assert json.loads(seen[0].content)["image_url"] == "https://v3.fal.media/files/frame.png"
 
 
-def test_submit_rejects_sync_mode():
+@pytest.mark.parametrize("value", [True, "true", "1"])
+def test_submit_rejects_sync_mode(value):
     provider = _provider(lambda request: pytest.fail("request must not be sent"))
     with pytest.raises(ProviderError, match="sync_mode") as info:
-        provider.submit(_step(params={"sync_mode": True}))
+        provider.submit(_step(params={"sync_mode": value}))
     assert info.value.error_code == ProviderErrorCode.INVALID_INPUT
+
+
+def test_submit_allows_explicit_sync_mode_false():
+    def handler(request):
+        return httpx.Response(200, json=_submit_body())
+
+    assert _provider(handler).submit(_step(params={"sync_mode": "false"})) == _PID
 
 
 def test_submit_http_error_is_mapped_and_does_not_leak_key():
@@ -206,12 +252,29 @@ def test_submit_http_error_is_mapped_and_does_not_leak_key():
     assert _KEY not in str(info.value)
 
 
-def test_submit_without_request_id_or_urls_fails():
+@pytest.mark.parametrize("request_id", [None, "", "../../etc", "a/b"])
+def test_submit_without_usable_request_id_fails(request_id):
+    def handler(request):
+        return httpx.Response(200, json={"request_id": request_id})
+
+    with pytest.raises(ProviderError, match="request_id") as info:
+        _provider(handler).submit(_step())
+    assert info.value.error_code == ProviderErrorCode.SERVER_ERROR
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("fal-ai/flux/schnell", f"fal-ai/flux/requests/{_REQ}"),
+        ("fal-ai/stable-audio", f"fal-ai/stable-audio/requests/{_REQ}"),
+        ("workflows/me/my-app/run", f"workflows/me/my-app/requests/{_REQ}"),
+    ],
+)
+def test_prediction_id_is_derived_when_response_url_is_absent(model, expected):
     def handler(request):
         return httpx.Response(200, json={"request_id": _REQ})
 
-    with pytest.raises(ProviderError, match="status_url"):
-        _provider(handler).submit(_step())
+    assert _provider(handler).submit(_step(model=model)) == expected
 
 
 def test_missing_key_fails_before_request(monkeypatch):
@@ -242,21 +305,30 @@ def test_key_read_from_fal_key_env(monkeypatch):
 @pytest.mark.parametrize(
     "overrides",
     [
+        {"response_url": f"https://attacker.example/fal-ai/flux/requests/{_REQ}"},
+        {"response_url": f"https://queue.fal.run.attacker.example/fal-ai/flux/requests/{_REQ}"},
+        {"response_url": f"http://queue.fal.run/fal-ai/flux/requests/{_REQ}"},
+        {"response_url": f"https://user@queue.fal.run/fal-ai/flux/requests/{_REQ}"},
+        {"response_url": f"https://queue.fal.run:abc/fal-ai/flux/requests/{_REQ}"},
+        {"response_url": f"https://queue.fal.run/evil/x/requests/{_REQ}?fal_webhook=https://e"},
+        {"response_url": "https://queue.fal.run/fal-ai/flux/requests/some-other-id"},
         {"status_url": "https://attacker.example/steal/status"},
-        {"response_url": "https://queue.fal.run.attacker.example/x"},
-        {"status_url": "http://queue.fal.run/fal-ai/flux/requests/x/status"},
     ],
 )
-def test_untrusted_queue_urls_never_receive_the_key(overrides):
+def test_untrusted_queue_urls_are_never_followed(overrides):
     hosts: list[str] = []
+    provider = _provider(_lifecycle_handler(_IMAGE_RESULT, seen=None, submit_overrides=overrides))
+    original = provider._client.send
 
-    def handler(request):
+    def recording_send(request, **kwargs):
         hosts.append(request.url.host)
-        return httpx.Response(200, json=_submit_body(**overrides))
+        return original(request, **kwargs)
 
-    with pytest.raises(ProviderError):
-        _provider(handler).submit(_step())
-    assert hosts == ["queue.fal.run"]
+    provider._client.send = recording_send  # type: ignore[method-assign]
+    result = provider.invoke(_step())
+    assert result.status == StepStatus.SUCCEEDED
+    assert set(hosts) == {"queue.fal.run"}
+    assert result.provider_payload["fal"]["request_id"] == _REQ
 
 
 # --- poll -----------------------------------------------------------------
@@ -275,28 +347,28 @@ def test_poll_uses_status_url_and_reports_completion(status, done):
     assert seen[-1].headers["authorization"] == f"Key {_KEY}"
 
 
-def test_poll_retries_transient_get_failures_then_succeeds(monkeypatch):
-    monkeypatch.setattr("genblaze_fal.provider.time.sleep", lambda _s: None)
+def test_core_policy_retries_transient_poll_failures_then_succeeds():
     status_calls = 0
 
     def handler(request):
         nonlocal status_calls
         if request.method == "POST":
             return httpx.Response(200, json=_submit_body())
+        if not request.url.path.endswith("/status"):
+            return httpx.Response(200, json=_IMAGE_RESULT)
         status_calls += 1
         if status_calls == 1:
             raise httpx.ConnectError("reset", request=request)
         if status_calls == 2:
-            return httpx.Response(503, json={"detail": "busy"})
+            return httpx.Response(429, json={"detail": "slow down"}, headers={"Retry-After": "0"})
         return httpx.Response(200, json={"status": "COMPLETED", "request_id": _REQ})
 
-    provider = _provider(handler)
-    assert provider.poll(provider.submit(_step())) is True
+    result = _provider(handler, retry_policy=_FAST_RETRY).invoke(_step())
+    assert result.status == StepStatus.SUCCEEDED
     assert status_calls == 3
 
 
-def test_poll_get_retries_are_bounded(monkeypatch):
-    monkeypatch.setattr("genblaze_fal.provider.time.sleep", lambda _s: None)
+def test_poll_retries_are_bounded_by_the_policy():
     status_calls = 0
 
     def handler(request):
@@ -306,11 +378,9 @@ def test_poll_get_retries_are_bounded(monkeypatch):
         status_calls += 1
         raise httpx.ReadTimeout("slow", request=request)
 
-    provider = _provider(handler, poll_get_retries=2)
-    request_id = provider.submit(_step())
-    with pytest.raises(ProviderError) as info:
-        provider.poll(request_id)
-    assert info.value.error_code == ProviderErrorCode.TIMEOUT
+    result = _provider(handler, retry_policy=_FAST_RETRY).invoke(_step())
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.TIMEOUT
     assert status_calls == 3
 
 
@@ -331,11 +401,38 @@ def test_poll_does_not_retry_client_errors():
     assert status_calls == 1
 
 
-def test_unknown_request_id_is_rejected_without_request():
+@pytest.mark.parametrize(
+    "prediction_id",
+    [
+        _REQ,  # bare request id: no app path
+        "../../admin/requests/x",
+        "https://attacker.example/fal-ai/flux/requests/x",
+        "fal-ai/flux/requests/x?fal_webhook=https://e",
+        "fal-ai/flux/status/x",
+    ],
+)
+def test_malformed_prediction_id_is_rejected_without_request(prediction_id):
     provider = _provider(lambda request: pytest.fail("request must not be sent"))
-    with pytest.raises(ProviderError, match="unknown fal request") as info:
-        provider.poll("not-submitted-here")
+    with pytest.raises(ProviderError, match="prediction id") as info:
+        provider.poll(prediction_id)
     assert info.value.error_code == ProviderErrorCode.INVALID_INPUT
+
+
+def test_resume_from_checkpoint_works_on_a_fresh_instance():
+    submitted: list[str] = []
+    _provider(_lifecycle_handler(_IMAGE_RESULT)).invoke(
+        _step(), {"on_submit": lambda _step_id, pid: submitted.append(pid)}
+    )
+    assert submitted == [_PID]
+
+    # A new process: fresh provider, only the checkpointed id survives.
+    seen: list[httpx.Request] = []
+    fresh = _provider(_lifecycle_handler(_IMAGE_RESULT, seen=seen))
+    result = fresh.resume(submitted[0], _step())
+    assert result.status == StepStatus.SUCCEEDED
+    assert [str(r.url) for r in seen] == [_urls()["status_url"], _urls()["response_url"]]
+    # Resuming again (e.g. after a downstream sink failure) still works.
+    assert fresh.resume(submitted[0], _step()).status == StepStatus.SUCCEEDED
 
 
 # --- fetch_output ---------------------------------------------------------
@@ -393,11 +490,32 @@ def test_bare_audio_url_output_infers_media_type_from_key_and_extension():
     assert asset.audio is not None
 
 
-def test_fetch_output_rejects_non_https_output_url():
-    bad = {"images": [{"url": "http://v3.fal.media/files/x.png"}]}
+@pytest.mark.parametrize(
+    "url", ["http://v3.fal.media/files/x.png", "data:image/png;base64,iVBORw0KGgo="]
+)
+def test_fetch_output_rejects_unhosted_output_url(url):
+    bad = {"images": [{"url": url}]}
     result = _provider(_lifecycle_handler(bad)).invoke(_step())
     assert result.status == StepStatus.FAILED
+    assert result.error_code == ProviderErrorCode.MODEL_ERROR
     assert result.assets == []
+
+
+def test_extension_beats_modality_for_unknown_output_keys():
+    video = {
+        "video": {"url": "https://v3.fal.media/files/out.mp4"},
+        "thumbnail": {"url": "https://v3.fal.media/files/thumb.png"},
+    }
+    step = _step(model="fal-ai/some/video-model", modality=Modality.VIDEO)
+    result = _provider(_lifecycle_handler(video)).invoke(step)
+    assert [a.media_type for a in result.assets] == ["video/mp4", "image/png"]
+
+
+def test_malformed_status_metrics_do_not_fail_a_completed_job():
+    handler = _lifecycle_handler(_IMAGE_RESULT, status_extra={"metrics": ["not", "a", "dict"]})
+    result = _provider(handler).invoke(_step())
+    assert result.status == StepStatus.SUCCEEDED
+    assert "inference_time" not in result.provider_payload["fal"]
 
 
 def test_fetch_output_without_media_is_model_error():
@@ -441,8 +559,45 @@ def test_key_never_reaches_step_or_manifest_payload():
     assert _KEY not in result.model_dump_json()
 
 
-def test_provider_repr_does_not_expose_key():
-    assert _KEY not in repr(_provider(lambda r: None))
+@pytest.mark.parametrize(
+    ("status_extra", "code"),
+    [
+        (
+            {"error": "Content flagged", "error_type": "content_policy_violation"},
+            ProviderErrorCode.CONTENT_POLICY,
+        ),
+        # Terminal failures are never retryable: fal already re-queued the runner.
+        (
+            {"error": "Runner died", "error_type": "runner_disconnected"},
+            ProviderErrorCode.MODEL_ERROR,
+        ),
+        (
+            {"error": "Request timed out", "error_type": "request_timeout"},
+            ProviderErrorCode.MODEL_ERROR,
+        ),
+        ({"error": "Generation failed"}, ProviderErrorCode.MODEL_ERROR),
+    ],
+)
+def test_status_error_is_classified_without_reading_the_result(status_extra, code):
+    seen: list[httpx.Request] = []
+    handler = _lifecycle_handler(_IMAGE_RESULT, seen=seen, status_extra=status_extra)
+    result = _provider(handler).invoke(_step(), {"max_retries": 2})
+    assert result.status == StepStatus.FAILED
+    assert result.error_code == code
+    assert result.assets == []
+    assert status_extra.get("error_type", status_extra["error"]) in (result.error or "")
+    # Only submit + one status read: the stored error response is never fetched.
+    assert [r.url.path.endswith("/status") for r in seen[1:]] == [True]
+
+
+def test_close_only_closes_an_internal_client():
+    injected = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    FalProvider(api_key=_KEY, http_client=injected).close()
+    assert not injected.is_closed
+
+    owned = FalProvider(api_key=_KEY)
+    owned.close()
+    assert owned._client.is_closed
 
 
 # --- error mapping --------------------------------------------------------
@@ -494,14 +649,20 @@ def test_map_fal_error(exc, code):
 # --- construction, registry, discovery ------------------------------------
 
 
-def test_rejects_non_https_base_url():
-    with pytest.raises(ValueError, match="https"):
-        FalProvider(api_key=_KEY, base_url="http://queue.fal.run")
-
-
-def test_rejects_negative_poll_get_retries():
-    with pytest.raises(ValueError, match="poll_get_retries"):
-        FalProvider(api_key=_KEY, poll_get_retries=-1)
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://queue.fal.run",
+        "https://queue.fal.run?fal_webhook=https://attacker.example",
+        "https://queue.fal.run#frag",
+        "https://user:pw@queue.fal.run",
+        "https://queue.fal.run/prefix",
+        "queue.fal.run",
+    ],
+)
+def test_rejects_unsafe_base_url(base_url):
+    with pytest.raises(ValueError, match="base_url"):
+        FalProvider(api_key=_KEY, base_url=base_url)
 
 
 def test_starter_registry_lists_known_models():
@@ -575,3 +736,16 @@ class TestFalCompliance(ProviderComplianceTests):
 
     def constructor_kwargs_for_probe_cache_test(self):
         return {"api_key": _KEY}
+
+
+class TestFalAudioCompliance(TestFalCompliance):
+    """Re-run the harness on an audio step so the AudioMetadata check is exercised."""
+
+    def make_provider(self):
+        audio = {
+            "audio_file": {"url": "https://v3.fal.media/files/a.wav", "content_type": "audio/wav"}
+        }
+        return _provider(_lifecycle_handler(audio))
+
+    def make_step(self):
+        return _step(model="fal-ai/stable-audio", modality=Modality.AUDIO)

@@ -95,6 +95,10 @@ def map_fal_error(exc: Exception) -> ProviderErrorCode:
     """Map fal and transport failures to genblaze error codes."""
     if isinstance(exc, httpx.TimeoutException):
         return ProviderErrorCode.TIMEOUT
+    if isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError)):
+        # Transient transport failure: retryable for the idempotent GETs.
+        # Submit never retries it (see FalProvider.submit).
+        return ProviderErrorCode.SERVER_ERROR
     if isinstance(exc, httpx.HTTPStatusError):
         for error_type in _error_types(exc.response):
             code = map_fal_error_type(error_type)

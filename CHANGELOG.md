@@ -26,10 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Added** an opt-in fal.ai connector that reaches fal's image, video, and
   audio catalog through its queue API over plain HTTP. Ships starter defaults
   for FLUX, Wan video, and Stable Audio; any other endpoint id passes through.
-  Submission is single-attempt to avoid duplicate billable jobs, status and
-  result GETs use bounded transient retries, URL-bearing inputs are validated
-  before being forwarded, and the `FAL_KEY` credential is sent only to the
-  queue host (#267).
+  Submission is single-attempt to avoid duplicate billable jobs, and status
+  and result GETs use the provider's bounded `RetryPolicy`. URL-bearing
+  inputs are validated before being forwarded, `FAL_KEY` is sent only to the
+  queue host, and checkpointed request ids can be resumed from any process
+  (#267).
 
 ### genblaze-google
 
