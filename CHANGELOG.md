@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
   `retry_policy=`) now retries a Gemini `503 UNAVAILABLE` / model-overloaded
   error under the same backoff as a 429 instead of failing on the first
-  attempt (#264).
+  attempt. Requires the genblaze-core release carrying #264.
 
 ### genblaze-core
 
@@ -94,11 +94,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModuleNotFoundError: No module named 'pytest'` on a clean
   `pip install genblaze-core`. `pytest` is now imported inside the four
   compliance-harness methods that use it (P1-01).
-- **Fixed** `call_with_rate_limit_retry` (behind the `retry_on_rate_limit=`
-  flag on the `chat()` helpers) now honors the full `RetryPolicy.retryable_codes`
-  instead of retrying `RATE_LIMIT` only, so the default policy also retries
-  `SERVER_ERROR` (e.g. Gemini `503 UNAVAILABLE`) and `TIMEOUT` — matching
-  `BaseProvider`'s poll/fetch path. Deterministic codes still fail fast; pass
+- **Changed** `call_with_rate_limit_retry` (behind the `retry_on_rate_limit=`
+  flag on the `chat()` helpers) now retries `SERVER_ERROR` (5xx, e.g. Gemini
+  `503 UNAVAILABLE`) as well as `RATE_LIMIT` by default, and honors an explicit
+  `RetryPolicy`'s full `retryable_codes` — matching `BaseProvider`'s poll/fetch
+  path. `TIMEOUT` retries only via an explicit policy, since a timed-out long
+  generation can still be billed. Pass
   `RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))` for
   the previous 429-only behavior (#264).
 
@@ -152,9 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now derived from the input `Asset.media_type` (falling back to `.png`)
   (#253).
 - **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
-  `retry_policy=`) now also retries 5xx and timeouts per `RetryPolicy`,
-  restoring the transient-error retry the OpenAI SDK performs by default
-  (which the opt-in disables to avoid double retry) (#264).
+  `retry_policy=`) now also retries 5xx, which previously failed fast because
+  opting in disables the OpenAI SDK's own retry. Requires the genblaze-core
+  release carrying #264.
 
 ## [0.7.0] - 2026-07-28
 

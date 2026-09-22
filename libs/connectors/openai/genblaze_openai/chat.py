@@ -146,8 +146,8 @@ def chat(
             and custom clients. When supplied, its lifecycle is the caller's
             (we won't close it).
         retry_on_rate_limit: When ``True``, waits and retries transient
-            failures — 429 plus, under the default policy, 5xx
-            (``SERVER_ERROR``) and ``TIMEOUT`` — using the server's
+            failures — 429 and 5xx (``SERVER_ERROR``); ``TIMEOUT`` too when
+            an explicit ``retry_policy`` includes it — using the server's
             ``Retry-After`` hint (falling back to exponential backoff)
             instead of raising immediately. Name kept for compatibility.
             Off by default. See ``docs/features/llm-calls.md``.

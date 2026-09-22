@@ -27,9 +27,10 @@ the pre-class behavior of `BaseProvider.poll_transient_retries=5`.
 
 The same policy also drives the opt-in retry loop on the standalone
 `genblaze_openai.chat` / `genblaze_google.chat` helpers
-(`retry_on_rate_limit=True` or `retry_policy=`): every code in
-`retryable_codes` is retried there too, so a Gemini `503 UNAVAILABLE`
-(`SERVER_ERROR`) retries under the default policy. See
+(`retry_on_rate_limit=True` or `retry_policy=`): every code in an explicit
+policy's `retryable_codes` is retried there too. With no policy passed, that
+loop retries `RATE_LIMIT` and `SERVER_ERROR` (so a Gemini `503 UNAVAILABLE`
+retries) but not `TIMEOUT`, which can re-bill a long generation. See
 [LLM Calls → Rate limits](llm-calls.md#rate-limits).
 
 ## The seven knobs
