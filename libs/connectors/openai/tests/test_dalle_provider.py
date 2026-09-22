@@ -770,6 +770,36 @@ def test_usage_recorded_on_edit_route(mock_b64_dalle):
     }
 
 
+def test_jsonable_usage_recurses_into_lists():
+    """A list-valued usage field (not currently emitted by OpenAI, but not
+    ruled out for a future field) is recursed into rather than passed
+    through as opaque, non-JSON-guaranteed objects."""
+    from genblaze_openai.dalle import _jsonable_usage
+
+    usage = {"breakdown": [SimpleNamespace(kind="text", tokens=3)]}
+    assert _jsonable_usage(usage) == {"breakdown": [{"kind": "text", "tokens": 3}]}
+
+
+def test_jsonable_usage_depth_guard_stops_pathological_recursion():
+    """A malformed/adversarial deeply-nested usage value can't provoke a
+    stack overflow — normalization gives up past _MAX_USAGE_DEPTH and falls
+    back to repr() rather than raising, since usage capture must never fail
+    the image generation it's attached to."""
+    from genblaze_openai.dalle import _MAX_USAGE_DEPTH, _jsonable_usage
+
+    # Build a chain nested well past the depth cap.
+    node: dict = {}
+    innermost = node
+    for _ in range(_MAX_USAGE_DEPTH + 5):
+        innermost["next"] = {}
+        innermost = innermost["next"]
+    innermost["leaf"] = "value"
+
+    result = _jsonable_usage(node)  # must not raise RecursionError
+    # Beyond the cap, normalization stops and falls back to a plain repr.
+    assert isinstance(result, dict)
+
+
 # --- _download_https_to_temp SSRF tests ---
 
 
