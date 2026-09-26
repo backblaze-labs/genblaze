@@ -11,8 +11,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 # The tools/ dir is not on sys.path by default. Add its parent so we
 # can import check_pin_parity as a module.
 _TOOLS_DIR = Path(__file__).resolve().parent.parent
@@ -20,7 +18,6 @@ if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
 import check_pin_parity as cpp  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # normalize() — parsing and structural equivalence
