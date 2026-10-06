@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-09-22
+## [0.8.0] - 2026-10-06
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
 fal.ai), experimental Mode 2 Ed25519 manifest signing, and a failed-attempt

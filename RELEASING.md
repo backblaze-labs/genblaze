@@ -106,6 +106,10 @@ clean-install crash class behind #37/#106. A clean run on `main` is a strong
 signal that `validate-version`, `changelog-gate`, and `release-smoke` in the
 workflow will all be green once you tag.
 
+`release-smoke` runs `twine check`, and CI installs `twine` unpinned. Keep
+your local `twine` and `packaging` current (`pip install -U twine packaging`);
+older versions reject the wheels' metadata version (2.5) with `InvalidDistribution`.
+
 ## The publish pipeline
 
 Defined in [`.github/workflows/release.yml`](.github/workflows/release.yml).
