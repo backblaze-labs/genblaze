@@ -190,6 +190,21 @@ class TestSoraDiscovery:
         assert result.status is DiscoveryStatus.OK
         assert result.slugs == frozenset({"sora-2", "sora-2-pro"})
 
+    def test_base_url_keeps_compatible_server_catalog(self) -> None:
+        """With ``base_url`` set, the server's own video slugs are not
+        filtered out, so they validate instead of failing with NOT_FOUND."""
+        from genblaze_openai import SoraProvider
+
+        provider = SoraProvider(api_key="test", base_url="http://localhost:8091/v1")
+        provider._client = _mock_client_with_models(["wan-2.2-ti2v", "sora-2"])
+        result = provider.discover_models()
+        assert result.status is DiscoveryStatus.OK
+        assert result.slugs == frozenset({"wan-2.2-ti2v", "sora-2"})
+        assert result.source_url == "http://localhost:8091/v1/models"
+        ok = ValidationOutcome.OK_AUTHORITATIVE
+        assert provider.validate_model("wan-2.2-ti2v").outcome is ok
+        assert provider.validate_model("not-listed").outcome is ValidationOutcome.NOT_FOUND
+
 
 # --- Pricing-removed contract --------------------------------------------
 

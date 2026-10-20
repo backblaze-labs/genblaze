@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-openai
+
+- `SoraProvider` accepts `base_url` to target OpenAI-compatible Videos API
+  servers now that OpenAI's own Videos API is shut down. With `base_url` set,
+  model discovery keeps every slug the server lists instead of only `sora-*`.
+
 ## [0.8.0] - 2026-10-06
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
