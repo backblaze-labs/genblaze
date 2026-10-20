@@ -415,3 +415,18 @@ class TestSoraCompliance(ProviderComplianceTests):
 
     def make_step(self):
         return Step(provider="openai-sora", model="sora-2", prompt="test prompt")
+
+
+def test_base_url_forwarded_to_sdk():
+    """``base_url`` reaches ``openai.OpenAI`` so the provider can target an
+    OpenAI-compatible Videos API server; omitting it keeps the SDK default."""
+    fake_openai = MagicMock()
+    with patch.dict("sys.modules", {"openai": fake_openai}):
+        from genblaze_openai import SoraProvider
+
+        SoraProvider(api_key="k", base_url="http://localhost:8091/v1")._get_client()
+        assert fake_openai.OpenAI.call_args.kwargs["base_url"] == "http://localhost:8091/v1"
+
+        fake_openai.OpenAI.reset_mock()
+        SoraProvider(api_key="k")._get_client()
+        assert "base_url" not in fake_openai.OpenAI.call_args.kwargs
