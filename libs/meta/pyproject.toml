@@ -51,6 +51,9 @@ langsmith = ["genblaze-langsmith>=0.3.2,<0.4"]
 nvidia = ["genblaze-nvidia>=0.3.4,<0.4"]
 atlascloud = ["genblaze-atlascloud>=0.1.0,<0.2"]
 fal = ["genblaze-fal>=0.1.0,<0.2"]
+# Kept out of the curated bundles: litellm requires openai<3, which would
+# hold every bundle install back from the openai 3.x line genblaze-openai uses.
+litellm = ["genblaze-litellm>=0.1.0,<0.2"]
 
 # Re-exposes genblaze-core's own `parquet` extra (ParquetSink) so
 # `pip install "genblaze[parquet]"` -- the exact incantation
