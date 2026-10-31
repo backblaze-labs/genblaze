@@ -1,0 +1,14 @@
+# Snyk policy. `exclude.code` keeps paths out of Snyk Code (SAST) scanning.
+exclude:
+  code:
+    # Test code. Tests are never shipped, and their fixtures are
+    # credential-shaped on purpose: mock secrets and fake provider API
+    # keys/tokens (e.g. sk-, r8_, AIza, AKIA, sk_live_, bearer/JWT) plus test
+    # doubles like api_key="test", which Snyk Code reports as hardcoded
+    # secrets. Production source under libs/*/genblaze_*/, cli/, and tools/ is
+    # still scanned. GitHub secret scanning still scans the whole repo, tests
+    # included, for real leaked secrets.
+    - '**/tests/**'
+    - '**/test_*.py'
+    - '**/*_test.py'
+    - '**/conftest.py'
