@@ -161,6 +161,11 @@ class SoraProvider(BaseProvider):
 
     Args:
         api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
+        base_url: Optional base URL of an OpenAI-compatible Videos API server
+            (for example ``http://localhost:8091/v1``). Defaults to the
+            openai SDK default (``OPENAI_BASE_URL`` or api.openai.com). When
+            set, model discovery accepts every slug the server lists, not
+            only ``sora-*``.
         poll_interval: Seconds between status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 60).
         output_dir: Directory for output files (default system temp).
@@ -188,6 +193,7 @@ class SoraProvider(BaseProvider):
         self,
         api_key: str | None = None,
         poll_interval: float = 5.0,
+        base_url: str | None = None,
         http_timeout: float = 60.0,
         output_dir: str | Path | None = None,
         *,
@@ -204,6 +210,7 @@ class SoraProvider(BaseProvider):
         )
         self.poll_interval = poll_interval
         self._api_key = api_key
+        self._base_url = base_url
         self._http_timeout = http_timeout
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
@@ -241,14 +248,22 @@ class SoraProvider(BaseProvider):
             slugs: set[str] = set()
             for model in response.data:
                 mid = getattr(model, "id", None)
-                if isinstance(mid, str) and self._models.match_family(mid) is not None:
+                if not isinstance(mid, str):
+                    continue
+                # A compatible server's catalog uses its own slugs, so only
+                # filter to the Sora family when talking to OpenAI itself.
+                if self._base_url or self._models.match_family(mid) is not None:
                     slugs.add(mid)
-            return DiscoveryResult.ok(slugs, source_url="https://api.openai.com/v1/models")
+            return DiscoveryResult.ok(slugs, source_url=self._models_url())
         except Exception as exc:
             return DiscoveryResult.failed(
                 f"OpenAI models.list() failed: {exc}",
-                source_url="https://api.openai.com/v1/models",
+                source_url=self._models_url(),
             )
+
+    def _models_url(self) -> str:
+        base = (self._base_url or "https://api.openai.com/v1").rstrip("/")
+        return f"{base}/models"
 
     def discover_models(
         self,
@@ -273,6 +288,8 @@ class SoraProvider(BaseProvider):
             kwargs: dict = {"timeout": self._http_timeout}
             if self._api_key:
                 kwargs["api_key"] = self._api_key
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
             self._client = openai.OpenAI(**kwargs)
         return self._client
 

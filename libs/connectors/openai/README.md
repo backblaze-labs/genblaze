@@ -49,6 +49,27 @@ run, manifest = (
 print(run.steps[0].assets[0].url, manifest.canonical_hash)
 ```
 
+### OpenAI-compatible Videos API servers
+
+OpenAI shut down Sora 2 and the Videos API on 2026-09-24. `SoraProvider` still
+speaks that API, so it can drive any server that implements
+`POST /videos`, `GET /videos/{id}` and `GET /videos/{id}/content`
+(self-hosted vLLM-Omni or SGLang diffusion, or a hosted gateway). Pass
+`base_url`; discovery then accepts the slugs the server lists in `/models`:
+
+```python
+provider = SoraProvider(api_key="...", base_url="http://localhost:8091/v1")
+run, manifest = (
+    Pipeline("compatible-video")
+    .step(provider, model="your-video-model", prompt="A lighthouse at dusk",
+          modality=Modality.VIDEO)
+    .run(timeout=600)
+)
+```
+
+Valid `seconds` and `size` values depend on the server's model. The Sora
+size/seconds checks apply only to `sora-*` slugs.
+
 ## Quickstart — DALL·E text-to-image
 
 ```python
