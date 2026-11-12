@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze
+
+- **Added** an `uberllm` extra and included UberLLM in the `image`, `video`,
+  and `all` bundles.
+
+### genblaze-uberllm
+
+- **Added** an opt-in UberLLM connector for image generation and edits and
+  asynchronous video jobs on one API key. Outputs are saved as local
+  `file://` assets with a SHA-256, `step.cost_usd` carries the cost the API
+  reports, submission is single-attempt, and URL-bearing model inputs are
+  validated before being forwarded.
+
 ## [0.8.0] - 2026-10-06
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and

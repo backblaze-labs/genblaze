@@ -136,3 +136,6 @@ class TestConnectorVersionCoherence:
 
     def test_genblaze_fal(self):
         self._check("genblaze_fal", "genblaze-fal")
+
+    def test_genblaze_uberllm(self):
+        self._check("genblaze_uberllm", "genblaze-uberllm")
