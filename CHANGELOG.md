@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Fixed** `PipelineTemplate.instantiate()` now constructs only providers
+  referenced by the template during auto-discovery. Unused providers that need
+  credentials no longer prevent a valid template from loading. Empty templates
+  fail before discovery; explicit provider maps remain authoritative (#67).
+
 ## [0.8.0] - 2026-10-06
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and

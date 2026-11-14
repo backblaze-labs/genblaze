@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-15 -->
+<!-- last_verified: 2026-11-14 -->
 # Pipeline Templates
 
 `PipelineTemplate` enables declarative, serializable pipeline definitions that can be saved to JSON, shared, and instantiated with different providers.
@@ -82,7 +82,15 @@ Non-string param values (`int`, `float`, `bool`, `None`) pass through unchanged.
 
 ## Provider resolution
 
-`instantiate()` accepts an explicit `providers` dict or auto-discovers via `discover_providers()` entry points.
+When `providers` is `None`, `instantiate()` discovers provider classes through
+entry points and constructs only the providers referenced by the template.
+Steps that reference the same provider share one instance. Unused provider
+constructors do not run. Empty templates fail before discovery.
+
+An explicit `providers` dict bypasses discovery, including an empty dict.
+The method uses the supplied instances and leaves the dict unchanged. Missing
+providers raise `GenblazeError` with the available names. If a required provider
+needs constructor arguments, create its instance and pass it in this dict.
 
 ## Canonical file
 
