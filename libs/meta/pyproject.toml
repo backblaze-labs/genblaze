@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze"
-version = "0.4.6"
+version = "0.4.7"
 description = "Umbrella package for genblaze — installs genblaze-core + genblaze-s3 and re-exports the core API; use extras for provider bundles"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "umbrella"]
 
 dependencies = [
-    "genblaze-core>=0.3.9,<0.4",
+    "genblaze-core>=0.3.10,<0.4",
     "genblaze-s3>=0.3.7,<0.4",
 ]
 
@@ -36,8 +36,8 @@ Issues = "https://github.com/backblaze-labs/genblaze/issues"
 [project.optional-dependencies]
 # Individual connectors
 gmicloud = ["genblaze-gmicloud>=0.3.6,<0.4"]
-openai = ["genblaze-openai>=0.3.5,<0.4"]
-google = ["genblaze-google>=0.3.5,<0.4"]
+openai = ["genblaze-openai>=0.3.6,<0.4"]
+google = ["genblaze-google>=0.3.6,<0.4"]
 replicate = ["genblaze-replicate>=0.3.4,<0.4"]
 runway = ["genblaze-runway>=0.3.4,<0.4"]
 luma = ["genblaze-luma>=0.3.2,<0.4"]
@@ -61,7 +61,7 @@ fal = ["genblaze-falai>=0.1.0,<0.2"]
 # automatically when core's version bumps in a future wave. Bump it by hand
 # alongside `genblaze-core`'s own floor above until the tool supports this
 # shape.
-parquet = ["genblaze-core[parquet]>=0.3.9,<0.4"]
+parquet = ["genblaze-core[parquet]>=0.3.10,<0.4"]
 
 # Curated bundles
 # genblaze-hume is left out while every `hume` SDK release on PyPI is yanked
@@ -71,7 +71,7 @@ video = [
     "genblaze-atlascloudai>=0.1.0,<0.2",
     "genblaze-falai>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.6,<0.4",
-    "genblaze-google>=0.3.5,<0.4",
+    "genblaze-google>=0.3.6,<0.4",
     "genblaze-runway>=0.3.4,<0.4",
     "genblaze-luma>=0.3.2,<0.4",
     "genblaze-decart>=0.3.4,<0.4",
@@ -81,8 +81,8 @@ image = [
     "genblaze-atlascloudai>=0.1.0,<0.2",
     "genblaze-falai>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.6,<0.4",
-    "genblaze-openai>=0.3.5,<0.4",
-    "genblaze-google>=0.3.5,<0.4",
+    "genblaze-openai>=0.3.6,<0.4",
+    "genblaze-google>=0.3.6,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",
 ]
 audio = [
@@ -97,8 +97,8 @@ all = [
     "genblaze-atlascloudai>=0.1.0,<0.2",
     "genblaze-falai>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.6,<0.4",
-    "genblaze-openai>=0.3.5,<0.4",
-    "genblaze-google>=0.3.5,<0.4",
+    "genblaze-openai>=0.3.6,<0.4",
+    "genblaze-google>=0.3.6,<0.4",
     "genblaze-replicate>=0.3.4,<0.4",
     "genblaze-runway>=0.3.4,<0.4",
     "genblaze-luma>=0.3.2,<0.4",
