@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Security** `genblaze-core` now requires `urllib3>=2.8.0` (was `>=1.26`).
+  `AssetTransfer` streams provider asset URLs through urllib3's streaming
+  API, which before 2.8.0 can exhaust memory on a crafted chunked or
+  compressed response (CVE-2026-97688, CVE-2026-97689). The 1.26.x line has
+  no fix; environments pinned to it must upgrade.
+- **Changed** the `parquet` extra now accepts `pyarrow` 26 (`<27`, was
+  `<26`). The test-only Pillow cap moves to `<14`, so CI picks up Pillow
+  13.0.0 and its fixes for 35 image-decoder CVEs.
+
 ## [0.8.1] - 2026-11-16
 
 Completes the 0.8.0 wave. The fal.ai and Atlas Cloud connectors ship under new
