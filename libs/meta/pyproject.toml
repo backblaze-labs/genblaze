@@ -64,6 +64,9 @@ fal = ["genblaze-fal>=0.1.0,<0.2"]
 parquet = ["genblaze-core[parquet]>=0.3.8,<0.4"]
 
 # Curated bundles
+# genblaze-hume is left out while every `hume` SDK release on PyPI is yanked
+# (Nov 2026): including it would make these bundles uninstallable. It stays
+# available as the explicit `hume` extra.
 video = [
     "genblaze-atlascloud>=0.1.0,<0.2",
     "genblaze-fal>=0.1.0,<0.2",
@@ -86,7 +89,6 @@ audio = [
     "genblaze-fal>=0.1.0,<0.2",
     "genblaze-elevenlabs>=0.3.3,<0.4",
     "genblaze-lmnt>=0.3.3,<0.4",
-    "genblaze-hume>=0.3.3,<0.4",
     "genblaze-stability-audio>=0.3.3,<0.4",
     "genblaze-gmicloud>=0.3.6,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",
@@ -104,7 +106,6 @@ all = [
     "genblaze-elevenlabs>=0.3.3,<0.4",
     "genblaze-stability-audio>=0.3.3,<0.4",
     "genblaze-lmnt>=0.3.3,<0.4",
-    "genblaze-hume>=0.3.3,<0.4",
     "genblaze-assemblyai>=0.3.3,<0.4",
     "genblaze-langsmith>=0.3.2,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",

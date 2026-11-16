@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze
+
+- **Changed** removed `genblaze-hume` from the `audio` and `all` bundles.
+  Every release of Hume's `hume` SDK is currently yanked on PyPI, so any
+  bundle that included it failed to install. The `hume` extra is kept, but
+  `pip install "genblaze[hume]"` fails until Hume republishes the SDK.
+
+### Internal
+
+- CI no longer installs, typechecks or tests `genblaze-hume` while its `hume`
+  SDK dependency is uninstallable.
+
 ## [0.8.0] - 2026-10-06
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
