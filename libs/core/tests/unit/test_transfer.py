@@ -1175,3 +1175,22 @@ class TestPerformanceDefaults:
         assert transfer._DEFAULT_MAX_DOWNLOAD_BYTES > two_gb, (
             "Default max download must exceed 2 GB to cover long-form video."
         )
+
+
+def test_urllib3_floor_includes_streaming_dos_fixes():
+    """_http_get_stream reads untrusted bodies via urllib3's streaming API
+    (preload_content=False + read(n)). urllib3 <2.8.0 can exhaust memory on
+    crafted chunked/compressed responses there (CVE-2026-97688, -97689), so
+    the declared floor must never drop below the fixed release."""
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    deps = tomllib.loads(pyproject.read_text())["project"]["dependencies"]
+    (spec,) = [Requirement(d).specifier for d in deps if Requirement(d).name == "urllib3"]
+
+    assert not spec.contains(Version("2.7.0"))
+    assert spec.contains(Version("2.8.0"))
