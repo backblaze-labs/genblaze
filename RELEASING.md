@@ -261,17 +261,12 @@ and gating, which still gives you ~90% of the value).
 
 ### c. npm publish auth
 
-Add an **`NPM_TOKEN`** repository secret containing a publish-scoped
-token for `@genblaze/spec`.
-
-Token type: **Automation token** with `publish` scope on the `@genblaze`
-org. Generate it from <https://www.npmjs.com/settings/genblaze/tokens>
-→ "Generate New Token" → "Automation".
-
-If/when npm Trusted Publishing supports scoped public packages on your
-org by default, replace the `NODE_AUTH_TOKEN` env var in `publish-npm`
-with the OIDC-based flow (same pattern as PyPI Trusted Publishing) and
-delete the `NPM_TOKEN` secret.
+`publish-npm` uses **npm Trusted Publishing** (OIDC); there is no npm token.
+On npmjs.com, open `@genblaze/spec` → Settings → Trusted Publisher → GitHub
+Actions, and set organization `backblaze-labs`, repository `genblaze`,
+workflow `release.yml`, environment `npm`. It requires npm >= 11.5.1, which
+is why the workflow pins `NODE_VERSION` to 24. Dry runs (`npm publish
+--dry-run`) don't authenticate, so `npm-dryrun` needs no setup.
 
 ### d. GitHub Environments
 
