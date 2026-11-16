@@ -20,6 +20,7 @@ from genblaze_core._utils import (
     normalize_tenant_id,
     sanitize_error,
     utc_now,
+    validate_path_component,
 )
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
@@ -428,6 +429,9 @@ class Pipeline(Runnable[None, PipelineResult]):
     ):
         self._name = name
         self._tenant_id = normalize_tenant_id(tenant_id)
+        # Fail here, not in _build_run after every provider call has been paid for.
+        if self._tenant_id:
+            validate_path_component(self._tenant_id, field="tenant_id", allow_colon=True)
         self._project_id = project_id
         self._parent_run_id: str | None = None
         self._steps: list[_PipelineStep] = []

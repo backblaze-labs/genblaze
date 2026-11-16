@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Security** `genblaze index` and `ParquetSink` no longer write or delete
+  files outside the index directory when given an untrusted manifest
+  (GHSA-x99g-wcm2-r2v8). `run_id` was joined into file paths unchecked, so a
+  manifest with `run_id="../../x"` or an absolute path could create or
+  overwrite `.parquet`/`.partition` files anywhere the user could write.
+  `run_id` is excluded from the canonical hash, so such a manifest still
+  verified. `Run.run_id`, `Run.parent_run_id`, `Run.tenant_id`,
+  `Step.step_id`, `Step.run_id` and `Asset.asset_id` must now be a single
+  path component, and `ParquetSink` refuses any path that lies outside its
+  `base_dir` (a lexical check; symlinks inside `base_dir` are trusted). Thanks to @orshih6 for the report.
+- **Changed** identity fields that are empty, `.` or `..`, or contain `/`,
+  `\`, NUL or (except `tenant_id`) `:` now fail validation, including in
+  `parse_manifest()`. UUIDs and ids such as `"intro clip"`, `"v1.2"` or a
+  tenant `"org:acme"` are unaffected. `Pipeline(tenant_id=...)` is checked at
+  construction, before any provider call. Existing manifests with ids like
+  `"urn:x:1"` or a tenant like `"org/team"` no longer load: replace those
+  characters (e.g. with `-`) in the JSON. Ids are excluded from
+  `canonical_hash`, so the edited manifest still verifies.
+  `get_output_path()` now also rejects a `step_id` of `.` or `..`.
+
 ### genblaze
 
 - **Changed** removed `genblaze-hume` from the `audio` and `all` bundles.

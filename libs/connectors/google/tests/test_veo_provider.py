@@ -312,12 +312,10 @@ def test_fetch_output_vertex_rejects_invalid_step_id(tmp_path, mock_google, bad_
     output_dir (issue #284)."""
     provider, client = mock_google
     provider._output_dir = tmp_path
-    step = Step(
-        provider="google-veo",
-        model="veo-2.0-generate-001",
-        prompt="a sunset",
-        step_id=bad_step_id,
-    )
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    # Assigned after construction: the Step model rejects path-unsafe ids, so
+    # this exercises Veo's own guard for Steps mutated after validation.
+    step.step_id = bad_step_id
     pred_id = provider.submit(step)
     client.operations.get.return_value = _make_completed_vertex_operation()
     provider.poll(pred_id)
@@ -341,12 +339,10 @@ def test_fetch_output_gemini_rejects_invalid_step_id(tmp_path, mock_google, bad_
     """Same invalid-step_id containment check on the Gemini download branch."""
     provider, client = mock_google
     provider._output_dir = tmp_path
-    step = Step(
-        provider="google-veo",
-        model="veo-2.0-generate-001",
-        prompt="a sunset",
-        step_id=bad_step_id,
-    )
+    step = Step(provider="google-veo", model="veo-2.0-generate-001", prompt="a sunset")
+    # Assigned after construction: the Step model rejects path-unsafe ids, so
+    # this exercises Veo's own guard for Steps mutated after validation.
+    step.step_id = bad_step_id
     pred_id = provider.submit(step)
     client.operations.get.return_value = _make_completed_gemini_operation()
     provider.poll(pred_id)

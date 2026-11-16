@@ -22,6 +22,7 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 from urllib.request import url2pathname
 
 from genblaze_core._utils import ALLOWED_FILE_ROOTS as _ALLOWED_FILE_ROOTS
+from genblaze_core._utils import validate_path_component
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import ProviderErrorCode
@@ -225,8 +226,8 @@ def get_output_path(step_id: str, ext: str, output_dir: str | Path | None) -> Pa
 
     Args:
         step_id: Filename stem, normally ``step.step_id`` (a UUID). Must be a
-            single path component — no ``/``, ``\\``, ``:`` or NUL. Unused for
-            temp files.
+            single path component (see ``validate_path_component``). Unused
+            for temp files.
         ext: Extension without the dot (e.g. ``"mp4"``); alphanumeric only.
         output_dir: Destination directory, or ``None`` for the system temp dir.
 
@@ -240,15 +241,12 @@ def get_output_path(step_id: str, ext: str, output_dir: str | Path | None) -> Pa
             error_code=ProviderErrorCode.INVALID_INPUT,
         )
     if output_dir:
-        # Block separators rather than whitelisting: a user-set step_id like
-        # "intro clip" is a legitimate filename and worked before #195. ':' is a
-        # Windows drive ("D:evil" escapes the dir) / NTFS alternate data stream.
-        if not step_id or any(c in step_id for c in ("/", "\\", ":", "\x00")):
-            raise ProviderError(
-                f"Invalid step_id {step_id!r} for an output filename: "
-                "it must be non-empty and contain no '/', '\\', ':' or NUL.",
-                error_code=ProviderErrorCode.INVALID_INPUT,
-            )
+        # Same rule as the Step model (blocks separators and dot segments, not a
+        # UUID whitelist), re-checked here because callers may pass any string.
+        try:
+            validate_path_component(step_id, field="step_id")
+        except ValueError as exc:
+            raise ProviderError(str(exc), error_code=ProviderErrorCode.INVALID_INPUT) from exc
         # Absolute so a relative dir can't yield "-x.mp4" / "pipe:..." that ffmpeg
         # would parse as a flag or protocol; absolute() keeps symlinks as given.
         out_dir = Path(output_dir).absolute()
