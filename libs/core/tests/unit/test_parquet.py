@@ -311,3 +311,43 @@ def test_write_run_applies_embed_policy_redaction(tmp_path: Path):
     assert step_table.column("prompt")[0].as_py() == ""
     assert step_table.column("seed")[0].as_py() is None
     assert step_table.column("params_json")[0].as_py() == "{}"
+
+
+# --- GHSA-x99g-wcm2-r2v8: every path the sink touches stays under base_dir ---
+
+
+def test_tampered_partition_index_cannot_unlink_outside_base_dir(tmp_path: Path):
+    """The stale-partition cleanup joins a partition read back from disk; a
+    tampered ``.partition`` file must not turn it into a delete primitive."""
+    import pytest
+    from genblaze_core.exceptions import SinkError
+
+    run = Run(steps=[Step(provider="p", model="m")])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+    sink = ParquetSink(tmp_path / "idx")
+    (sink.base_dir / "_run_index" / f"{run.run_id}.partition").write_text(
+        "../../victim", encoding="utf-8"
+    )
+    victim = tmp_path / "victim" / f"{run.run_id}.parquet"
+    victim.parent.mkdir()
+    victim.write_bytes(b"precious")
+
+    with pytest.raises(SinkError, match="outside"):
+        sink.write_run(run, manifest)
+    assert victim.read_bytes() == b"precious"
+
+
+def test_unvalidated_run_id_cannot_write_outside_base_dir(tmp_path: Path):
+    """Defense in depth for Runs built without validation (model_construct)."""
+    import pytest
+    from genblaze_core.exceptions import SinkError
+
+    run = Run(steps=[Step(provider="p", model="m")])
+    manifest = Manifest(run=run)
+    manifest.compute_hash()
+    hostile = Run.model_construct(**{**dict(run), "run_id": "../../../escaped"})
+
+    with pytest.raises(SinkError, match="outside"):
+        ParquetSink(tmp_path / "a" / "idx").write_run(hostile, manifest)
+    assert not list(tmp_path.rglob("escaped*"))

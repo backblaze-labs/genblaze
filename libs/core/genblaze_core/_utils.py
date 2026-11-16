@@ -78,6 +78,32 @@ def normalize_tenant_id(tenant_id: str | None) -> str | None:
     return tenant_id.strip() or None
 
 
+# '/' and '\' are separators; ':' is a Windows drive ("D:evil" escapes the dir)
+# or NTFS alternate data stream; NUL truncates paths in C APIs.
+_UNSAFE_PATH_CHARS = ("/", "\\", ":", "\x00")
+
+
+def validate_path_component(value: str, *, field: str) -> str:
+    """Return ``value`` if it is safe as a single filename or object-key segment.
+
+    Identity fields (``run_id``, ``step_id``, ``asset_id``, ``tenant_id``) are
+    joined into Parquet paths, connector ``output_dir`` files and storage keys,
+    and they come from untrusted manifests (GHSA-x99g-wcm2-r2v8). Blocks
+    separators and dot segments rather than requiring a UUID: user-set ids like
+    ``"intro clip"`` or ``"v1.2"`` are legitimate and predate this check.
+
+    Raises:
+        ValueError: ``value`` is empty, ``.``/``..``, or contains ``/``, ``\\``,
+            ``:`` or NUL. The message names ``field``.
+    """
+    if not value or value in (".", "..") or any(c in value for c in _UNSAFE_PATH_CHARS):
+        raise ValueError(
+            f"Invalid {field} {value!r}: it must be a single path component, "
+            "not empty, '.' or '..', with no '/', '\\', ':' or NUL."
+        )
+    return value
+
+
 def _run_async(coro: Coroutine) -> Any:
     """Run an async coroutine from sync code safely.
 

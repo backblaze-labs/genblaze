@@ -663,3 +663,38 @@ def test_version_label_shows_cli_package() -> None:
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
     assert "genblaze-cli" in result.output
+
+
+# --- GHSA-x99g-wcm2-r2v8: hostile identity fields in an untrusted manifest ---
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_index_rejects_traversing_run_id(tmp_path: Path, absolute: bool) -> None:
+    # Both forms land inside tmp_path if unfixed, so a regression is caught
+    # without the test itself writing outside its sandbox. Seven ".." climb
+    # from runs/<4-level partition> under work/index_out back to tmp_path.
+    run_id = str(tmp_path / "escaped") if absolute else "../" * 7 + "escaped"
+    manifest_path = _create_manifest_json(tmp_path)
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["run"]["run_id"] = run_id
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+    out_dir = tmp_path / "work" / "index_out"
+
+    result = CliRunner().invoke(cli, ["index", str(manifest_path), "-o", str(out_dir)])
+
+    assert result.exit_code != 0
+    assert "run_id" in _combined_output(result)
+    assert not out_dir.exists()
+    assert not list(tmp_path.rglob("escaped*"))
+
+
+def test_verify_rejects_traversing_step_id(tmp_path: Path) -> None:
+    manifest_path = _create_manifest_json(tmp_path)
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["run"]["steps"][0]["step_id"] = "../evil"
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["verify", str(manifest_path)])
+
+    assert result.exit_code != 0
+    assert "step_id" in _combined_output(result)

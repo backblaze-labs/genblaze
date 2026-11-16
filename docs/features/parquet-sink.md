@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-15 -->
+<!-- last_verified: 2026-11-10 -->
 # Feature: Parquet Sink
 
 ## Purpose
@@ -19,6 +19,10 @@ Write structured run/step/asset data to partitioned Parquet files for analytics 
 ## Inputs
 - `Run` and `Manifest` objects
 - `output_dir`: path for Parquet output
+
+Every file the sink writes or deletes must stay under `output_dir`; anything
+else raises `SinkError`. `run_id` is checked as a single path component when
+the `Run` is validated (GHSA-x99g-wcm2-r2v8).
 
 ## Outputs
 - Three Parquet table directories: `runs/`, `steps/`, `assets/`
