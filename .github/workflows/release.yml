@@ -42,7 +42,8 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.13"
-  NODE_VERSION: "20"
+  # 24 ships npm >= 11.5.1, which npm trusted publishing (OIDC) requires.
+  NODE_VERSION: "24"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
@@ -378,7 +379,7 @@ jobs:
   # already-verified artifact and calls `npm publish`. No npm install or
   # execution of third-party code happens in the privileged job, so a
   # compromised transitive dependency of the type generator can never reach
-  # the OIDC token or NPM_TOKEN.
+  # the OIDC token.
   # ─────────────────────────────────────────────────────────────────────
 
   build-npm-types:
@@ -470,10 +471,12 @@ jobs:
       - name: Publish to npm
         if: steps.npm_check.outputs.skip != 'true'
         working-directory: libs/spec
+        # Authenticates via npm trusted publishing (OIDC, `id-token: write`
+        # above); no long-lived NPM_TOKEN.
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN: ${{ needs.validate-version.outputs.dry_run }}
         run: |
+          npm --version
           if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run: validating publish without uploading"
             npm publish --access public --dry-run --provenance
