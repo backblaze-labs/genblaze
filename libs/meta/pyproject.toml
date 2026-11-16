@@ -61,7 +61,7 @@ fal = ["genblaze-fal>=0.1.0,<0.2"]
 # automatically when core's version bumps in a future wave. Bump it by hand
 # alongside `genblaze-core`'s own floor above until the tool supports this
 # shape.
-parquet = ["genblaze-core[parquet]>=0.3.8,<0.4"]
+parquet = ["genblaze-core[parquet]>=0.3.9,<0.4"]
 
 # Curated bundles
 # genblaze-hume is left out while every `hume` SDK release on PyPI is yanked
