@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-hume"
-version = "0.3.3"
+version = "0.3.4"
 description = "Hume AI (Octave TTS) provider adapter for genblaze"
 authors = [{name = "Kamren Mahaney", email = "kmahaney@backblaze.com"}]
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "hume", "octave", "tts", "audio"]
 
 dependencies = [
-    "genblaze-core>=0.3.7,<0.4",
+    "genblaze-core>=0.3.9,<0.4",
     # The provider passes `version` (octave-1/-2 → Octave version) and
     # `temperature` to synthesize_json; both kwargs only exist together from
     # hume 0.13.13 (earlier 0.x raise TypeError on the octave-* path). Bounded
