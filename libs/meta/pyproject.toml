@@ -41,11 +41,11 @@ google = ["genblaze-google>=0.3.5,<0.4"]
 replicate = ["genblaze-replicate>=0.3.4,<0.4"]
 runway = ["genblaze-runway>=0.3.4,<0.4"]
 luma = ["genblaze-luma>=0.3.2,<0.4"]
-decart = ["genblaze-decart>=0.3.3,<0.4"]
-elevenlabs = ["genblaze-elevenlabs>=0.3.3,<0.4"]
-stability-audio = ["genblaze-stability-audio>=0.3.3,<0.4"]
-lmnt = ["genblaze-lmnt>=0.3.3,<0.4"]
-hume = ["genblaze-hume>=0.3.3,<0.4"]
+decart = ["genblaze-decart>=0.3.4,<0.4"]
+elevenlabs = ["genblaze-elevenlabs>=0.3.4,<0.4"]
+stability-audio = ["genblaze-stability-audio>=0.3.4,<0.4"]
+lmnt = ["genblaze-lmnt>=0.3.4,<0.4"]
+hume = ["genblaze-hume>=0.3.4,<0.4"]
 assemblyai = ["genblaze-assemblyai>=0.3.3,<0.4"]
 langsmith = ["genblaze-langsmith>=0.3.2,<0.4"]
 nvidia = ["genblaze-nvidia>=0.3.4,<0.4"]
@@ -74,7 +74,7 @@ video = [
     "genblaze-google>=0.3.5,<0.4",
     "genblaze-runway>=0.3.4,<0.4",
     "genblaze-luma>=0.3.2,<0.4",
-    "genblaze-decart>=0.3.3,<0.4",
+    "genblaze-decart>=0.3.4,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",
 ]
 image = [
@@ -87,9 +87,9 @@ image = [
 ]
 audio = [
     "genblaze-falai>=0.1.0,<0.2",
-    "genblaze-elevenlabs>=0.3.3,<0.4",
-    "genblaze-lmnt>=0.3.3,<0.4",
-    "genblaze-stability-audio>=0.3.3,<0.4",
+    "genblaze-elevenlabs>=0.3.4,<0.4",
+    "genblaze-lmnt>=0.3.4,<0.4",
+    "genblaze-stability-audio>=0.3.4,<0.4",
     "genblaze-gmicloud>=0.3.6,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",
 ]
@@ -102,10 +102,10 @@ all = [
     "genblaze-replicate>=0.3.4,<0.4",
     "genblaze-runway>=0.3.4,<0.4",
     "genblaze-luma>=0.3.2,<0.4",
-    "genblaze-decart>=0.3.3,<0.4",
-    "genblaze-elevenlabs>=0.3.3,<0.4",
-    "genblaze-stability-audio>=0.3.3,<0.4",
-    "genblaze-lmnt>=0.3.3,<0.4",
+    "genblaze-decart>=0.3.4,<0.4",
+    "genblaze-elevenlabs>=0.3.4,<0.4",
+    "genblaze-stability-audio>=0.3.4,<0.4",
+    "genblaze-lmnt>=0.3.4,<0.4",
     "genblaze-assemblyai>=0.3.3,<0.4",
     "genblaze-langsmith>=0.3.2,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",

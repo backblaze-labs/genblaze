@@ -19,9 +19,7 @@ Docs: https://elevenlabs.io/docs/api-reference/text-to-speech
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +37,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    get_output_path,
 )
 from genblaze_core.providers.discovery import DEFAULT_TTL_SECONDS, _DiscoveryCache
 from genblaze_core.providers.retry import retry_after_from_response
@@ -301,13 +300,7 @@ class ElevenLabsTTSProvider(SyncProvider):
                 audio_iter = client.text_to_speech.convert(**kwargs)
                 audio_bytes = b"".join(audio_iter)
 
-            if self._output_dir:
-                self._output_dir.mkdir(parents=True, exist_ok=True)
-                out_path = self._output_dir / f"{step.step_id}{ext}"
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=ext)
-                os.close(fd)
-                out_path = Path(tmp)
+            out_path = get_output_path(step.step_id, ext.lstrip("."), self._output_dir)
 
             out_path.write_bytes(audio_bytes)
             file_url = local_file_url(out_path.resolve())

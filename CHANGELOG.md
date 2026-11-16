@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze
+
+- **Changed** raised the `decart`, `elevenlabs`, `hume`, `lmnt` and
+  `stability-audio` extra floors to the releases that name output files
+  through `get_output_path()`.
+
 ### genblaze-core
 
 - **Security** `genblaze-core` now requires `urllib3>=2.8.0` (was `>=1.26`).
@@ -17,6 +23,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changed** the `parquet` extra now accepts `pyarrow` 26 (`<27`, was
   `<26`). The test-only Pillow cap moves to `<14`, so CI picks up Pillow
   13.0.0 and its fixes for 35 image-decoder CVEs.
+
+### genblaze-decart
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` and `image.py`,
+  so a `step_id` containing a path separator (for example one set on a `Step`
+  after it was built) or a non-alphanumeric output format can no longer write
+  outside `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-elevenlabs
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` and `sfx.py`,
+  so a `step_id` containing a path separator (for example one set on a `Step`
+  after it was built) or a non-alphanumeric output format can no longer write
+  outside `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-google
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `imagen.py` and
+  `gemini_image.py`, so a `step_id` containing a path separator (for example
+  one set on a `Step` after it was built) or a non-alphanumeric output format
+  can no longer write outside `output_dir`. Same class as the Veo fix (#284).
+
+### genblaze-hume
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-lmnt
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-openai
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` (Sora),
+  `tts.py` and `dalle.py`, so a `step_id` containing a path separator (for
+  example one set on a `Step` after it was built) or a non-alphanumeric output
+  format can no longer write outside `output_dir`. Same class as the Veo fix
+  (#284).
+
+### genblaze-stability-audio
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
 
 ## [0.8.1] - 2026-11-16
 
