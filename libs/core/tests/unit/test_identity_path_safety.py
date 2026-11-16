@@ -50,6 +50,8 @@ def test_helper_accepts_single_components(value):
 def test_models_reject_hostile_identity_fields(factory, field, value):
     if field == "tenant_id" and value == "":
         pytest.skip("empty tenant_id normalizes to no tenant")
+    if field == "tenant_id" and value == "C:x":
+        pytest.skip("tenant_id allows ':' (see test_tenant_id_allows_colon)")
     with pytest.raises(ValidationError, match=field) as excinfo:
         factory(value)
     assert "single path component" in str(excinfo.value)
@@ -61,6 +63,26 @@ def test_models_accept_existing_id_styles(value):
     step = Step(provider="p", model="m", step_id=value, run_id=value)
     asset = Asset(url="https://example.com/a.png", media_type="image/png", asset_id=value)
     assert (run.run_id, step.step_id, asset.asset_id) == (value, value, value)
+
+
+def test_tenant_id_allows_colon():
+    """Tenants never reach a filesystem path raw (ParquetSink re-sanitizes
+    partitions), so URN-style tenants such as ``org:acme`` keep working."""
+    assert Run(tenant_id="org:acme").tenant_id == "org:acme"
+
+
+def test_error_message_truncates_long_values():
+    with pytest.raises(ValueError) as excinfo:
+        validate_path_component("a/" * 10_000, field="run_id")
+    assert len(str(excinfo.value)) < 300
+
+
+def test_pipeline_rejects_bad_tenant_before_running_steps():
+    """A bad tenant must fail at construction, not after paid provider calls."""
+    from genblaze_core.pipeline.pipeline import Pipeline
+
+    with pytest.raises(ValueError, match="Invalid tenant_id"):
+        Pipeline("p", tenant_id="org/team")
 
 
 def test_optional_identity_fields_accept_none():

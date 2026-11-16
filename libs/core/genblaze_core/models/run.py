@@ -49,7 +49,11 @@ class Run(BaseModel):
     def _validate_tenant_id(cls, value: str | None) -> str | None:
         # "" means "no tenant" everywhere downstream (normalize_tenant_id), so
         # only a non-empty tenant has to be a safe key/path segment.
-        return value if not value else validate_path_component(value, field="tenant_id")
+        return (
+            value
+            if not value
+            else validate_path_component(value, field="tenant_id", allow_colon=True)
+        )
 
     def __repr__(self) -> str:
         return (

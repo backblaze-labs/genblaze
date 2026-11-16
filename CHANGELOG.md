@@ -17,12 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_id` is excluded from the canonical hash, so such a manifest still
   verified. `Run.run_id`, `Run.parent_run_id`, `Run.tenant_id`,
   `Step.step_id`, `Step.run_id` and `Asset.asset_id` must now be a single
-  path component, and `ParquetSink` refuses any path that resolves outside
-  its `base_dir`. Thanks to @orshih6 for the report.
+  path component, and `ParquetSink` refuses any path that lies outside its
+  `base_dir` (a lexical check; symlinks inside `base_dir` are trusted). Thanks to @orshih6 for the report.
 - **Changed** identity fields that are empty, `.` or `..`, or contain `/`,
-  `\`, `:` or NUL now fail validation, including in `parse_manifest()`.
-  UUIDs and existing ids such as `"intro clip"` or `"v1.2"` are unaffected.
-  URN-style ids (`"urn:x:1"`) and tenants like `"org/team"` must be renamed.
+  `\`, NUL or (except `tenant_id`) `:` now fail validation, including in
+  `parse_manifest()`. UUIDs and ids such as `"intro clip"`, `"v1.2"` or a
+  tenant `"org:acme"` are unaffected. `Pipeline(tenant_id=...)` is checked at
+  construction, before any provider call. Existing manifests with ids like
+  `"urn:x:1"` or a tenant like `"org/team"` no longer load: replace those
+  characters (e.g. with `-`) in the JSON. Ids are excluded from
+  `canonical_hash`, so the edited manifest still verifies.
   `get_output_path()` now also rejects a `step_id` of `.` or `..`.
 
 ## [0.8.0] - 2026-10-06

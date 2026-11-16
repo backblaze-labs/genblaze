@@ -83,7 +83,7 @@ def normalize_tenant_id(tenant_id: str | None) -> str | None:
 _UNSAFE_PATH_CHARS = ("/", "\\", ":", "\x00")
 
 
-def validate_path_component(value: str, *, field: str) -> str:
+def validate_path_component(value: str, *, field: str, allow_colon: bool = False) -> str:
     """Return ``value`` if it is safe as a single filename or object-key segment.
 
     Identity fields (``run_id``, ``step_id``, ``asset_id``, ``tenant_id``) are
@@ -92,14 +92,24 @@ def validate_path_component(value: str, *, field: str) -> str:
     separators and dot segments rather than requiring a UUID: user-set ids like
     ``"intro clip"`` or ``"v1.2"`` are legitimate and predate this check.
 
+    ``allow_colon`` is for values that never reach a filesystem path raw
+    (``tenant_id``: ParquetSink re-sanitizes partitions), where ``:`` is only a
+    Windows-drive risk and URN-style tenants are legitimate.
+
     Raises:
         ValueError: ``value`` is empty, ``.``/``..``, or contains ``/``, ``\\``,
-            ``:`` or NUL. The message names ``field``.
+            NUL or (unless ``allow_colon``) ``:``. The message names ``field``
+            and shows at most 64 characters of ``value``.
     """
-    if not value or value in (".", "..") or any(c in value for c in _UNSAFE_PATH_CHARS):
+    unsafe = (
+        _UNSAFE_PATH_CHARS if not allow_colon else tuple(c for c in _UNSAFE_PATH_CHARS if c != ":")
+    )
+    if not value or value in (".", "..") or any(c in value for c in unsafe):
+        shown = f"{value[:64]!r}{'...' if len(value) > 64 else ''}"
+        banned = "'/', '\\', NUL" + ("" if allow_colon else " or ':'")
         raise ValueError(
-            f"Invalid {field} {value!r}: it must be a single path component, "
-            "not empty, '.' or '..', with no '/', '\\', ':' or NUL."
+            f"Invalid {field} {shown}: it must be a single path component, "
+            f"not empty, '.' or '..', with no {banned}."
         )
     return value
 
