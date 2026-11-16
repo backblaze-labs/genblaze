@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "genblaze-atlascloud"
+name = "genblaze-atlascloudai"
 version = "0.1.0"
 description = "Atlas Cloud image and video provider adapter for genblaze"
 authors = [{name = "genblaze contributors"}]
