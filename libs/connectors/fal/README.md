@@ -1,4 +1,4 @@
-# genblaze-fal
+# genblaze-falai
 
 [fal.ai](https://fal.ai) image, video, and audio generation adapter for
 [genblaze](https://github.com/backblaze-labs/genblaze). One connector reaches
@@ -9,7 +9,7 @@ using plain HTTP (no `fal-client` dependency).
 ## Install
 
 ```bash
-pip install genblaze-fal
+pip install genblaze-falai
 export FAL_KEY="..."   # https://fal.ai/dashboard/keys
 ```
 

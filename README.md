@@ -82,8 +82,8 @@ pip install genblaze-stability-audio # Stability AI Stable Audio (music)
 pip install genblaze-lmnt            # LMNT fast TTS
 pip install genblaze-hume            # Hume AI Octave TTS (currently uninstallable, see its README)
 pip install genblaze-assemblyai      # AssemblyAI speech-to-text / transcription
-pip install genblaze-atlascloud      # Atlas Cloud image and video generation
-pip install genblaze-fal             # fal.ai image, video, and audio generation
+pip install genblaze-atlascloudai    # Atlas Cloud image and video generation
+pip install genblaze-falai           # fal.ai image, video, and audio generation
 ```
 
 Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`.

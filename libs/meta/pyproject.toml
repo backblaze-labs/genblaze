@@ -49,8 +49,8 @@ hume = ["genblaze-hume>=0.3.3,<0.4"]
 assemblyai = ["genblaze-assemblyai>=0.3.3,<0.4"]
 langsmith = ["genblaze-langsmith>=0.3.2,<0.4"]
 nvidia = ["genblaze-nvidia>=0.3.4,<0.4"]
-atlascloud = ["genblaze-atlascloud>=0.1.0,<0.2"]
-fal = ["genblaze-fal>=0.1.0,<0.2"]
+atlascloud = ["genblaze-atlascloudai>=0.1.0,<0.2"]
+fal = ["genblaze-falai>=0.1.0,<0.2"]
 
 # Re-exposes genblaze-core's own `parquet` extra (ParquetSink) so
 # `pip install "genblaze[parquet]"` -- the exact incantation
@@ -68,8 +68,8 @@ parquet = ["genblaze-core[parquet]>=0.3.9,<0.4"]
 # (Nov 2026): including it would make these bundles uninstallable. It stays
 # available as the explicit `hume` extra.
 video = [
-    "genblaze-atlascloud>=0.1.0,<0.2",
-    "genblaze-fal>=0.1.0,<0.2",
+    "genblaze-atlascloudai>=0.1.0,<0.2",
+    "genblaze-falai>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.6,<0.4",
     "genblaze-google>=0.3.5,<0.4",
     "genblaze-runway>=0.3.4,<0.4",
@@ -78,15 +78,15 @@ video = [
     "genblaze-nvidia>=0.3.4,<0.4",
 ]
 image = [
-    "genblaze-atlascloud>=0.1.0,<0.2",
-    "genblaze-fal>=0.1.0,<0.2",
+    "genblaze-atlascloudai>=0.1.0,<0.2",
+    "genblaze-falai>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.6,<0.4",
     "genblaze-openai>=0.3.5,<0.4",
     "genblaze-google>=0.3.5,<0.4",
     "genblaze-nvidia>=0.3.4,<0.4",
 ]
 audio = [
-    "genblaze-fal>=0.1.0,<0.2",
+    "genblaze-falai>=0.1.0,<0.2",
     "genblaze-elevenlabs>=0.3.3,<0.4",
     "genblaze-lmnt>=0.3.3,<0.4",
     "genblaze-stability-audio>=0.3.3,<0.4",
@@ -94,8 +94,8 @@ audio = [
     "genblaze-nvidia>=0.3.4,<0.4",
 ]
 all = [
-    "genblaze-atlascloud>=0.1.0,<0.2",
-    "genblaze-fal>=0.1.0,<0.2",
+    "genblaze-atlascloudai>=0.1.0,<0.2",
+    "genblaze-falai>=0.1.0,<0.2",
     "genblaze-gmicloud>=0.3.6,<0.4",
     "genblaze-openai>=0.3.5,<0.4",
     "genblaze-google>=0.3.5,<0.4",
