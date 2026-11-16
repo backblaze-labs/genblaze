@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-11-16 -->
 # genblaze-hume
 
 [Hume AI](https://www.hume.ai/) **Octave TTS** provider adapter for
@@ -9,6 +9,10 @@ synchronous audio provider — generate speech, get a provenance manifest, and
 persist the result to Backblaze B2 / S3 like any other genblaze step.
 
 ## Install
+
+> **Temporarily uninstallable:** every `hume` SDK release on PyPI is yanked (Nov 2026), so pip cannot
+> resolve this package's `hume` dependency. It is left out of the
+> `genblaze[audio]` and `genblaze[all]` bundles until Hume republishes.
 
 ```bash
 pip install genblaze-hume          # or: pip install "genblaze[hume]"

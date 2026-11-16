@@ -39,7 +39,6 @@ ALL_EXTRA_PACKAGE_IMPORTS = (
     ("genblaze-elevenlabs", "genblaze_elevenlabs"),
     ("genblaze-stability-audio", "genblaze_stability_audio"),
     ("genblaze-lmnt", "genblaze_lmnt"),
-    ("genblaze-hume", "genblaze_hume"),
     ("genblaze-assemblyai", "genblaze_assemblyai"),
     ("genblaze-langsmith", "genblaze_langsmith"),
     ("genblaze-nvidia", "genblaze_nvidia"),
