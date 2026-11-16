@@ -42,7 +42,7 @@ Genblaze sits between "call a single video API" and "run a media pipeline in pro
 pip install genblaze                  # core + B2/S3 storage (the umbrella)
 pip install "genblaze[gmicloud]"      # + GMICloud provider
 pip install "genblaze[video]"         # + curated video bundle
-pip install "genblaze[all]"           # + every provider
+pip install "genblaze[all]"           # + every provider except Hume (see below)
 ```
 
 The umbrella pulls in `genblaze-core` (pipeline + models) and `genblaze-s3` (Backblaze B2 / S3 storage) so you have a working provenance pipeline out of the box. Provider adapters are opt-in extras.
@@ -80,7 +80,7 @@ pip install genblaze-replicate       # Replicate (Flux, SDXL, etc.)
 pip install genblaze-elevenlabs      # ElevenLabs TTS + sound effects
 pip install genblaze-stability-audio # Stability AI Stable Audio (music)
 pip install genblaze-lmnt            # LMNT fast TTS
-pip install genblaze-hume            # Hume AI Octave TTS
+pip install genblaze-hume            # Hume AI Octave TTS (currently uninstallable, see its README)
 pip install genblaze-assemblyai      # AssemblyAI speech-to-text / transcription
 pip install genblaze-atlascloud      # Atlas Cloud image and video generation
 pip install genblaze-fal             # fal.ai image, video, and audio generation
