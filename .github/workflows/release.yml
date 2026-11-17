@@ -6,16 +6,16 @@ name: Release
 #                             `## [X.Y.Z]` heading is `## [0.3.0]`). Per-package
 #                             pyproject versions are NOT tag-validated; they
 #                             version independently. See RELEASING.md.
-#   2. workflow_dispatch    — manual. Defaults to dry_run=true → TestPyPI + npm --dry-run.
-#                             Use this to exercise the full pipeline (build, smoke, gates,
-#                             OIDC, sigstore attestations) without touching prod registries.
+#   2. workflow_dispatch    — manual. Defaults to dry_run=true → build + twine check every
+#                             dist (no PyPI upload) + npm --dry-run. Use this to exercise
+#                             the gates and builds without touching prod registries.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Route publishes to TestPyPI + npm --dry-run instead of real registries"
+        description: "Build and validate everything but skip the PyPI upload; npm runs with --dry-run"
         type: boolean
         required: true
         default: true
@@ -118,6 +118,12 @@ jobs:
           else
             dry_run="false"
           fi
+          # Publish jobs treat anything but "true" as a real release, so fail
+          # closed on an unexpected value rather than uploading.
+          case "$dry_run" in
+            true|false) ;;
+            *) echo "::error::dry_run must be true or false, got '$dry_run'"; exit 1 ;;
+          esac
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
 
           # On `release` trigger, enforce tag matches the CHANGELOG wave name.
@@ -222,10 +228,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [validate-version, changelog-gate, release-smoke, pin-parity]
-    # Dry-run dispatches use the `testpypi` environment so we can configure
-    # a SEPARATE Trusted Publisher on test.pypi.org without leaking that
-    # OIDC trust into production. Real publishes use `pypi`.
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    # Dry runs build and twine-check every dist but skip the Publish step,
+    # and run with no environment so no prod deployment is recorded. Keep the
+    # `!= 'true' && 'pypi' || ''` order: '' is falsy, so the inverted form
+    # would always yield 'pypi'. The same expression is used by every PyPI job.
+    environment: ${{ needs.validate-version.outputs.dry_run != 'true' && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write   # Trusted Publishing to PyPI + sigstore attestations.
@@ -242,11 +249,11 @@ jobs:
         run: cd libs/core && python -m build
       - name: Validate wheel metadata
         run: twine check libs/core/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.dry_run != 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/core/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true   # PEP 740 sigstore attestations — provenance into PyPI's integrity registry.
           skip-existing: true  # Idempotent: re-running a partially-failed release is safe. PyPI duplicates are treated as success.
 
@@ -254,7 +261,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-core, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ needs.validate-version.outputs.dry_run != 'true' && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write
@@ -271,11 +278,11 @@ jobs:
         run: cd cli && python -m build
       - name: Validate wheel metadata
         run: twine check cli/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.dry_run != 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: cli/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -283,7 +290,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-core, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ needs.validate-version.outputs.dry_run != 'true' && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write
@@ -326,11 +333,11 @@ jobs:
         run: cd libs/connectors/${{ matrix.connector }} && python -m build
       - name: Validate wheel metadata
         run: twine check libs/connectors/${{ matrix.connector }}/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.dry_run != 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/connectors/${{ matrix.connector }}/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -344,7 +351,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-connectors, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ needs.validate-version.outputs.dry_run != 'true' && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write
@@ -361,11 +368,11 @@ jobs:
         run: cd libs/meta && python -m build
       - name: Validate wheel metadata
         run: twine check libs/meta/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.dry_run != 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/meta/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -487,8 +494,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Post-publish: install from the public registry and import each
   # package to confirm the publish actually worked end-to-end. Skipped
-  # on dry-runs because TestPyPI metadata indexing lags real PyPI by
-  # enough that this would flake.
+  # on dry runs because nothing was uploaded.
   # ─────────────────────────────────────────────────────────────────────
 
   install-verify:

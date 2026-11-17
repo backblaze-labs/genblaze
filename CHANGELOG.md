@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slug a compatible server lists; only api.openai.com is filtered to
   `sora-*` (#319).
 
+### Internal
+
+- Release dry runs no longer publish to TestPyPI. They build and
+  `twine check` every package but skip the PyPI upload; npm still runs with
+  `--dry-run`. The `testpypi` environment is no longer used.
+
 ## [0.8.2] - 2026-11-16
 
 Security hardening wave. `genblaze-core` now requires `urllib3>=2.8.0`, which
