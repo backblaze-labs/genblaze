@@ -12,10 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-# Defaults below mirror the current hardcoded values in
-# ``libs/connectors/s3/genblaze_s3/backend.py`` (lines 27-33). Holding them
-# here as the single source of truth lets callers override per-backend
-# without subclassing, and keeps the s3 connector free of magic numbers.
+# Single source of truth for storage tuning defaults (#42). The s3 connector
+# builds its boto3 client and transfer configs from ``StorageConfig()``, and
+# ``storage.transfer`` sizes its spool threshold from the multipart threshold,
+# so changing a default here changes both without a second edit.
 _DEFAULT_MAX_POOL_CONNECTIONS = 20
 _DEFAULT_CONNECT_TIMEOUT_SEC = 30.0
 _DEFAULT_READ_TIMEOUT_SEC = 300.0

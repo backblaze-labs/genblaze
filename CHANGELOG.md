@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   referenced by the template during auto-discovery. Unused providers that need
   credentials no longer prevent a valid template from loading. Empty templates
   fail before discovery; explicit provider maps remain authoritative (#67).
+- **Changed** `Pipeline.run`, `arun`, `map` and `amap` now type
+  `on_progress`, `on_step_complete` and `on_retry` as precise callables instead
+  of `Any`, and so do the webhook `make_on_progress` / `make_on_step_complete`
+  factories. No runtime change; type checkers now flag a callback with the
+  wrong signature, including an `async def` (#45).
+- **Removed** the unused `genblaze_core.providers.canonical_params` module and
+  the private, never-applied `storage._tracer` decorator. Nothing in genblaze
+  imported either. If you imported the canonical name constants, define them
+  locally; connectors still accept those parameter names (#47).
+- **Changed** the s3 storage backend and the download spool threshold now take
+  their pool size, timeouts, retries and multipart sizes from
+  `StorageConfig`'s defaults instead of separate copies. Values are unchanged
+  (#42).
 
 ### genblaze-openai
 

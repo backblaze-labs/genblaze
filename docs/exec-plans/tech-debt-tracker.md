@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-07-14 -->
+---
+type: Plan
+title: Tech debt tracker
+description: Known tech debt with impact, proposed resolution and priority.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Tech Debt Tracker
 
 Track known tech debt. Update when debt is discovered or resolved.
@@ -16,3 +23,4 @@ Track known tech debt. Update when debt is discovered or resolved.
 | ffmpeg follows HTTP redirects internally with no interception point (#9) | `resolve_input_path` in `_ffmpeg_utils.py` passes `https://` URLs directly to ffmpeg as a subprocess arg after `check_ssrf`. ffmpeg follows 3xx redirects internally, bypassing the SSRF guard on the redirect target. A server can return `Location: http://169.254.169.254/...` and ffmpeg will fetch it. Lower severity than the fixed paths because ffmpeg runs in a separate OS process. | Pre-download via `transfer._http_get_stream` (which validates each redirect hop) before handing the local file path to ffmpeg. | P1 |
 | `_http_get_stream` creates a fresh `HTTPSConnectionPool` per redirect hop | DNS pinning required removing the shared pool; cost is one TLS handshake per asset (old shared pool amortised handshakes across a batch — ~7.5 s saved on 50 same-CDN images). Acceptable security tradeoff, but the perf can be recovered. | Cache pools keyed by `(pinned_ip, host, port)` with a bounded LRU (e.g. 16 entries) and a short TTL; re-pin on miss. | P3 |
 | No dedicated CI job asserts a deliberately-ReDoS-shaped `ModelFamily` pattern fails the build end-to-end (#80) | `assert_safe()` is authoritative under `google-re2` (now installed via the `dev` extra, so it's active in every existing CI job) and every connector's test collection already imports and constructs its families, so a bad pattern fails CI today — but there's no dedicated fixture proving the failure mode itself, only incidental coverage. | Add a small negative-fixture test (a throwaway `ModelFamily` with a known-bad pattern, asserted to raise at construction) alongside the perf gate in `tests/perf/test_registry_perf.py` or a new `tests/unit/test_pattern_safety_ci_gate.py`. | P3 |
+| Storage backend operations emit no tracer spans (#47) | The unused `storage._tracer.traced` decorator was removed in #47, so `put`/`get`/`head`/`list`/`presigned_get` produce no `storage.*` spans even though `storage-backend-hardening-tranche.md` planned them. Storage latency is invisible in OTel traces. | Wrap the `StorageBackend` methods with a small span helper on the existing observability `Tracer`, with an in-memory exporter test asserting span names and `key`/`bucket` attributes. | P3 |

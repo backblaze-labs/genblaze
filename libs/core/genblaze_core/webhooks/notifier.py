@@ -15,13 +15,17 @@ import time
 import weakref
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genblaze_core._utils import jittered_backoff, open_pinned_https_connection, utc_now
 from genblaze_core.exceptions import WebhookError
 from genblaze_core.models.enums import RunStatus, StepStatus
 from genblaze_core.pipeline.result import PipelineResult, StepCompleteEvent
 from genblaze_core.providers.progress import ProgressEvent
+
+if TYPE_CHECKING:
+    from genblaze_core.pipeline.pipeline import StepCompleteCallback
+    from genblaze_core.runnable.config import ProgressCallback
 
 logger = logging.getLogger("genblaze.webhook")
 
@@ -288,7 +292,7 @@ class WebhookNotifier:
             payload["canonical_hash"] = canonical_hash
         self.enqueue(payload)
 
-    def make_on_progress(self) -> Any:
+    def make_on_progress(self) -> ProgressCallback:
         """Return a callback for Pipeline's on_progress parameter.
 
         Fires "step.started" on first "submitted" status per step.
@@ -313,7 +317,7 @@ class WebhookNotifier:
 
         return callback
 
-    def make_on_step_complete(self) -> Any:
+    def make_on_step_complete(self) -> StepCompleteCallback:
         """Return a callback for Pipeline's on_step_complete parameter.
 
         Fires "step.completed" or "step.failed" per step.

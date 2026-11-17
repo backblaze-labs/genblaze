@@ -352,10 +352,16 @@ def _pre_moderation_payload(step: Step) -> str | None:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import TypeAlias
+
     from genblaze_core.models.asset import Asset
     from genblaze_core.pipeline.cache import StepCache
     from genblaze_core.pipeline.template import PipelineTemplate
+    from genblaze_core.runnable.config import ProgressCallback, RetryCallback
     from genblaze_core.sinks.base import BaseSink
+
+    StepCompleteCallback: TypeAlias = Callable[[StepCompleteEvent], None]
 
 
 @dataclass
@@ -1625,7 +1631,7 @@ class Pipeline(Runnable[None, PipelineResult]):
     def _install_progress_tracer(
         self,
         config: RunnableConfig | None,
-        user_on_progress: Any,
+        user_on_progress: ProgressCallback | None,
         run_id: str,
     ) -> RunnableConfig | None:
         """Wrap ``on_progress`` and ``on_retry`` so tracer + stream emitter see each tick.
@@ -1963,11 +1969,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
-        on_progress: Any = None,
+        on_progress: ProgressCallback | None = None,
         progress: bool | None = None,
         pipeline_timeout: float | None = None,
-        on_step_complete: Any = None,
-        on_retry: Any = None,
+        on_step_complete: StepCompleteCallback | None = None,
+        on_retry: RetryCallback | None = None,
         _config_override: RunnableConfig | None = None,
         _owns_sink: bool = True,
         **unsupported: Any,
@@ -2199,11 +2205,11 @@ class Pipeline(Runnable[None, PipelineResult]):
         timeout: float | None = None,
         max_retries: int | None = None,
         max_concurrency: int | None = None,
-        on_progress: Any = None,
+        on_progress: ProgressCallback | None = None,
         progress: bool | None = None,
         pipeline_timeout: float | None = None,
-        on_step_complete: Any = None,
-        on_retry: Any = None,
+        on_step_complete: StepCompleteCallback | None = None,
+        on_retry: RetryCallback | None = None,
         _config_override: RunnableConfig | None = None,
         _owns_sink: bool = True,
         **unsupported: Any,
@@ -2769,9 +2775,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
-        on_progress: Any = None,
+        on_progress: ProgressCallback | None = None,
         pipeline_timeout: float | None = None,
-        on_step_complete: Any = None,
+        on_step_complete: StepCompleteCallback | None = None,
         **unsupported: Any,
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (sync).
@@ -2887,9 +2893,9 @@ class Pipeline(Runnable[None, PipelineResult]):
         raise_on_failure: bool | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
-        on_progress: Any = None,
+        on_progress: ProgressCallback | None = None,
         pipeline_timeout: float | None = None,
-        on_step_complete: Any = None,
+        on_step_complete: StepCompleteCallback | None = None,
         **unsupported: Any,
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (async).
