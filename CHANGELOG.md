@@ -3,7 +3,34 @@
 Generated from Changie fragments. Add a fragment with `make changelog-new`;
 package versions remain independent of release waves. See [RELEASE.md](RELEASE.md).
 
-## [Unreleased]
+## [999.0.0] - 2026-11-17
+This is release wave **v999.0.0**, which names the Git tag. Each package
+versions independently; install the exact package version below, not the wave.
+
+### Released package versions
+
+- `@genblaze/spec` **0.4.1**
+- `genblaze` **0.4.8**
+- `genblaze-assemblyai` **0.3.3**
+- `genblaze-atlascloudai` **0.1.1**
+- `genblaze-cli` **0.3.9**
+- `genblaze-core` **0.3.11**
+- `genblaze-decart` **0.3.5**
+- `genblaze-elevenlabs` **0.3.5**
+- `genblaze-falai` **0.1.0**
+- `genblaze-gmicloud` **0.3.6**
+- `genblaze-google` **0.3.7**
+- `genblaze-hume` **0.3.5**
+- `genblaze-langsmith` **0.3.2**
+- `genblaze-lmnt` **0.3.4**
+- `genblaze-luma` **0.3.3**
+- `genblaze-nvidia` **0.3.4**
+- `genblaze-openai` **0.3.7**
+- `genblaze-replicate` **0.3.5**
+- `genblaze-runway` **0.3.5**
+- `genblaze-s3` **0.3.8**
+- `genblaze-stability-audio` **0.3.4**
+
 
 ### genblaze-core
 

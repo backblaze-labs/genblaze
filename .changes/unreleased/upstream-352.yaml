@@ -1,5 +1,0 @@
-component: Internal
-kind: Changed
-body: Release dry runs build and twine-check every package without Python uploads;
-  npm runs with --dry-run. TestPyPI is no longer used (#352).
-time: '2026-11-17T01:00:00Z'
