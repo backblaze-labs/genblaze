@@ -909,14 +909,22 @@ class TestBaseProviderIntegration:
         assert out == {"prompt": "hi", "k": "v", "seed": 42}
 
 
-class _LockProbeSet(set):
-    """A dedup set whose ``add`` asks another thread whether the registry lock
-    is free. ``False`` means the writer holds the lock while it mutates (#58)."""
+class _LockProbeSet:
+    """Stand-in for a dedup set whose ``add`` asks another thread whether the
+    registry lock is free. ``False`` means the writer holds the lock while it
+    mutates (#58). Wraps a set instead of subclassing it, and implements only
+    what the registry uses (``in``, ``add`` and iteration for ``fork()``)."""
 
     def __init__(self, lock) -> None:
-        super().__init__()
+        self._items: set = set()
         self._lock = lock
         self.lock_was_free: list[bool] = []
+
+    def __contains__(self, item) -> bool:
+        return item in self._items
+
+    def __iter__(self):
+        return iter(self._items)
 
     def add(self, item) -> None:
         import threading
@@ -933,7 +941,7 @@ class _LockProbeSet(set):
         t.start()
         t.join()
         self.lock_was_free.append(seen[0])
-        super().add(item)
+        self._items.add(item)
 
 
 class TestDedupSetsMutateUnderLock:
