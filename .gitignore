@@ -70,7 +70,10 @@ site/
 # Claude Code — local/ephemeral
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 CLAUDE.local.md
+# Private companion repo clone (maintainers only; see CONTRIBUTING.md)
+.internal/
 
 # Hypothesis test cache
 .hypothesis/

@@ -1,11 +1,18 @@
-<!-- last_verified: 2026-07-28 -->
+---
+type: Library
+title: Pricing recipes
+description: Pricing snapshots from the 0.3.0 catalog-decoupling migration; not maintained.
+status: deprecated
+stale_after: 2027-05-16T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Pricing recipes
 
 > **Not maintained.** Prices in this document are snapshots taken at the
 > time each connector was migrated to the catalog-decoupled architecture
 > in `genblaze-core 0.3.0`. **Verify with the upstream provider before
 > relying on them for billing or cost-estimation.** See
-> [docs/exec-plans/active/model-registry-decoupling.md](../exec-plans/active/model-registry-decoupling.md)
+> [docs/exec-plans/completed/model-registry-decoupling.md](../exec-plans/completed/model-registry-decoupling.md)
 > for the rationale behind shipping pricing as a one-shot cookbook
 > rather than maintained SDK state.
 

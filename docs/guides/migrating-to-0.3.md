@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-05-07 -->
+---
+type: Library
+title: Migrating to genblaze-core 0.3.0
+description: Upgrade guide for genblaze-core 0.2.x callers.
+status: stable
+stale_after: 2027-05-16T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Migrating to genblaze-core 0.3.0
 
 > **Audience.** This guide is for callers of `genblaze-core` 0.2.x who are
@@ -61,7 +68,7 @@ what `validate_model()` returns: `OK_AUTHORITATIVE`, `OK_PROVISIONAL`,
 `UNKNOWN_PERMISSIVE`, or `NOT_FOUND`.
 
 The full design trail is in
-[`docs/exec-plans/active/model-registry-decoupling.md`](../exec-plans/active/model-registry-decoupling.md).
+[`docs/exec-plans/completed/model-registry-decoupling.md`](../exec-plans/completed/model-registry-decoupling.md).
 
 ---
 

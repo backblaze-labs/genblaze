@@ -89,7 +89,8 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
-    "ruff>=0.4",
+    # Pinned to CI's ruff (ci.yml lint job) so `make lint` and CI agree.
+    "ruff==0.14.0",
     "mypy>=1.8",
     "deptry>=0.23",
     "pyarrow>=14.0,<27",
@@ -105,6 +106,8 @@ dev = [
     # Test-only since #249: JPEG/WebP embedding splices XMP bytes directly, so
     # Pillow is used only to build image fixtures. <14: bounded-major (#61).
     "pillow>=10.0,<14",
+    # tools/check_docs.py (docs lint) parses OKF frontmatter; its tests run in CI.
+    "pyyaml>=6.0,<7",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -1,0 +1,62 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # `edited` re-runs the internal-reference guard when a PR title or body
+    # changes, without re-running the heavier CI workflow.
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-lint:
+    # Policy: Dependabot PRs run no CI (see ci.yml).
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          persist-credentials: false
+          fetch-depth: 0  # merge-base, changed files and commit messages need history
+      # A change must not edit the check that judges it: PRs are linted by the
+      # base branch's copy of the script (and its pattern digests).
+      - name: Check out base branch lint
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: tools/check_docs.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install pyyaml==6.0.3
+      - name: Docs lint
+        env:
+          # Untrusted PR text goes through env only, never into the script body.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            # push to main: whole-tree pass, legacy findings warn only.
+            exec python pr/tools/check_docs.py --root pr
+          fi
+          lint=base/tools/check_docs.py
+          if [ ! -f "$lint" ]; then
+            echo "::warning::Base branch has no tools/check_docs.py (bootstrap PR); using this PR's copy."
+            lint=pr/tools/check_docs.py
+          fi
+          python "$lint" --root pr --base "$BASE_SHA"

@@ -1,9 +1,16 @@
-<!-- last_verified: 2026-05-11 -->
+---
+type: Plan
+title: Release 0.3.0 readiness sweep
+description: Final coordination of the model-registry-decoupling rollout.
+status: stable
+stale_after: 2027-05-16T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Release 0.3.0 — readiness sweep
 
 > Final coordination of the model-registry-decoupling rollout. The
 > code is shipped (PR #1-#14), production-hardened
-> ([`model-registry-decoupling-hardening.md`](model-registry-decoupling-hardening.md)),
+> ([`model-registry-decoupling-hardening.md`](../completed/model-registry-decoupling-hardening.md)),
 > and deeply reviewed. This plan closes the remaining
 > release-mechanics gaps so the `0.3.0` tag actually installs against
 > PyPI.

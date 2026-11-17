@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint deptry fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity release-smoke pre-release post-release
+.PHONY: install install-dev test lint deptry fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity release-smoke pre-release post-release verify docs-lint e2e-smoke
 
 install:
 	pip install -e libs/core
@@ -90,8 +90,18 @@ fmt:
 	ruff format libs/ cli/ examples/
 	ruff check --fix libs/ cli/ examples/
 
+# Same scope as CI's typecheck job (which calls this target): core plus every
+# connector. Connectors are checked one at a time because each ships its own
+# top-level package; every failure is reported before exiting.
 typecheck:
 	mypy libs/core/genblaze_core/ --ignore-missing-imports
+	@failed=""; \
+	for conn in libs/connectors/*/; do \
+		conn="$${conn%/}"; \
+		echo "=== mypy: $$conn ==="; \
+		mypy $$conn/genblaze_*/ --ignore-missing-imports || failed="$$failed $${conn##*/}"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "Typecheck failed for:$$failed"; exit 1; fi
 
 coverage:
 	cd libs/core && pytest tests/ --cov=genblaze_core --cov-report=term-missing --cov-report=html --cov-fail-under=70
@@ -137,13 +147,32 @@ pypi-pin-parity:
 release-smoke:
 	@tools/release_smoke.sh
 
+# Docs lint (Repo Docs Standard): frontmatter, links, AGENTS.md commands and
+# the internal-reference guard. Changed-file rules and the leak scan diff
+# against DOCS_BASE; untouched legacy docs only warn. See tools/check_docs.py.
+DOCS_BASE ?= origin/main
+docs-lint:
+	@python tools/check_docs.py --base $(DOCS_BASE)
+
+# End-to-end user flow through the installed CLI: pipeline -> embed ->
+# extract -> verify --fetch, plus a tamper negative control. Offline, ~2s.
+e2e-smoke:
+	@python tools/e2e_smoke.py
+
+# The one "is this change done?" gate. Agents and humans run it before
+# opening a PR and paste the output into the PR's Testing section. CI runs
+# the same targets (ts-types-check stays CI-only: it needs Node).
+verify: lint typecheck test docs-lint e2e-smoke
+	@echo ""
+	@echo "verify passed."
+
 # Local pre-flight before tagging a release. Runs the same gates the
 # release workflow runs (validate-version excepted — that needs the
 # tag and the CHANGELOG cut). A clean ``make pre-release`` on ``main``
 # is a strong signal the publish pipeline will be green. Ordered for
 # quick-fail: cheap checks first, then the full test suite and the
-# wheelhouse smoke. See RELEASING.md.
-pre-release: lint typecheck ts-types-check pypi-metadata-check pypi-pin-parity test release-smoke
+# wheelhouse smoke. Covers everything ``verify`` runs. See RELEASING.md.
+pre-release: lint typecheck docs-lint ts-types-check pypi-metadata-check pypi-pin-parity test e2e-smoke release-smoke
 	@echo ""
 	@echo "pre-release gates passed."
 	@echo "Next: bump pyproject.toml versions, cut CHANGELOG, tag, gh release create."
