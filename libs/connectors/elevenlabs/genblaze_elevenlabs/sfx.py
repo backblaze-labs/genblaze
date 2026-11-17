@@ -114,6 +114,10 @@ class ElevenLabsSFXProvider(SyncProvider):
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:

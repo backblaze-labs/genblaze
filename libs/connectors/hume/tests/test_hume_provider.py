@@ -322,3 +322,16 @@ class TestHumeCompliance(ProviderComplianceTests):
 
     def make_step(self):
         return Step(provider="hume-tts", model="octave-2", prompt="test prompt")
+
+
+# --- lifecycle (issue #10) ----------------------------------------------------
+
+
+def test_close_releases_client_once_and_is_idempotent(mock_hume):
+    provider, client, _ = mock_hume
+    with provider:
+        pass
+    client.close.assert_called_once()
+    assert provider._client is None
+    provider.close()
+    client.close.assert_called_once()

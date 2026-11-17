@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import pytest
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.step import Step
-from genblaze_core.providers.base import SyncProvider
+from genblaze_core.providers.base import BaseProvider, SyncProvider
 
 
 class _GoodSync(SyncProvider):
@@ -284,3 +284,50 @@ async def test_genuine_retry_policy_bug_in_a_correctly_constructed_provider_is_n
         await provider.ainvoke(step)
 
     assert "_this_attribute_does_not_exist" in str(exc_info.value)
+
+
+class _ClientHolder(BaseProvider):
+    """Minimal provider holding a lazily built client, for lifecycle tests."""
+
+    name = "client-holder"
+
+    def close(self) -> None:
+        self._release_client()
+
+    def get_capabilities(self):  # pragma: no cover - not exercised
+        raise NotImplementedError
+
+    def submit(self, step):  # pragma: no cover
+        raise NotImplementedError
+
+    def poll(self, prediction_id, config=None):  # pragma: no cover
+        raise NotImplementedError
+
+    def fetch_output(self, prediction_id, step):  # pragma: no cover
+        raise NotImplementedError
+
+
+def test_base_provider_close_is_noop_and_context_manager():
+    p = _ClientHolder()
+    p.close()
+    with p as entered:
+        assert entered is p
+
+
+def test_release_client_closes_and_clears_client():
+    class _C:
+        closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    p = _ClientHolder()
+    p._release_client()  # never built: no error
+    client = _C()
+    p._client = client
+    with p:
+        pass
+    assert client.closed == 1
+    assert p._client is None
+    p.close()  # idempotent
+    assert client.closed == 1

@@ -191,3 +191,17 @@ All fields are optional (default `None` = unspecified). The base `get_capabiliti
 - Quick verify: `cd libs/core && pytest tests/unit/test_sync_provider.py tests/unit/test_provider_retry.py -v`
 - Full verify: `make test`
 - Pass criteria: provider lifecycle correct, errors classified with explicit codes, asset URLs validated, compliance tests pass
+
+## Provider lifecycle
+
+`BaseProvider` exposes `close()` and the context-manager protocol. `close()`
+is a no-op by default; client-owning connectors override it to release their
+HTTP/SDK client pool (injected clients are never closed). `close()` is
+idempotent, and lazily built clients are rebuilt on next use. The Pipeline
+does not close providers it is handed, so services that create a provider per
+request or tenant (e.g. via `ModelRegistry.fork()`) should release it:
+
+```python
+with ReplicateProvider() as provider:
+    Pipeline("job").step(provider, model="...").run()
+```
