@@ -212,7 +212,8 @@ return {
   summary: plan.summary,
   red_team: redteam,
   red_team_path: redteamPath,
-  next: `Review ${plan.doc_path} and ${redteamPath}. Preview with the ` +
-    `batch-execute workflow and args {"docPath": "${plan.doc_path}"} (dry run ` +
-    `by default); add "dryRun": false to execute.`,
+  next: `Review ${plan.doc_path} and ${redteamPath}, tick "- [x] approve" for ` +
+    `each cluster to run, then preview with the batch-execute workflow and args ` +
+    `{"docPath": "${plan.doc_path}"} (dry run by default); add "dryRun": false ` +
+    `to execute.`,
 }

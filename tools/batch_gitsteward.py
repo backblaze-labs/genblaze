@@ -78,6 +78,14 @@ def _ahead_behind(repo: str, local: str, remote: str) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
+# batch-plan's own untracked output; it must not block the next run.
+_BATCH_PLAN_DOC = re.compile(r"^\?\? docs/exec-plans/active/batch-plan-[\w.-]+\.md$")
+
+
+def _is_batch_plan_output(status_line: str) -> bool:
+    return bool(_BATCH_PLAN_DOC.match(status_line))
+
+
 @dataclass
 class Preflight:
     ok: bool
@@ -99,7 +107,12 @@ def preflight(repo: str) -> Preflight:
     switches branches, stashes, or commits.
     """
     current = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    dirty = bool(_git(repo, "status", "--porcelain").stdout.strip())
+    dirty = any(
+        not _is_batch_plan_output(line)
+        # -uall lists untracked files individually; the default collapses a new
+        # directory to one "?? docs/" line that would hide what is in it.
+        for line in _git(repo, "status", "--porcelain", "-uall").stdout.splitlines()
+    )
     messages: list[str] = []
 
     if dirty:

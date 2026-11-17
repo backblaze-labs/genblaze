@@ -70,6 +70,25 @@ def test_preflight_clean_and_current_is_ok(tmp_path):
     assert not report.dirty
 
 
+def test_preflight_ignores_untracked_batch_plan_docs(tmp_path):
+    _, local = _make_origin_and_clone(tmp_path)
+    plans = local / "docs" / "exec-plans" / "active"
+    plans.mkdir(parents=True)
+    (plans / "batch-plan-2026-11-17.md").write_text("plan", encoding="utf-8")
+    (plans / "batch-plan-2026-11-17.redteam.md").write_text("rt", encoding="utf-8")
+    report = preflight(str(local))
+    assert report.ok and not report.dirty
+
+
+def test_preflight_still_blocks_on_other_untracked_files(tmp_path):
+    _, local = _make_origin_and_clone(tmp_path)
+    plans = local / "docs" / "exec-plans" / "active"
+    plans.mkdir(parents=True)
+    (plans / "batch-plan-2026-11-17.md").write_text("plan", encoding="utf-8")
+    (plans / "other-plan.md").write_text("wip", encoding="utf-8")
+    assert not preflight(str(local)).ok
+
+
 def test_preflight_dirty_tree_blocks(tmp_path):
     _, local = _make_origin_and_clone(tmp_path)
     (local / "scratch.txt").write_text("wip", encoding="utf-8")

@@ -123,3 +123,9 @@ def test_write_issue_files_one_file_per_issue(tmp_path):
     index = write_issue_files(rows, tmp_path)
     assert json.loads((tmp_path / "70.json").read_text())["body"] == "b"
     assert index == [{"number": 70, "path": str(tmp_path / "70.json"), "existing_work": []}]
+
+
+def test_write_issue_files_removes_files_for_issues_no_longer_open(tmp_path):
+    (tmp_path / "69.json").write_text("{}", encoding="utf-8")
+    write_issue_files([{"number": 70, "existing_work": []}], tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["70.json"]

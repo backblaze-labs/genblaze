@@ -294,8 +294,33 @@ def build_plan(scout: list[dict], config: Config | None = None) -> Plan:
                 )
             )
         elif oversized:
-            # Serialize: run the lowest-numbered issue alone now, defer the rest.
-            head, *tail = members
+            # Serialize: run one issue alone now, defer the rest. The head must
+            # have no unmet "depends on" inside this component, or a dependent
+            # would run before its prerequisite (lowest number is only the
+            # tie-break among issues that are ready).
+            intra = {
+                n: {int(d) for d in active[n].get("deps", [])} & set(members) for n in members
+            }
+            ready = [n for n in members if not intra[n]]
+            if not ready:
+                clusters.append(
+                    _make_cluster(
+                        members,
+                        member_files,
+                        member_hot,
+                        layer[root],
+                        False,
+                        blocked_by,
+                        DEFER_CYCLE,
+                    )
+                )
+                notes.append(
+                    f"Every issue in {_slug(members)} depends on another member; "
+                    f"resolve the circular 'depends on' links by hand."
+                )
+                continue
+            head = ready[0]
+            tail = [n for n in members if n != head]
             clusters.append(
                 _make_cluster(
                     [head],
