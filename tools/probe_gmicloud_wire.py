@@ -279,12 +279,18 @@ def main() -> int:
     parser.add_argument(
         "--out-json",
         type=Path,
-        help="Path to write the JSON report (default: docs/reference/gmicloud-wire-probe-{date}.json)",
+        help=(
+            "Path to write the JSON report "
+            "(default: docs/reference/gmicloud-wire-probe-{date}.json)"
+        ),
     )
     parser.add_argument(
         "--out-md",
         type=Path,
-        help="Path to write the markdown report (default: docs/reference/gmicloud-wire-probe-{date}.md)",
+        help=(
+            "Path to write the markdown report "
+            "(default: docs/reference/gmicloud-wire-probe-{date}.md)"
+        ),
     )
     parser.add_argument("--skip-slug-case", action="store_true")
     parser.add_argument("--skip-i2v", action="store_true", help="Skip image-wire-key probes")
@@ -326,7 +332,8 @@ def main() -> int:
             report["image_keys"] = _probe_image_keys(client)
         if not args.skip_duration:
             print(
-                f"Probing PixVerse duration coercer for {len(_PIXVERSE_DURATION_TARGETS)} models...",
+                "Probing PixVerse duration coercer for "
+                f"{len(_PIXVERSE_DURATION_TARGETS)} models...",
                 file=sys.stderr,
             )
             report["pixverse_duration"] = _probe_pixverse_duration(client)

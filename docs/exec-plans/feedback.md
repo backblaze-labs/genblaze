@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-07-15 -->
+---
+type: Plan
+title: SDK feedback tracker
+description: Triaged inbox for feedback from real users and sample-app builds.
+status: stable
+stale_after: 2027-05-16T00:00:00Z
+owner: "@jeronimodeleon"
+---
 <!-- cleaned: 2026-04-25 -->
 # SDK Feedback Tracker
 
@@ -120,7 +127,7 @@ Verified in code on 2026-04-25:
 The exec-plan extensions for this batch are at:
 - [`active/retry-policy-unification.md`](active/retry-policy-unification.md)
   Phase 2 — `RetryPolicy` class + idempotency scaffolding.
-- [`active/gmi-registry-reconciliation.md`](active/gmi-registry-reconciliation.md)
+- [`active/gmi-registry-reconciliation.md`](completed/gmi-registry-reconciliation.md)
   "Wire-conformance probe" section.
 
 **F-2026-04-25-08** — PixVerse `duration` requires string enum; the shared

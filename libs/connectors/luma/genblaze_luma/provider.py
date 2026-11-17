@@ -164,6 +164,10 @@ class LumaProvider(BaseProvider):
         # double the API call rate to surface preview frames.
         self._progress_cache: dict[str, Any] = {}
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:

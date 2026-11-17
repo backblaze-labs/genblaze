@@ -16,9 +16,7 @@ Docs: https://platform.openai.com/docs/api-reference/audio/createSpeech
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +36,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    get_output_path,
 )
 from genblaze_core.providers.discovery import DEFAULT_TTL_SECONDS, _DiscoveryCache
 from genblaze_core.providers.retry import retry_after_from_response
@@ -194,6 +193,10 @@ class OpenAITTSProvider(SyncProvider):
             return cache.get()
         return cache.get(max_age_seconds=max_age_seconds)
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:
@@ -233,15 +236,8 @@ class OpenAITTSProvider(SyncProvider):
             response = client.audio.speech.create(**params)
 
             suffix = f".{response_format}"
-            if self._output_dir:
-                self._output_dir.mkdir(parents=True, exist_ok=True)
-                out_path = self._output_dir / f"{step.step_id}{suffix}"
-                response.write_to_file(str(out_path))
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=suffix)
-                os.close(fd)
-                out_path = Path(tmp)
-                response.write_to_file(str(out_path))
+            out_path = get_output_path(step.step_id, suffix.lstrip("."), self._output_dir)
+            response.write_to_file(str(out_path))
 
             # Use file URI — upload to cloud storage via ObjectStorageSink
             file_url = local_file_url(out_path.resolve())

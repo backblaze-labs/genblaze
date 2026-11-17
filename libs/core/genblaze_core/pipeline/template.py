@@ -131,7 +131,8 @@ class PipelineTemplate(BaseModel):
 
         Args:
             providers: Dict mapping provider name → provider instance.
-                If None, uses discover_providers() to auto-discover.
+                If None, discovers provider classes and constructs only those
+                referenced by the template. Explicit maps bypass discovery.
             variables: Optional dict of {variable} placeholders to render in
                 step prompts AND string values inside step params (top-level
                 or nested in dict/list/tuple) — e.g. ``params={"voice":
@@ -153,12 +154,19 @@ class PipelineTemplate(BaseModel):
         # Lazy imports to avoid circular dependencies
         from genblaze_core.pipeline.pipeline import Pipeline
 
+        if not self.steps:
+            raise GenblazeError("Template has no steps")
+
         if providers is None:
             from genblaze_core.providers.registry import discover_providers
 
             discovered = discover_providers()
             providers = {}
-            for name, cls in discovered.items():
+            for name in dict.fromkeys(st.provider_name for st in self.steps):
+                cls = discovered.get(name)
+                if cls is None:
+                    available = ", ".join(sorted(discovered))
+                    raise GenblazeError(f"Provider '{name}' not found. Available: [{available}]")
                 try:
                     providers[name] = cls()
                 except Exception as exc:
@@ -166,9 +174,6 @@ class PipelineTemplate(BaseModel):
                         f"Failed to instantiate provider '{name}'. "
                         f"Pass providers= explicitly if constructor requires arguments: {exc}"
                     ) from exc
-
-        if not self.steps:
-            raise GenblazeError("Template has no steps")
 
         pipe = Pipeline(
             self.name,

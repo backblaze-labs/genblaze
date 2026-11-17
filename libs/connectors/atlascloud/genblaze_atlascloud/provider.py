@@ -107,7 +107,17 @@ class AtlasCloudProvider(BaseProvider):
         self.poll_get_retries = poll_get_retries
         self._api_key = api_key or os.getenv("ATLASCLOUD_API_KEY")
         self._base_url = base_url.rstrip("/")
+        self._owns_client = http_client is None
         self._client = http_client or httpx.Client(timeout=http_timeout)
+
+    def close(self) -> None:
+        """Release the connection pool of an internally created ``httpx.Client``.
+
+        No-op for an injected ``http_client``: the caller owns its lifecycle.
+        Idempotent. The provider can't make requests after closing.
+        """
+        if self._owns_client:
+            self._client.close()
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(

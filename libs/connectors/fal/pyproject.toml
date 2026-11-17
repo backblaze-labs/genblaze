@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "genblaze-fal"
+name = "genblaze-falai"
 version = "0.1.0"
 description = "fal.ai image, video, and audio provider adapter for genblaze"
 authors = [{name = "genblaze contributors"}]

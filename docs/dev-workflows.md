@@ -1,35 +1,42 @@
-<!-- last_verified: 2026-04-23 -->
+---
+type: Library
+title: Dev workflows
+description: Contributor checklists for features, bugfixes, refactors, docs and PRs, plus test placement and the doc update mapping.
+status: stable
+stale_after: 2027-05-16T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Dev Workflows
 
 ## Setup
 
 - [ ] Clone repo
 - [ ] Run `make install-dev`
-- [ ] Run `make test` to verify setup
+- [ ] Run `make verify` to confirm the setup
 
 ## New Feature
 
-- [ ] Create execution plan in `docs/exec-plans/active/`
+- [ ] Create execution plan in `docs/exec-plans/active/<feature>/plan.md` (`type: Plan` frontmatter)
 - [ ] Implement feature in appropriate package (`libs/core/`, `libs/connectors/`, `cli/`)
 - [ ] Write tests (unit at minimum)
 - [ ] Create feature doc in `docs/features/<feature>.md`
 - [ ] Update `ARCHITECTURE.md` if system layout changed
 - [ ] Update `docs/app-workflows.md` if user journeys changed
 - [ ] If a Pydantic wire model changed: update `libs/spec/schemas/manifest/v1/` and run `make ts-types`
-- [ ] Run `make test` and `make lint`
-- [ ] Move plan to `docs/exec-plans/completed/`
+- [ ] Run `make verify`
+- [ ] Move the plan folder to `docs/exec-plans/completed/` when its last task merges
 
 ## Bugfix
 
 - [ ] Add failing test that reproduces the bug
 - [ ] Confirm test fails
 - [ ] Implement fix
-- [ ] Run `make test` — confirm all green
-- [ ] Update feature doc if behavior changed
+- [ ] Run `make verify`, confirm all green
+- [ ] Update feature doc if behavior changed (no plan needed if behavior is unchanged)
 
 ## Refactor
 
-- [ ] Create execution plan in `docs/exec-plans/active/`
+- [ ] Create execution plan in `docs/exec-plans/active/<feature>/plan.md`
 - [ ] Run `make test` before starting (baseline)
 - [ ] Make changes incrementally
 - [ ] Run `make test` after each change
@@ -38,17 +45,18 @@
 ## Documentation Update
 
 - [ ] Edit the canonical doc (feature doc, ARCHITECTURE.md, etc.)
-- [ ] Update `<!-- last_verified: YYYY-MM-DD -->` header
-- [ ] Verify cross-links are correct
+- [ ] Docs under `docs/`: add or update OKF frontmatter and move `stale_after`
+      forward (drop the legacy `<!-- last_verified -->` comment). Root files
+      keep the `last_verified` comment.
+- [ ] `make docs-lint` passes (frontmatter, links, AGENTS.md commands)
 - [ ] No duplicate information across docs
 
 ## Pull Request
 
-- [ ] All tests pass (`make test`)
-- [ ] Linter passes (`make lint`)
+- [ ] `make verify` passes; output pasted into the PR's Testing section
+- [ ] Risk, How to revert and Public API / semver filled in
 - [ ] Docs updated in same PR as code changes
-- [ ] Execution plan referenced if applicable
-- [ ] PR description summarizes changes
+- [ ] Execution plan or issue referenced
 
 ## Testing
 
@@ -149,5 +157,7 @@ Connector package READMEs are also PyPI long descriptions. Cross-file links in t
 | System layout/integrations | `ARCHITECTURE.md` |
 | Dev/testing process | `docs/dev-workflows.md` |
 | Setup or tech stack | `README.md` |
-| Active work | `docs/exec-plans/active/` |
+| Active work | `docs/exec-plans/active/<feature>/plan.md` |
 | Known tech debt | `docs/exec-plans/tech-debt-tracker.md` |
+| What review flags; a lesson from a revert or incident | `REVIEW.md` |
+| Agent commands, boundaries, done-checks | `AGENTS.md` |

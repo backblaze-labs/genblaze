@@ -70,7 +70,10 @@ site/
 # Claude Code — local/ephemeral
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 CLAUDE.local.md
+# Private companion repo clone (maintainers only; see CONTRIBUTING.md)
+.internal/
 
 # Hypothesis test cache
 .hypothesis/
@@ -83,3 +86,9 @@ CLAUDE.local.md
 pre-pr-check-findings-batch-*.md
 # Node (libs/spec type-generation toolchain)
 node_modules/
+
+# Batch maintainer: fetched issue files (untrusted text)
+.batch/
+
+# Local editor/plugin caches (e.g. the Impeccable hook)
+.impeccable/

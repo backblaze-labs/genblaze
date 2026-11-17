@@ -24,9 +24,7 @@ Docs: https://docs.platform.decart.ai/
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +42,7 @@ from genblaze_core.providers import (
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
+    get_output_path,
 )
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.providers.retry import retry_after_from_response
@@ -153,6 +152,10 @@ class DecartVideoProvider(BaseProvider):
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:
@@ -246,13 +249,7 @@ class DecartVideoProvider(BaseProvider):
             # Download the video result
             result = _run_async(client.queue.result(prediction_id))
 
-            if self._output_dir:
-                self._output_dir.mkdir(parents=True, exist_ok=True)
-                out_path = self._output_dir / f"{step.step_id}.mp4"
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=".mp4")
-                os.close(fd)
-                out_path = Path(tmp)
+            out_path = get_output_path(step.step_id, "mp4", self._output_dir)
 
             out_path.write_bytes(result.data)
             file_url = local_file_url(out_path.resolve())

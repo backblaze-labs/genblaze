@@ -70,15 +70,49 @@ input mid-run — so the gate becomes an explicit, auditable boundary.
 # 1. Plan — review all issues, cluster + order them, write an approval-gated doc, STOP.
 /batch-plan                       # (or: Workflow tool, name: "batch-plan")
 
-# → review docs/exec-plans/active/batch-plan-<date>.md, then:
+# → review docs/exec-plans/active/batch-plan-<date>.md, tick "- [x] approve `<slug>`"
+#   for each cluster you want, then:
 
 # 2. Execute — validate the approved plan against live state, open one PR per cluster.
-/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md", "dryRun": true}
-/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md"}
+/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md"}                   # dry run (default)
+/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md", "dryRun": false}
 ```
 
-**Safety model:**
+Executors only run sandboxed on **macOS** (`sandbox-exec`); elsewhere they are
+denied. Review the dry-run dispatch before running for real, and keep the first
+real run to one or two clusters.
 
+Start both workflows from your **main Claude Code session**: subagents don't
+have the Workflow tool, so a delegated run can't begin. Preflight refuses a
+dirty tree, so if your checkout has local changes, run from a clean worktree
+(it's fine for `main` to be checked out, and behind, in another worktree).
+Clusters that need CI, release, agent-config, CHANGELOG or dependency files
+are planned as `needs-human`, since executors can't change those.
+
+**Safety model:** issue titles, bodies and comments are written by anyone, so
+the agents that read them are treated as untrusted.
+
+- **Issue text enters through code.** `tools/batch_issues.py` fetches every open
+  issue (failing instead of truncating above `max`) into `.batch/issues/<N>.json`
+  and records linked PRs and branches. Issue text is never pasted into prompts.
+- **Scouts are read-only.** `batch-scout` has only Read, Grep and Glob.
+- **Executors are sandboxed.** `.claude/hooks/batch-executor-guard.py` (active
+  only for `batch-executor`; adds ~90 ms per tool call elsewhere and does
+  nothing) runs every executor command in a macOS sandbox with no network, no
+  credentials and writes only to its worktree, and refuses edits to the paths
+  in `tools/batch_policy.py` (CI, release tooling, agent config, CHANGELOG,
+  dependency files). Executors only edit files: they never run git, push,
+  comment or label (Claude Code also refuses git inside the sandbox wrapper).
+- **Nothing is pushed unverified.** `batch_gitsteward.py publish --worktree`
+  re-fetches `origin/main`, commits the executor's changes on top of it (from
+  the outside; the worktree itself is never modified), then refuses any branch
+  that touches a guarded path (renames
+  included), changes a dependency file, adds a credential-shaped string, carries
+  a `Co-authored-by` trailer or isn't based on `origin/main`. Only a clean branch
+  is pushed, with a PR body built from its commits and the plan's `Closes #N`.
+  Refused branches stay local for you to inspect.
+- **No in-batch review panel.** Executors can't spawn sub-agents; review each PR
+  yourself (or run `/panel-review` on it) before merging.
 - **Deterministic core, tested.** Clustering, plan-doc integrity, and all git
   hygiene live in `tools/batch_*.py` under `make test` — not in prose. Agents
   only do the one fuzzy step (estimating which files an issue touches) and act as
@@ -86,9 +120,12 @@ input mid-run — so the gate becomes an explicit, auditable boundary.
 - **Preflight never touches your checkout.** It fails fast on a dirty tree, and
   fast-forwards local `main` only when `main` is not checked out and strictly
   behind — never switching, stashing, or committing.
-- **The gate is enforced, not assumed.** The plan doc embeds the `origin/main`
-  SHA and a content token; `batch-execute` re-validates against live state and
-  aborts if main advanced, the doc was hand-edited, or a planned issue closed.
+- **The gate is enforced, not assumed.** Only clusters you tick run; nothing is
+  pre-approved. `batch-execute` refuses a hand-edited plan block (content token),
+  a tick on a deferred cluster, or an approved issue that has closed, and skips
+  clusters that already have a PR or branch (so re-running after a partial batch
+  is safe). If `origin/main` moved since planning it warns instead of aborting:
+  executors branch off live main and `publish` re-checks every diff.
 - **Conflict-aware, capped clusters.** Issues sharing real (non-"hot") files
   cluster into one PR up to a size cap; oversized or dependent work is deferred to
   a re-plan rather than stacked (stacked branches break when a prerequisite is

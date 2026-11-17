@@ -19,9 +19,7 @@ Docs: https://elevenlabs.io/docs/api-reference/text-to-sound-effects
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +36,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    get_output_path,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -115,6 +114,10 @@ class ElevenLabsSFXProvider(SyncProvider):
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:
@@ -164,13 +167,7 @@ class ElevenLabsSFXProvider(SyncProvider):
             audio_iter = client.text_to_sound_effects.convert(**kwargs)
             audio_bytes = b"".join(audio_iter)
 
-            if self._output_dir:
-                self._output_dir.mkdir(parents=True, exist_ok=True)
-                out_path = self._output_dir / f"{step.step_id}.mp3"
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                out_path = Path(tmp)
+            out_path = get_output_path(step.step_id, "mp3", self._output_dir)
 
             out_path.write_bytes(audio_bytes)
             file_url = local_file_url(out_path.resolve())

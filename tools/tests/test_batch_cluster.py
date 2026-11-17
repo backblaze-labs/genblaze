@@ -15,9 +15,11 @@ _TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
+import pytest  # noqa: E402
 from batch_cluster import (  # noqa: E402
     DEFER_AWAITING_PREREQ,
     DEFER_CYCLE,
+    DEFER_NEEDS_HUMAN,
     DEFER_OVERSIZED,
     Config,
     build_plan,
@@ -149,6 +151,33 @@ def test_oversized_component_serializes_head_and_defers_tail():
     assert not tail.executable
     assert tail.defer_reason == DEFER_OVERSIZED
     assert any("size cap" in n for n in plan.notes)
+
+
+def test_oversized_component_runs_a_prerequisite_before_its_dependent():
+    """Regression: #70 depends on #75 inside one oversized component. The head
+    that runs alone must be #75, never the lower-numbered dependent #70."""
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [
+            _issue(70, [shared], deps=[75]),
+            _issue(71, [shared]),
+            _issue(72, [shared]),
+            _issue(75, [shared]),
+        ],
+        Config(max_issues=3),
+    )
+    runnable = [c for c in plan.clusters if c.executable]
+    assert [c.issues for c in runnable] == [[71]]
+    assert 70 not in runnable[0].issues
+
+
+def test_oversized_component_with_only_dependent_members_defers_all():
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [_issue(n, [shared], deps=[n % 4 + 1]) for n in (1, 2, 3, 4)],
+        Config(max_issues=3),
+    )
+    assert not any(c.executable for c in plan.clusters)
 
 
 def test_oversized_by_file_count():
@@ -296,3 +325,32 @@ def test_plan_serializes_to_json_dict():
     d = plan.to_dict()
     assert set(d) == {"clusters", "skipped", "notes"}
     assert d["clusters"][0]["id"] == "issues-1"
+
+
+# ---------------------------------------------------------------------------
+# Clusters a batch executor is not allowed to finish
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "libs/core/pyproject.toml",  # dependency file (also a hot file)
+        "AGENTS.md",  # agent instructions (also a hot file)
+        ".github/workflows/ci.yml",
+        "CHANGELOG.md",
+    ],
+)
+def test_cluster_needing_guarded_files_is_deferred_for_a_human(path):
+    plan = build_plan([_issue(25, ["libs/core/genblaze_core/x.py", path]), _issue(26, ["a.py"])])
+    clusters = _by_id(plan)
+    assert not clusters["issues-25"].executable
+    assert clusters["issues-25"].defer_reason == DEFER_NEEDS_HUMAN
+    assert clusters["issues-26"].executable
+    assert any("#25" in n and path in n for n in plan.notes)
+
+
+def test_cluster_with_no_scoped_files_gets_a_note():
+    plan = build_plan([_issue(254, ["README.md"])])
+    assert _by_id(plan)["issues-254"].executable
+    assert any("#254" in n and "no files of its own" in n for n in plan.notes)

@@ -20,9 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -40,6 +38,7 @@ from genblaze_core.providers import (
     ModelSpec,
     ProviderCapabilities,
     RetryPolicy,
+    get_output_path,
     route_images,
 )
 from genblaze_core.providers.base import BaseProvider
@@ -277,6 +276,10 @@ class SoraProvider(BaseProvider):
             return cache.get()
         return cache.get(max_age_seconds=max_age_seconds)
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:
@@ -391,15 +394,8 @@ class SoraProvider(BaseProvider):
             # Content endpoint requires the API key in the Authorization header.
             # openai SDK 2.x renamed videos.content → videos.download_content (#127).
             content = client.videos.download_content(prediction_id, variant="video")
-            if self._output_dir:
-                self._output_dir.mkdir(parents=True, exist_ok=True)
-                out_path = self._output_dir / f"{step.step_id}.mp4"
-                content.write_to_file(str(out_path))
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=".mp4")
-                os.close(fd)
-                out_path = Path(tmp)
-                content.write_to_file(str(out_path))
+            out_path = get_output_path(step.step_id, "mp4", self._output_dir)
+            content.write_to_file(str(out_path))
 
             file_url = local_file_url(out_path.resolve())
             asset = Asset(url=file_url, media_type="video/mp4")

@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
-from genblaze_core._utils import new_id, utc_now
+from genblaze_core._utils import new_id, utc_now, validate_path_component
 from genblaze_core.models.enums import RunStatus
 from genblaze_core.models.step import Step
 
@@ -33,6 +33,27 @@ class Run(BaseModel):
         default=None, description="Execution completion timestamp."
     )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata.")
+
+    # Path-safety is enforced on tolerant loads too: parse_manifest() is exactly
+    # where hostile ids arrive, and they are hash-excluded so verify can't
+    # catch a tampered value (GHSA-x99g-wcm2-r2v8).
+    @field_validator("run_id", "parent_run_id", mode="after")
+    @classmethod
+    def _validate_run_ids(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return (
+            None if value is None else validate_path_component(value, field=str(info.field_name))
+        )
+
+    @field_validator("tenant_id", mode="after")
+    @classmethod
+    def _validate_tenant_id(cls, value: str | None) -> str | None:
+        # "" means "no tenant" everywhere downstream (normalize_tenant_id), so
+        # only a non-empty tenant has to be a safe key/path segment.
+        return (
+            value
+            if not value
+            else validate_path_component(value, field="tenant_id", allow_colon=True)
+        )
 
     def __repr__(self) -> str:
         return (

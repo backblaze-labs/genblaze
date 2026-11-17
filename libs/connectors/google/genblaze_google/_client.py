@@ -10,7 +10,7 @@ copies of both methods; ``GeminiImageProvider`` would have made it a third.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genblaze_core.exceptions import ProviderError
 from genblaze_core.providers import LiveProbeResult
@@ -30,6 +30,14 @@ class GoogleClientMixin:
     _project: str | None
     _location: str
     _client: Any
+
+    if TYPE_CHECKING:
+        # Supplied by BaseProvider in the including provider class.
+        def _release_client(self, attr: str = "_client") -> None: ...
+
+    def close(self) -> None:
+        """Release the lazily built genai client."""
+        self._release_client()
 
     def _get_client(self) -> Any:
         if self._client is None:

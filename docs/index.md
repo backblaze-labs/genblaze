@@ -1,4 +1,7 @@
-<!-- last_verified: 2026-05-12 -->
+---
+okf_version: "0.2"
+---
+<!-- last_verified: 2026-11-16 -->
 # Genblaze Documentation
 
 Genblaze is a Python SDK for generative-media pipelines with cryptographic
@@ -6,7 +9,10 @@ provenance manifests, pluggable provider connectors, and S3-compatible
 storage sinks (Backblaze B2 first).
 
 New here? Read [README.md](../README.md) → [ARCHITECTURE.md](../ARCHITECTURE.md) →
-[AGENTS.md](../AGENTS.md) → the relevant feature doc below.
+[AGENTS.md](../AGENTS.md) → the relevant feature doc below. Reviewers:
+[REVIEW.md](../REVIEW.md). Every doc under `docs/` carries OKF v0.2
+frontmatter once edited (`type`, `owner`, `status`, `stale_after`), checked
+by `make docs-lint`.
 
 ---
 
@@ -101,6 +107,8 @@ New here? Read [README.md](../README.md) → [ARCHITECTURE.md](../ARCHITECTURE.m
 ## Planning & Tracking
 
 - [Active exec-plans](exec-plans/active/) — in-flight tranches and rollouts.
+  New plans use `active/<feature>/plan.md`, e.g.
+  [repo-docs-standard](exec-plans/active/repo-docs-standard/plan.md).
   See [release-0.3.md](exec-plans/active/release-0.3.md),
   [p0-p1-feedback-execution.md](exec-plans/active/p0-p1-feedback-execution.md),
   [storage-backend-hardening-tranche.md](exec-plans/active/storage-backend-hardening-tranche.md),

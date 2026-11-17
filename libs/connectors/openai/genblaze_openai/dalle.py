@@ -58,6 +58,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    get_output_path,
     validate_asset_url,
     validate_chain_input_url,
 )
@@ -546,6 +547,10 @@ class DalleProvider(SyncProvider):
             return cache.get()
         return cache.get(max_age_seconds=max_age_seconds)
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:
@@ -593,13 +598,7 @@ class DalleProvider(SyncProvider):
         content hash so manifests verify without a storage sink, and
         ``ObjectStorageSink`` can reuse the hash/size on transfer retry.
         """
-        if self._output_dir:
-            self._output_dir.mkdir(parents=True, exist_ok=True)
-            out_path = self._output_dir / f"{step.step_id}_{index}{ext}"
-        else:
-            fd, tmp = tempfile.mkstemp(suffix=ext)
-            os.close(fd)
-            out_path = Path(tmp)
+        out_path = get_output_path(f"{step.step_id}_{index}", ext.lstrip("."), self._output_dir)
         out_path.write_bytes(img_bytes)
         return (
             local_file_url(out_path.resolve()),

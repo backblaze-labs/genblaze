@@ -25,7 +25,7 @@ docs/                   # Internal feature docs
 ## Making changes
 
 1. **Read the docs first**: [ARCHITECTURE.md](ARCHITECTURE.md) for system layout, [AGENTS.md](AGENTS.md) for conventions.
-2. **Create an execution plan** for multi-file changes or new features — place it in `docs/exec-plans/active/`.
+2. **Plan larger work.** Maintainers write an execution plan for multi-file changes or new features in `docs/exec-plans/active/<feature>/plan.md`. External contributors: open or link a GitHub issue describing the change instead.
 3. **Write tests** for new functionality. Don't skip them.
 4. **Update docs** in the same PR as code changes (see [Doc Update Mapping](docs/dev-workflows.md)).
 
@@ -36,6 +36,7 @@ See [docs/guides/new-provider.md](docs/guides/new-provider.md) for a complete wa
 ## Running checks
 
 ```bash
+make verify     # The done check: lint + typecheck + tests + docs lint + e2e smoke
 make test       # Full test suite
 make lint       # Ruff linter + format check
 make fmt        # Auto-format code
@@ -44,17 +45,23 @@ make coverage   # Tests with coverage report (70% minimum)
 make ts-types   # Regenerate libs/spec/ts/genblaze.d.ts from JSON Schemas
 ```
 
+On a fork, `origin` is your fork, so point the docs lint at upstream:
+`git fetch upstream main && make verify DOCS_BASE=upstream/main`.
+
 If you change a Pydantic model in `libs/core/genblaze_core/models/`,
 update the matching schema in `libs/spec/schemas/manifest/v1/` and run
 `make ts-types`. CI's `ts-types` job will fail the PR otherwise.
 
 ## Pull request process
 
-1. All tests pass (`make test`)
-2. Linter passes (`make lint`)
-3. Docs updated in the same PR as code changes
-4. PR description summarizes what and why
-5. Reference the execution plan if one exists
+1. `make verify` passes; paste its output into the PR's **Testing** section
+2. Docs updated in the same PR as code changes. New or edited files under
+   `docs/` need OKF frontmatter (see [AGENTS.md](AGENTS.md#docs-and-plans));
+   `make docs-lint` checks it
+3. Fill in the PR template: Testing, Risk, How to revert, Public API / semver
+4. Reference the issue or execution plan
+5. Every PR check passes on a fork with no secrets. Reviews follow
+   [REVIEW.md](REVIEW.md)
 6. If your change should ship in a release, add a bullet to the
    `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) under the
    appropriate package heading. The release workflow's `changelog-gate`
@@ -70,6 +77,23 @@ which packages publish (core → cli/connectors → meta umbrella), the
 TestPyPI dry-run path, and how to recover from a partially-failed
 release. The release-smoke gate (`make release-smoke`) is the same
 script the CI workflow runs; run it locally before tagging.
+
+## Internal context (Backblaze maintainers)
+
+This repo is public. Internal tickets, links and specs live in a private
+companion repo cloned into the gitignored `.internal/` folder:
+
+```bash
+git clone <companion-repo-url> .internal
+echo "@.internal/AGENTS.md" > CLAUDE.local.md
+```
+
+In a git worktree, symlink rather than re-clone: `ln -s <main-checkout>/.internal .internal`
+(`CLAUDE.local.md` is copied automatically via `.worktreeinclude`). Never
+copy ticket keys or internal URLs into tracked files, branch names, PR titles
+or commit messages. The `Docs` workflow fails on Atlassian links; its Jira-key
+and host lists are pending, so check the rest by hand. Link the public PR
+from the ticket instead.
 
 ## Code conventions
 
