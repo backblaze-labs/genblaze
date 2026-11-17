@@ -225,6 +225,10 @@ class ElevenLabsTTSProvider(SyncProvider):
             return cache.get()
         return cache.get(max_age_seconds=max_age_seconds)
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:

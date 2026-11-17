@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -472,6 +472,35 @@ class BaseProvider(Runnable[Step, Step], metaclass=_ProviderInitGuardMeta):
         if cls.__dict__.get("_models_cache") is None:
             cls._models_cache = cls.create_registry()  # type: ignore[attr-defined]
         return cls._models_cache  # type: ignore[attr-defined,return-value]
+
+    def close(self) -> None:
+        """Release provider-held resources (HTTP/SDK client pools).
+
+        Default is a no-op. Client-owning subclasses override this; it must be
+        idempotent and must not close caller-injected clients. Long-running
+        services that build a provider per request or tenant should call it
+        (or use ``with provider:``) when done.
+        """
+
+    def _release_client(self, attr: str = "_client") -> None:
+        """Close and drop a lazily built client held in ``self.<attr>``.
+
+        Safe when the client was never built or its SDK exposes no ``close()``.
+        The next ``_get_client()`` call rebuilds it.
+        """
+        client = getattr(self, attr, None)
+        if client is None:
+            return
+        setattr(self, attr, None)
+        closer = getattr(client, "close", None)
+        if callable(closer):
+            closer()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def __init__(
         self,

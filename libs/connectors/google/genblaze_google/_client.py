@@ -31,6 +31,10 @@ class GoogleClientMixin:
     _location: str
     _client: Any
 
+    def close(self) -> None:
+        """Release the lazily built genai client."""
+        self._release_client()
+
     def _get_client(self) -> Any:
         if self._client is None:
             try:

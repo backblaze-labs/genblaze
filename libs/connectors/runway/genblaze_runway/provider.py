@@ -417,6 +417,10 @@ class RunwayProvider(BaseProvider):
             p["ratio"] = p.pop("aspect_ratio")
         return p
 
+    def close(self) -> None:
+        """Release the lazily built SDK client."""
+        self._release_client()
+
     def _get_client(self):
         if self._client is None:
             try:

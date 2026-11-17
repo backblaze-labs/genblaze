@@ -149,3 +149,20 @@ class TestAtlasCloudCompliance(ProviderComplianceTests):
     def test_full_lifecycle(self):
         result = self.make_provider().invoke(self.make_step())
         assert result.status == StepStatus.SUCCEEDED
+
+
+def test_close_releases_an_owned_http_client():
+    provider = AtlasCloudProvider(api_key="test-key")
+    client = provider._client
+    with provider:
+        pass
+    assert client.is_closed
+    provider.close()  # idempotent
+
+
+def test_close_leaves_an_injected_http_client_open():
+    client = httpx.Client()
+    provider = AtlasCloudProvider(api_key="test-key", http_client=client)
+    provider.close()
+    assert not client.is_closed
+    client.close()
