@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-16
+
+Security hardening wave. `genblaze-core` now requires `urllib3>=2.8.0`, which
+fixes memory-exhaustion bugs in the streaming download path
+(CVE-2026-97688, CVE-2026-97689). Twelve connector call sites now name output
+files through `get_output_path()`, closing the remaining ways a `step_id` or
+output format could write outside `output_dir` (follow-up to
+GHSA-x99g-wcm2-r2v8).
+
+This heading is the release **wave** name and the git tag (`v0.8.2`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.7`). Don't pin `genblaze==0.8.2`; pin the
+umbrella version above, or use a lockfile.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.6 → **0.4.7**
+- `genblaze-core` 0.3.9 → **0.3.10**
+- `genblaze-cli` 0.3.7 → **0.3.8**
+- `genblaze-decart` 0.3.3 → **0.3.4**
+- `genblaze-elevenlabs` 0.3.3 → **0.3.4**
+- `genblaze-google` 0.3.5 → **0.3.6**
+- `genblaze-hume` 0.3.3 → **0.3.4**
+- `genblaze-lmnt` 0.3.3 → **0.3.4**
+- `genblaze-openai` 0.3.5 → **0.3.6**
+- `genblaze-stability-audio` 0.3.3 → **0.3.4**
+
 ### genblaze
 
 - **Changed** raised the `decart`, `elevenlabs`, `hume`, `lmnt` and
