@@ -52,19 +52,13 @@ route around the reserved-version guard intentionally).
 Then, by hand (this is not scriptable — it's an editorial decision about wave naming
 and prose):
 
-1. Cut `CHANGELOG.md`'s `[Unreleased]` section to `## [X.Y.Z] - <today>`, pasting in
-   the `### Released package versions` list the script just emitted. Fold in any
-   entries that were mis-sectioned under the wrong package heading. Carry forward
-   the "wave vs. package version" paragraph from the most recent prior wave (see
-   the current `## [0.7.0]` entry) — the GitHub Release body is generated verbatim
-   from this section, so a dropped paragraph here silently disappears from the
-   published release notes too.
-2. Leave `[Unreleased]` empty — `changelog-gate` in `release.yml` fails the release
-   otherwise.
-3. **The tag name is `v` + that heading, exactly** (e.g. heading `## [0.5.0]` → tag
-   `v0.5.0`) — `validate-version` enforces this and a mismatch is the single most
-   common reason a release run fails. Do not confuse the wave name with any one
-   package's version (see RELEASING.md's versioning policy).
+1. Confirm every release-bound issue and PR is assigned to the chosen wave's
+   `vX.Y.Z` milestone. Defer unrelated work explicitly.
+2. Batch fragments with `make changelog-batch WAVE=X.Y.Z`. This writes the
+   package-version inventory and wave notes, and regenerates CHANGELOG.md.
+   Do not edit the generated notes by hand; edit fragments before batching.
+3. Run `make changelog-release-check`. The tag remains `v` + that wave, while
+   each package keeps its own version. Use `.changes/vX.Y.Z.md` as Release notes.
 
 If `libs/spec` changed this wave, `prepare_release.py` will have flagged it — run:
 
@@ -100,8 +94,8 @@ gate; this skill has no permission to install anything, and one-time machine set
 If `make pre-release` can't run locally for environment reasons (missing Node for
 `ts-types`, no local PyPI network access, etc.), fall back to the `workflow_dispatch`
 dry-run instead of forcing it: push the branch, then from the Actions tab → Release
-workflow → "Run workflow" with `dry_run: true`. This runs the same gates and
-builds without a local toolchain, skipping the PyPI upload.
+workflow → "Run workflow" with `dry_run: true, validation_only: true`. This exercises the identical
+pipeline against TestPyPI without a local toolchain.
 
 ## Step 4 — Open the release PR
 
@@ -117,8 +111,6 @@ Never commit to `main` directly. This is a normal PR — it needs review and a g
 CI run like anything else before it merges.
 
 **Conditional follow-ups** (only if the wave warrants them, not mandatory steps):
-- New package this wave? Confirm its PyPI pending publisher exists
-  (RELEASING.md §a); dry runs can't catch a missing one.
 - Breaking changes this wave? Write `MIGRATING-<wave>.md`.
 - Large surface touched? Consider running `/verify-docs` and `/security-review`
   before opening the PR.
@@ -129,7 +121,7 @@ Once CI is green on `main`, here are the human commands to run — this skill do
 not run them for you:
 
 ```bash
-git tag -a v<wave> -m "Release <wave>"
+git -c gpg.format=ssh -c user.signingkey=/path/to/signing-key tag -s v<wave> -m "Release <wave>"
 git push origin v<wave>
 # --notes-from-tag would just repeat the tag message ("Release <wave>") as the
 # body. Paste the actual CHANGELOG slice per RELEASING.md instead — extract it

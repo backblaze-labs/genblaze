@@ -1,15 +1,15 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Generated from Changie fragments. Add a fragment with `make changelog-new`;
+package versions remain independent of release waves. See [RELEASE.md](RELEASE.md).
 
 ## [Unreleased]
 
 ### genblaze-core
 
-- **Fixed** `PipelineTemplate.instantiate()` now constructs only providers
+#### Fixed
+
+- `PipelineTemplate.instantiate()` now constructs only providers
   referenced by the template during auto-discovery. Unused providers that need
   credentials no longer prevent a valid template from loading. Empty templates
   fail before discovery; explicit provider maps remain authoritative (#67).
@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### genblaze-openai
 
-- **Added** `SoraProvider(base_url=...)` (keyword-only) to target
+#### Added
+
+- `SoraProvider(base_url=...)` (keyword-only) to target
   OpenAI-compatible Videos API servers now that OpenAI's own Videos API is
   shut down. `base_url` must be `https://`, or `http://` on a loopback host,
   with no credentials, query or fragment. Discovery now queries the server
@@ -48,9 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- Release dry runs no longer publish to TestPyPI. They build and
-  `twine check` every package but skip the PyPI upload; npm still runs with
-  `--dry-run`. The `testpypi` environment is no longer used.
+#### Changed
+
+- Generate wave release notes with Changie; require trusted signed tags and closed wave milestones before production publication (#354).
 
 ## [0.8.2] - 2026-11-16
 
@@ -1687,7 +1689,7 @@ pins ranges, not exact versions, for its own dependencies).
   `on_submit(step_id, prediction_id)` callbacks before retry resume (#70).
 - `genblaze-core`: fan-in consumers using `input_from` now fail before provider
   invocation when a referenced producer step failed, produced no assets, or
-  points at an out-of-range prior step, preventing a downstream step from 
+  points at an out-of-range prior step, preventing a downstream step from
   reporting success with empty declared inputs (#69). Affected pipelines that
   previously appeared green can now report `FAILED`/`INVALID_INPUT`, which may
   increase status-based alerts and change manifest hashes once during rollout.
@@ -3291,15 +3293,6 @@ for the design trail.
   generating the model-status matrix from live API probes (not part of any
   published package; repo-only utilities).
 - Docs: `docs/reference/model-matrix.md`, `docs/reference/model-probe-status.json`.
-
-## [0.2.5.post1] - 2026-04-24
-
-### Fixed
-- `genblaze` 0.3.1: corrects the `genblaze-nvidia` pin in the `nvidia` extra
-  and the `video`/`image`/`audio`/`all` bundles. 0.3.0 pinned
-  `genblaze-nvidia>=0.1.0,<0.2` but nvidia actually shipped at 0.2.0, which
-  made `pip install "genblaze[nvidia]"` unresolvable. Widened to
-  `>=0.2.0,<0.3`.
 
 ## [0.2.5] - 2026-04-24
 

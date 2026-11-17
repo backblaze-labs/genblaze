@@ -33,8 +33,8 @@ This script makes that bookkeeping mechanical instead of memorized:
   silently kept forever by ``skip-existing``).
 
 What this script deliberately does NOT do (left to a human, or to the
-``prepare-release`` skill that drives it): pick the wave name, write
-CHANGELOG prose, tag, or publish. See ``.claude/skills/prepare-release/SKILL.md``.
+``prepare-release`` skill that drives it): pick the wave name, batch Changie
+fragments, tag, or publish. See ``.claude/skills/prepare-release/SKILL.md``.
 
 Modes
 -----

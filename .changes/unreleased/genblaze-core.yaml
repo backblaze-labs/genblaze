@@ -1,0 +1,8 @@
+component: genblaze-core
+kind: Fixed
+body: |-
+  `PipelineTemplate.instantiate()` now constructs only providers
+    referenced by the template during auto-discovery. Unused providers that need
+    credentials no longer prevent a valid template from loading. Empty templates
+    fail before discovery; explicit provider maps remain authoritative (#67).
+time: '2026-11-17T00:00:00Z'
