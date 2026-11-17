@@ -1,56 +1,102 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-11-16 -->
 # Agents
 
-## Repo Purpose
+Orchestration framework for generative media pipelines with manifest-based
+provenance. 20 pip packages: `genblaze-core` (`libs/core/`), 17 connectors
+(`libs/connectors/*`), `genblaze-cli` (`cli/`), and the `genblaze` umbrella
+(`libs/meta/`). Read order: README.md → ARCHITECTURE.md → this file → the
+relevant `docs/features/` doc. Contributor process: [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Orchestration framework for generative media pipelines with manifest-based provenance tracking. Produces 18 pip-installable packages: `genblaze-core`, 15 provider adapter packages (`genblaze-openai`, `genblaze-google`, `genblaze-runway`, `genblaze-luma`, `genblaze-decart`, `genblaze-replicate`, `genblaze-elevenlabs`, `genblaze-stability-audio`, `genblaze-lmnt`, `genblaze-hume`, `genblaze-gmicloud`, `genblaze-nvidia`, `genblaze-assemblyai`, `genblaze-atlascloudai`, `genblaze-falai`), `genblaze-s3`, and `genblaze-cli`.
+**Internal context:** if `.internal/AGENTS.md` exists, read it too. If it
+doesn't, use public docs only. Nothing from `.internal/` (ticket keys,
+internal links, specs) may appear in tracked files, branch names, PR titles,
+PR bodies or commit messages. The docs lint flags Atlassian links today; its
+hashed key and host lists are still empty, so check by hand.
 
-## Architecture Boundaries
+## Commands
 
-- `libs/core/` — Core SDK; no external API dependencies
-- `libs/connectors/replicate/` — Replicate-specific; depends on core
-- `cli/` — CLI commands; depends on core
-- `libs/spec/` — Language-neutral wire contract: JSON Schemas + generated TypeScript types (`ts/genblaze.d.ts`). Schemas are authoritative; any Pydantic model change must regenerate types via `make ts-types` and pass `test_spec_conformance.py`. No Python dependencies.
-- Providers never store API tokens in manifests
-- See [ARCHITECTURE.md](ARCHITECTURE.md) for full detail
+- Setup: `make install-dev`
+- **Done check: `make verify`.** Runs lint, typecheck (core + connectors),
+  every test suite, the docs lint and the end-to-end CLI smoke. CI runs the
+  same targets. Run it before opening a PR and paste its output into the PR's
+  Testing section (`/verify` does both).
+- Iterate: `cd libs/core && pytest tests/unit/<file>.py -v`, or
+  `/test-package <name|changed>`
+- Pieces of verify: `make lint`, `make typecheck`, `make test`,
+  `make docs-lint`, `make e2e-smoke`
+- Format: `make fmt`
+- Wire-model change: `make ts-types` (needs Node), then commit `libs/spec/ts/`
+- New connector: `/scaffold-provider`. Releases: `make pre-release` and
+  [RELEASING.md](RELEASING.md); after publish `make post-release VERSION=<umbrella>`.
 
-## Invariants and Guardrails
+## Architecture boundaries
 
-- All changes must pass `make test` before PR
-- Canonical JSON hashing must remain deterministic — never change key sort order or float normalization
-- Manifest `canonical_hash` must always verify against re-serialized content
-- Provider adapters must implement `submit/poll/fetch_output` — no exceptions
-- All IDs are UUIDs — never sequential integers
-- `EmbedPolicy` must be respected in all embedding paths
-- Pydantic v2 models only — no v1 compatibility layer
-- Docs must be updated in the same PR as code changes (see [Doc Update Mapping](docs/dev-workflows.md))
-- Python 3.11+ required
+- `libs/core/`: core SDK; no provider API dependencies
+- `libs/connectors/<name>/`: one provider each; depends on core only
+- `cli/`: depends on core
+- `libs/spec/`: language-neutral wire contract. JSON Schemas are
+  authoritative; a Pydantic model change must update the schema, run
+  `make ts-types`, and pass `test_spec_conformance.py`.
+- Full detail: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-## Doc Map
+## Invariants
 
-- [README.md](README.md) — Product overview, install, quickstart
-- [ARCHITECTURE.md](ARCHITECTURE.md) — System layout, data flows, canonical files
-- [AGENTS.md](AGENTS.md) — This file; agent table of contents
-- [RELEASING.md](RELEASING.md) — Release wave naming, publish pipeline, dry-run path
-- [CONTRIBUTING.md](CONTRIBUTING.md) — Dev setup, PR process, release notes via CHANGELOG
-- [docs/features/](docs/features/) — Feature docs (one per core feature)
-- [docs/features/maintainer-agent.md](docs/features/maintainer-agent.md) — Maintainer agent flow, modes, and invariants (human reference)
-- [docs/app-workflows.md](docs/app-workflows.md) — User journeys
-- [docs/dev-workflows.md](docs/dev-workflows.md) — Engineering workflows
-- [docs/exec-plans/active/](docs/exec-plans/active/) — Active execution plans
-- [docs/exec-plans/completed/](docs/exec-plans/completed/) — Completed plans
-- [docs/exec-plans/tech-debt-tracker.md](docs/exec-plans/tech-debt-tracker.md) — Known tech debt
-- [CLAUDE.md](CLAUDE.md) — Claude Code agent config
+- Canonical JSON hashing stays deterministic: never change key sort order or
+  float normalization. `canonical_hash` must verify after re-serialization.
+- Provider tokens never land in manifests, embedded media or logs.
+- Providers implement `submit` / `poll` / `fetch_output`, no exceptions.
+- Identity fields (`run_id`, `step_id`, `asset_id`, `tenant_id`,
+  `parent_run_id`) are untrusted path components: validate before joining
+  into a filesystem path or object key.
+- `EmbedPolicy` is respected on every embedding path.
+- All IDs are UUIDs. Pydantic v2 only. Python 3.11+.
 
-## Planning and Execution
+## Boundaries
 
-- Plans live in `docs/exec-plans/active/`; move to `completed/` when done
-- Plans required for: multi-file changes, new features, refactors
-- See [docs/dev-workflows.md](docs/dev-workflows.md) for full process
+- Generated, never hand-edit: `libs/spec/ts/genblaze.d.ts` (`make ts-types`),
+  `docs/reference/model-matrix.md` (`tools/gen_model_matrix.py`).
+- Needs a maintainer's approval: changes to AGENTS.md, CLAUDE.md, REVIEW.md,
+  `.claude/`, `.github/` and release tooling (CODEOWNERS); version bumps and
+  CHANGELOG wave cuts (`/prepare-release`); anything touching auth, tokens or
+  storage credentials.
+- A change must not edit the check that judges it: don't modify
+  `tools/check_docs.py`, `tools/e2e_smoke.py` or REVIEW.md to make your own
+  change pass. CI runs the base branch's copy of `check_docs.py`; the e2e
+  smoke and REVIEW.md rely on CODEOWNERS review instead.
+- CI policy: Dependabot PRs run no CI. Every job in a `pull_request`-triggered
+  workflow carries `if: ${{ github.actor != 'dependabot[bot]' &&
+  github.event.pull_request.user.login != 'dependabot[bot]' }}`; copy it onto
+  any new job. `release.yml` has no `pull_request` trigger and needs none.
 
-## Review Loop
+## Verification rules
 
-- Run `make test` — all tests must pass
-- Run `make lint` — no linter errors
-- Update relevant feature docs and ARCHITECTURE.md if behavior changed
-- PR must reference the execution plan if one exists
+- Run the change, not just the unit tests: `make verify` includes an
+  end-to-end pipeline → embed → `genblaze extract`/`verify` smoke.
+- If a check still fails after three fix attempts, stop and ask a human.
+- Flaky tests: never skip, add sleeps or retry until green. Find the root
+  cause, or delete the test and record why in the PR.
+- Prefer Hypothesis property tests for round-trips and invariants (see
+  `libs/core/tests/unit/test_canonical_properties.py`).
+- Every revert or incident adds a test, a lint, or a REVIEW.md checklist item.
+
+## Docs and plans
+
+- Docs change in the same PR as the code ([Doc Update Mapping](docs/dev-workflows.md#doc-update-mapping)).
+- Every new or edited `docs/**/*.md` starts with OKF frontmatter: `type`
+  (Service|Library|Intent|Spec|Plan|Decision), `title`, `description`,
+  `status` (draft|stable|deprecated), `stale_after` (ISO 8601 UTC), `owner`.
+  `index.md` and `log.md` are exempt. `make docs-lint` enforces it.
+- Plans for multi-file changes, features and refactors:
+  `docs/exec-plans/active/<feature>/plan.md` (`type: Plan`); move the folder
+  to `completed/` when its last task merges. Bug fixes that keep behavior need
+  no plan; the PR's Testing section is the record.
+- Outside contributors link a GitHub issue instead of writing plan files.
+
+## Doc map
+
+- [docs/index.md](docs/index.md): every doc with a one-line description
+- [docs/dev-workflows.md](docs/dev-workflows.md): engineering workflows
+- [docs/features/maintainer-agent.md](docs/features/maintainer-agent.md): maintainer agent flow
+- [docs/exec-plans/active/](docs/exec-plans/active/) and [tech-debt-tracker.md](docs/exec-plans/tech-debt-tracker.md)
+- [REVIEW.md](REVIEW.md): what code review flags here
+- [SECURITY.md](SECURITY.md): vulnerability reporting

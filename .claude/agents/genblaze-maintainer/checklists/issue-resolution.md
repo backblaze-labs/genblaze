@@ -101,9 +101,10 @@ gh pr create --fill-first \
   --title "<conventional-commit subject>" \
   --body "<filled .github/pull_request_template.md, with 'Closes #<N>'>"
 ```
-- [ ] PR body follows `.github/pull_request_template.md` (Summary / Changes /
-      Test plan / Related) and includes **`Closes #<N>`** so the issue auto-closes
-- [ ] Check the Test plan boxes you actually verified
+- [ ] PR body follows `.github/pull_request_template.md` (Summary / Testing /
+      Risk / How to revert / Public API / semver) and includes **`Closes #<N>`**
+      so the issue auto-closes
+- [ ] Testing pastes `make verify` output you actually ran this session
 - [ ] Include the triangulated-review summary (the three reviewer verdicts) so
       the human reviewer sees what was already checked
 - [ ] Reviewers and labels are **best-effort**: try `gh pr edit --add-reviewer`

@@ -1957,7 +1957,7 @@ migration guide.
 
 Closes the BLOCKER + HIGH-severity findings from the post-rollout deep
 review. See
-[`docs/exec-plans/active/model-registry-decoupling-hardening.md`](docs/exec-plans/active/model-registry-decoupling-hardening.md)
+[`docs/exec-plans/completed/model-registry-decoupling-hardening.md`](docs/exec-plans/completed/model-registry-decoupling-hardening.md)
 for the design trail.
 
 **Security:**

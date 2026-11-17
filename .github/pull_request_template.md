@@ -1,17 +1,26 @@
 ## Summary
 
-<!-- What does this PR do and why? -->
+<!-- What does this PR do and why? Link the issue or plan: Fixes #123, or docs/exec-plans/active/<feature>/plan.md -->
 
-## Changes
+## Testing
 
-<!-- Key files changed and what was modified -->
+<!-- Evidence, not a checklist. Paste the commands you ran and their output
+(`/verify` formats this). Say what was NOT covered. -->
 
-## Test plan
+- `make verify`:
+- Not covered:
 
-- [ ] `make test` passes
-- [ ] `make lint` passes
-- [ ] Docs updated (if behavior changed)
+## Risk
 
-## Related
+<!-- What could break, for whom, and how likely? Name touched invariants:
+canonical hashing, EmbedPolicy, identity fields in paths, token handling. -->
 
-<!-- Link to issue, execution plan, or discussion -->
+## How to revert
+
+<!-- Usually "revert this PR". Call out anything that isn't: published
+packages, schema/wire changes, data written in a new format. -->
+
+## Public API / semver
+
+<!-- none | patch | minor | major, and which packages. Matches the CHANGELOG
+[Unreleased] entry. -->

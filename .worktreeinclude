@@ -1,0 +1,4 @@
+# Gitignored files copied into new worktrees. .internal/ is deliberately not
+# listed: copying it would nest a full git clone per worktree. Symlink it
+# instead (see CONTRIBUTING.md, "Internal context").
+CLAUDE.local.md

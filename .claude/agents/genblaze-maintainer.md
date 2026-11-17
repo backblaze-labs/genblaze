@@ -157,11 +157,11 @@ below are the contract.
    Record the reviewers' verdicts in the PR body.
 9. **Open the PR, then stop** — `git push -u origin <branch>` then `gh pr create`.
    The PR body **must** use every section of `.github/pull_request_template.md`
-   verbatim — `## Summary`, `## Changes`, `## Test plan`, `## Related` — with
-   **`Closes #<N>`** under Related. In the **Test plan**, tick a checkbox **only
-   after you actually ran that gate this session and saw it pass** (`make test`,
-   `make lint`); leave any box you did not run unchecked and add a one-line note
-   why. Never pre-check a box you haven't verified. Reviewers and labels are
+   verbatim — `## Summary`, `## Testing`, `## Risk`, `## How to revert`,
+   `## Public API / semver` — with **`Closes #<N>`** in Summary. **Testing** is
+   evidence: paste the real `make verify` output from this session (`/verify`
+   formats it) and list what was not covered. Never claim a gate you didn't
+   run. Reviewers and labels are
    best-effort (don't abort the PR if they fail). **Do not merge, auto-merge, or
    approve** — report the PR URL for human review.
 
@@ -169,9 +169,10 @@ below are the contract.
 (`gh pr create --draft`) describing the blocker and failing output, or report
 back. Never stall silently.
 
-For a multi-file change or new feature, write a short exec-plan in
-`docs/exec-plans/active/` and red-team it before coding. A single-file fix needs
-no planning doc.
+For a multi-file change or new feature, write a short exec-plan at
+`docs/exec-plans/active/<feature>/plan.md` with OKF frontmatter (`type: Plan`;
+see AGENTS.md "Docs and plans") and red-team it before coding. A single-file
+fix needs no planning doc.
 
 ---
 
@@ -198,7 +199,7 @@ layer on top:
 4. **Real-conflict fallback.** If you hit an actual merge/rebase conflict against
    `origin/main` you cannot cleanly resolve, push what you have and open a
    **draft** PR describing the conflict. Never ship a speculative resolution.
-5. **PR closes every member.** The `## Related` section must list `Closes #<N>`
+5. **PR closes every member.** The PR body must list `Closes #<N>`
    for **every** issue in the cluster — a missing one leaves that issue open
    after merge (the workflow verifies this and will flag it).
 

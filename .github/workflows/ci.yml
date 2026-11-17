@@ -34,7 +34,8 @@ jobs:
           cache-dependency-path: "**/pyproject.toml"
       # Pin ruff: unpinned drift false-reds lint on every PR + main when a new
       # ruff reformats pre-existing files no PR touched (#211). Bump deliberately
-      # alongside a matching `make format`.
+      # alongside a matching `make format`, and keep libs/core/pyproject.toml's
+      # dev pin (used by `make lint`) on the same version.
       - run: pip install ruff==0.14.0
       - run: ruff check libs/ cli/ examples/
       - run: ruff format --check libs/ cli/ examples/
@@ -102,21 +103,9 @@ jobs:
           pip install -e "libs/connectors/fal[dev]"
           pip install -e "cli[dev]"
           pip install mypy
-      - name: Typecheck core
-        run: mypy libs/core/genblaze_core/ --ignore-missing-imports
-      - name: Typecheck connectors
-        run: |
-          failed=""
-          for conn in replicate s3 openai google runway luma decart elevenlabs stability-audio lmnt gmicloud langsmith nvidia assemblyai atlascloud fal; do
-            echo "=== Typechecking $conn ==="
-            if ! mypy libs/connectors/$conn/genblaze_*/ --ignore-missing-imports; then
-              failed="$failed $conn"
-            fi
-          done
-          if [ -n "$failed" ]; then
-            echo "::error::Typecheck failed for:$failed"
-            exit 1
-          fi
+      - name: Typecheck core and connectors
+        # Same target agents run locally via `make verify`.
+        run: make typecheck
 
   deptry:
     if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
@@ -236,6 +225,8 @@ jobs:
       - name: Run release-tooling tests
         run: |
           pytest tools/tests/ -v
+      - name: End-to-end smoke (pipeline -> embed -> CLI extract/verify)
+        run: make e2e-smoke
       - name: Upload coverage
         if: matrix.python-version == '3.13'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
