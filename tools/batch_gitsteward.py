@@ -601,8 +601,24 @@ def publish(
     ).stdout.splitlines()
     bodies = _git(repo, "log", "--reverse", "--format=%B%n---", f"{base}..{branch}").stdout.strip()
     closes = "\n".join(f"Closes #{n}" for n in issues)
-    footer = "Opened by `batch-execute`; review before merging."
-    body = f"{bodies}\n\n## Related\n\n{closes}\n\n{footer}\n"
+    # Mirrors .github/pull_request_template.md so REVIEW.md's checks apply.
+    # Only claims what this step verified; the rest is left to the reviewer.
+    body = (
+        f"## Summary\n\n{bodies}\n\n{closes}\n\n"
+        "Opened by `batch-execute`; review before merging.\n\n"
+        "## Testing\n\n"
+        "- `make verify`: not run by the publisher. The executor ran tests in its "
+        "sandbox, which this step can't attest to. Run `make verify` and paste the "
+        "output here before merging.\n"
+        "- Publisher checks passed: git object integrity, base ancestry, no "
+        "guarded paths, dependency files, symlinks, submodules, secrets or "
+        "co-author trailers.\n\n"
+        "## Risk\n\n"
+        "Automated change from untrusted issue text. Review the full diff.\n\n"
+        "## How to revert\n\nRevert this PR.\n\n"
+        "## Public API / semver\n\n"
+        "Not assessed. Set from the CHANGELOG entry during review.\n"
+    )
 
     _git(repo, "push", "--quiet", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
     out = gh(
