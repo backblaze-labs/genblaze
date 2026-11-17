@@ -35,6 +35,8 @@ def release_mode(event: str, dry_run: str, validation_only: str) -> tuple[bool, 
         or validation_only not in {"true", "false"}
     ):
         raise ReleaseGateError("Dispatch dry_run and validation_only must be true or false")
+    if dry_run == "false" and validation_only == "true":
+        raise ReleaseGateError("Production dispatch requires validation_only=false")
     dry = dry_run == "true"
     return dry, dry and validation_only == "true"
 
@@ -144,9 +146,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag")
     parser.add_argument("--plan", action="store_true")
+    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--repository", default="backblaze-labs/genblaze")
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = args.repo_root.resolve()
     try:
         if args.plan:
             write_plan(root)

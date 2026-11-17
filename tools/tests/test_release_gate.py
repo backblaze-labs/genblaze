@@ -144,3 +144,93 @@ def test_validation_plan_never_enables_python_uploads(signed_repo, monkeypatch):
     assert values["core"] == "0.3.10"
     assert values["umbrella"] == "0.4.7"
     assert values["source_sha"] == run(signed_repo, "git", "rev-parse", "HEAD").stdout.strip()
+
+
+def test_revoked_key_in_main_cannot_authorize_old_tag(signed_repo):
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    other = signed_repo / "replacement"
+    run(signed_repo, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other))
+    (signed_repo / ".github/release-signers").write_text(
+        "release@example.invalid " + other.with_suffix(".pub").read_text()
+    )
+    run(signed_repo, "git", "add", ".github/release-signers")
+    run(signed_repo, "git", "commit", "-m", "rotate signing trust")
+    with pytest.raises(ReleaseGateError):
+        verify_tag(signed_repo, "v1.2.3", "main")
+
+
+def test_validation_only_cannot_silently_become_production():
+    with pytest.raises(ReleaseGateError, match="validation_only"):
+        release_mode("workflow_dispatch", "false", "true")
+
+
+def plan_fixture(repo, monkeypatch, wave="1.2.3"):
+    paths = {
+        f".changes/v{wave}.md": f"## [{wave}] - 2026-11-17\n",
+        "libs/core/pyproject.toml": '[project]\nversion="0.3.10"\n',
+        "libs/meta/pyproject.toml": '[project]\nversion="0.4.7"\n',
+        "libs/spec/package.json": '{"version":"0.4.1"}',
+    }
+    for name, content in paths.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    bin_dir = repo / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(
+        '#!/bin/sh\nprintf \'[[{"title":"v1.2.3","state":"closed","open_issues":0}]]\\n\'\n'
+    )
+    gh.chmod(0o755)
+    import os
+
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    for name, value in {
+        "EVENT_NAME": "release",
+        "RELEASE_TAG": "v1.2.3",
+        "GITHUB_OUTPUT": str(repo / "outputs"),
+        "GITHUB_REPOSITORY": "backblaze-labs/genblaze",
+    }.items():
+        monkeypatch.setenv(name, value)
+    run(repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
+def test_production_rejects_head_different_from_signed_tag(signed_repo, monkeypatch):
+    from release_gate import production
+
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    (signed_repo / "later").touch()
+    run(signed_repo, "git", "add", "later")
+    run(signed_repo, "git", "commit", "-m", "later main commit")
+    plan_fixture(signed_repo, monkeypatch)
+    with pytest.raises(ReleaseGateError, match="candidate differs"):
+        production(signed_repo, "v1.2.3", "backblaze-labs/genblaze")
+
+
+def test_release_tag_must_match_wave(signed_repo, monkeypatch):
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch, wave="2.0.0")
+    with pytest.raises(ReleaseGateError, match="differs from the latest Changie wave"):
+        write_plan(signed_repo)
+
+
+def test_complete_production_plan_enables_upload_only_after_trust(signed_repo, monkeypatch):
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch)
+    write_plan(signed_repo)
+    assert "upload_python=true\n" in (signed_repo / "outputs").read_text()
+
+
+def test_wrong_wave_milestone_does_not_satisfy_readiness():
+    with pytest.raises(ReleaseGateError, match="v1.2.3"):
+        check_milestone([{"title": "v9.9.9", "state": "closed", "open_issues": 0}], "1.2.3")
+
+
+def test_explicit_production_dispatch_mode():
+    assert release_mode("workflow_dispatch", "false", "false") == (False, False)
+
+
+@pytest.mark.parametrize("value", ["", "TRUE", "1", "false; echo nope"])
+def test_invalid_validation_only_boolean_fails_closed(value):
+    with pytest.raises(ReleaseGateError):
+        release_mode("workflow_dispatch", "true", value)

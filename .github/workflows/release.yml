@@ -82,9 +82,18 @@ jobs:
       upload_python: ${{ steps.read.outputs.upload_python }}
       source_sha: ${{ steps.read.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out production policy from main
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: release-policy
+          persist-credentials: false
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
+          path: candidate
           persist-credentials: false
           fetch-depth: 0
       - id: read
@@ -95,7 +104,13 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           INPUT_VALIDATION_ONLY: ${{ inputs.validation_only }}
           GH_TOKEN: ${{ github.token }}
-        run: python tools/release_gate.py --plan
+        run: |
+          set -euo pipefail
+          policy_dir=release-policy
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_DRY_RUN" = "true" ]; then
+            policy_dir=candidate
+          fi
+          python "$policy_dir/tools/release_gate.py" --plan --repo-root candidate
 
   changelog-gate:
     # Generated notes must match committed fragments/history, and a release
@@ -169,7 +184,7 @@ jobs:
     # Dry-run dispatches use the `testpypi` environment so we can configure
     # a SEPARATE Trusted Publisher on test.pypi.org without leaking that
     # OIDC trust into production. Real publishes use `pypi`.
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'testpypi' || 'pypi' }}
     permissions:
       contents: read
       id-token: write   # Trusted Publishing to PyPI + sigstore attestations.
@@ -187,11 +202,11 @@ jobs:
       - name: Validate wheel metadata
         run: twine check libs/core/dist/*
       - name: Publish (skipped for validation-only dispatches)
-        if: needs.validate-version.outputs.upload_python == 'true'
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false || inputs.validation_only == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/core/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true   # PEP 740 sigstore attestations — provenance into PyPI's integrity registry.
           skip-existing: true  # Idempotent: re-running a partially-failed release is safe. PyPI duplicates are treated as success.
 
@@ -199,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-core, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'testpypi' || 'pypi' }}
     permissions:
       contents: read
       id-token: write
@@ -217,11 +232,11 @@ jobs:
       - name: Validate wheel metadata
         run: twine check cli/dist/*
       - name: Publish (skipped for validation-only dispatches)
-        if: needs.validate-version.outputs.upload_python == 'true'
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false || inputs.validation_only == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: cli/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -229,7 +244,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-core, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'testpypi' || 'pypi' }}
     permissions:
       contents: read
       id-token: write
@@ -273,11 +288,11 @@ jobs:
       - name: Validate wheel metadata
         run: twine check libs/connectors/${{ matrix.connector }}/dist/*
       - name: Publish (skipped for validation-only dispatches)
-        if: needs.validate-version.outputs.upload_python == 'true'
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false || inputs.validation_only == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/connectors/${{ matrix.connector }}/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -291,7 +306,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-connectors, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'testpypi' || 'pypi' }}
     permissions:
       contents: read
       id-token: write
@@ -309,11 +324,11 @@ jobs:
       - name: Validate wheel metadata
         run: twine check libs/meta/dist/*
       - name: Publish (skipped for validation-only dispatches)
-        if: needs.validate-version.outputs.upload_python == 'true'
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false || inputs.validation_only == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/meta/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -370,7 +385,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [build-npm-types, validate-version, changelog-gate, release-smoke, pin-parity]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'npm-dryrun' || 'npm' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'npm-dryrun' || 'npm' }}
     permissions:
       contents: read
       id-token: write   # npm provenance — signed attestation that this tarball was built from this commit by this workflow.
@@ -417,12 +432,12 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish to npm
-        if: needs.validate-version.outputs.dry_run == 'true' || steps.npm_check.outputs.skip != 'true'
+        if: (github.event_name == 'workflow_dispatch' && inputs.dry_run) || steps.npm_check.outputs.skip != 'true'
         working-directory: libs/spec
         # Authenticates via npm trusted publishing (OIDC, `id-token: write`
         # above); no long-lived NPM_TOKEN.
         env:
-          DRY_RUN: ${{ needs.validate-version.outputs.dry_run }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
         run: |
           npm --version
           if [ "$DRY_RUN" = "true" ]; then
@@ -443,7 +458,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [publish-meta, publish-npm, validate-version]
-    if: needs.validate-version.outputs.dry_run != 'true'
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

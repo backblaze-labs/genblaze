@@ -42,7 +42,7 @@ Changie v1.26.0 is pinned in the Makefile. Go downloads it with checksum
 verification; an installed binary of that version can be selected with
 `CHANGIE=/path/to/changie`. Fragments are grouped by package, while a wave is
 still an explicitly selected `X.Y.Z`. There are no Changie replacements that
-rewrite package versions. Historical wave text was migrated (with one legacy trailing space removed) into
+rewrite package versions. Historical wave text was migrated verbatim into
 `.changes/vX.Y.Z.md` files. The legacy PEP 440 `0.2.5.post1` section is
 retained after `0.2.6` in that archive file because Changie only sorts SemVer
 filenames; its original heading, contents and position remain unchanged.
@@ -84,7 +84,11 @@ its fingerprint with the owner before merging this trust bootstrap. Additions,
 rotation, and revocation require CODEOWNERS review on protected `main`; never
 fetch a key from a keyserver or trust an allowlist supplied only by a tag.
 
-Production executes `git verify-tag` using the allowlist read from `origin/main`,
+Production runs the verifier from a separate protected-main checkout, pointed
+at the candidate repository. Preview validation may use candidate tooling, but
+upload conditions, registry selection and npm's dry-run flag come directly from
+workflow inputs, independently of candidate outputs. Production executes
+`git verify-tag` using the allowlist read from `origin/main`,
 requires the tag commit on that branch, and pins every downstream checkout to
 that verified commit. Use `python tools/release_gate.py --tag vX.Y.Z` locally
 with GitHub read access to check both the signature and milestone. Signed,
@@ -298,7 +302,7 @@ workflow":
   uploads. The TestPyPI target stays selected. Set `validation_only=false`
   only to intentionally upload to TestPyPI; its trusted publishers are separate
   from production and must be configured. With `dry_run=false`, this option
-  has no effect: all production signature/milestone gates apply.
+  must be false too; contradictory flags fail closed before production.
 * **`ref`** — optional. Defaults to the branch you dispatched from.
 
 Dry runs are the recommended way to:

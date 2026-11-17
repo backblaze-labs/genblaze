@@ -1,7 +1,7 @@
 ---
 name: prepare-release
 description: Prepare a wave-level genblaze release — scope version bumps and dependency-floor drift with tools/prepare_release.py, apply them, gate with make pre-release, and open a release PR. Cannot tag or publish. Use before cutting a new CHANGELOG wave (as opposed to /release-check, which gates one already-decided package version).
-allowed-tools: Bash(git add:*) Bash(git commit:*) Bash(git checkout:*) Bash(git switch:*) Bash(git push:*) Bash(git status:*) Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(python3:*) Bash(make pre-release:*) Bash(make ts-types:*) Bash(gh pr:*) Read Grep Edit
+allowed-tools: Bash(git add:*) Bash(git commit:*) Bash(git checkout:*) Bash(git switch:*) Bash(git push:*) Bash(git status:*) Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(python3:*) Bash(make changelog-batch:*) Bash(make changelog-release-check:*) Bash(make pre-release:*) Bash(make ts-types:*) Bash(gh pr:*) Read Grep Edit
 ---
 
 # Prepare a release wave — $ARGUMENTS

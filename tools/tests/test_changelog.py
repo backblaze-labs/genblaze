@@ -93,3 +93,10 @@ def test_batch_rejects_invalid_or_existing_wave_without_consuming_notes(tmp_path
     with pytest.raises(ChangelogError):
         batch_notes(tmp_path, version)
     assert sorted(p.name for p in (tmp_path / ".changes/unreleased").glob("*.yaml")) == before
+
+
+@pytest.mark.parametrize("version", ["0.8.1", "v0.7.9"])
+def test_batch_rejects_older_wave(tmp_path, version):
+    batch_fixture(tmp_path)
+    with pytest.raises(ChangelogError, match="newer"):
+        batch_notes(tmp_path, version)
