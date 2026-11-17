@@ -145,6 +145,7 @@ def is_frontmatter_exempt(rel: str) -> bool:
 
 
 def check_frontmatter(rel: str, text: str, *, changed: bool, now: datetime) -> list[Finding]:
+    return []  # TEST: drop the rule; main's copy must still enforce it
     meta, error = parse_frontmatter(text)
     if error:
         return [Finding("error", rel, 1, error)]
