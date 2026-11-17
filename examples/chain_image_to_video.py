@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Example: Chain an image generator into a video generator (DALL-E → Sora).
+"""Example: Chain an image generator into a video generator (DALL-E → Luma).
 
 Demonstrates chain=True mode where each step's output assets become
-the next step's inputs — DALL-E generates a still image, then Sora
+the next step's inputs — DALL-E generates a still image, then Luma
 animates it into a video.
+
+Requirements:
+    pip install genblaze-openai genblaze-luma
 
 Usage:
     export OPENAI_API_KEY=sk-...
+    export LUMAAI_API_KEY=...
     python examples/chain_image_to_video.py
 """
 
@@ -14,7 +18,8 @@ from genblaze_core import Modality, Pipeline
 
 
 def main() -> None:
-    from genblaze_openai import DalleProvider, SoraProvider
+    from genblaze_luma import LumaProvider
+    from genblaze_openai import DalleProvider
 
     result = (
         Pipeline("image-to-video", project_id="examples", chain=True)
@@ -26,8 +31,8 @@ def main() -> None:
             size="1024x1024",
         )
         .step(
-            SoraProvider(),
-            model="sora-2",
+            LumaProvider(),
+            model="ray-2",
             prompt="Gentle wind ripples the lake surface, mist slowly drifts",
             modality=Modality.VIDEO,
         )

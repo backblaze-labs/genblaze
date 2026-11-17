@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-09-21 -->
+---
+type: Library
+title: Retry policy
+description: RetryPolicy presets and custom policies for provider submit and poll retries.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Retry Policy
 
 `RetryPolicy` is the user-tunable knob for how `BaseProvider` retries transient
@@ -8,16 +15,16 @@ the initial call" behavior so existing code keeps working unchanged.
 
 ```python
 from genblaze_core.providers import RetryPolicy
-from genblaze_openai import SoraProvider
+from genblaze_runway import RunwayProvider
 
-provider = SoraProvider(retry_policy=RetryPolicy.conservative())
+provider = RunwayProvider(retry_policy=RetryPolicy.conservative())
 ```
 
 ## When to override the default
 
 | Scenario | Suggested policy | Why |
 |---|---|---|
-| Billed video generation (Sora, Runway, Veo) | `RetryPolicy.conservative()` | One duplicate submit costs more than a clean failure. Shorter budget, longer backoffs avoid bunching. |
+| Billed video generation (Runway, Luma, Veo) | `RetryPolicy.conservative()` | One duplicate submit costs more than a clean failure. Shorter budget, longer backoffs avoid bunching. |
 | Cheap idempotent reads (chat, polls) | `RetryPolicy.aggressive()` | Transient hiccups are common; retries are free. |
 | Tests / debugging | `RetryPolicy.disabled()` | Fail fast on first error so you see the real cause. |
 | Batch/eval pipelines | Custom — usually `aggressive()` plus narrowed `retryable_codes` | Tune to your upstream's known failure modes. |
@@ -149,10 +156,10 @@ to the underlying HTTP client.
 
 ```python
 from genblaze_core.providers import RetryPolicy
-from genblaze_openai import SoraProvider
+from genblaze_runway import RunwayProvider
 
 # Conservative for billed video gen.
-sora = SoraProvider(retry_policy=RetryPolicy.conservative())
+runway = RunwayProvider(retry_policy=RetryPolicy.conservative())
 
 # Custom: only retry rate-limits, full jitter, max 4 attempts.
 from genblaze_core.models.enums import ProviderErrorCode
@@ -164,7 +171,7 @@ custom = RetryPolicy(
 )
 
 # Tests: disable retries entirely so failures surface immediately.
-test_provider = SoraProvider(retry_policy=RetryPolicy.disabled())
+test_provider = RunwayProvider(retry_policy=RetryPolicy.disabled())
 ```
 
 ## Migrating from `poll_transient_retries`

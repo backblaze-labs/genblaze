@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-03-17 -->
+---
+type: Library
+title: Asset transforms
+description: Local transform steps that post-process prior step outputs.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Asset Transforms
 
 `FFmpegTransform` is a `SyncProvider` that performs media transformations via ffmpeg. It operates on a single input asset and supports resize, crop, text overlay, audio normalization, and format conversion.
@@ -13,7 +20,7 @@ transform = FFmpegTransform(output_dir="output/")
 # Resize after generation
 result = (
     Pipeline("resize", chain=True)
-    .step(video_provider, model="sora-2", prompt="sunset", modality=Modality.VIDEO)
+    .step(video_provider, model="ray-2", prompt="sunset", modality=Modality.VIDEO)
     .step(transform, model="transform", modality=Modality.VIDEO,
           step_type=StepType.TRANSCODE, operation="resize", width=1280, height=720)
     .run()

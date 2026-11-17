@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-05-07 -->
+---
+type: Library
+title: Iteration and lineage
+description: Link runs with parent_run_id to track refinement, parameter tuning and forks.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Iteration & Lineage
 
 Every generation should know what came before it. Genblaze tracks iteration history through `parent_run_id` — a field on every run that points to the previous attempt, creating a linked chain of manifests.
@@ -37,11 +44,11 @@ v2 = Pipeline("hero-shot").from_result(v1).step(
 Take a successful run's output and start a new pipeline from it:
 
 ```python
-from genblaze_openai import SoraProvider
+from genblaze_luma import LumaProvider
 
 # Fork v1's image into a video pipeline
 v3 = Pipeline("hero-video", chain=True).from_result(v1).step(
-    SoraProvider(), model="sora-2",
+    LumaProvider(), model="ray-2",
     prompt="slow zoom in",
     modality=Modality.VIDEO,
 ).run(timeout=300)

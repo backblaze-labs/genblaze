@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "genblaze-openai"
 version = "0.3.6"
-description = "OpenAI provider adapters for genblaze (Sora, DALL-E, TTS)"
+description = "OpenAI provider adapters for genblaze (DALL-E, TTS, Sora-compatible servers)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
 requires-python = ">=3.11"

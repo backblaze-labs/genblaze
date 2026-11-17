@@ -6,11 +6,11 @@ a single MP4 using FFmpegCompositor. Demonstrates input_from=[0, 1] —
 a step that pulls outputs from multiple prior steps.
 
 Requirements:
-    pip install genblaze-openai genblaze-elevenlabs
+    pip install genblaze-luma genblaze-elevenlabs
     ffmpeg on PATH (the compositor shells out to it)
 
 Usage:
-    export OPENAI_API_KEY=sk-...
+    export LUMAAI_API_KEY=...
     export ELEVENLABS_API_KEY=...
     python examples/fan_in_av_composite.py
 """
@@ -20,20 +20,19 @@ from genblaze_core import FFmpegCompositor, Modality, Pipeline, StepType
 
 def main() -> None:
     from genblaze_elevenlabs import ElevenLabsSFXProvider
-    from genblaze_openai import SoraProvider
+    from genblaze_luma import LumaProvider
 
-    # Step 0: Video generation (Sora)
+    # Step 0: Video generation (Luma)
     # Step 1: Sound effects (ElevenLabs) — independent of step 0
     # Step 2: Local ffmpeg mux — consumes outputs of steps 0 and 1
     result = (
         Pipeline("av-composite", project_id="examples")
         .step(
-            SoraProvider(),
-            model="sora-2",
+            LumaProvider(),
+            model="ray-2",
             prompt="A campfire crackling under a starry sky, slow orbit",
             modality=Modality.VIDEO,
-            seconds=4,
-            size="1280x720",
+            aspect_ratio="16:9",
         )
         .step(
             ElevenLabsSFXProvider(),

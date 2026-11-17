@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-09-21 -->
+---
+type: Library
+title: Pipeline
+description: Fluent API for multi-step generative media workflows with automatic manifests.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Feature: Pipeline
 
 ## Purpose
@@ -125,7 +132,7 @@ from genblaze_core.models.enums import StepType
 
 result = (
     Pipeline("av-mux")
-    .step(video_provider, model="sora-2", prompt="sunset timelapse", modality=Modality.VIDEO)
+    .step(video_provider, model="ray-2", prompt="sunset timelapse", modality=Modality.VIDEO)
     .step(audio_provider, model="eleven_v3", prompt="ocean waves", modality=Modality.AUDIO)
     .step(
         FFmpegCompositor(),

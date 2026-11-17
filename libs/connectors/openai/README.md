@@ -1,14 +1,14 @@
 <!-- last_verified: 2026-04-22 -->
 # genblaze-openai
 
-**OpenAI provider adapters for [genblaze](https://github.com/backblaze-labs/genblaze) — [Sora](https://openai.com/sora) text-to-video, DALL·E / gpt-image text-to-image, and TTS text-to-speech — with SHA-256 provenance manifests on every output.**
+**OpenAI provider adapters for [genblaze](https://github.com/backblaze-labs/genblaze) — DALL·E / gpt-image text-to-image, TTS text-to-speech, and Sora-compatible video servers — with SHA-256 provenance manifests on every output.**
 
-`genblaze-openai` wraps OpenAI's generative media APIs (Sora video, DALL·E 3 and gpt-image-1 images, `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` audio) as genblaze providers. Compose them into multi-step AI pipelines, persist outputs to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) or any S3-compatible store, and emit a tamper-evident provenance manifest for every run.
+`genblaze-openai` wraps OpenAI's generative media APIs (DALL·E 3 and gpt-image-1 images, `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` audio) as genblaze providers, plus `SoraProvider` for OpenAI-compatible Videos API servers. Compose them into multi-step AI pipelines, persist outputs to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) or any S3-compatible store, and emit a tamper-evident provenance manifest for every run.
 
 ## Why genblaze-openai
 
-- **Three OpenAI modalities, one SDK** — video (Sora), image (DALL·E, gpt-image), audio (TTS) — same `Pipeline` API.
-- **Built-in provenance** — Every Sora render / DALL·E image / TTS clip lands with a SHA-256-verified manifest.
+- **Three modalities, one SDK** — image (DALL·E, gpt-image), audio (TTS), and video (Sora-compatible servers) — same `Pipeline` API.
+- **Built-in provenance** — Every DALL·E image / TTS clip / video render lands with a SHA-256-verified manifest.
 - **Swap models without rewrites** — Same pipeline works with Runway, Luma, Flux, Veo, ElevenLabs, etc.
 - **Production-ready** — Retries, timeouts, moderation hooks, step caching, streaming events.
 - **Durable storage** — Plug `genblaze-s3` in for B2 / AWS S3 / R2 / MinIO persistence.
@@ -17,7 +17,7 @@
 
 | Provider class | Modality | Models |
 |---|---|---|
-| `SoraProvider` | video | `sora-2`, `sora-2-pro` |
+| `SoraProvider` | video | Slugs listed by your OpenAI-compatible server (OpenAI's own `sora-2` / `sora-2-pro` were retired 2026-09-24) |
 | `DalleProvider` | image | `gpt-image-1`, `dall-e-3`, `dall-e-2` (+ edits) |
 | `OpenAITTSProvider` | audio | `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts` |
 
@@ -29,27 +29,7 @@ Each is registered via entry points (`openai-sora`, `openai-dalle`, `openai-tts`
 pip install genblaze-openai
 ```
 
-## Quickstart — Sora text-to-video
-
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-```python
-from genblaze_core import Modality, Pipeline
-from genblaze_openai import SoraProvider
-
-run, manifest = (
-    Pipeline("sora-demo")
-    .step(SoraProvider(), model="sora-2",
-          prompt="A cinematic drone shot gliding over a misty mountain valley at sunrise",
-          modality=Modality.VIDEO, seconds=4, size="1280x720")
-    .run(timeout=300)
-)
-print(run.steps[0].assets[0].url, manifest.canonical_hash)
-```
-
-### OpenAI-compatible Videos API servers
+## Sora on OpenAI-compatible Videos API servers
 
 OpenAI shut down Sora 2 and the Videos API on 2026-09-24. `SoraProvider` still
 speaks that API, so it can drive any server that implements

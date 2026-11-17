@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-11-14 -->
+---
+type: Library
+title: Pipeline templates
+description: Serializable pipeline definitions with variables, export, save, load and instantiate.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Pipeline Templates
 
 `PipelineTemplate` enables declarative, serializable pipeline definitions that can be saved to JSON, shared, and instantiated with different providers.
@@ -16,7 +23,7 @@ template = PipelineTemplate(
     steps=[
         StepTemplate(provider_name="openai", model="dall-e-3",
                      prompt="cyberpunk cityscape", modality=Modality.IMAGE),
-        StepTemplate(provider_name="openai", model="sora-2",
+        StepTemplate(provider_name="luma", model="ray-2",
                      prompt="camera slowly pans right", modality=Modality.VIDEO),
     ],
     description="Generate image then animate",
@@ -40,7 +47,7 @@ loaded = PipelineTemplate.from_file("templates/image-to-video.json")
 ### Instantiate
 
 ```python
-pipeline = loaded.instantiate({"openai": openai_provider})
+pipeline = loaded.instantiate({"openai": openai_provider, "luma": luma_provider})
 result = pipeline.run()
 ```
 
@@ -49,11 +56,11 @@ result = pipeline.run()
 ```python
 template = PipelineTemplate(
     name="product",
-    steps=[StepTemplate(provider_name="openai", model="sora-2",
+    steps=[StepTemplate(provider_name="luma", model="ray-2",
                         prompt="A {product} in {setting}")],
 )
 pipeline = template.instantiate(
-    {"openai": provider},
+    {"luma": provider},
     variables={"product": "laptop", "setting": "minimalist studio"},
 )
 ```

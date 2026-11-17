@@ -67,7 +67,7 @@ class PipelineTemplate(BaseModel):
             steps=[
                 StepTemplate(provider_name="openai", model="dall-e-3",
                              prompt="cyberpunk cityscape", modality=Modality.IMAGE),
-                StepTemplate(provider_name="openai", model="sora-2",
+                StepTemplate(provider_name="luma", model="ray-2",
                              prompt="camera slowly pans right", modality=Modality.VIDEO),
             ],
         )
