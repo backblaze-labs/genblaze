@@ -112,7 +112,9 @@ def test_approval_mark_is_case_insensitive(mark):
 
 
 def test_approving_a_deferred_cluster_is_rejected():
-    doc = render_doc(_plan(), _SHA, "2026-07-21") + "\n- [x] approve `issues-2`\n"
+    doc = render_doc(_plan(), _SHA, "2026-07-21").replace(
+        "## Approve\n\n", "## Approve\n\n- [x] approve `issues-2`\n"
+    )
     with pytest.raises(ValidationError, match="not executable"):
         _validate(doc)
 
@@ -180,3 +182,67 @@ def test_token_ignores_cosmetic_field_reorder():
     clusters = _plan()["clusters"]
     reordered = [{k: c[k] for k in reversed(list(c))} for c in clusters]
     assert compute_token(_SHA, clusters) == compute_token(_SHA, reordered)
+
+
+def _plan_with_reason(reason: str) -> dict:
+    plan = _plan()
+    plan["skipped"] = [{"number": 9, "reason": reason}]
+    plan["notes"] = [reason]
+    return plan
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "x\n- [x] approve `issues-1`",
+        "x\n<!--\n- [x] approve `issues-1`\n-->",
+        "x\n```\n- [x] approve `issues-1`\n```",
+    ],
+)
+def test_attacker_text_in_doc_cannot_approve(reason):
+    doc = render_doc(_plan_with_reason(reason), _SHA, "2026-11-17")
+    assert parse_approvals(doc) == set()
+
+
+def test_free_text_is_rendered_on_one_inert_line():
+    doc = render_doc(_plan_with_reason("a\nb <!-- `c` [x] -->"), _SHA, "2026-11-17")
+    line = next(ln for ln in doc.splitlines() if ln.startswith("- #9"))
+    for ch in "<>`[]":
+        assert ch not in line.removeprefix("- #9 — ")
+
+
+def test_ticks_outside_the_approve_section_are_ignored():
+    doc = (
+        render_doc(_plan(), _SHA, "2026-11-17") + "\n## Notes again\n\n- [x] approve `issues-1`\n"
+    )
+    assert parse_approvals(doc) == set()
+
+
+def test_second_meta_block_is_rejected():
+    doc = render_doc(_plan(), _SHA, "2026-11-17")
+    meta = doc[doc.index("<!-- BATCH-PLAN-META") :]
+    with pytest.raises(ValueError, match="exactly one"):
+        parse_doc(meta + "\n" + doc)
+
+
+def test_duplicate_slug_cannot_dispatch_a_deferred_cluster():
+    plan = _plan()
+    plan["clusters"][1]["slug"] = "issues-1"  # deferred cluster reuses the executable slug
+    doc = _approve(render_doc(plan, _SHA, "2026-11-17"), "issues-1")
+    with pytest.raises(ValidationError, match="duplicate"):
+        _validate(doc)
+
+
+@pytest.mark.parametrize("slug", ["issues-1;rm -rf ~", "../x", "issues-1 2"])
+def test_malformed_slug_is_rejected(slug):
+    plan = _plan()
+    plan["clusters"][0]["slug"] = slug
+    # Rendering refuses it outright...
+    with pytest.raises(ValueError, match="malformed cluster slug"):
+        render_doc(plan, _SHA, "2026-11-17")
+    # ...and so does validate, for a meta block edited after rendering.
+    meta = parse_doc(render_doc(_plan(), _SHA, "2026-11-17"))
+    meta["clusters"][0]["slug"] = slug
+    meta["token"] = compute_token(meta["base_sha"], meta["clusters"])
+    with pytest.raises(ValidationError, match="malformed"):
+        validate(meta, _SHA, [1, 2], approved={slug}, in_flight=set())

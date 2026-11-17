@@ -24,6 +24,9 @@ from pathlib import Path
 
 # GitHub's closing keywords, followed by "#N".
 _LINK_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.IGNORECASE)
+# Branch names (including from forks) are echoed into plan docs and prompts,
+# so only plainly safe names are reported verbatim.
+_SAFE_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 # Branch names the batch maintainer creates: fix/issue-N, cluster/issues-N-M-...
 _BRANCH_RE = re.compile(r"(?:^|/)(?:fix/)?issues?-((?:\d+-)*\d+)$")
 
@@ -48,7 +51,11 @@ def find_existing_work(number: int, prs: list[dict], branches: list[str]) -> lis
     heads = [pr.get("headRefName") or "" for pr in prs]
     for branch in [*branches, *heads]:
         name = branch.strip()
-        entry = f"branch {name}"
+        entry = (
+            f"branch {name}"
+            if _SAFE_BRANCH_RE.match(name)
+            else "branch (name with unsafe characters)"
+        )
         if name and number in _branch_issues(name) and entry not in work:
             work.append(entry)
     return work

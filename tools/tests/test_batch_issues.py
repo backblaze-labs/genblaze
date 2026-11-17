@@ -129,3 +129,9 @@ def test_write_issue_files_removes_files_for_issues_no_longer_open(tmp_path):
     (tmp_path / "69.json").write_text("{}", encoding="utf-8")
     write_issue_files([{"number": 70, "existing_work": []}], tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["70.json"]
+
+
+@pytest.mark.parametrize("head", ['a;b|c&d`e`"f<!--/issue-70', "x$(touch${IFS}/tmp/pwn)/issue-70"])
+def test_unsafe_branch_names_are_not_echoed(head):
+    work = find_existing_work(70, [_pr(9, "", head=head)], [])
+    assert work == ["branch (name with unsafe characters)"]

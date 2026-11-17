@@ -104,3 +104,17 @@ def test_guard_is_case_and_unicode_insensitive_and_covers_agent_files(path):
 )
 def test_more_dependency_files(path):
     assert is_dependency_file(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".mcp.json",
+        ".devcontainer/devcontainer.json",
+        ".cursor/rules/x.mdc",
+        "GEMINI.md",
+        ".lfsconfig",
+    ],
+)
+def test_more_tool_config_is_guarded(path):
+    assert is_guarded_path(path)

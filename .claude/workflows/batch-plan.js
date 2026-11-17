@@ -57,16 +57,27 @@ const ISSUES_SCHEMA = {
   },
 }
 
-// Matches the scout row shape consumed by tools/batch_cluster.py.
+// Matches the scout row shape consumed by tools/batch_cluster.py. Scouts read
+// attacker-written issue text and their rows are later pasted into a prompt for
+// an agent that runs commands, so every field is constrained to data that can't
+// carry instructions: repo paths, integers, and a fixed set of skip categories.
 const SCOUT_SCHEMA = {
   type: 'object',
   required: ['number', 'touched_files', 'deps'],
+  additionalProperties: false,
   properties: {
-    number: { type: 'integer' },
-    type: { type: 'string' },
-    touched_files: { type: 'array', items: { type: 'string' } },
-    deps: { type: 'array', items: { type: 'integer' } },
-    skip_reason: { type: ['string', 'null'] },
+    number: { type: 'integer', minimum: 1 },
+    type: { type: 'string', enum: ['bug', 'feature', 'docs', 'question'] },
+    touched_files: {
+      type: 'array',
+      maxItems: 50,
+      items: { type: 'string', pattern: '^[A-Za-z0-9._/@+-]{1,200}$' },
+    },
+    deps: { type: 'array', maxItems: 20, items: { type: 'integer', minimum: 1 } },
+    skip_reason: {
+      type: ['string', 'null'],
+      enum: [null, 'suspicious', 'question', 'duplicate', 'needs-info', 'out-of-scope'],
+    },
   },
 }
 

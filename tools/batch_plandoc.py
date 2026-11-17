@@ -63,6 +63,11 @@ _APPROVAL_HELP = (
     "ticked issue has closed; clusters that already have a PR or branch "
     "are skipped. Executors never merge, comment or label."
 )
+# Cluster slugs as batch_cluster.py emits them. Slugs become branch names and
+# shell arguments downstream, so anything else is rejected.
+_SLUG_RE = re.compile(r"^issues(?:-\d+)+$")
+# Characters that could start markup, a code span, a checkbox or a comment.
+_INERT = str.maketrans({"<": "‹", ">": "›", "`": "'", "[": "(", "]": ")"})
 # A ticked approval line, e.g. "- [x] approve `issues-70-71`".
 _APPROVAL_RE = re.compile(r"^\s*[-*]\s*\[[xX]\]\s*approve\s+`([a-z0-9-]+)`\s*$", re.MULTILINE)
 
@@ -93,9 +98,30 @@ def compute_token(base_sha: str, clusters: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
+def _inert(text: object, limit: int = 200) -> str:
+    """Render untrusted text as one short line that can't form markdown structure.
+
+    Skip reasons and notes can carry text quoted from GitHub issues. Collapsing
+    whitespace (so it can never start a new line such as a checkbox) and
+    neutralizing ``< > ` [ ]`` (comments, code spans, checkboxes) keeps attacker
+    text from approving a cluster or hiding content in the rendered doc.
+    """
+    collapsed = " ".join("".join(ch if ch.isprintable() else " " for ch in str(text)).split())
+    flat = collapsed.translate(_INERT)
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _check_slug(slug: str) -> str:
+    if not _SLUG_RE.match(slug):
+        raise ValueError(f"malformed cluster slug {_inert(slug, 60)!r}")
+    return slug
+
+
 def render_doc(plan: dict, base_sha: str, date: str) -> str:
     """Render the human-facing markdown plan doc with an embedded meta block."""
     clusters = plan["clusters"]
+    for c in clusters:
+        _check_slug(c["slug"])
     token = compute_token(base_sha, clusters)
     meta = {
         "version": 1,
@@ -136,7 +162,7 @@ def render_doc(plan: dict, base_sha: str, date: str) -> str:
         issues = ", ".join(f"#{n}" for n in c["issues"])
         lines.append(
             f"| `{c['slug']}` | {issues} | {c['pr_mode']} | "
-            f"{len(c['touched_files'])} | {', '.join(c['blocked_by']) or '—'} |"
+            f"{len(c['touched_files'])} | {_inert(', '.join(c['blocked_by'])) or '—'} |"
         )
 
     lines += ["", "## Deferred to a later re-plan", ""]
@@ -145,8 +171,8 @@ def render_doc(plan: dict, base_sha: str, date: str) -> str:
         for c in deferred:
             issues = ", ".join(f"#{n}" for n in c["issues"])
             lines.append(
-                f"| `{c['slug']}` | {issues} | {c['defer_reason']} | "
-                f"{', '.join(c['blocked_by']) or '—'} |"
+                f"| `{c['slug']}` | {issues} | {_inert(c['defer_reason'])} | "
+                f"{_inert(', '.join(c['blocked_by'])) or '—'} |"
             )
     else:
         lines.append("_None._")
@@ -154,13 +180,13 @@ def render_doc(plan: dict, base_sha: str, date: str) -> str:
     lines += ["", "## Skipped issues", ""]
     if meta["skipped"]:
         for s in meta["skipped"]:
-            lines.append(f"- #{s['number']} — {s['reason']}")
+            lines.append(f"- #{int(s['number'])} — {_inert(s['reason'])}")
     else:
         lines.append("_None._")
 
     lines += ["", "## Notes", ""]
     if meta["notes"]:
-        lines += [f"- {n}" for n in meta["notes"]]
+        lines += [f"- {_inert(n, 400)}" for n in meta["notes"]]
     else:
         lines.append("_None._")
 
@@ -177,19 +203,36 @@ def render_doc(plan: dict, base_sha: str, date: str) -> str:
 
 
 def parse_doc(markdown: str) -> dict:
-    """Extract the embedded meta block from a plan doc. Raises on absence."""
+    """Extract the embedded meta block from a plan doc.
+
+    Raises unless there is exactly one block: a second one could only come from
+    an edit or injected text, and choosing between them would let it win.
+    """
     pattern = re.escape(_META_OPEN) + r"\s*(.*?)\s*" + re.escape(_META_CLOSE)
-    match = re.search(pattern, markdown, re.DOTALL)
-    if not match:
+    matches = re.findall(pattern, markdown, re.DOTALL)
+    if not matches:
         raise ValueError("plan doc has no BATCH-PLAN-META block")
-    return json.loads(match.group(1))
+    if len(matches) > 1:
+        raise ValueError(
+            f"plan doc must have exactly one BATCH-PLAN-META block, found {len(matches)}"
+        )
+    return json.loads(matches[0])
 
 
 def parse_approvals(markdown: str) -> set[str]:
-    """Return the cluster slugs ticked in the doc, ignoring the meta block."""
+    """Return the cluster slugs ticked in the doc's ``## Approve`` section.
+
+    Only that section counts: ticks anywhere else (notes, skip reasons, the meta
+    block) are ignored, so text quoted from an issue can't approve anything.
+    """
     pattern = re.escape(_META_OPEN) + r".*?" + re.escape(_META_CLOSE)
-    visible = re.sub(pattern, "", markdown, flags=re.DOTALL)
-    return set(_APPROVAL_RE.findall(visible))
+    lines = re.sub(pattern, "", markdown, flags=re.DOTALL).splitlines()
+    try:
+        start = lines.index("## Approve") + 1
+    except ValueError:
+        return set()
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return set(_APPROVAL_RE.findall("\n".join(lines[start:end])))
 
 
 class ValidationError(Exception):
@@ -225,6 +268,12 @@ def validate(
         )
 
     # 2. Approval: only ticked, executable clusters may run.
+    slugs = [c["slug"] for c in clusters]
+    if len(slugs) != len(set(slugs)):
+        raise ValidationError("plan has duplicate cluster slugs; re-run batch-plan.")
+    bad = sorted(s for s in [*slugs, *approved] if not _SLUG_RE.match(s))
+    if bad:
+        raise ValidationError(f"malformed cluster slug(s) {[_inert(s, 60) for s in bad]}")
     executable = {c["slug"]: c for c in clusters if c.get("executable")}
     if not approved:
         raise ValidationError(
@@ -239,7 +288,7 @@ def validate(
         )
 
     # 3. Issue drift: every approved issue must still be open.
-    chosen = [c for c in clusters if c["slug"] in approved]
+    chosen = [c for c in clusters if c.get("executable") and c["slug"] in approved]
     closed = {n for c in chosen for n in c["issues"]} - set(live_open_issues)
     if closed:
         raise ValidationError(

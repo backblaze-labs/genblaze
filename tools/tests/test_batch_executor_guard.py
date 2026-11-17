@@ -233,6 +233,7 @@ _WRITE_AND_RUN_NETWORK_SCRIPT = (
         'echo junk > "$(git rev-parse --git-dir)/commondir"',
         "echo 'gitdir: /tmp/x' > .git",
         "/usr/bin/osascript -e 'return 1'",
+        'echo /tmp > "$(git rev-parse --git-common-dir)/objects/info/alternates"',
         # A script the agent writes inherits the sandbox when run.
         _WRITE_AND_RUN_NETWORK_SCRIPT,
     ],

@@ -198,6 +198,8 @@ def _profile(worktree: Path, git_dir: Path, common: Path, run_tmp: Path, home: P
             "(deny file-write*)",
             f"(allow file-write* {' '.join(writable)})",
             f"(deny file-write* (subpath {_sbpl(git_dir / 'hooks')}) {git_pointers})",
+            # alternates would point git at an object store the executor controls.
+            f"(deny file-write* (subpath {_sbpl(common / 'objects' / 'info')}))",
             f"(deny file-read* (subpath {_sbpl(home)}))",
             f"(allow file-read* (literal {_sbpl(home)}) {home_reads})",
             f"(deny file-read* {secrets})",
