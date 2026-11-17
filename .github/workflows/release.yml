@@ -493,7 +493,7 @@ jobs:
 
   install-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: [publish-meta, publish-npm, validate-version]
     if: needs.validate-version.outputs.dry_run != 'true'
     steps:
@@ -505,8 +505,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Wait for PyPI to index the umbrella
-        # PyPI's CDN can take ~30-60s to surface a fresh release. Poll with
-        # a bounded retry so an indexing lag doesn't fail the whole run.
+        # PyPI's CDN usually surfaces a fresh release in ~30-60s, but has
+        # taken 5+ minutes (v0.8.2). Poll for up to 10 minutes so an
+        # indexing lag doesn't fail the whole run.
         # Indexing is checked against the umbrella's own version because
         # that's what `pip install genblaze` resolves to — the wave name
         # (which the tag follows) doesn't appear in the package metadata.
@@ -514,15 +515,15 @@ jobs:
           UMBRELLA_VERSION: ${{ needs.validate-version.outputs.umbrella_version }}
         run: |
           version="$UMBRELLA_VERSION"
-          for i in $(seq 1 12); do
-            if pip index versions genblaze 2>/dev/null | grep -q "$version"; then
+          for i in $(seq 1 60); do
+            if pip index versions --no-cache-dir genblaze 2>/dev/null | grep -q "$version"; then
               echo "genblaze==$version is visible on PyPI"
               exit 0
             fi
-            echo "[$i/12] genblaze==$version not yet on PyPI, sleeping 10s…"
+            echo "[$i/60] genblaze==$version not yet on PyPI, sleeping 10s…"
             sleep 10
           done
-          echo "::error::genblaze==$version did not appear on PyPI within 2 minutes"
+          echo "::error::genblaze==$version did not appear on PyPI within 10 minutes"
           exit 1
       - name: Fresh install and import smoke
         # Resolves ``genblaze[all]`` (every connector), not bare ``genblaze``
@@ -545,17 +546,17 @@ jobs:
           # install can still 404 on a connector's stale edge even when the
           # umbrella wait passed (#189). Retry the install itself — it's the
           # operation that actually fails, regardless of which package lags.
-          attempts=5
+          attempts=10
           for i in $(seq 1 "$attempts"); do
-            if /tmp/verify/bin/pip install "genblaze[all]==$version"; then
+            if /tmp/verify/bin/pip install --no-cache-dir "genblaze[all]==$version"; then
               break
             fi
             if [ "$i" -eq "$attempts" ]; then
               echo "::error::pip install genblaze[all]==$version failed after $attempts attempts"
               exit 1
             fi
-            echo "[$i/$attempts] pip install genblaze[all]==$version failed, retrying in 30s…"
-            sleep 30
+            echo "[$i/$attempts] pip install genblaze[all]==$version failed, retrying in 60s…"
+            sleep 60
           done
 
           /tmp/verify/bin/python tools/release_import_smoke.py
