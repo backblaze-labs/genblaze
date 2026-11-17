@@ -420,7 +420,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish to npm
-        if: (github.event_name == 'workflow_dispatch' && inputs.dry_run) || steps.npm_check.outputs.skip != 'true'
+        if: steps.npm_check.outputs.skip != 'true'
         working-directory: libs/spec
         # Authenticates via npm trusted publishing (OIDC, `id-token: write`
         # above); no long-lived NPM_TOKEN.
