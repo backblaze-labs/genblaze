@@ -128,7 +128,7 @@ git push origin v<wave>
 # and pass it via --notes-file:
 awk '/^## \[<wave>\]/{p=1} p&&/^## \[/&&!/^## \[<wave>\]/{exit} p' CHANGELOG.md > /tmp/release-notes-<wave>.md
 if test -s /tmp/release-notes-<wave>.md; then
-  gh release create v<wave> --title "<wave>" --notes-file /tmp/release-notes-<wave>.md
+  gh release create v<wave> --verify-tag --title "<wave>" --notes-file /tmp/release-notes-<wave>.md
 else
   echo "empty slice — check the wave heading; release NOT created" >&2
 fi

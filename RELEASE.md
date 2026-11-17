@@ -17,3 +17,7 @@ The trigger decision remains open for human review: this change preserves
 `release: published` and recommends a later, separately approved migration to
 signed tag → publish → GitHub Release. See the guide for both options and the
 conditions for a documented exception.
+
+Before production, confirm the guide's GitHub environment restrictions and
+release-tag ruleset with the release owner. These account-level controls and
+the initial signing-key approval are separate activation prerequisites.

@@ -210,7 +210,7 @@ Triggered two ways:
    awk '/^## \[0.3.0\]/{p=1} p&&/^## \[/&&!/^## \[0.3.0\]/{exit} p' CHANGELOG.md \
      > /tmp/release-notes-0.3.0.md
    if test -s /tmp/release-notes-0.3.0.md; then
-     gh release create v0.3.0 --title "0.3.0" --notes-file /tmp/release-notes-0.3.0.md
+     gh release create v0.3.0 --verify-tag --title "0.3.0" --notes-file /tmp/release-notes-0.3.0.md
    else
      echo "empty slice — check the wave heading; release NOT created" >&2
    fi
