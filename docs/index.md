@@ -107,8 +107,8 @@ by `make docs-lint`.
 ## Planning & Tracking
 
 - [Active exec-plans](exec-plans/active/) — in-flight tranches and rollouts.
-  New plans use `active/<feature>/plan.md`, e.g.
-  [repo-docs-standard](exec-plans/active/repo-docs-standard/plan.md).
+  New plans use `active/<feature>/plan.md` and move to `completed/` when done,
+  e.g. [repo-docs-standard](exec-plans/completed/repo-docs-standard/plan.md).
   See [release-0.3.md](exec-plans/active/release-0.3.md),
   [p0-p1-feedback-execution.md](exec-plans/active/p0-p1-feedback-execution.md),
   [storage-backend-hardening-tranche.md](exec-plans/active/storage-backend-hardening-tranche.md),
