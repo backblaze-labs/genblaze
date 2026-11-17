@@ -14,6 +14,24 @@ from changelog import ChangelogError, batch_notes, check_changelog, read_wave, r
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def batch_fixture(root):
+    """A fixed starting wave, independent of this checkout's release state."""
+    pending = root / ".changes/unreleased"
+    pending.mkdir(parents=True)
+    shutil.copy(ROOT / ".changie.yaml", root)
+    (root / ".changes/header.tpl.md").write_text("# Changelog\n")
+    (root / ".changes/v0.8.2.md").write_text("## [0.8.2] - 2026-11-16\n")
+    (pending / "change.yaml").write_text(
+        "component: Internal\nkind: Changed\nbody: Release tooling\ntime: 2026-11-17T00:00:00Z\n"
+    )
+
+
+def test_historical_pep440_post_release_survives_changie_merge():
+    text = (ROOT / "CHANGELOG.md").read_text()
+    assert "## [0.2.5.post1] - 2026-04-24" in text
+    assert text.index("## [0.2.6]") < text.index("## [0.2.5.post1]") < text.index("## [0.2.5]")
+
+
 def test_latest_wave_uses_semver_and_checks_heading(tmp_path):
     changes = tmp_path / ".changes"
     changes.mkdir()
@@ -47,8 +65,7 @@ def test_generated_changelog_cannot_drift(tmp_path):
 
 
 def test_batch_preserves_independent_versions_and_records_inventory(tmp_path):
-    shutil.copytree(ROOT / ".changes", tmp_path / ".changes")
-    shutil.copy(ROOT / ".changie.yaml", tmp_path)
+    batch_fixture(tmp_path)
     paths = {
         "libs/core/pyproject.toml": '[project]\nname="genblaze-core"\nversion="0.3.10"\n',
         "cli/pyproject.toml": '[project]\nname="genblaze-cli"\nversion="0.3.8"\n',
@@ -71,7 +88,7 @@ def test_batch_preserves_independent_versions_and_records_inventory(tmp_path):
 
 @pytest.mark.parametrize("version", ["../../outside", "0.8.2", "v01.2.3", "v1.2.3;touch bad"])
 def test_batch_rejects_invalid_or_existing_wave_without_consuming_notes(tmp_path, version):
-    shutil.copytree(ROOT / ".changes", tmp_path / ".changes")
+    batch_fixture(tmp_path)
     before = sorted(p.name for p in (tmp_path / ".changes/unreleased").glob("*.yaml"))
     with pytest.raises(ChangelogError):
         batch_notes(tmp_path, version)

@@ -43,7 +43,9 @@ verification; an installed binary of that version can be selected with
 `CHANGIE=/path/to/changie`. Fragments are grouped by package, while a wave is
 still an explicitly selected `X.Y.Z`. There are no Changie replacements that
 rewrite package versions. Historical wave text was migrated (with one legacy trailing space removed) into
-`.changes/vX.Y.Z.md` files.
+`.changes/vX.Y.Z.md` files. The legacy PEP 440 `0.2.5.post1` section is
+retained after `0.2.6` in that archive file because Changie only sorts SemVer
+filenames; its original heading, contents and position remain unchanged.
 
 During development:
 
