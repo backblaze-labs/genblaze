@@ -99,7 +99,8 @@ make pre-release
 ```
 
 This runs `lint`, `typecheck`, `ts-types-check`, `pypi-metadata-check`,
-`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order. `lint`
+`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order, then
+`pypi-new-projects` (warning only, see [§a](#a-pypi-trusted-publishing-per-package)). `lint`
 now also runs the `deptry` dependency-hygiene gate (`make deptry`), which
 fails if any package imports a dependency it doesn't declare — the
 clean-install crash class behind #37/#106. A clean run on `main` is a strong
@@ -256,7 +257,10 @@ For a **new package** that isn't on PyPI yet, add a *pending* publisher
 (pypi.org → Your account → Publishing) with the same values before its first
 release. Without it, that package's publish job fails with `403 Invalid API
 Token: OIDC scoped token is not valid for project`. Dry runs don't upload, so
-they can't catch this; check it by hand when a release adds a package.
+they can't catch this. `make pre-release` ends with `make pypi-new-projects`,
+which prints a warning banner naming every package with no pypi.org project.
+It never fails the gate: PyPI's API can't see pending publishers, so the
+warning stays until the first upload even when the publisher is in place.
 
 ### b. npm publish auth
 
