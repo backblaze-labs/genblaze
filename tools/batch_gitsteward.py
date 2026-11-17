@@ -387,6 +387,27 @@ def _changed_entries(repo: str, revspec: str) -> list[tuple[str, list[str]]]:
     return entries
 
 
+def _show(path: str) -> str:
+    """A path as one escaped, bounded line (paths are attacker-chosen)."""
+    text = json.dumps(path)[1:-1]
+    return text if len(text) <= 120 else text[:119] + "…"
+
+
+def verify_objects(repo: str) -> list[str]:
+    """Return problems if any stored object's content doesn't match its hash.
+
+    Batch executors can write to the shared object store (commits need it), so
+    one could overwrite an existing blob in place; the next local checkout or
+    merge would then write the attacker's content. ``fsck --full`` re-hashes
+    every object, catching a swapped, pre-planted or forged one.
+    """
+    proc = _git(repo, "fsck", "--full", "--no-dangling", "--no-progress", check=False)
+    if proc.returncode == 0:
+        return []
+    detail = " ".join((proc.stderr or proc.stdout).split())[:300]
+    return [f"object store integrity check failed (git fsck): {detail}"]
+
+
 def branch_violations(repo: str, branch: str, base: str = "origin/main") -> list[str]:
     """Return every reason ``branch`` must not be pushed (empty list = safe).
 
@@ -405,14 +426,14 @@ def branch_violations(repo: str, branch: str, base: str = "origin/main") -> list
     violations: list[str] = []
     for new_mode, paths in _changed_entries(repo, f"{base}...{branch}"):
         if new_mode == "120000":
-            violations.append(f"adds a symlink {paths[-1]}")
+            violations.append(f"adds a symlink {_show(paths[-1])}")
         elif new_mode == "160000":
-            violations.append(f"adds a submodule {paths[-1]}")
+            violations.append(f"adds a submodule {_show(paths[-1])}")
         for path in paths:
             if is_guarded_path(path):
-                violations.append(f"touches guarded path {path}")
+                violations.append(f"touches guarded path {_show(path)}")
             elif is_dependency_file(path):
-                violations.append(f"changes dependency file {path}")
+                violations.append(f"changes dependency file {_show(path)}")
 
     messages = _git(repo, "log", "--format=%B", f"{base}..{branch}").stdout
     if _COAUTHOR_RE.search(messages):
@@ -446,7 +467,7 @@ def publish(
     # writable by anything that ran in this repo, so it is not trusted as-is.
     remote, _, base_branch = base.partition("/")
     _git(repo, "fetch", "--quiet", remote, f"+refs/heads/{base_branch}:refs/remotes/{base}")
-    violations = branch_violations(repo, branch, base)
+    violations = verify_objects(repo) or branch_violations(repo, branch, base)
     if violations:
         return PublishResult(ok=False, branch=branch, violations=violations)
 

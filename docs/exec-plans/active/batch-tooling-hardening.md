@@ -1,6 +1,6 @@
 # Batch tooling hardening (`batch-plan` / `batch-execute`)
 
-**Status:** PR 1 merged (#338); PR 2 (approval, ordering) on `feat/batch-approval-and-ordering` · **Owner:** maintainer
+**Status:** PR 1 (#338) and PR 2 (#339) merged; PR 3 (re-check fixes) on `fix/batch-approval-injection` · **Owner:** maintainer
 
 ## Goal
 
@@ -170,6 +170,31 @@ with a regression test each:
 - `osascript`, `open`, `security` and the Apple Events / LaunchServices
   services are blocked.
 
+## Adversarial re-check (2026-11-17, after PR 2)
+
+Re-verified the five PR 1 bypasses as fixed, then found (PR 3 fixes each with
+a regression test):
+
+- **Critical: issue text could approve its own cluster.** Scout `skip_reason`,
+  notes and paths were rendered verbatim, so `x\n<!--\n- [x] approve ...-->`
+  or a forged second meta block dispatched a cluster with no human tick. Free
+  text now renders as one inert line (`< > ` + "`" + ` [ ]` neutralized), ticks
+  count only inside `## Approve`, a doc must have exactly one meta block, slugs
+  must match `issues(-N)+` and be unique, and scout `skip_reason` is a fixed
+  category, never quoted text.
+- **High: executors could swap objects in the shared store** (commits need
+  write access), so a later local merge could check out attacker content.
+  `publish` now runs `git fsck --full` first and refuses on any hash mismatch;
+  `batch-execute` runs it again at the end and flags the run. Writes to
+  `objects/info` (alternates) are denied.
+- **Medium: attacker strings reached credentialed agents.** Fork branch names
+  with shell/markup characters are no longer echoed; violation paths are
+  escaped; `batch-execute.js` re-checks slugs and issue numbers itself and
+  trusts `publish`'s exit code, not the relayed `ok`; the scout schema allows
+  only repo-path characters and integers.
+- **Low:** clusters are chosen only from executable ones; `.mcp.json`,
+  `.devcontainer/`, `.cursor/`, `GEMINI.md`, `.lfsconfig` are guarded.
+
 ## Residual risk
 
 - macOS only: `sandbox-exec` is deprecated by Apple but still enforced; if it
@@ -181,4 +206,6 @@ with a regression test each:
 - `find_secrets` catches common token shapes only (not encoded or split
   tokens). The home-read denial is the real control; a human reviews every PR.
 - The hook adds ~90 ms (Python startup) to every tool call in every session.
-- Re-run the adversarial pass after PR 2 and before the first real batch.
+- Between an executor writing a bad object and the end-of-batch fsck, a
+  local merge in the main checkout could still use it: don't pull or merge
+  in this repo while a batch is running.
