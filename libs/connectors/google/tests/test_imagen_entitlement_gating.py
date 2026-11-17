@@ -1,10 +1,6 @@
 """Tests for ImagenProvider entitlement re-grading (issue #206, #220 panel).
 
-`imagen-4.0-*` slugs are catalog-listed (`models.get` 200 -> probe LIVE) but
-404 "no longer available to new users" on the `:predict` call for keys
-created after the imagen 3.0->4.0 migration. `validate_model` re-grades those
-to `OK_PROVISIONAL` (a warn) rather than a billable `:predict` probe (spend
-risk) or a hard `DEAD` (would lock out an entitled user on any unrelated 404).
+The gate's mechanics are documented once, in ``ImagenProvider.validate_model``.
 """
 
 from __future__ import annotations
