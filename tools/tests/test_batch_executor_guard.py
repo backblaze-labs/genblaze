@@ -228,6 +228,7 @@ def test_sandbox_scrubs_variables_the_hook_never_saw(repo):
     assert f"HOME={repo['home']}" in proc.stdout  # inherited, not set by us
 
 
+@needs_sandbox
 def test_rewritten_command_sets_neither_home_nor_git_variables(repo):
     """Claude Code refuses worktree-agent commands that set HOME or inject git
     config, which made every sandboxed executor command fail."""
