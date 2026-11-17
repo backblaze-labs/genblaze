@@ -591,3 +591,23 @@ def test_symlinked_summary_is_not_read(tmp_path):
     (wt / ".batch" / "summary.txt").symlink_to(secret)
     assert commit_worktree_changes(str(local), str(wt), "fix/issue-70", [70], "origin/main") == []
     assert "PRIVATE-KEY" not in _git(local, "log", "-1", "--format=%B", "fix/issue-70")
+
+
+def test_publish_works_when_the_repo_gitignores_batch(tmp_path):
+    """The real repo ignores .batch/; naming an ignored path in ``git add``
+    makes git exit 1, which crashed the first real publish."""
+    origin, local = _bare_origin_and_clone(tmp_path)
+    pusher = _clone(origin, tmp_path / "pusher-ignore")
+    _commit(pusher, ".gitignore", ".batch/\n")
+    _git(pusher, "push", "-q", "origin", "HEAD:main")
+    _git(local, "pull", "-q", "--ff-only")
+    wt = _executor_worktree(local)
+    (wt / "fix.py").write_text("x = 1\n", encoding="utf-8")
+    (wt / ".batch").mkdir()
+    (wt / ".batch" / "summary.txt").write_text("Fix it.", encoding="utf-8")
+
+    result = publish(str(local), "fix/issue-70", [70], gh=_FakeGh(), worktree=str(wt))
+
+    assert result.ok, result.violations
+    files = _git(local, "ls-tree", "-r", "--name-only", "fix/issue-70").split()
+    assert "fix.py" in files and not any(f.startswith(".batch/") for f in files)

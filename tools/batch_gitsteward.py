@@ -534,8 +534,13 @@ def commit_worktree_changes(
         snapshot, target = str(Path(tmp) / "snapshot"), str(Path(tmp) / "target")
         _git_with_index(str(wt), snapshot, "read-tree", "HEAD")
         # .batch/ holds the executor's summary and fetched issue text: never
-        # commit it, whatever the worktree's .gitignore says.
-        _git_with_index(str(wt), snapshot, "add", "-A", "--", ".", ":(exclude).batch")
+        # commit it, whatever the worktree's .gitignore says. It's dropped from
+        # the throwaway index after `add` rather than excluded by pathspec,
+        # because naming an ignored path makes `git add` exit 1.
+        _git_with_index(str(wt), snapshot, "add", "-A", "--", ".")
+        _git_with_index(
+            str(wt), snapshot, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".batch"
+        )
         tree = _git_with_index(str(wt), snapshot, "write-tree").stdout.strip()
         if tree == _git(str(wt), "rev-parse", "HEAD^{tree}").stdout.strip():
             return ["the executor's worktree has no changes"]
