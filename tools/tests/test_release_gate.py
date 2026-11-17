@@ -211,6 +211,36 @@ def test_complete_production_plan_enables_upload_only_after_trust(signed_repo, m
     assert "upload_python=true\n" in (signed_repo / "outputs").read_text()
 
 
+@pytest.mark.parametrize(
+    "milestones",
+    [
+        [],
+        [{"title": "v9.9.9", "state": "closed", "open_issues": 0}],
+        [{"title": "v1.2.3", "state": "open", "open_issues": 0}],
+        [{"title": "v1.2.3", "state": "closed", "open_issues": 1}],
+    ],
+)
+def test_production_plan_rejects_unready_milestone_before_upload(
+    signed_repo, monkeypatch, milestones
+):
+    import json
+
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch)
+    gh = signed_repo / "bin/gh"
+    gh.write_text(
+        "#!" + sys.executable + "\nimport sys\n"
+        "assert '--paginate' in sys.argv and '--slurp' in sys.argv\n"
+        "assert any('milestones?state=all&per_page=100' in a for a in sys.argv)\n"
+        + "print("
+        + repr(json.dumps([milestones]))
+        + ")\n"
+    )
+    with pytest.raises(ReleaseGateError, match="milestone|Milestone"):
+        write_plan(signed_repo)
+    assert not (signed_repo / "outputs").exists()
+
+
 def test_wrong_wave_milestone_does_not_satisfy_readiness():
     with pytest.raises(ReleaseGateError, match="v1.2.3"):
         check_milestone([{"title": "v9.9.9", "state": "closed", "open_issues": 0}], "1.2.3")

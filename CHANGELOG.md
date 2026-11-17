@@ -30,6 +30,8 @@ package versions remain independent of release waves. See [RELEASE.md](RELEASE.m
   referenced by the template during auto-discovery. Unused providers that need
   credentials no longer prevent a valid template from loading. Empty templates
   fail before discovery; explicit provider maps remain authoritative (#67).
+- Computed costs no longer carry float noise such as 0.30000000000000004. cost_usd from registry pricing, estimate_cost() and AgentResult.total_cost_usd are rounded to 9 decimal places, preserving sub-micro-dollar per-token rates. Persisted manifests, Parquet rows and canonical hashes are unchanged (#63).
+- ModelRegistry now updates its warning-dedup sets under its lock, so a concurrent fork() cannot copy a set mid-change on free-threaded Python. Document the concurrency guarantee (#58).
 
 ### genblaze-openai
 

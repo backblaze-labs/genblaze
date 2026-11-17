@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,7 +119,8 @@ def test_policy_selection_runs_trusted_main_code_for_production(tmp_path):
         assert chosen == {"source": expected, "args": ["--plan", "--repo-root", "candidate"]}
 
 
-def test_npm_dispatch_executes_dry_run_without_registry_upload(tmp_path):
+@pytest.mark.parametrize("dry", ["true", "false"])
+def test_npm_shell_passes_the_selected_publish_mode_to_npm(tmp_path, dry):
     import json
     import os
     import subprocess
@@ -134,12 +136,40 @@ def test_npm_dispatch_executes_dry_run_without_registry_upload(tmp_path):
     step = next(
         s for s in workflow()["jobs"]["publish-npm"]["steps"] if s.get("name") == "Publish to npm"
     )
-    env = dict(os.environ, DRY_RUN="true", PATH=str(tmp_path) + os.pathsep + os.environ["PATH"])
+    env = dict(os.environ, DRY_RUN=dry, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"])
     subprocess.run(
         ["bash", "-c", step["run"]], cwd=tmp_path, env=env, check=True, capture_output=True
     )
     calls = [json.loads(line) for line in (tmp_path / "npm-calls.jsonl").read_text().splitlines()]
-    assert calls == [["--version"], ["publish", "--access", "public", "--dry-run", "--provenance"]]
+    args = ["publish", "--access", "public"]
+    if dry == "true":
+        args.append("--dry-run")
+    assert calls == [["--version"], [*args, "--provenance"]]
+
+
+def test_read_step_propagates_policy_rejection_without_outputs(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    policy = tmp_path / "release-policy/tools/release_gate.py"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("raise SystemExit(17)\n")
+    gate = next(
+        s for s in workflow()["jobs"]["validate-version"]["steps"] if s.get("id") == "read"
+    )
+    output = tmp_path / "outputs"
+    env = dict(
+        os.environ,
+        EVENT_NAME="release",
+        GITHUB_OUTPUT=str(output),
+        PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+    )
+    result = subprocess.run(
+        ["bash", "-c", gate["run"]], cwd=tmp_path, env=env, capture_output=True
+    )
+    assert result.returncode == 17
+    assert not output.exists()
 
 
 def test_mode_expressions_pin_production_and_preview_outcomes():
@@ -170,4 +200,6 @@ def test_mode_expressions_pin_production_and_preview_outcomes():
     assert gate.get("continue-on-error", False) is False
     assert gate["env"]["EVENT_NAME"] == "${{ github.event_name }}"
     assert gate["env"]["INPUT_DRY_RUN"] == "${{ inputs.dry_run }}"
+    assert gate["env"]["RELEASE_TAG"] == "${{ github.event.release.tag_name }}"
+    assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105 — expression, not a credential
     assert "INPUT_VALIDATION_ONLY" not in gate["env"]

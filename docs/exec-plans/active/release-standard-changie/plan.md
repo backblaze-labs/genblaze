@@ -64,7 +64,9 @@ release-smoke retains its normal resolver and may expose the same baseline gap.
 
 ## Upstream reconciliation
 
-Rebased onto 28c38c9, including #352 (build-only dry runs, no TestPyPI) and
+Rebased onto 7672b92, including #352 (build-only dry runs, no TestPyPI) and
 #355 (warning-only first-publish readiness). Preserve both, including the
 pypi-new-projects target and package-list parity tests. The requested validation
 runs with dry_run=true and uploads nothing; it does not use TestPyPI after #352.
+
+Preserve #356 core fixes and migrate its two pending notes into fragments.
