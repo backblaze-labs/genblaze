@@ -94,8 +94,8 @@ gate; this skill has no permission to install anything, and one-time machine set
 If `make pre-release` can't run locally for environment reasons (missing Node for
 `ts-types`, no local PyPI network access, etc.), fall back to the `workflow_dispatch`
 dry-run instead of forcing it: push the branch, then from the Actions tab → Release
-workflow → "Run workflow" with `dry_run: true, validation_only: true`. This exercises the identical
-pipeline against TestPyPI without a local toolchain.
+workflow → "Run workflow" with `dry_run: true`. This runs the same gates and
+builds without a local toolchain, skipping registry uploads.
 
 ## Step 4 — Open the release PR
 
@@ -111,6 +111,8 @@ Never commit to `main` directly. This is a normal PR — it needs review and a g
 CI run like anything else before it merges.
 
 **Conditional follow-ups** (only if the wave warrants them, not mandatory steps):
+- New package this wave? Confirm its PyPI pending publisher exists
+  (RELEASING.md §a); dry runs cannot catch a missing one.
 - Breaking changes this wave? Write `MIGRATING-<wave>.md`.
 - Large surface touched? Consider running `/verify-docs` and `/security-review`
   before opening the PR.

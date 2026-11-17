@@ -26,19 +26,12 @@ def git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def release_mode(event: str, dry_run: str, validation_only: str) -> tuple[bool, bool]:
+def release_mode(event: str, dry_run: str) -> bool:
     if event == "release":
-        return False, False
-    if (
-        event != "workflow_dispatch"
-        or dry_run not in {"true", "false"}
-        or validation_only not in {"true", "false"}
-    ):
-        raise ReleaseGateError("Dispatch dry_run and validation_only must be true or false")
-    if dry_run == "false" and validation_only == "true":
-        raise ReleaseGateError("Production dispatch requires validation_only=false")
-    dry = dry_run == "true"
-    return dry, dry and validation_only == "true"
+        return False
+    if event != "workflow_dispatch" or dry_run not in {"true", "false"}:
+        raise ReleaseGateError("Dispatch dry_run must be true or false")
+    return dry_run == "true"
 
 
 def verify_tag(root: Path, tag: str, trusted_ref: str = "origin/main") -> str:
@@ -110,10 +103,9 @@ def write_plan(root: Path) -> None:
     from changelog import read_wave
 
     wave = read_wave(root)
-    dry, validation = release_mode(
+    dry = release_mode(
         os.environ["EVENT_NAME"],
         os.environ.get("INPUT_DRY_RUN", ""),
-        os.environ.get("INPUT_VALIDATION_ONLY", ""),
     )
     tag = (
         os.environ.get("RELEASE_TAG", "") if os.environ["EVENT_NAME"] == "release" else f"v{wave}"
@@ -126,8 +118,7 @@ def write_plan(root: Path) -> None:
         "wave": wave,
         "source_sha": git(root, "rev-parse", "HEAD"),
         "dry_run": str(dry).lower(),
-        "validation_only": str(validation).lower(),
-        "upload_python": str(not validation).lower(),
+        "upload_python": str(not dry).lower(),
     }
     for key, folder in [("umbrella", "libs/meta"), ("core", "libs/core")]:
         values[key] = tomllib.loads((root / folder / "pyproject.toml").read_text())["project"][

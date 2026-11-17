@@ -24,7 +24,7 @@ def test_existing_production_trigger_is_preserved_for_human_decision():
 def test_dispatch_defaults_to_validation_without_uploads():
     inputs = workflow()["on"]["workflow_dispatch"]["inputs"]
     assert inputs["dry_run"]["default"] is True
-    assert inputs["validation_only"]["default"] is True
+    assert "validation_only" not in inputs
     for job in workflow()["jobs"].values():
         for step in job.get("steps", []):
             if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@"):
@@ -32,6 +32,7 @@ def test_dispatch_defaults_to_validation_without_uploads():
                     "needs.validate-version.outputs.upload_python == 'true' &&"
                 )
                 assert step["with"]["attestations"] is True
+                assert "repository-url" not in step["with"]
 
 
 def test_all_four_gates_precede_python_and_npm_builds():
@@ -76,7 +77,7 @@ def test_upload_guards_do_not_trust_candidate_mode_outputs():
     ]
     assert len(publishers) == 4
     for step in publishers:
-        assert "inputs.validation_only == false" in step["if"]
+        assert "inputs.dry_run == false" in step["if"]
     npm = jobs["publish-npm"]
     publish = next(s for s in npm["steps"] if s.get("name") == "Publish to npm")
     assert "inputs.dry_run" in publish["if"]
@@ -146,11 +147,13 @@ def test_mode_expressions_pin_production_and_preview_outcomes():
     preview = "github.event_name == 'workflow_dispatch' && inputs.dry_run"
     expected_guard = (
         "needs.validate-version.outputs.upload_python == 'true' && "
-        "(github.event_name != 'workflow_dispatch' || inputs.dry_run == false || "
-        "inputs.validation_only == false)"
+        "(github.event_name != 'workflow_dispatch' || inputs.dry_run == false)"
     )
     for name in ["publish-core", "publish-cli", "publish-connectors", "publish-meta"]:
-        assert jobs[name]["environment"] == "${{ " + preview + " && 'testpypi' || 'pypi' }}"
+        assert jobs[name]["environment"] == (
+            "${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == false) "
+            "&& 'pypi' || '' }}"
+        )
         publish = next(
             s
             for s in jobs[name]["steps"]
@@ -167,4 +170,4 @@ def test_mode_expressions_pin_production_and_preview_outcomes():
     assert gate.get("continue-on-error", False) is False
     assert gate["env"]["EVENT_NAME"] == "${{ github.event_name }}"
     assert gate["env"]["INPUT_DRY_RUN"] == "${{ inputs.dry_run }}"
-    assert gate["env"]["INPUT_VALIDATION_ONLY"] == "${{ inputs.validation_only }}"
+    assert "INPUT_VALIDATION_ONLY" not in gate["env"]

@@ -175,7 +175,8 @@ make pre-release
 ```
 
 This runs `lint`, `typecheck`, `ts-types-check`, `pypi-metadata-check`,
-`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order. `lint`
+`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order, then
+`pypi-new-projects` (warning only, see [§a](#a-pypi-trusted-publishing-per-package)). `lint`
 now also runs the `deptry` dependency-hygiene gate (`make deptry`), which
 fails if any package imports a dependency it doesn't declare — the
 clean-install crash class behind #37/#106. A clean run on `main` is a strong
@@ -287,7 +288,7 @@ Notes on the graph:
   against the live registry, which is what catches drift like the 0.3.2
   langsmith/cli wheels (a bare `genblaze==$version` resolve only pulls
   the umbrella defaults and misses connector-specific pin breakage).
-  Skipped on dry-runs (TestPyPI indexing lag makes this flaky).
+  Skipped on dry runs because nothing was uploaded.
 
 ### 2. Dry run (`workflow_dispatch`)
 
@@ -295,23 +296,17 @@ Use this to exercise the full pipeline without touching production
 registries. From the GitHub Actions tab → Release workflow → "Run
 workflow":
 
-* **`dry_run`** — defaults to `true`. PyPI uploads target TestPyPI when explicitly enabled;
-  npm publish runs with `--dry-run`. No production registry changes.
-* **`validation_only`** — defaults to `true`. With `dry_run=true`, build and
-  validate every wheel and run npm's publish dry run, but skip **all** Python
-  uploads. The TestPyPI target stays selected. Set `validation_only=false`
-  only to intentionally upload to TestPyPI; its trusted publishers are separate
-  from production and must be configured. With `dry_run=false`, this option
-  must be false too; contradictory flags fail closed before production. This
-  is a CI safety contract for the requested non-publishing mode, not a change
-  to the B2/S3 API or any public SDK parameter.
+* **`dry_run`** — defaults to `true`. Build and `twine check` every Python
+  package, skip all Python uploads, and run npm publish with `--dry-run`.
+  No registry changes and no TestPyPI configuration are needed. Production
+  dispatches require explicit `dry_run=false` and the signed-tag/milestone gates.
 * **`ref`** — optional. Defaults to the branch you dispatched from.
 
 Dry runs are the recommended way to:
 
 * Test the workflow after editing `release.yml`.
-* Verify Trusted Publishing is configured correctly on a brand-new
-  package before its first real publish.
+* Validate builds for a brand-new package before its first real publish.
+  Dry runs cannot validate its production Trusted Publisher.
 * Sanity-check a release candidate without using up a version number on
   prod PyPI (you can't re-publish the same version; a botched 0.4.0
   burns the slot forever).
@@ -335,16 +330,15 @@ No `PYPI_API_TOKEN` is needed once Trusted Publishing is configured —
 the workflow uses OIDC and the action obtains a short-lived token at
 publish time.
 
-### b. TestPyPI Trusted Publishing (per package, for dry-runs)
+For a **new package** that is not on PyPI yet, add a *pending* publisher
+(pypi.org → Your account → Publishing) with the same values before its first
+release. Without it, publication fails with an OIDC authorization error.
+`make pre-release` ends with `make pypi-new-projects`, which prints a warning
+naming packages with no pypi.org project. It never fails the gate: PyPI's API
+cannot see pending publishers, so the warning remains until the first upload
+even when the publisher is configured. Dry runs cannot check this authentication.
 
-Same setup as above, but on **test.pypi.org** instead of pypi.org, with
-environment name `testpypi`. This is what the dry-run path uses.
-
-If you skip this, explicit TestPyPI uploads fail at the publish step. The
-validation-only default never attempts that upload and needs no TestPyPI
-trusted-publisher configuration.
-
-### c. npm publish auth
+### b. npm publish auth
 
 `publish-npm` uses **npm Trusted Publishing** (OIDC); there is no npm token.
 On npmjs.com, open `@genblaze/spec` → Settings → Trusted Publisher → GitHub
@@ -353,12 +347,11 @@ workflow `release.yml`, environment `npm`. It requires npm >= 11.5.1, which
 is why the workflow pins `NODE_VERSION` to 24. Dry runs (`npm publish
 --dry-run`) don't authenticate, so `npm-dryrun` needs no setup.
 
-### d. GitHub Environments
+### c. GitHub Environments
 
-Create four environments under repo Settings → Environments:
+Create three environments under repo Settings → Environments:
 
 * **`pypi`** — production PyPI. Use the restrictions below.
-* **`testpypi`** — TestPyPI for dry-runs. No required reviewers.
 * **`npm`** — production npm. Use the restrictions below.
 * **`npm-dryrun`** — npm dry-run. No required reviewers.
 
@@ -465,14 +458,13 @@ Dispatch the branch's workflow against that candidate's immutable SHA:
 
 ```bash
 gh workflow run release.yml --ref "$WORKFLOW_BRANCH" \
-  -f ref="$CANDIDATE_SHA" -f dry_run=true -f validation_only=true
+  -f ref="$CANDIDATE_SHA" -f dry_run=true
 ```
 
-This validates the TestPyPI-targeted build graph without registry uploads. It
+This validates the release build graph without registry uploads. It
 exercises the four gates, metadata checks, type generation and npm dry run;
 it does not claim to validate OIDC upload authentication or a production tag.
 Do not remove fragments, relax assertions, or bypass a gate to obtain a green run.
 
-Related proposal [#352](https://github.com/backblaze-labs/genblaze/pull/352)
-removes TestPyPI entirely. Reconcile it before merging either overlapping
-workflow change; this implementation retains the explicit TestPyPI route.
+This preserves the non-publishing dry-run behavior introduced by
+[#352](https://github.com/backblaze-labs/genblaze/pull/352); TestPyPI is not used.

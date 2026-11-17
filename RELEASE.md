@@ -10,8 +10,8 @@ entry point preserves existing links and the detailed operating procedures.
   tag with a reviewed key from `.github/release-signers` on protected main.
 - Run `make pre-release`. Production retains all four pre-publish gates,
   PyPI/npm OIDC and provenance/attestations.
-- Use `dry_run=true, validation_only=true` for a workflow validation without
-  registry uploads. TestPyPI uploads require explicit `validation_only=false`.
+- Use `dry_run=true` for build-only workflow validation without registry
+  uploads. TestPyPI is not used.
 
 The trigger decision remains open for human review: this change preserves
 `release: published` and recommends a later, separately approved migration to

@@ -102,19 +102,15 @@ def test_closed_empty_wave_milestone_passes():
 @pytest.mark.parametrize("value", ["", "false; echo injected", "1", "TRUE"])
 def test_dispatch_mode_fails_closed_on_invalid_boolean(value):
     with pytest.raises(ReleaseGateError):
-        release_mode("workflow_dispatch", value, "true")
+        release_mode("workflow_dispatch", value)
 
 
 def test_release_event_cannot_be_made_a_preview():
-    assert release_mode("release", "true", "true") == (False, False)
+    assert release_mode("release", "true") is False
 
 
 def test_default_dispatch_is_non_publishing():
-    assert release_mode("workflow_dispatch", "true", "true") == (True, True)
-
-
-def test_explicit_testpypi_upload_remains_available():
-    assert release_mode("workflow_dispatch", "true", "false") == (True, False)
+    assert release_mode("workflow_dispatch", "true") is True
 
 
 def test_validation_plan_never_enables_python_uploads(signed_repo, monkeypatch):
@@ -132,7 +128,6 @@ def test_validation_plan_never_enables_python_uploads(signed_repo, monkeypatch):
     for name, value in {
         "EVENT_NAME": "workflow_dispatch",
         "INPUT_DRY_RUN": "true",
-        "INPUT_VALIDATION_ONLY": "true",
         "GITHUB_OUTPUT": str(output),
     }.items():
         monkeypatch.setenv(name, value)
@@ -157,11 +152,6 @@ def test_revoked_key_in_main_cannot_authorize_old_tag(signed_repo):
     run(signed_repo, "git", "commit", "-m", "rotate signing trust")
     with pytest.raises(ReleaseGateError):
         verify_tag(signed_repo, "v1.2.3", "main")
-
-
-def test_validation_only_cannot_silently_become_production():
-    with pytest.raises(ReleaseGateError, match="validation_only"):
-        release_mode("workflow_dispatch", "false", "true")
 
 
 def plan_fixture(repo, monkeypatch, wave="1.2.3"):
@@ -227,13 +217,7 @@ def test_wrong_wave_milestone_does_not_satisfy_readiness():
 
 
 def test_explicit_production_dispatch_mode():
-    assert release_mode("workflow_dispatch", "false", "false") == (False, False)
-
-
-@pytest.mark.parametrize("value", ["", "TRUE", "1", "false; echo nope"])
-def test_invalid_validation_only_boolean_fails_closed(value):
-    with pytest.raises(ReleaseGateError):
-        release_mode("workflow_dispatch", "true", value)
+    assert release_mode("workflow_dispatch", "false") is False
 
 
 def test_real_policy_cli_targets_separate_candidate_root(signed_repo, monkeypatch, tmp_path):
@@ -282,10 +266,10 @@ def test_malformed_or_duplicate_milestones_fail_closed(items):
 @pytest.mark.parametrize("event", ["push", "pull_request", ""])
 def test_unknown_event_cannot_enable_publication(event):
     with pytest.raises(ReleaseGateError):
-        release_mode(event, "false", "false")
+        release_mode(event, "false")
 
 
-def test_testpypi_plan_requires_explicit_upload_opt_in(signed_repo, monkeypatch):
+def test_dry_run_cannot_enable_upload_through_obsolete_input(signed_repo, monkeypatch):
     plan_fixture(signed_repo, monkeypatch)
     monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
     monkeypatch.setenv("INPUT_DRY_RUN", "true")
@@ -294,5 +278,5 @@ def test_testpypi_plan_requires_explicit_upload_opt_in(signed_repo, monkeypatch)
     values = dict(
         line.split("=", 1) for line in (signed_repo / "outputs").read_text().splitlines()
     )
-    assert values["upload_python"] == "true"
+    assert values["upload_python"] == "false"
     assert values["dry_run"] == "true"

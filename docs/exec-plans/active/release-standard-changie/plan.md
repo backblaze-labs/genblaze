@@ -21,7 +21,7 @@ Use Git SSH tag signatures with a reviewed, repository-local allowed-signers
 file. Read the production trust list from origin/main, require the tag's commit
 on that branch, and bind every downstream checkout to the validated commit.
 Reject missing, unsigned, untrusted, and off-main production tags. Legacy tags
-remain historical; validation-only dispatches do not claim to verify them.
+remain historical; dry-run dispatches do not claim to verify them.
 
 Require the wave's vX.Y.Z milestone to be closed with no open issues or PRs before
 production. Assign release-bound issues and PRs during planning; defer unrelated
@@ -35,9 +35,9 @@ choice before a separate trigger migration.
 
 A major risk is weakening dry-run gates to tolerate pending notes or broken
 published pins. Keep all four existing gates, and exercise a separately recorded
-release-candidate snapshot with batched notes for the dispatch. Add a
-validation_only input that keeps the TestPyPI target but skips all registry
-uploads. Do not change production OIDC, attestations, or package versions.
+release-candidate snapshot with batched notes for the dispatch. Keep the
+build-only dry run that skips all registry uploads, preserving merged PR #352.
+Do not change production OIDC, attestations, or package versions.
 
 Trust must not come from the unverified tag itself. Tests use real SSH-signed
 tags, including a forged allowlist in an off-main commit, and exercise the actual
@@ -61,3 +61,10 @@ The source checkout is 09836ec. GitHub CI passes there. Initial local setup with
 uv could not resolve hume>=0.13.13,<1 because the available satisfying release
 was yanked. An explicit 0.13.13 test-environment install is diagnostic only;
 release-smoke retains its normal resolver and may expose the same baseline gap.
+
+## Upstream reconciliation
+
+Rebased onto 28c38c9, including #352 (build-only dry runs, no TestPyPI) and
+#355 (warning-only first-publish readiness). Preserve both, including the
+pypi-new-projects target and package-list parity tests. The requested validation
+runs with dry_run=true and uploads nothing; it does not use TestPyPI after #352.
