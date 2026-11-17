@@ -101,9 +101,12 @@ the agents that read them are treated as untrusted.
   nothing) runs every executor command in a macOS sandbox with no network, no
   credentials and writes only to its worktree, and refuses edits to the paths
   in `tools/batch_policy.py` (CI, release tooling, agent config, CHANGELOG,
-  dependency files). Executors commit locally; they never push, comment or label.
-- **Nothing is pushed unverified.** `batch_gitsteward.py publish` re-fetches
-  `origin/main`, then refuses any branch that touches a guarded path (renames
+  dependency files). Executors only edit files: they never run git, push,
+  comment or label (Claude Code also refuses git inside the sandbox wrapper).
+- **Nothing is pushed unverified.** `batch_gitsteward.py publish --worktree`
+  re-fetches `origin/main`, commits the executor's changes on top of it (from
+  the outside; the worktree itself is never modified), then refuses any branch
+  that touches a guarded path (renames
   included), changes a dependency file, adds a credential-shaped string, carries
   a `Co-authored-by` trailer or isn't based on `origin/main`. Only a clean branch
   is pushed, with a PR body built from its commits and the plan's `Closes #N`.

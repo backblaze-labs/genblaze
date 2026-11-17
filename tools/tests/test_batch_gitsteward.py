@@ -478,3 +478,116 @@ def test_violation_paths_are_escaped(tmp_path):
     result = publish(str(local), "fix/issue-70", [70], gh=_FakeGh())
     assert not result.ok
     assert all("\n" not in v for v in result.violations)
+
+
+# ---------------------------------------------------------------------------
+# publish --worktree: the trusted step commits an executor's changes
+# ---------------------------------------------------------------------------
+
+from batch_gitsteward import commit_worktree_changes  # noqa: E402
+
+
+def _executor_worktree(local: Path, name: str = "agent-1") -> Path:
+    """A batch worktree as the runtime creates it: under .claude/worktrees/."""
+    wt = local / ".claude" / "worktrees" / name
+    _git(local, "worktree", "add", "-q", "-b", f"worktree-{name}", str(wt), "HEAD")
+    return wt
+
+
+def _advance_origin(origin: Path, tmp_path: Path, name: str, content: str) -> None:
+    pusher = _clone(origin, tmp_path / f"pusher-{name}")
+    _commit(pusher, name, content)
+    _git(pusher, "push", "-q", "origin", "HEAD:main")
+
+
+def test_publish_commits_worktree_changes_on_top_of_origin_main(tmp_path):
+    origin, local = _bare_origin_and_clone(tmp_path)
+    wt = _executor_worktree(local)
+    _advance_origin(origin, tmp_path, "later.py", "y = 2\n")  # executor's base is now stale
+    (wt / "libs").mkdir()
+    (wt / "libs" / "fix.py").write_text("x = 1\n", encoding="utf-8")  # untracked new file
+    (wt / ".batch").mkdir()
+    (wt / ".batch" / "summary.txt").write_text(
+        "Fix the leak\nin close()\x07 " + "z" * 500, encoding="utf-8"
+    )
+    head_before = _git(wt, "rev-parse", "HEAD").strip()
+    gh = _FakeGh()
+
+    result = publish(str(local), "fix/issue-70", [70], gh=gh, worktree=str(wt))
+
+    assert result.ok, result.violations
+    assert _pushed(origin, "fix/issue-70")
+    files = _git(local, "ls-tree", "-r", "--name-only", "fix/issue-70").split()
+    assert "libs/fix.py" in files and "later.py" in files  # based on the new origin/main
+    assert not any(f.startswith(".batch/") for f in files)
+    message = _git(local, "log", "-1", "--format=%B", "fix/issue-70")
+    assert message.splitlines()[0] == "fix: resolve #70"
+    assert "Fix the leak in close()" in message and "\x07" not in message
+    assert len(message) < 600
+    assert "co-authored-by" not in message.lower()
+    assert _git(wt, "rev-parse", "HEAD").strip() == head_before  # worktree untouched
+    assert "Closes #70" in gh.body
+
+
+@pytest.mark.parametrize("where", ["main-checkout", "unregistered", "outside-worktrees-dir"])
+def test_publish_refuses_untrusted_worktree_paths(tmp_path, where):
+    origin, local = _bare_origin_and_clone(tmp_path)
+    if where == "main-checkout":
+        path = local
+    elif where == "unregistered":
+        path = local / ".claude" / "worktrees" / "ghost"
+        path.mkdir(parents=True)
+    else:
+        path = tmp_path / "elsewhere"
+        _git(local, "worktree", "add", "-q", "-b", "elsewhere", str(path), "HEAD")
+    (Path(path) / "a.py").write_text("x", encoding="utf-8")
+    result = publish(str(local), "fix/issue-70", [70], gh=_FakeGh(), worktree=str(path))
+    assert not result.ok and any("worktree" in v for v in result.violations)
+    assert not _pushed(origin, "fix/issue-70")
+
+
+def test_publish_refuses_worktree_with_no_changes(tmp_path):
+    origin, local = _bare_origin_and_clone(tmp_path)
+    wt = _executor_worktree(local)
+    result = publish(str(local), "fix/issue-70", [70], gh=_FakeGh(), worktree=str(wt))
+    assert not result.ok and any("no changes" in v for v in result.violations)
+
+
+def test_publish_refuses_changes_that_dont_apply_to_origin_main(tmp_path):
+    origin, local = _bare_origin_and_clone(tmp_path)
+    wt = _executor_worktree(local)
+    _advance_origin(origin, tmp_path, "README.md", "rewritten upstream\n")
+    (wt / "README.md").write_text("rewritten by executor\n", encoding="utf-8")
+    result = publish(str(local), "fix/issue-70", [70], gh=_FakeGh(), worktree=str(wt))
+    assert not result.ok and any("apply" in v for v in result.violations)
+    assert not _pushed(origin, "fix/issue-70")
+
+
+def test_publish_worktree_with_guarded_change_is_refused(tmp_path):
+    origin, local = _bare_origin_and_clone(tmp_path)
+    wt = _executor_worktree(local)
+    (wt / ".github" / "workflows" / "release.yml").write_text("on: push", encoding="utf-8")
+    result = publish(str(local), "fix/issue-70", [70], gh=_FakeGh(), worktree=str(wt))
+    assert not result.ok and any("guarded" in v for v in result.violations)
+    assert not _pushed(origin, "fix/issue-70")
+
+
+def test_commit_worktree_changes_leaves_worktree_index_alone(tmp_path):
+    origin, local = _bare_origin_and_clone(tmp_path)
+    wt = _executor_worktree(local)
+    (wt / "a.py").write_text("x", encoding="utf-8")
+    commit_worktree_changes(str(local), str(wt), "fix/issue-70", [70], "origin/main")
+    assert _git(wt, "status", "--porcelain").strip() == "?? a.py"
+
+
+def test_symlinked_summary_is_not_read(tmp_path):
+    """A summary symlinked to a secret must not carry it into the commit."""
+    origin, local = _bare_origin_and_clone(tmp_path)
+    wt = _executor_worktree(local)
+    secret = tmp_path / "id_ed25519"
+    secret.write_text("PRIVATE-KEY-MATERIAL", encoding="utf-8")
+    (wt / "a.py").write_text("x", encoding="utf-8")
+    (wt / ".batch").mkdir()
+    (wt / ".batch" / "summary.txt").symlink_to(secret)
+    assert commit_worktree_changes(str(local), str(wt), "fix/issue-70", [70], "origin/main") == []
+    assert "PRIVATE-KEY" not in _git(local, "log", "-1", "--format=%B", "fix/issue-70")

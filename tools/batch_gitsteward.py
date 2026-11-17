@@ -31,11 +31,14 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from batch_policy import find_secrets, is_dependency_file, is_guarded_path
 
@@ -473,12 +476,102 @@ def branch_violations(repo: str, branch: str, base: str = "origin/main") -> list
     return violations
 
 
+def _git_with_index(
+    repo: str, index: str, *args: str, stdin: str | None = None, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """Run git against a throwaway index so a worktree's own index is untouched."""
+    return subprocess.run(
+        ["git", *_SAFE_GIT, "-C", repo, *args],
+        input=stdin,
+        check=check,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIT_INDEX_FILE": index},
+    )
+
+
+def _read_summary(worktree: Path) -> str:
+    """The executor's one-line summary from ``.batch/summary.txt``, or "".
+
+    Only a regular file is read (never a symlink, which could point at a secret
+    and carry it into the commit message), and the text is flattened to one
+    bounded printable line.
+    """
+    path = worktree / ".batch" / "summary.txt"
+    if path.is_symlink() or not path.is_file():
+        return ""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
+        text = fh.read(4096)
+    flat = " ".join("".join(ch if ch.isprintable() else " " for ch in text).split())
+    return flat[:299] + "…" if len(flat) > 300 else flat
+
+
+def commit_worktree_changes(
+    repo: str, worktree: str, branch: str, issues: list[int], base: str
+) -> list[str]:
+    """Commit an executor worktree's changes as ``branch`` on top of ``base``.
+
+    Batch executors can't run git (Claude Code refuses git inside the sandbox
+    wrapper), so this trusted step does it. It checks the path is a registered
+    batch worktree, snapshots the worktree's files (``.batch/`` always left out),
+    and re-applies that change onto the freshly fetched
+    base: the runtime may have created the worktree from an older commit. The
+    worktree's own index, HEAD and files are never modified. Returns the
+    reasons it refused (empty list = ``refs/heads/<branch>`` created).
+    """
+    common = Path(
+        _git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    ).resolve()
+    main_root = common.parent
+    allowed = main_root / ".claude" / "worktrees"
+    wt = Path(worktree).resolve()
+    registered = {Path(t["path"]).resolve() for t in _worktrees(repo)}
+    if wt == main_root or allowed not in wt.parents or wt not in registered:
+        return [f"refusing worktree {_show(str(worktree))}: not a registered batch worktree"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot, target = str(Path(tmp) / "snapshot"), str(Path(tmp) / "target")
+        _git_with_index(str(wt), snapshot, "read-tree", "HEAD")
+        # .batch/ holds the executor's summary and fetched issue text: never
+        # commit it, whatever the worktree's .gitignore says.
+        _git_with_index(str(wt), snapshot, "add", "-A", "--", ".", ":(exclude).batch")
+        tree = _git_with_index(str(wt), snapshot, "write-tree").stdout.strip()
+        if tree == _git(str(wt), "rev-parse", "HEAD^{tree}").stdout.strip():
+            return ["the executor's worktree has no changes"]
+        patch = _git(str(wt), "diff", "--binary", "--full-index", "HEAD", tree).stdout
+
+        _git_with_index(repo, target, "read-tree", base)
+        applied = _git_with_index(
+            repo, target, "apply", "--cached", "--binary", stdin=patch, check=False
+        )
+        if applied.returncode != 0:
+            return [f"the executor's changes don't apply cleanly to {base}"]
+        new_tree = _git_with_index(repo, target, "write-tree").stdout.strip()
+
+    refs = ", ".join(f"#{n}" for n in issues)
+    message = f"fix: resolve {refs}\n"
+    summary = _read_summary(wt)
+    if summary:
+        message += f"\n{summary}\n"
+    commit = subprocess.run(
+        ["git", *_SAFE_GIT, "-C", repo, "commit-tree", new_tree, "-p", base, "-F", "-"],
+        input=message,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo, "update-ref", f"refs/heads/{branch}", commit)
+    return []
+
+
 def publish(
     repo: str,
     branch: str,
     issues: list[int],
     base: str = "origin/main",
     gh: Callable[[list[str], str | None], str] = _default_gh,
+    worktree: str | None = None,
 ) -> PublishResult:
     """Verify ``branch``, then push it and open a PR that closes ``issues``.
 
@@ -491,7 +584,10 @@ def publish(
     # writable by anything that ran in this repo, so it is not trusted as-is.
     remote, _, base_branch = base.partition("/")
     _git(repo, "fetch", "--quiet", remote, f"+refs/heads/{base_branch}:refs/remotes/{base}")
-    violations = verify_objects(repo) or branch_violations(repo, branch, base)
+    violations = verify_objects(repo)
+    if not violations and worktree is not None:
+        violations = commit_worktree_changes(repo, worktree, branch, issues, base)
+    violations = violations or branch_violations(repo, branch, base)
     if violations:
         return PublishResult(ok=False, branch=branch, violations=violations)
 
@@ -532,6 +628,10 @@ def main(argv: list[str] | None = None) -> int:
     pub = sub.add_parser("publish", help="Verify a local branch, then push it and open a PR.")
     pub.add_argument("--branch", required=True)
     pub.add_argument("--issues", required=True, help="Comma-separated issue numbers to close.")
+    pub.add_argument(
+        "--worktree",
+        help="An executor's batch worktree: commit its changes as --branch before checking.",
+    )
     args = parser.parse_args(argv)
 
     if args.cmd == "preflight":
@@ -542,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "publish":
         issues = [int(n) for n in args.issues.split(",") if n.strip()]
-        published = publish(args.repo, args.branch, issues)
+        published = publish(args.repo, args.branch, issues, worktree=args.worktree)
         json.dump(published.to_dict(), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0 if published.ok else 1
