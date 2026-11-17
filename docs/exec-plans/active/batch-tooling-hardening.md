@@ -38,9 +38,11 @@ process can reach.
 - File tools: Read/Grep/Glob only inside the worktree (plus
   `.batch/issues`); Edit/Write only inside the worktree and never on a
   `tools/batch_policy.py` path. Any other tool (Agent, WebFetch, …) is denied.
-- Executors edit, test and commit locally. They never push, open PRs, comment
-  or label, and they skip the maintainer's in-PR review panel (no sub-agents);
-  the human reviews each PR.
+- Executors edit and test only. A live probe showed Claude Code refuses git
+  inside the sandbox wrapper, so `publish --worktree` (trusted, outside the
+  sandbox) commits their changes on top of `origin/main` before its checks.
+  They never push, open PRs, comment or label, and they skip the maintainer's
+  in-PR review panel (no sub-agents); the human reviews each PR.
 
 ### 2. A trusted step verifies before anything leaves the machine
 
