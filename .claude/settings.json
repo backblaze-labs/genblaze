@@ -47,6 +47,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/batch-executor-guard.py\"",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }
