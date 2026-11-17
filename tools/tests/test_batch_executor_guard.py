@@ -207,6 +207,13 @@ def test_sandbox_strips_credentials_from_env(repo):
     assert "ghp_SHOULD_NOT_LEAK" not in proc.stdout
 
 
+_WRITE_AND_RUN_NETWORK_SCRIPT = (
+    "printf 'import urllib.request\\n"
+    + 'urllib.request.urlopen("https://github.com", timeout=3)\\n'
+    + "' > t.py && python3 t.py"
+)
+
+
 @needs_sandbox
 @pytest.mark.parametrize(
     "command",
@@ -227,8 +234,7 @@ def test_sandbox_strips_credentials_from_env(repo):
         "echo 'gitdir: /tmp/x' > .git",
         "/usr/bin/osascript -e 'return 1'",
         # A script the agent writes inherits the sandbox when run.
-        'printf \'import urllib.request\\nurllib.request.urlopen("https://github.com", '
-        "timeout=3)\\n' > t.py && python3 t.py",
+        _WRITE_AND_RUN_NETWORK_SCRIPT,
     ],
 )
 def test_sandbox_denies_escape(repo, command):

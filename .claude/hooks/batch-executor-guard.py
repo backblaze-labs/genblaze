@@ -46,6 +46,16 @@ from batch_policy import is_dependency_file, is_guarded_path  # noqa: E402
 AGENT_TYPE = "batch-executor"
 # Branch prefixes an executor may create or move (see batch-execute.js branchFor).
 BRANCH_NAMESPACES = ("fix", "cluster")
+
+# Ways to act outside the sandbox through other apps or the keychain.
+BLOCKED_BINARIES = ("/usr/bin/osascript", "/usr/bin/open", "/usr/bin/security")
+BLOCKED_MACH_SERVICES = (
+    "com.apple.SecurityServer",
+    "com.apple.securityd",
+    "com.apple.coreservices.appleevents",
+    "com.apple.coreservices.launchservicesd",
+    "com.apple.coreservices.quarantine-resolver",
+)
 FILE_READ_TOOLS = {"Read", "Grep", "Glob"}
 FILE_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
@@ -193,15 +203,12 @@ def _profile(worktree: Path, git_dir: Path, common: Path, run_tmp: Path, home: P
             f"(deny file-read* {secrets})",
             f'(deny file-read* (regex #"^{re.escape(str(main_root))}/\\.env"))',
             # No reaching other apps: Apple Events, LaunchServices, keychain.
-            "(deny process-exec"
-            ' (literal "/usr/bin/osascript") (literal "/usr/bin/open")'
-            ' (literal "/usr/bin/security"))',
-            "(deny mach-lookup"
-            ' (global-name "com.apple.SecurityServer")'
-            ' (global-name "com.apple.securityd")'
-            ' (global-name "com.apple.coreservices.appleevents")'
-            ' (global-name "com.apple.coreservices.launchservicesd")'
-            ' (global-name "com.apple.coreservices.quarantine-resolver"))',
+            "(deny process-exec "
+            + " ".join(f'(literal "{path}")' for path in BLOCKED_BINARIES)
+            + ")",
+            "(deny mach-lookup "
+            + " ".join(f'(global-name "{name}")' for name in BLOCKED_MACH_SERVICES)
+            + ")",
         ]
     )
 
