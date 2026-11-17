@@ -83,3 +83,6 @@ CLAUDE.local.md
 pre-pr-check-findings-batch-*.md
 # Node (libs/spec type-generation toolchain)
 node_modules/
+
+# Batch maintainer: fetched issue files (untrusted text)
+.batch/

@@ -73,12 +73,35 @@ input mid-run — so the gate becomes an explicit, auditable boundary.
 # → review docs/exec-plans/active/batch-plan-<date>.md, then:
 
 # 2. Execute — validate the approved plan against live state, open one PR per cluster.
-/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md", "dryRun": true}
-/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md"}
+/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md"}                   # dry run (default)
+/batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md", "dryRun": false}
 ```
 
-**Safety model:**
+Executors only run sandboxed on **macOS** (`sandbox-exec`); elsewhere they are
+denied. Review the dry-run dispatch before running for real, and keep the first
+real run to one or two clusters.
 
+**Safety model:** issue titles, bodies and comments are written by anyone, so
+the agents that read them are treated as untrusted.
+
+- **Issue text enters through code.** `tools/batch_issues.py` fetches every open
+  issue (failing instead of truncating above `max`) into `.batch/issues/<N>.json`
+  and records linked PRs and branches. Issue text is never pasted into prompts.
+- **Scouts are read-only.** `batch-scout` has only Read, Grep and Glob.
+- **Executors are sandboxed.** `.claude/hooks/batch-executor-guard.py` (active
+  only for `batch-executor`; adds ~90 ms per tool call elsewhere and does
+  nothing) runs every executor command in a macOS sandbox with no network, no
+  credentials and writes only to its worktree, and refuses edits to the paths
+  in `tools/batch_policy.py` (CI, release tooling, agent config, CHANGELOG,
+  dependency files). Executors commit locally; they never push, comment or label.
+- **Nothing is pushed unverified.** `batch_gitsteward.py publish` re-fetches
+  `origin/main`, then refuses any branch that touches a guarded path (renames
+  included), changes a dependency file, adds a credential-shaped string, carries
+  a `Co-authored-by` trailer or isn't based on `origin/main`. Only a clean branch
+  is pushed, with a PR body built from its commits and the plan's `Closes #N`.
+  Refused branches stay local for you to inspect.
+- **No in-batch review panel.** Executors can't spawn sub-agents; review each PR
+  yourself (or run `/panel-review` on it) before merging.
 - **Deterministic core, tested.** Clustering, plan-doc integrity, and all git
   hygiene live in `tools/batch_*.py` under `make test` — not in prose. Agents
   only do the one fuzzy step (estimating which files an issue touches) and act as
