@@ -13,6 +13,7 @@ from botocore.exceptions import ClientError
 from genblaze_core._version import __version__  # noqa: F401 — re-exported elsewhere
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import ObjectLockConfig, StorageBackend
+from genblaze_core.storage.config import StorageConfig
 from genblaze_core.storage.errors import classify_botocore_error
 from genblaze_core.storage.types import (
     DeleteError,
@@ -47,16 +48,13 @@ _DEFAULT_EXPIRES_IN_SEC = 3600
 # ``build_user_agent`` helper or via :attr:`StorageConfig.user_agent_extra`.
 _USER_AGENT = build_user_agent()
 
-# Single-PUT vs multipart cutoff. Above this, boto3 splits into 16 MB parts
-# and uploads up to _MAX_CONCURRENCY in parallel — each part individually
-# retryable, which matters for multi-GB video payloads on flaky links.
-_MULTIPART_THRESHOLD = 16 * 1024 * 1024
-_MULTIPART_CHUNKSIZE = 16 * 1024 * 1024
+# Client and transfer tuning (pool size, timeouts, retries, multipart
+# threshold and part size) comes from core's StorageConfig defaults, the one
+# source of truth (#42). Above multipart_threshold, boto3 splits uploads into
+# multipart_chunk_size parts and sends up to _MAX_CONCURRENCY in parallel, each
+# individually retryable, which matters for multi-GB video on flaky links.
+_STORAGE_DEFAULTS = StorageConfig()
 _MAX_CONCURRENCY = 4
-
-# urllib3 connection pool ceiling. With 4 asset workers × 4 part workers we
-# can saturate 16 concurrent connections; headroom for HEAD/auth prefetch.
-_MAX_POOL_CONNECTIONS = 20
 
 # Lifecycle defaults applied by ensure_lifecycle_defaults() / auto_lifecycle=True.
 # Orphaned multipart uploads from mid-stream failures otherwise sit billable
@@ -198,10 +196,10 @@ def _build_boto_config() -> Any:
 
     return BotoConfig(
         user_agent_extra=_USER_AGENT,
-        retries={"max_attempts": 3, "mode": "adaptive"},
-        connect_timeout=30,
-        read_timeout=300,
-        max_pool_connections=_MAX_POOL_CONNECTIONS,
+        retries={"max_attempts": _STORAGE_DEFAULTS.retries, "mode": "adaptive"},
+        connect_timeout=_STORAGE_DEFAULTS.connect_timeout_sec,
+        read_timeout=_STORAGE_DEFAULTS.read_timeout_sec,
+        max_pool_connections=_STORAGE_DEFAULTS.max_pool_connections,
         request_checksum_calculation="when_required",
         response_checksum_validation="when_required",
     )
@@ -353,8 +351,8 @@ class S3StorageBackend(StorageBackend):
         from boto3.s3.transfer import TransferConfig
 
         return TransferConfig(
-            multipart_threshold=_MULTIPART_THRESHOLD,
-            multipart_chunksize=_MULTIPART_CHUNKSIZE,
+            multipart_threshold=_STORAGE_DEFAULTS.multipart_threshold,
+            multipart_chunksize=_STORAGE_DEFAULTS.multipart_chunk_size,
             max_concurrency=_MAX_CONCURRENCY,
             use_threads=True,
         )

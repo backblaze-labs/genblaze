@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any
 from genblaze_core.storage.errors import classify_botocore_error
 from genblaze_core.storage.types import TransferProgress
 
-from genblaze_s3.backend import _MAX_POOL_CONNECTIONS, _USER_AGENT
+from genblaze_s3.backend import _STORAGE_DEFAULTS, _USER_AGENT
 from genblaze_s3.encryption import Encryption
 
 if TYPE_CHECKING:
@@ -97,10 +97,10 @@ def _build_aio_config() -> Any:
 
     return AioConfig(
         user_agent_extra=_USER_AGENT,
-        retries={"max_attempts": 3, "mode": "adaptive"},
-        connect_timeout=30,
-        read_timeout=300,
-        max_pool_connections=_MAX_POOL_CONNECTIONS,
+        retries={"max_attempts": _STORAGE_DEFAULTS.retries, "mode": "adaptive"},
+        connect_timeout=_STORAGE_DEFAULTS.connect_timeout_sec,
+        read_timeout=_STORAGE_DEFAULTS.read_timeout_sec,
+        max_pool_connections=_STORAGE_DEFAULTS.max_pool_connections,
         request_checksum_calculation="when_required",
         response_checksum_validation="when_required",
     )

@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-07-15 -->
+---
+type: Library
+title: Model Registry
+description: Declarative per-model configuration, discovery, validation and pricing across connectors.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Model Registry
 
 Unified, declarative surface for per-model configuration across every
@@ -340,18 +347,15 @@ The SDK ships zero hardcoded prices as of 0.3.0 — see
 [`docs/reference/pricing-recipes.md`](../reference/pricing-recipes.md) for
 copy-pasteable per-provider rate tables.
 
-## Canonical parameter vocabulary
+## Canonical parameter names
 
-A tight set of portable names in `genblaze_core.providers.canonical_params`:
-
-```python
-PROMPT, NEGATIVE_PROMPT, SEED, N
-IMAGE, IMAGE_END, AUDIO, VIDEO
-DURATION, ASPECT_RATIO, RESOLUTION, FPS
-VOICE, OUTPUT_FORMAT, QUALITY
-```
-
-Plus value vocabularies: `ASPECT_RATIOS = {"1:1","16:9","9:16", ...}` and `RESOLUTIONS_TIERED = {"480p","720p","1080p","4k"}`.
+Connectors accept a small set of portable parameter names and map them to
+native equivalents through `ModelSpec.param_aliases`: `prompt`,
+`negative_prompt`, `seed`, `n`, `image`, `image_end`, `audio`, `video`,
+`duration`, `aspect_ratio`, `resolution`, `fps`, `voice`, `output_format` and
+`quality`. Common values are aspect ratios such as `"16:9"` and resolution tiers
+`"480p"`, `"720p"`, `"1080p"` and `"4k"`. genblaze doesn't ship these as
+constants; define them locally if you want them in code.
 
 A pipeline written with canonical names is portable across providers that alias them to native equivalents:
 
@@ -443,7 +447,6 @@ for before/after examples, validation-outcome handling, and the
 - Family + DiscoverySupport implementation: `libs/core/genblaze_core/providers/family.py`
 - Validation outcomes: `libs/core/genblaze_core/providers/validation.py`
 - Discovery cache: `libs/core/genblaze_core/providers/discovery.py`
-- Canonical params: `libs/core/genblaze_core/providers/canonical_params.py`
 - Pricing helpers: `libs/core/genblaze_core/providers/pricing.py`
 - Input routers: `libs/core/genblaze_core/providers/input_mapping.py`
 - Constraints: `libs/core/genblaze_core/providers/constraints.py`

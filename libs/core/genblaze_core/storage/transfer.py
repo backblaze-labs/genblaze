@@ -18,6 +18,7 @@ from genblaze_core._utils import ALLOWED_FILE_ROOTS, resolve_ssrf
 from genblaze_core._version import __version__
 from genblaze_core.exceptions import StorageError
 from genblaze_core.storage.base import KeyStrategy
+from genblaze_core.storage.config import _DEFAULT_MULTIPART_THRESHOLD
 from genblaze_core.storage.key_builder import KeyBuilder
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ _CHUNK_SIZE = 256 * 1024
 # disk round-trip that 1 MB files otherwise paid (images, audio, short clips).
 # Peak memory per worker is bounded by this; 4 workers × 16 MB = 64 MB worst
 # case, which is fine for anything larger than a tight Lambda.
-_SPOOL_THRESHOLD = 16 * 1024 * 1024  # 16 MB — matches the multipart threshold
+_SPOOL_THRESHOLD = _DEFAULT_MULTIPART_THRESHOLD
 
 # Default max download size. Generous enough for long-form generated video
 # (multi-minute 1080p from Sora / Veo can approach 2 GB) while still
