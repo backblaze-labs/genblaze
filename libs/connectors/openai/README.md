@@ -67,6 +67,8 @@ run, manifest = (
 )
 ```
 
+`base_url` is keyword-only and must be `https://`, or `http://` on a loopback
+host, with no credentials, query or fragment: the API key is sent to it.
 Valid `seconds` and `size` values depend on the server's model. The Sora
 size/seconds checks apply only to `sora-*` slugs.
 

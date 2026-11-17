@@ -430,3 +430,63 @@ def test_base_url_forwarded_to_sdk():
         fake_openai.OpenAI.reset_mock()
         SoraProvider(api_key="k")._get_client()
         assert "base_url" not in fake_openai.OpenAI.call_args.kwargs
+
+
+def test_existing_positional_args_keep_their_meaning():
+    """``base_url`` is keyword-only, so ``SoraProvider(key, 5.0, 60.0)`` still
+    binds ``http_timeout`` instead of silently becoming a base URL."""
+    from genblaze_openai import SoraProvider
+
+    provider = SoraProvider("k", 2.0, 45.0)
+    assert provider.poll_interval == 2.0
+    assert provider._http_timeout == 45.0
+    assert provider._base_url is None
+
+
+def test_base_url_is_keyword_only():
+    import inspect
+
+    from genblaze_openai import SoraProvider
+
+    param = inspect.signature(SoraProvider.__init__).parameters["base_url"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://videos.example.com/v1",
+        "https://videos.example.com:8443/v1/",
+        "http://localhost:8091/v1",
+        "http://127.0.0.1:8091/v1",
+        "http://[::1]:8091/v1",
+    ],
+)
+def test_base_url_accepts_https_and_loopback_http(url):
+    from genblaze_openai import SoraProvider
+
+    assert SoraProvider(api_key="k", base_url=url)._base_url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://videos.example.com/v1",  # plain http off-box would send the key in clear
+        "http://10.0.0.5/v1",
+        "ftp://videos.example.com/v1",
+        "https:///v1",
+        "https://user:pass@videos.example.com/v1",
+        "https://videos.example.com/v1?key=x",
+        "https://videos.example.com/v1#frag",
+        "https://videos.example.com:0/v1",
+        "https://videos.example.com:99999/v1",
+        "",
+    ],
+)
+def test_base_url_rejects_unsafe_values(url):
+    """The API key (or ``OPENAI_API_KEY``) is sent to ``base_url``, so only
+    https, or http on loopback, is allowed, with no embedded credentials."""
+    from genblaze_openai import SoraProvider
+
+    with pytest.raises(ValueError, match="base_url"):
+        SoraProvider(api_key="k", base_url=url)

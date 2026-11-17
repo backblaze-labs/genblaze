@@ -152,6 +152,41 @@ _OPENAI_SORA_FAMILY = ModelFamily(
 
 _FALLBACK = ModelSpec(model_id="*", modality=Modality.VIDEO)
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _validate_base_url(base_url: str) -> None:
+    """Reject a ``base_url`` that could leak the API key.
+
+    The openai SDK sends the key (or ``OPENAI_API_KEY``) to whatever host this
+    names, so require ``https://``, allowing plain ``http://`` only on loopback
+    for local servers. Credentials, query and fragment are rejected; a path
+    such as ``/v1`` is allowed because compatible servers mount the API there.
+    """
+    parsed = urlparse(base_url)
+    try:
+        port = parsed.port
+    except ValueError:  # non-numeric or out of range
+        port = -1
+    secure = parsed.scheme == "https" or (
+        parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS
+    )
+    if (
+        not secure
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or "?" in base_url
+        or "#" in base_url
+        or port in (-1, 0)
+    ):
+        raise ValueError(
+            "base_url must be https:// (or http:// on localhost) with no credentials, "
+            f"query or fragment, got {base_url!r}"
+        )
+
 
 class SoraProvider(BaseProvider):
     """Provider adapter for OpenAI Sora video generation.
@@ -160,14 +195,16 @@ class SoraProvider(BaseProvider):
 
     Args:
         api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        base_url: Optional base URL of an OpenAI-compatible Videos API server
-            (for example ``http://localhost:8091/v1``). Defaults to the
-            openai SDK default (``OPENAI_BASE_URL`` or api.openai.com). When
-            set, model discovery accepts every slug the server lists, not
-            only ``sora-*``.
         poll_interval: Seconds between status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 60).
         output_dir: Directory for output files (default system temp).
+        base_url: Keyword-only. Base URL of an OpenAI-compatible Videos API
+            server (for example ``http://localhost:8091/v1``). Must be
+            ``https://``, or ``http://`` on a loopback host, with no
+            credentials, query or fragment, since the API key is sent there.
+            Defaults to the openai SDK default (``OPENAI_BASE_URL`` or
+            api.openai.com). When set, model discovery accepts every slug the
+            server lists, not only ``sora-*``.
         models: Optional custom ``ModelRegistry`` — overrides the class default.
         retry_policy: Optional retry policy override.
         probe_cache_ttl: Per-instance probe-cache TTL (no-op for NATIVE
@@ -192,15 +229,17 @@ class SoraProvider(BaseProvider):
         self,
         api_key: str | None = None,
         poll_interval: float = 5.0,
-        base_url: str | None = None,
         http_timeout: float = 60.0,
         output_dir: str | Path | None = None,
         *,
+        base_url: str | None = None,
         models: ModelRegistry | None = None,
         retry_policy: RetryPolicy | None = None,
         probe_cache_ttl: float | None = None,
         probe_cache_max_entries: int | None = None,
     ):
+        if base_url is not None:
+            _validate_base_url(base_url)
         super().__init__(
             models=models,
             retry_policy=retry_policy,
