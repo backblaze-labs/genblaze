@@ -6,13 +6,9 @@ Synchronous API: client.models.generate_images() returns images directly.
 pattern-keyed ``google-imagen`` family (``^imagen-``) instead of a
 hardcoded slug list. Liveness comes from ``google_models_get_probe``
 (``client.models.get(model=slug)``), so dead slugs surface at preflight
-rather than mid-call. ``models.get`` only proves catalog membership, not
-account entitlement: imagen-4.0-* are catalog-listed but 404 "no longer
-available to new users" for new keys (issue #206). Rather than spend a
-billable ``:predict`` call to probe entitlement, ``validate_model``
-re-grades those known-gated slugs to ``OK_PROVISIONAL``. If your account
-has no Imagen access, see ``GeminiImageProvider`` for the Gemini-native
-image line instead.
+rather than mid-call. imagen-4.0-* are entitlement-gated in a way the probe
+can't see; ``ImagenProvider.validate_model`` explains how that's handled.
+If your account has no Imagen access, use ``GeminiImageProvider``.
 
 **Pricing**: per-image-by-model rates were dropped in 0.3.0. See
 ``docs/reference/pricing-recipes.md`` for the canonical Imagen
@@ -59,9 +55,7 @@ class ImagenProvider(GoogleClientMixin, SyncProvider):
 
     Models match the ``google-imagen`` family (``^imagen-``). Current
     examples: ``imagen-4.0-generate-001``, ``imagen-4.0-fast-generate-001``
-    — catalog-listed, but entitlement-gated for accounts without Imagen
-    access (new Gemini API keys as of 2026-07; ``validate_model`` re-grades
-    these to ``OK_PROVISIONAL``).
+    (entitlement-gated; see ``validate_model``).
 
     Imagen returns image bytes directly (synchronous, not operation-based).
     Output is saved to files; use ObjectStorageSink for cloud upload.
@@ -126,18 +120,20 @@ class ImagenProvider(GoogleClientMixin, SyncProvider):
 
     @staticmethod
     def _is_entitlement_gated(model_id: str) -> bool:
-        """True for imagen slugs known to be catalog-listed but not callable
-        on a new key. ``imagen-4.0-*`` return 200 from ``models.get`` but 404
-        "no longer available to new users" on the ``:predict`` call for keys
-        created after the imagen 3.0->4.0 migration — an account-entitlement
-        gate ``models.get`` can't see (#206)."""
+        """True for the known entitlement-gated slugs; see ``validate_model``."""
         return model_id.startswith("imagen-4.0")
 
     def validate_model(self, model_id: str, *, refresh: bool = False) -> ValidationResult:
         """Re-grade a probe-confirmed-LIVE result to ``OK_PROVISIONAL`` for
         entitlement-gated imagen slugs.
 
-        ``models.get`` only proves catalog membership. Confirming entitlement
+        Canonical explanation of the Imagen entitlement gate (#206); other
+        sites in this package cross-reference it rather than restate it.
+
+        ``imagen-4.0-*`` return 200 from ``models.get`` but 404 "no longer
+        available to new users" on ``:predict`` for keys created after the
+        imagen 3.0->4.0 migration. ``models.get`` only proves catalog
+        membership, not account entitlement. Confirming entitlement
         at preflight would require a real (billable) ``:predict`` call, so
         rather than spend money probing — or hard-failing with ``DEAD`` on any
         404, which would lock out an entitled user on an unrelated error — the

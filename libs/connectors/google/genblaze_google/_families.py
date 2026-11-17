@@ -158,12 +158,9 @@ GOOGLE_IMAGEN_FAMILY = ModelFamily(
         param_constraints=(_check_imagen_aspect_ratio,),
     ),
     description="Google Imagen family — text-to-image generation.",
-    # imagen-3.0-* left the catalog (404 on models.get -> DEAD) and were
-    # replaced by imagen-4.0-*, which IS catalog-listed but entitlement-gated
-    # for new keys. The plain catalog-membership probe can't see that gate
-    # (models.get returns 200); ImagenProvider.validate_model re-grades the
-    # known-gated imagen-4.0-* slugs to OK_PROVISIONAL rather than a billable
-    # :predict probe or a hard DEAD — see issue #206.
+    # imagen-3.0-* left the catalog; imagen-4.0-* replaced them but are
+    # entitlement-gated in a way this probe can't see. See
+    # ImagenProvider.validate_model (#206).
     example_slugs=(
         "imagen-4.0-generate-001",
         "imagen-4.0-fast-generate-001",
