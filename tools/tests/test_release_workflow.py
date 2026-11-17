@@ -81,7 +81,7 @@ def test_upload_guards_do_not_trust_candidate_mode_outputs():
         assert "inputs.dry_run == false" in step["if"]
     npm = jobs["publish-npm"]
     publish = next(s for s in npm["steps"] if s.get("name") == "Publish to npm")
-    assert "inputs.dry_run" in publish["if"]
+    assert publish["if"] == "steps.npm_check.outputs.skip != 'true'"
     assert "npm publish --access public --dry-run --provenance" in publish["run"]
     assert "inputs.dry_run" in publish["env"]["DRY_RUN"]
     assert "outputs.dry_run" not in npm["environment"]
@@ -194,7 +194,7 @@ def test_mode_expressions_pin_production_and_preview_outcomes():
     assert npm["environment"] == "${{ " + preview + " && 'npm-dryrun' || 'npm' }}"
     step = next(s for s in npm["steps"] if s.get("name") == "Publish to npm")
     assert step["env"]["DRY_RUN"] == "${{ " + preview + " && 'true' || 'false' }}"
-    assert step["if"] == "(" + preview + ") || steps.npm_check.outputs.skip != 'true'"
+    assert step["if"] == "steps.npm_check.outputs.skip != 'true'"
     gate = next(s for s in jobs["validate-version"]["steps"] if s.get("id") == "read")
     assert gate.get("if") is None
     assert gate.get("continue-on-error", False) is False
