@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Added** `SoraProvider(base_url=...)` (keyword-only) to target
   OpenAI-compatible Videos API servers now that OpenAI's own Videos API is
   shut down. `base_url` must be `https://`, or `http://` on a loopback host,
-  with no credentials, query or fragment. With `base_url` set, model
-  discovery keeps every slug the server lists instead of only `sora-*`.
+  with no credentials, query or fragment. Discovery now queries the server
+  the SDK actually calls (`base_url`, then `OPENAI_BASE_URL`) and keeps every
+  slug a compatible server lists; only api.openai.com is filtered to
+  `sora-*` (#319).
 
 ## [0.8.2] - 2026-11-16
 

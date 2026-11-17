@@ -55,9 +55,13 @@ OpenAI shut down Sora 2 and the Videos API on 2026-09-24. `SoraProvider` still
 speaks that API, so it can drive any server that implements
 `POST /videos`, `GET /videos/{id}` and `GET /videos/{id}/content`
 (self-hosted vLLM-Omni or SGLang diffusion, or a hosted gateway). Pass
-`base_url`; discovery then accepts the slugs the server lists in `/models`:
+`base_url`, including the prefix the server mounts those routes under (usually
+`/v1`); discovery then accepts the slugs the server lists in `/models`:
 
 ```python
+from genblaze_core import Modality, Pipeline
+from genblaze_openai import SoraProvider
+
 provider = SoraProvider(api_key="...", base_url="http://localhost:8091/v1")
 run, manifest = (
     Pipeline("compatible-video")
@@ -68,7 +72,10 @@ run, manifest = (
 ```
 
 `base_url` is keyword-only and must be `https://`, or `http://` on a loopback
-host, with no credentials, query or fragment: the API key is sent to it.
+host (localhost, 127.0.0.0/8 or ::1), with no credentials, query or fragment:
+the API key is sent to it. Setting the openai SDK's `OPENAI_BASE_URL`
+environment variable instead also works, but that value is used as-is and not
+validated.
 Valid `seconds` and `size` values depend on the server's model. The Sora
 size/seconds checks apply only to `sora-*` slugs.
 

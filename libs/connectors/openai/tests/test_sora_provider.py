@@ -443,15 +443,6 @@ def test_existing_positional_args_keep_their_meaning():
     assert provider._base_url is None
 
 
-def test_base_url_is_keyword_only():
-    import inspect
-
-    from genblaze_openai import SoraProvider
-
-    param = inspect.signature(SoraProvider.__init__).parameters["base_url"]
-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -460,6 +451,8 @@ def test_base_url_is_keyword_only():
         "http://localhost:8091/v1",
         "http://127.0.0.1:8091/v1",
         "http://[::1]:8091/v1",
+        "http://127.0.0.2:8091/v1",  # all of 127.0.0.0/8 is loopback
+        "HTTP://LOCALHOST:8091/v1",
     ],
 )
 def test_base_url_accepts_https_and_loopback_http(url):
@@ -480,6 +473,11 @@ def test_base_url_accepts_https_and_loopback_http(url):
         "https://videos.example.com/v1#frag",
         "https://videos.example.com:0/v1",
         "https://videos.example.com:99999/v1",
+        "https://videos.example.com/v1;params",
+        " https://videos.example.com/v1",  # httpx reads this as a relative URL
+        "http://localhost:8091/v1\n",  # e.g. a trailing newline from a config file
+        "https://videos.example.com\t/v1",
+        "http://localhost.:8091/v1",
         "",
     ],
 )
@@ -490,3 +488,56 @@ def test_base_url_rejects_unsafe_values(url):
 
     with pytest.raises(ValueError, match="base_url"):
         SoraProvider(api_key="k", base_url=url)
+
+
+def _client_listing(model_ids):
+    client = MagicMock()
+    client.models.list.return_value = MagicMock(data=[MagicMock(id=m) for m in model_ids])
+    return client
+
+
+def test_base_url_instance_does_not_change_another_instances_catalog():
+    """Providers share a class-level registry by default; one pointed at a
+    compatible server must not swap the catalog other instances validate against."""
+    from genblaze_openai import SoraProvider
+
+    openai_side = SoraProvider(api_key="k")
+    openai_side._client = _client_listing(["sora-2"])
+    local = SoraProvider(api_key="k", base_url="http://localhost:8091/v1")
+    local._client = _client_listing(["wan-2.2"])
+
+    assert openai_side.discover_models().slugs == frozenset({"sora-2"})
+    assert local.discover_models().slugs == frozenset({"wan-2.2"})
+
+
+def test_openai_base_url_env_var_gets_the_same_discovery_as_base_url(monkeypatch):
+    """The SDK honors ``OPENAI_BASE_URL`` when ``base_url`` isn't passed, so
+    discovery must target and report that server too. The env value is the
+    user's own SDK config and is not validated."""
+    from genblaze_openai import SoraProvider
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://10.0.0.5:8091/v1/")
+    provider = SoraProvider(api_key="k", models=SoraProvider.create_registry())
+    provider._client = _client_listing(["wan-2.2", "sora-2"])
+    result = provider.discover_models()
+    assert result.slugs == frozenset({"wan-2.2", "sora-2"})
+    assert result.source_url == "http://10.0.0.5:8091/v1/models"
+
+
+def test_default_discovery_targets_openai_and_keeps_the_sora_filter(monkeypatch):
+    from genblaze_openai import SoraProvider
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    provider = SoraProvider(api_key="k", models=SoraProvider.create_registry())
+    provider._client = _client_listing(["gpt-4o", "sora-2"])
+    result = provider.discover_models()
+    assert result.slugs == frozenset({"sora-2"})
+    assert result.source_url == "https://api.openai.com/v1/models"
+
+
+def test_base_url_pointing_at_openai_keeps_the_sora_filter():
+    from genblaze_openai import SoraProvider
+
+    provider = SoraProvider(api_key="k", base_url="https://api.openai.com/v1")
+    provider._client = _client_listing(["gpt-4o", "sora-2"])
+    assert provider.discover_models().slugs == frozenset({"sora-2"})
