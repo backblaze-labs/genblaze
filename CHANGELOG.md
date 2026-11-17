@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their pool size, timeouts, retries and multipart sizes from
   `StorageConfig`'s defaults instead of separate copies. Values are unchanged
   (#42).
+- **Fixed** computed costs no longer carry float noise such as
+  `0.30000000000000004`. `cost_usd` from registry pricing, `estimate_cost()` and
+  `AgentResult.total_cost_usd` are rounded to 9 decimal places, which keeps
+  sub-micro-dollar per-token rates. Already-persisted manifests and Parquet rows
+  are unchanged, and canonical hashes are unaffected (#63).
+- **Fixed** `ModelRegistry` now updates its warning-dedup sets under its lock,
+  so a concurrent `fork()` can't copy a set mid-change (a real race on
+  free-threaded Python). The docstring now states the exact concurrency
+  guarantee (#58).
 
 ### genblaze-openai
 
