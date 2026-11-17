@@ -53,6 +53,15 @@ def test_flac_embed_and_extract(tmp_flac: Path, sample_manifest: Manifest) -> No
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_flac_embed_and_extract_accept_str_path(tmp_flac: Path, sample_manifest: Manifest) -> None:
+    handler = FlacHandler()
+    embed_result = handler.embed(str(tmp_flac), sample_manifest)
+    assert isinstance(embed_result, Path)
+
+    extracted = handler.extract(str(tmp_flac))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
 def test_flac_verify(tmp_flac: Path, sample_manifest: Manifest) -> None:
     handler = FlacHandler()
     handler.embed(tmp_flac, sample_manifest)

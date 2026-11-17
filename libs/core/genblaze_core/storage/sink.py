@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as _futures_wait
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -190,6 +191,44 @@ def _tenant_index_segment(tenant_id: str) -> str:
     return quote(tenant_id, safe="")
 
 
+def _validate_allowed_roots(roots: Sequence[str | Path] | None) -> list[Path] | None:
+    """Resolve and sanity-check caller-supplied local-file allowlist roots.
+
+    Forwarded to :class:`~genblaze_core.storage.transfer.AssetTransfer`, whose
+    ``_read_local_file`` re-resolves each root (following symlinks) before
+    comparing it against the requested path's own resolved form — so a root
+    validated here keeps the exact same symlink-escape protection whether the
+    escape attempt comes from inside the root or from a relative traversal in
+    ``asset.url``. Failing loudly at construction (rather than at first
+    transfer) surfaces a typo'd or overly broad root immediately instead of
+    as a confusing access-denied — or, worse, unintended access-granted —
+    deep inside a pipeline run.
+    """
+    if not roots:
+        return None
+    resolved: list[Path] = []
+    for root in roots:
+        candidate = Path(root).resolve()
+        if not candidate.is_dir():
+            raise SinkError(
+                f"allowed_roots entry {root!r} does not resolve to an existing "
+                f"directory (resolved: {candidate})"
+            )
+        if str(candidate) == candidate.anchor:
+            # e.g. "/" on POSIX or "C:\\" on Windows. Allowing the filesystem
+            # root defeats the entire allowlist — every absolute path is
+            # "relative to" it — so this is always a misconfiguration, never
+            # an intentional opt-in. Never widen the allowlist implicitly;
+            # require the caller to scope it to a specific directory.
+            raise SinkError(
+                f"allowed_roots entry {root!r} resolves to the filesystem root "
+                f"({candidate}), which would allow uploading any local file. "
+                "Scope allowed_roots to a specific directory."
+            )
+        resolved.append(candidate)
+    return resolved
+
+
 def _manifest_references_asset(manifest: Manifest, asset_id: str) -> bool:
     for step in manifest.run.steps:
         if any(asset.asset_id == asset_id for asset in step.assets):
@@ -324,6 +363,7 @@ class ObjectStorageSink(BaseSink):
         allow_unverified_manifest_reads: bool | None = None,
         strict_manifest_reads: bool | None = None,
         legacy_index_tenant_id: str | None = None,
+        allowed_roots: Sequence[str | Path] | None = None,
     ):
         """Construct an ObjectStorageSink.
 
@@ -373,12 +413,32 @@ class ObjectStorageSink(BaseSink):
             legacy_index_tenant_id: Explicit tenant bucket used only when
                 migrating legacy flat reverse-index entries whose manifest has
                 no ``run.tenant_id``. Use ``"legacy"`` to opt in.
+            allowed_roots: Additional local directories permitted for
+                ``file://`` asset transfer, on top of the built-in temp-dir
+                allowlist. Opt-in only — the default stays temp-only, so a
+                sink never widens what's readable without the caller
+                explicitly listing a root. Set this to a provider's
+                ``output_dir`` (e.g. ``ElevenLabsTTSProvider(output_dir=...)``)
+                when that provider writes generated assets outside the
+                system temp directory. Each root is resolved (symlinks
+                followed, relative paths resolved against the process's
+                current working directory) and must already exist as a
+                directory; the filesystem root itself is rejected as too
+                broad. See
+                :func:`genblaze_core.storage.transfer.AssetTransfer` for the
+                underlying allowlist check. Treat this as a fixed,
+                operator-controlled deployment setting — never derive it
+                from per-request, per-tenant, or otherwise caller-controlled
+                input, which would let an untrusted caller widen the
+                allowlist to arbitrary local paths.
 
         Raises:
             URLPolicyError: ``asset_url_policy=URLPolicy.PRESIGNED`` (rejected;
                 manifests cannot carry credential-bearing URLs). Or
                 ``asset_url_policy=URLPolicy.PUBLIC`` when the backend has
                 no ``public_url_base`` set.
+            SinkError: An ``allowed_roots`` entry does not resolve to an
+                existing directory, or resolves to the filesystem root.
         """
         self._validate_asset_url_policy(backend, asset_url_policy)
         self._asset_url_policy = asset_url_policy
@@ -396,6 +456,7 @@ class ObjectStorageSink(BaseSink):
             legacy_index_tenant_id,
             message="legacy_index_tenant_id must be a string",
         )
+        self._allowed_roots = _validate_allowed_roots(allowed_roots)
         self._backend = backend
         self._prefix = prefix
         self._key_strategy = key_strategy
@@ -410,6 +471,7 @@ class ObjectStorageSink(BaseSink):
             prefix=asset_kb.prefix,
             key_strategy=key_strategy,
             pipelined_transfer=pipelined_transfer,
+            allowed_roots=self._allowed_roots,
         )
         self._parquet_sink = parquet_sink
         self._max_upload_workers = max_upload_workers

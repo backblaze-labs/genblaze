@@ -10,6 +10,7 @@ for large images.
 from __future__ import annotations
 
 import json
+import os
 import struct
 import zlib
 from collections.abc import Iterator
@@ -148,9 +149,17 @@ def _extract_text(data: bytes) -> str:
 class PngHandler(BaseMediaHandler):
     """Embed and extract manifests in PNG iTXt metadata chunks."""
 
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
-        output = output or source
+    def embed(
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
+    ) -> Path:
         try:
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
+            source = Path(source)
+            output = Path(output) if output else source
             data = read_media_bytes(source)
             new_data = _embed_chunks(data, manifest.to_canonical_json())
             with atomic_write(output) as tmp:
@@ -161,8 +170,9 @@ class PngHandler(BaseMediaHandler):
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed manifest in PNG: {exc}") from exc
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         try:
+            # read_media_bytes() already coerces — no need to double it here.
             data = read_media_bytes(source)
             text = _extract_text(data)
             return parse_manifest(json.loads(text))

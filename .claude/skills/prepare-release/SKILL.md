@@ -54,7 +54,11 @@ and prose):
 
 1. Cut `CHANGELOG.md`'s `[Unreleased]` section to `## [X.Y.Z] - <today>`, pasting in
    the `### Released package versions` list the script just emitted. Fold in any
-   entries that were mis-sectioned under the wrong package heading.
+   entries that were mis-sectioned under the wrong package heading. Carry forward
+   the "wave vs. package version" paragraph from the most recent prior wave (see
+   the current `## [0.7.0]` entry) — the GitHub Release body is generated verbatim
+   from this section, so a dropped paragraph here silently disappears from the
+   published release notes too.
 2. Leave `[Unreleased]` empty — `changelog-gate` in `release.yml` fails the release
    otherwise.
 3. **The tag name is `v` + that heading, exactly** (e.g. heading `## [0.5.0]` → tag
@@ -125,7 +129,15 @@ not run them for you:
 ```bash
 git tag -a v<wave> -m "Release <wave>"
 git push origin v<wave>
-gh release create v<wave> --title "<wave>" --notes-from-tag
+# --notes-from-tag would just repeat the tag message ("Release <wave>") as the
+# body. Paste the actual CHANGELOG slice per RELEASING.md instead — extract it
+# and pass it via --notes-file:
+awk '/^## \[<wave>\]/{p=1} p&&/^## \[/&&!/^## \[<wave>\]/{exit} p' CHANGELOG.md > /tmp/release-notes-<wave>.md
+if test -s /tmp/release-notes-<wave>.md; then
+  gh release create v<wave> --title "<wave>" --notes-file /tmp/release-notes-<wave>.md
+else
+  echo "empty slice — check the wave heading; release NOT created" >&2
+fi
 # after the Release workflow finishes publishing:
 make post-release VERSION=<umbrella-version>
 ```

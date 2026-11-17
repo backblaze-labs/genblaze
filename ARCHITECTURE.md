@@ -6,7 +6,7 @@
 - **genblaze-core** (`libs/core/`) — Python SDK: Pydantic v2 models, builders, canonical JSON, media handlers, sinks, pipeline, agents, observability
 - **Provider adapters** (`libs/connectors/`) — One package per provider:
   - `genblaze-openai` — OpenAI (Sora video; DALL-E + gpt-image family image generation & edits; TTS audio)
-  - `genblaze-google` — Google GenAI (Veo video, Imagen image)
+  - `genblaze-google` — Google GenAI (Veo video, Imagen / Gemini-native image)
   - `genblaze-runway` — Runway (Gen-4 Turbo video)
   - `genblaze-luma` — Luma (Dream Machine video)
   - `genblaze-decart` — Decart (Lucy video/image)
@@ -18,6 +18,8 @@
   - `genblaze-gmicloud` — GMICloud (video, image, audio via request queue)
   - `genblaze-nvidia` — NVIDIA NIM / build.nvidia.com (video, image, audio, chat)
   - `genblaze-assemblyai` — AssemblyAI (speech-to-text / transcription → TEXT output)
+  - `genblaze-atlascloudai` — Atlas Cloud (asynchronous image and video generation)
+  - `genblaze-falai` — fal.ai (image, video, audio via the fal queue API)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
@@ -59,7 +61,7 @@
 ## External Services
 
 - **OpenAI API** — Sora video; DALL-E + gpt-image family (`gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) image generation and edits; TTS audio (`genblaze-openai`)
-- **Google GenAI API** — Veo video, Imagen image (`genblaze-google`)
+- **Google GenAI API** — Veo video, Imagen / Gemini-native image (`genblaze-google`)
 - **Runway API** — Gen-4 Turbo video (`genblaze-runway`)
 - **Luma API** — Dream Machine video (`genblaze-luma`)
 - **Decart API** — Lucy video/image (`genblaze-decart`)
@@ -70,6 +72,8 @@
 - **Hume AI API** — Octave TTS (`genblaze-hume`)
 - **GMICloud API** — Video, image, audio via request queue (`genblaze-gmicloud`)
 - **AssemblyAI API** — Speech-to-text / transcription → TEXT transcript (`genblaze-assemblyai`)
+- **Atlas Cloud API** — Asynchronous image and video generation (`genblaze-atlascloudai`)
+- **fal.ai queue API** — Image, video, and audio generation across the fal catalog (`genblaze-falai`)
 - All accessed via lazy SDK imports — no runtime dependency unless the connector is used
 
 ## Trust Boundaries

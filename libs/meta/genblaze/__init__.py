@@ -47,7 +47,18 @@ def __getattr__(name: str):
         raise AttributeError(f"module 'genblaze' has no attribute {name!r}")
     try:
         val = getattr(_core, name)
-    except AttributeError:
+    except AttributeError as exc:
+        # Issue #197: genblaze_core.__getattr__ (#165) re-raises a missing
+        # optional dependency as AttributeError chained via __cause__ to an
+        # OptionalDependencyError carrying the actionable install hint (e.g.
+        # `pip install "genblaze[parquet]"`). Without unwrapping __cause__
+        # here, that hint was lost and replaced with the generic "unknown
+        # attribute / provider adapter" message below — which actively
+        # misdirects since the name IS known, just its extra isn't installed.
+        from genblaze_core._optional import OptionalDependencyError
+
+        if isinstance(exc.__cause__, OptionalDependencyError):
+            raise AttributeError(str(exc.__cause__)) from exc.__cause__
         raise AttributeError(
             f"module 'genblaze' has no attribute {name!r}. "
             f"For nested submodules (e.g. genblaze_core.media) import from "

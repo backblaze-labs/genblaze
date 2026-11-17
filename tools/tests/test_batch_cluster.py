@@ -15,9 +15,11 @@ _TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
+import pytest  # noqa: E402
 from batch_cluster import (  # noqa: E402
     DEFER_AWAITING_PREREQ,
     DEFER_CYCLE,
+    DEFER_NEEDS_HUMAN,
     DEFER_OVERSIZED,
     Config,
     build_plan,
@@ -151,6 +153,33 @@ def test_oversized_component_serializes_head_and_defers_tail():
     assert any("size cap" in n for n in plan.notes)
 
 
+def test_oversized_component_runs_a_prerequisite_before_its_dependent():
+    """Regression: #70 depends on #75 inside one oversized component. The head
+    that runs alone must be #75, never the lower-numbered dependent #70."""
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [
+            _issue(70, [shared], deps=[75]),
+            _issue(71, [shared]),
+            _issue(72, [shared]),
+            _issue(75, [shared]),
+        ],
+        Config(max_issues=3),
+    )
+    runnable = [c for c in plan.clusters if c.executable]
+    assert [c.issues for c in runnable] == [[71]]
+    assert 70 not in runnable[0].issues
+
+
+def test_oversized_component_with_only_dependent_members_defers_all():
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [_issue(n, [shared], deps=[n % 4 + 1]) for n in (1, 2, 3, 4)],
+        Config(max_issues=3),
+    )
+    assert not any(c.executable for c in plan.clusters)
+
+
 def test_oversized_by_file_count():
     files_a = [f"libs/core/f{i}.py" for i in range(20)]
     plan = build_plan(
@@ -193,8 +222,135 @@ def test_dep_on_out_of_scope_issue_is_ignored():
     assert not plan.clusters[0].blocked_by
 
 
+def test_dep_on_skipped_in_flight_issue_blocks_dependent():
+    # #1 depends on #2, which the scout skipped because it already has an open
+    # PR/branch (still in flight, not merged). #2 never becomes a cluster, but
+    # #1 must stay blocked rather than being cleared to run against
+    # origin/main before #2 lands.
+    plan = build_plan(
+        [
+            _issue(1, ["libs/core/a.py"], deps=[2]),
+            _issue(2, ["libs/core/b.py"], skip="has open PR"),
+        ]
+    )
+    assert len(plan.clusters) == 1
+    cluster = plan.clusters[0]
+    assert cluster.issues == [1]
+    assert not cluster.executable
+    assert cluster.defer_reason == DEFER_AWAITING_PREREQ
+    assert cluster.blocked_by == ["issue-2"]
+    assert plan.skipped == [{"number": 2, "reason": "has open PR"}]
+
+
+def test_skipped_in_flight_issue_blocks_multiple_downstream_clusters():
+    # #1 and #2 don't share files (separate clusters) but both depend on the
+    # same skipped-in-flight #3 -- neither should be cleared to run.
+    plan = build_plan(
+        [
+            _issue(1, ["libs/core/a.py"], deps=[3]),
+            _issue(2, ["libs/core/b.py"], deps=[3]),
+            _issue(3, ["libs/core/c.py"], skip="has open PR"),
+        ]
+    )
+    clusters = _by_id(plan)
+    assert clusters["issues-1"].blocked_by == ["issue-3"]
+    assert clusters["issues-2"].blocked_by == ["issue-3"]
+    assert not clusters["issues-1"].executable
+    assert not clusters["issues-2"].executable
+
+
+def test_component_members_depend_on_different_skipped_issues():
+    # #1 and #2 share a file (one cluster) but each depends on a different
+    # skipped-in-flight prerequisite -- both must accumulate as blockers.
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [
+            _issue(1, [shared], deps=[3]),
+            _issue(2, [shared], deps=[4]),
+            _issue(3, ["libs/core/c.py"], skip="has open PR"),
+            _issue(4, ["libs/core/d.py"], skip="has open PR"),
+        ]
+    )
+    assert len(plan.clusters) == 1
+    cluster = plan.clusters[0]
+    assert cluster.issues == [1, 2]
+    assert cluster.blocked_by == ["issue-3", "issue-4"]
+    assert not cluster.executable
+
+
+def test_oversized_component_blocked_by_skipped_dep_on_tail_member():
+    # The skipped-in-flight dependency is on #3, a tail member, not the head
+    # (#1). blocked_by is computed once per component and shared by both the
+    # serialized head and deferred tail, so the head must also stay blocked --
+    # it would otherwise wrongly run now just because it isn't the member
+    # holding the dependency.
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [
+            _issue(1, [shared, "libs/core/f1.py"]),
+            _issue(2, [shared, "libs/core/f2.py"]),
+            _issue(3, [shared, "libs/core/f3.py"], deps=[99]),
+            _issue(4, [shared, "libs/core/f4.py"]),
+            _issue(99, ["libs/core/f99.py"], skip="has open PR"),
+        ],
+        Config(max_issues=3),
+    )
+    clusters = _by_id(plan)
+    head = clusters["issues-1"]
+    tail = clusters["issues-2-3-4"]
+    assert not head.executable
+    assert head.blocked_by == ["issue-99"]
+    assert head.defer_reason == DEFER_AWAITING_PREREQ
+    assert not tail.executable
+    assert tail.defer_reason == DEFER_OVERSIZED
+
+
+def test_blocked_by_mixes_cluster_and_issue_level_blockers():
+    # #1 depends on both an active prerequisite (#2, its own cluster) and a
+    # skipped-in-flight one (#3) -- blocked_by must carry both blocker shapes.
+    plan = build_plan(
+        [
+            _issue(1, ["libs/core/a.py"], deps=[2, 3]),
+            _issue(2, ["libs/core/b.py"]),
+            _issue(3, ["libs/core/c.py"], skip="has open PR"),
+        ]
+    )
+    cluster = _by_id(plan)["issues-1"]
+    assert not cluster.executable
+    assert cluster.blocked_by == ["issues-2", "issue-3"]
+
+
 def test_plan_serializes_to_json_dict():
     plan = build_plan([_issue(1, ["libs/core/a.py"])])
     d = plan.to_dict()
     assert set(d) == {"clusters", "skipped", "notes"}
     assert d["clusters"][0]["id"] == "issues-1"
+
+
+# ---------------------------------------------------------------------------
+# Clusters a batch executor is not allowed to finish
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "libs/core/pyproject.toml",  # dependency file (also a hot file)
+        "AGENTS.md",  # agent instructions (also a hot file)
+        ".github/workflows/ci.yml",
+        "CHANGELOG.md",
+    ],
+)
+def test_cluster_needing_guarded_files_is_deferred_for_a_human(path):
+    plan = build_plan([_issue(25, ["libs/core/genblaze_core/x.py", path]), _issue(26, ["a.py"])])
+    clusters = _by_id(plan)
+    assert not clusters["issues-25"].executable
+    assert clusters["issues-25"].defer_reason == DEFER_NEEDS_HUMAN
+    assert clusters["issues-26"].executable
+    assert any("#25" in n and path in n for n in plan.notes)
+
+
+def test_cluster_with_no_scoped_files_gets_a_note():
+    plan = build_plan([_issue(254, ["README.md"])])
+    assert _by_id(plan)["issues-254"].executable
+    assert any("#254" in n and "no files of its own" in n for n in plan.notes)

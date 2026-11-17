@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
@@ -19,6 +20,7 @@ from genblaze_core._utils import (
     normalize_tenant_id,
     sanitize_error,
     utc_now,
+    validate_path_component,
 )
 from genblaze_core.builders.run_builder import RunBuilder
 from genblaze_core.exceptions import (
@@ -38,7 +40,7 @@ from genblaze_core.models.enums import (
 )
 from genblaze_core.models.manifest import Manifest
 from genblaze_core.models.prompt_template import PromptTemplate
-from genblaze_core.models.step import Step
+from genblaze_core.models.step import Step, StepAttempt
 from genblaze_core.observability.events import (
     PipelineCompletedEvent,
     PipelineFailedEvent,
@@ -101,6 +103,13 @@ def _coerce_str(value: str | bytes | bytearray) -> str:
     return value if isinstance(value, str) else value.decode("utf-8", errors="replace")
 
 
+def _describe_step_provider_arg(value: Any) -> str:
+    """Describe a bad ``step(provider=...)`` argument for the TypeError message (#224)."""
+    if inspect.isfunction(value) or inspect.ismethod(value):
+        return f"function {value.__name__!r}"
+    return f"{type(value).__name__} instance"
+
+
 def _resolve_raise_on_failure(
     raise_on_failure: bool | None,
     *,
@@ -136,6 +145,39 @@ def _resolve_raise_on_failure(
 # batch_run()'s historical default — sync batch execution has always been
 # sequential regardless of max_concurrency (see _resolve_batch_max_concurrency).
 _BATCH_MAX_CONCURRENCY_DEFAULT = 5
+
+
+# Pipeline options that live on the constructor or a builder method rather than
+# on a run entry point. Passing one to run()/arun()/batch_run()/abatch_run()
+# raised a bare "unexpected keyword argument", which names neither the right
+# call site nor the right spelling — the only way out was to read the source.
+# Each value completes the sentence "... — <hint>."
+#
+# Names that ARE real parameters of a given entry point never reach this table:
+# Python binds them normally, so they are never collected into **unsupported.
+# That is why ``max_concurrency`` can be listed here — it only fires on run(),
+# the one entry point that does not take it.
+_MISPLACED_RUN_KWARGS: dict[str, str] = {
+    "cache": "caching is configured on the pipeline: .cache(StepCache(...))",
+    "config": "per-run config is set with .config({...})",
+    "metadata": (
+        "run metadata is set with .metadata(key=value); for step metadata use "
+        ".step(..., metadata={...})"
+    ),
+    "tracer": "a tracer is attached with .tracer(...) or Pipeline(..., tracer=...)",
+    "preflight": ("preflight is toggled with .preflight(False) or Pipeline(..., preflight=False)"),
+    "tenant_id": "the tenant is set on the pipeline: Pipeline(..., tenant_id=...)",
+    "project_id": "the project is set on the pipeline: Pipeline(..., project_id=...)",
+    "chain": "chaining is set on the pipeline: Pipeline(..., chain=...)",
+    "moderation": "moderation is set on the pipeline: Pipeline(..., moderation=...)",
+    "structured_log": (
+        "structured logging is set on the pipeline: Pipeline(..., structured_log=...)"
+    ),
+    "max_concurrency": (
+        "run() is sequential; use arun()/abatch_run() for concurrency, or set the "
+        "default with Pipeline(..., max_concurrency=...)"
+    ),
+}
 
 
 def _resolve_batch_max_concurrency(max_concurrency: int | None) -> int:
@@ -387,6 +429,9 @@ class Pipeline(Runnable[None, PipelineResult]):
     ):
         self._name = name
         self._tenant_id = normalize_tenant_id(tenant_id)
+        # Fail here, not in _build_run after every provider call has been paid for.
+        if self._tenant_id:
+            validate_path_component(self._tenant_id, field="tenant_id", allow_colon=True)
         self._project_id = project_id
         self._parent_run_id: str | None = None
         self._steps: list[_PipelineStep] = []
@@ -509,6 +554,23 @@ class Pipeline(Runnable[None, PipelineResult]):
                 "RunnableConfig does not support 'tenant_id'. Set the tenant on "
                 "the pipeline instead: Pipeline(..., tenant_id=...) (see #68)."
             )
+
+    @staticmethod
+    def _reject_unsupported_run_kwargs(method: str, kwargs: dict[str, Any]) -> None:
+        """Reject unknown keyword arguments to a run entry point.
+
+        Python's own error for a misplaced option (``run(cache=...)``) is
+        ``got an unexpected keyword argument 'cache'`` — correct but a dead
+        end, because pipeline configuration is split across the constructor,
+        the fluent builders, and the run entry points with no rule the caller
+        can guess. For the options in ``_MISPLACED_RUN_KWARGS`` the error now
+        names the call site that does work; everything else keeps CPython's
+        exact wording so existing expectations still match.
+        """
+        for name in kwargs:
+            base = f"Pipeline.{method}() got an unexpected keyword argument {name!r}"
+            hint = _MISPLACED_RUN_KWARGS.get(name)
+            raise TypeError(f"{base} — {hint}." if hint else base)
 
     def config(self, cfg: RunnableConfig) -> Pipeline:
         self._reject_config_tenant(cfg)
@@ -681,6 +743,22 @@ class Pipeline(Runnable[None, PipelineResult]):
             **extra_params: Provider-specific parameters as top-level kwargs
                 (e.g. ``duration=10``). Merged with ``params=`` above.
         """
+        # Fail immediately, at the mistake, rather than at run() with a
+        # bare AttributeError on an internal method name (#224). The most
+        # common miss is passing a standalone chat()/achat() function —
+        # those are convenience helpers, not BaseProvider instances.
+        # Deliberately TypeError, not GenblazeError like the sibling guards
+        # below (reserved-param names, metadata collisions) — this rejects
+        # the argument's *type*, not a value/usage mistake within an
+        # otherwise-valid call, matching the same distinction already drawn
+        # in canonical/_normalize.py and models/chat.py.
+        if not isinstance(provider, BaseProvider):
+            raise TypeError(
+                f"step() expected a BaseProvider; got {_describe_step_provider_arg(provider)}. "
+                "chat()/achat() are convenience helpers, not pipeline steps — wrap them in "
+                "a SyncProvider to record them as a step (see docs/features/llm-calls.md)."
+            )
+
         # Explicit params= dict and **extra_params kwargs both feed
         # Step.params; kwargs win on key collision since they're the more
         # specific, call-site-local override.
@@ -1221,6 +1299,26 @@ class Pipeline(Runnable[None, PipelineResult]):
         }
         return step
 
+    @staticmethod
+    def _should_fallback(ps: _PipelineStep, result: Step) -> bool:
+        """Fallback models are tried only when the primary failed with MODEL_ERROR."""
+        return (
+            result.status == StepStatus.FAILED
+            and result.error_code == ProviderErrorCode.MODEL_ERROR
+            and bool(ps.fallback_models)
+        )
+
+    def _build_fallback_step(self, ps: _PipelineStep, step: Step, fb_model: str) -> Step:
+        """Build the Step for one fallback attempt — shared by sync/async paths."""
+        logger.info("Falling back from %s to %s", step.model, fb_model)
+        fb_step = self._build_step(ps, step.inputs or None)
+        fb_step.model = fb_model
+        # .update(), not reassignment — fb_step.metadata already carries caller
+        # metadata= and the _input_from graph key from _build_step(); replacing
+        # it wholesale would silently drop both on a fallback retry (#53).
+        fb_step.metadata.update({"fallback_from": step.model, "fallback_model": fb_model})
+        return fb_step
+
     def _try_fallback_models(
         self,
         ps: _PipelineStep,
@@ -1231,34 +1329,23 @@ class Pipeline(Runnable[None, PipelineResult]):
     ) -> tuple[Step, Step]:
         """Try fallback models on MODEL_ERROR. Returns (result, cache_key_step).
 
-        Used by the sync _execute_step path. The async path inlines its own
-        version because ainvoke requires await.
+        Every superseded failure is kept on the returned Step's
+        ``failed_attempts`` so its error, timing, upstream id and cost stay in
+        the manifest (#239). Used by the sync _execute_step path; the async
+        path mirrors this loop because ainvoke requires await.
         """
+        if not self._should_fallback(ps, result):
+            return result, step
         cache_key_step = step
-        if (
-            result.status == StepStatus.FAILED
-            and result.error_code == ProviderErrorCode.MODEL_ERROR
-            and ps.fallback_models
-        ):
-            original_model = step.model
-            for fb_model in ps.fallback_models:
-                logger.info("Falling back from %s to %s", step.model, fb_model)
-                fb_step = self._build_step(ps, step.inputs or None)
-                fb_step.model = fb_model
-                # .update(), not reassignment — fb_step.metadata already
-                # carries caller metadata= and the _input_from graph key from
-                # _build_step(); replacing it wholesale would silently drop
-                # both on a fallback retry (#53).
-                fb_step.metadata.update(
-                    {
-                        "fallback_from": original_model,
-                        "fallback_model": fb_model,
-                    }
-                )
-                result = invoke_fn(fb_step, config)
-                if result.status == StepStatus.SUCCEEDED:
-                    cache_key_step = fb_step
-                    break
+        attempts: list[StepAttempt] = []
+        for fb_model in ps.fallback_models:
+            attempts.append(StepAttempt.from_step(result))
+            fb_step = self._build_fallback_step(ps, step, fb_model)
+            result = invoke_fn(fb_step, config)
+            if result.status == StepStatus.SUCCEEDED:
+                cache_key_step = fb_step
+                break
+        result.failed_attempts = attempts
         return result, cache_key_step
 
     def _post_step(
@@ -1286,7 +1373,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                 return self._apply_moderation_failure(result, mod_result, "post")
 
         if self._cache is not None and result.status == StepStatus.SUCCEEDED:
-            self._cache.put(cache_key_step, result, tenant_id=self._tenant_id)
+            # The failed-attempt ledger belongs to this run: a later cache hit
+            # never re-ran (or re-paid for) those attempts.
+            cached = result
+            if result.failed_attempts:
+                cached = result.model_copy(update={"failed_attempts": []})
+            self._cache.put(cache_key_step, cached, tenant_id=self._tenant_id)
 
         if result.status == StepStatus.FAILED and result.error:
             # Providers usually sanitize their own failures. This pipeline
@@ -1392,30 +1484,18 @@ class Pipeline(Runnable[None, PipelineResult]):
         try:
             result = await ps.provider.ainvoke(step, config)
 
-            # Fallback loop (inlined because ainvoke requires await)
+            # Mirrors _try_fallback_models (inlined because ainvoke requires await).
             cache_key_step = step
-            if (
-                result.status == StepStatus.FAILED
-                and result.error_code == ProviderErrorCode.MODEL_ERROR
-                and ps.fallback_models
-            ):
-                original_model = step.model
+            if self._should_fallback(ps, result):
+                attempts: list[StepAttempt] = []
                 for fb_model in ps.fallback_models:
-                    logger.info("Falling back from %s to %s", step.model, fb_model)
-                    fb_step = self._build_step(ps, step.inputs or None)
-                    fb_step.model = fb_model
-                    # .update(), not reassignment — see the sync fallback
-                    # path (_try_fallback_models) for why (#53).
-                    fb_step.metadata.update(
-                        {
-                            "fallback_from": original_model,
-                            "fallback_model": fb_model,
-                        }
-                    )
+                    attempts.append(StepAttempt.from_step(result))
+                    fb_step = self._build_fallback_step(ps, step, fb_model)
                     result = await ps.provider.ainvoke(fb_step, config)
                     if result.status == StepStatus.SUCCEEDED:
                         cache_key_step = fb_step
                         break
+                result.failed_attempts = attempts
 
             # Async post-moderation — run before shared _post_step
             if (
@@ -1890,6 +1970,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
         _owns_sink: bool = True,
+        **unsupported: Any,
     ) -> PipelineResult:
         """Execute all steps synchronously and return a PipelineResult.
 
@@ -1922,9 +2003,13 @@ class Pipeline(Runnable[None, PipelineResult]):
                 synchronous side-effect alongside (e.g., metrics).
 
         Raises:
+            TypeError: If an unknown keyword argument is passed. Options that
+                belong on the constructor or a builder (``cache``, ``config``,
+                ``tracer``, …) get an error naming the call site that works.
             GenblazeError: If no steps have been added to the pipeline.
             GenblazeError: If pipeline_timeout is exceeded.
         """
+        self._reject_unsupported_run_kwargs("run", unsupported)
         if not self._steps:
             msg = "Pipeline has no steps. Add steps with .step() before calling .run()."
             raise GenblazeError(msg)
@@ -2121,6 +2206,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_retry: Any = None,
         _config_override: RunnableConfig | None = None,
         _owns_sink: bool = True,
+        **unsupported: Any,
     ) -> PipelineResult:
         """Execute steps asynchronously and return a PipelineResult.
 
@@ -2151,9 +2237,12 @@ class Pipeline(Runnable[None, PipelineResult]):
                 :meth:`astream` consumers.
 
         Raises:
+            TypeError: If an unknown keyword argument is passed — see
+                :meth:`run`.
             GenblazeError: If no steps have been added to the pipeline.
             GenblazeError: If pipeline_timeout is exceeded.
         """
+        self._reject_unsupported_run_kwargs("arun", unsupported)
         if not self._steps:
             msg = "Pipeline has no steps. Add steps with .step() before calling .arun()."
             raise GenblazeError(msg)
@@ -2683,6 +2772,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_progress: Any = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
+        **unsupported: Any,
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (sync).
 
@@ -2714,9 +2804,14 @@ class Pipeline(Runnable[None, PipelineResult]):
             on_progress: Optional callback fired during provider poll loops.
             pipeline_timeout: End-to-end timeout in seconds for each pipeline.
             on_step_complete: Optional callback fired after each step completes.
+
+        Raises:
+            TypeError: If an unknown keyword argument is passed — see
+                :meth:`run`.
         """
         import copy
 
+        self._reject_unsupported_run_kwargs("batch_run", unsupported)
         self._validate_batch_args(prompts, items)
         # Validates >= 1 and warns once if the caller explicitly asked for
         # concurrency this sequential sync path can't provide (#83). The
@@ -2795,6 +2890,7 @@ class Pipeline(Runnable[None, PipelineResult]):
         on_progress: Any = None,
         pipeline_timeout: float | None = None,
         on_step_complete: Any = None,
+        **unsupported: Any,
     ) -> list[PipelineResult]:
         """Execute the pipeline independently for each batch entry (async).
 
@@ -2802,12 +2898,15 @@ class Pipeline(Runnable[None, PipelineResult]):
         must be supplied; see :meth:`batch_run` for the semantic difference.
 
         Raises:
+            TypeError: If an unknown keyword argument is passed — see
+                :meth:`run`.
             GenblazeError: If ``max_concurrency < 1`` — a non-positive value
                 would otherwise build a ``asyncio.Semaphore`` no task can ever
                 acquire, hanging forever instead of failing fast (issue #83).
         """
         import copy
 
+        self._reject_unsupported_run_kwargs("abatch_run", unsupported)
         self._validate_batch_args(prompts, items)
         if max_concurrency < 1:
             raise GenblazeError(f"max_concurrency must be >= 1, got {max_concurrency}")

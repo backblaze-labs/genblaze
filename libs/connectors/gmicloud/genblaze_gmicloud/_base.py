@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -16,6 +19,9 @@ from genblaze_core.models.enums import ProviderErrorCode
 from genblaze_core.providers import (
     DiscoverySupport,
     LiveProbeResult,
+    ValidationOutcome,
+    ValidationResult,
+    ValidationSource,
 )
 from genblaze_core.providers.base import BaseProvider, SubmitResult
 from genblaze_core.providers.model_registry import ModelRegistry
@@ -27,6 +33,37 @@ from ._errors import map_gmicloud_error
 _DEFAULT_BASE_URL = "https://console.gmicloud.ai/api/v1/ie/requestqueue/apikey"
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "cancelled"})
+
+# Default connector-side ceiling on how long a single request may sit in a
+# non-terminal state before we fail it (#262). GMICloud occasionally leaves a
+# request wedged in ``queued``/``processing`` indefinitely; the core poll loop's
+# only backstop is the caller-supplied ``config["timeout"]``, which long video
+# runs set very large (or leave unset), so a wedged job would otherwise poll
+# forever. 30 minutes is well beyond any real Seedance/Veo/Kling completion.
+_DEFAULT_MAX_POLL_SECONDS = 1800.0
+
+# Upper bound on the ``_poll_first_seen`` deadline map so a long-lived provider
+# that accumulates many wedged/abandoned request ids can't grow it unbounded.
+# Entries are removed on a terminal poll; this FIFO cap bounds the pathological
+# case where jobs only ever fail via the ceiling. 512 dwarfs any realistic
+# in-flight fan-out.
+_POLL_FIRST_SEEN_MAX = 512
+
+
+def _is_inference_endpoint_shaped(url: str) -> bool:
+    """True when ``url`` has the shape of GMICloud's chat/inference endpoint.
+
+    GMICloud's OpenAI-compatible inference endpoint (``chat.py``'s own
+    default, ``https://api.gmi-serving.com/v1``) always terminates at
+    ``/v1``. The request-queue endpoint this module talks to always has
+    additional path segments after ``/v1`` (e.g. the default
+    ``.../v1/ie/requestqueue/apikey``, or a VPC proxy's own routing
+    suffix). A bare ``/v1`` ending is therefore a reliable signal that
+    ``GMI_BASE_URL``/``base_url=`` was pointed at the wrong surface — see
+    the guard in ``GMICloudBase.__init__`` (#193).
+    """
+    return url.rstrip("/").endswith("/v1")
+
 
 # Legacy flat outcome keys — kept as defensive fallbacks while GMICloud
 # completes its migration to the ``media_urls`` envelope.
@@ -113,6 +150,14 @@ class GMICloudBase(BaseProvider):
         poll_interval: Seconds between request status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 120).
             Ignored when ``http_client`` is supplied.
+        max_poll_seconds: Connector-side ceiling on how long a single request
+            may remain in a non-terminal (``queued``/``processing``) state
+            before ``poll()`` fails it with a retryable ``TIMEOUT`` error
+            (default 1800). This is independent of — and a hard backstop for —
+            the caller-supplied per-step ``timeout``: a wedged upstream job
+            terminates here even when the caller set a very large or unbounded
+            ``timeout`` for long video (#262). Pass ``None`` to disable and rely
+            solely on the caller's ``timeout``.
         base_url: Override the request-queue base URL. Falls back to the
             GMI_BASE_URL env var, then the canonical production URL.
             Ignored when ``http_client`` is supplied.
@@ -128,6 +173,21 @@ class GMICloudBase(BaseProvider):
     family-attached empty-payload probe is the authoritative liveness
     signal — see ``_invoke_family_probe`` below and ``_probe.py``."""
 
+    _entitlement_gated_slugs: frozenset[str] = frozenset()
+    """Slugs known to require GMICloud account entitlement beyond a valid
+    API key (e.g. gated third-party models). The empty-payload probe (see
+    ``_probe.py``) can only prove a slug exists in GMICloud's catalog —
+    GMICloud validates payload *shape* before account *entitlement*, so
+    the probe's deliberately-empty payload never reaches the entitlement
+    gate a real, well-formed submit hits. That lets ``validate_model()``
+    report a slug as fully confirmed (``OK_AUTHORITATIVE``) when in fact
+    submitting it 404s with "you do not have access" — preflight passes,
+    the job dies at dispatch (#193). ``validate_model()`` below re-grades
+    these specific, known-gated slugs to ``OK_PROVISIONAL`` so the result
+    is honest about what the probe actually proved. Populated per-modality
+    by subclasses; empty by default (most slugs are not gated, and this
+    connector has no way to discover which are without a curated list)."""
+
     def _invoke_family_probe(self, probe: Any, model_id: str) -> LiveProbeResult:
         """Forward the family probe with this provider's ``httpx.Client``."""
         return probe(model_id, http=self._get_http_client())
@@ -138,6 +198,7 @@ class GMICloudBase(BaseProvider):
         *,
         poll_interval: float = 5.0,
         http_timeout: float = 120.0,
+        max_poll_seconds: float | None = _DEFAULT_MAX_POLL_SECONDS,
         base_url: str | None = None,
         http_client: httpx.Client | None = None,
         models: ModelRegistry | None = None,
@@ -156,9 +217,38 @@ class GMICloudBase(BaseProvider):
             probe_cache_max_entries=probe_cache_max_entries,
         )
         self.poll_interval = poll_interval
+        self._max_poll_seconds = max_poll_seconds
+        # Monotonic timestamp of the first poll seen for each in-flight
+        # prediction id, used to enforce ``max_poll_seconds``. Guarded by a
+        # lock because one provider instance is shared across a fan-out
+        # (sync ThreadPoolExecutor, or async via ``asyncio.to_thread``) — same
+        # concurrency contract as the core poll-result cache.
+        self._poll_first_seen: dict[str, float] = {}
+        self._poll_first_seen_lock = threading.Lock()
         self._api_key: str | None = api_key or os.environ.get("GMI_API_KEY")
         self._http_timeout = http_timeout
         self._base_url: str = base_url or os.environ.get("GMI_BASE_URL") or _DEFAULT_BASE_URL
+        # GMI_BASE_URL reads as a general GMICloud override but is only ever
+        # consulted here (chat() has its own hardcoded default and never
+        # reads it) — pointing it at the serving/inference URL silently
+        # 404s every image/video/audio model while chat() keeps working
+        # (#193). Skip the check when http_client is supplied: base_url is
+        # documented as ignored in that path, and raising here would
+        # contradict that contract for callers who inject their own client.
+        if http_client is None and _is_inference_endpoint_shaped(self._base_url):
+            source = "base_url=" if base_url else "GMI_BASE_URL"
+            raise ProviderError(
+                f"{source} {self._base_url!r} looks like GMICloud's chat/inference "
+                f"endpoint (path ends in '/v1'), not the request-queue endpoint "
+                f"{type(self).__name__} talks to. GMI_BASE_URL is read only by the "
+                "video/image/audio queue providers — chat() has its own default "
+                "and never consults it — so this would silently 404 every submit "
+                "on this provider while chat() keeps working fine. Leave it unset "
+                f"to use the default ({_DEFAULT_BASE_URL!r}), or point it at a "
+                "queue proxy/VPC URL with the queue's own path suffix "
+                "(e.g. '.../v1/ie/requestqueue/apikey').",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
         self._http_client: httpx.Client | None = http_client
         self._owns_client: bool = http_client is None
 
@@ -208,8 +298,48 @@ class GMICloudBase(BaseProvider):
         request_id = data.get("request_id") or data.get("id")
         return SubmitResult(prediction_id=request_id, estimated_seconds=30.0)
 
+    def _clear_poll_deadline(self, key: str) -> None:
+        """Forget the stall deadline for a request that has finished polling."""
+        with self._poll_first_seen_lock:
+            self._poll_first_seen.pop(key, None)
+
+    def _enforce_poll_deadline(self, key: str, status: str) -> None:
+        """Fail a request that has sat in a non-terminal state past the ceiling.
+
+        Records the first time this ``key`` was seen (once), then raises a
+        retryable ``TIMEOUT`` ``ProviderError`` once elapsed exceeds
+        ``max_poll_seconds``. The deadline entry is deliberately *not* cleared
+        on breach: the core poll phase retries ``poll()`` a bounded number of
+        times, and each retry must see the deadline still blown so the retry
+        budget drains and the step terminates as ``FAILED`` — clearing here
+        would reset the clock and re-hang. Cleared instead on a terminal poll
+        (see ``poll``), with a FIFO cap as the backstop for abandoned ids.
+        """
+        if self._max_poll_seconds is None:
+            return
+        now = time.monotonic()
+        with self._poll_first_seen_lock:
+            first = self._poll_first_seen.get(key)
+            if first is None:
+                # FIFO-evict the oldest entry before inserting a new one so a
+                # long-lived provider can't grow the map without bound.
+                if len(self._poll_first_seen) >= _POLL_FIRST_SEEN_MAX:
+                    oldest = next(iter(self._poll_first_seen))
+                    self._poll_first_seen.pop(oldest, None)
+                self._poll_first_seen[key] = first = now
+        elapsed = now - first
+        if elapsed >= self._max_poll_seconds:
+            raise ProviderError(
+                f"GMICloud request {key} stalled in status {status!r} after "
+                f"{elapsed:.0f}s (max_poll_seconds={self._max_poll_seconds:.0f}); "
+                "upstream never reached a terminal state. Failing the step so it "
+                "can be retried.",
+                error_code=ProviderErrorCode.TIMEOUT,
+            )
+
     def poll(self, prediction_id: Any, config: RunnableConfig | None = None) -> bool:
         """Check if a GMICloud request is complete (shared across all modalities)."""
+        key = str(prediction_id)
         try:
             client = self._get_http_client()
             resp = client.get(f"/requests/{prediction_id}")
@@ -221,9 +351,15 @@ class GMICloudBase(BaseProvider):
                     retry_after=retry_after_from_response(resp),
                 )
             detail = resp.json()
-            if detail.get("status", "") in _TERMINAL_STATUSES:
+            status = detail.get("status", "")
+            if status in _TERMINAL_STATUSES:
+                self._clear_poll_deadline(key)
                 self._cache_poll_result(prediction_id, detail)
                 return True
+            # Non-terminal: enforce the connector-side stall ceiling so a wedged
+            # upstream job can't poll forever when the caller set a large or
+            # unbounded per-step timeout (#262).
+            self._enforce_poll_deadline(key, status)
             return False
         except ProviderError:
             raise
@@ -297,6 +433,49 @@ class GMICloudBase(BaseProvider):
                 "Verify the key at https://console.gmicloud.ai/.",
                 error_code=ProviderErrorCode.AUTH_FAILURE,
             )
+
+    def validate_model(self, model_id: str, *, refresh: bool = False) -> ValidationResult:
+        """Re-grade probe-confirmed-LIVE to provisional for known-gated slugs.
+
+        ``BaseProvider.validate_model()`` treats a family probe's LIVE
+        verdict as authoritative proof a slug is callable. For GMICloud
+        that's only true some of the time — see ``_entitlement_gated_slugs``
+        above for why the probe can't see entitlement failures. This
+        override leaves the base behavior untouched for every other slug
+        (the common case, and what the existing probe test suite pins) and
+        only re-grades the specific slugs this connector knows are gated,
+        so ``result.outcome`` genuinely distinguishes "known slug" from
+        "confirmed callable with this key" instead of collapsing both into
+        ``OK_AUTHORITATIVE``.
+        """
+        result = super().validate_model(model_id, refresh=refresh)
+        if (
+            result.outcome is ValidationOutcome.OK_AUTHORITATIVE
+            and result.source is ValidationSource.PROBE
+            and self._is_entitlement_gated(model_id)
+        ):
+            return replace(
+                result,
+                outcome=ValidationOutcome.OK_PROVISIONAL,
+                detail=(
+                    f"known slug ({model_id!r} exists in GMICloud's catalog per "
+                    "the request-queue probe) but NOT confirmed callable with "
+                    "this API key — this slug is known to require additional "
+                    "GMICloud account entitlement, and the probe can't detect "
+                    "that (payload shape is validated before entitlement, so "
+                    "the empty-payload probe never reaches the same check a "
+                    "real submit hits). A real submit may still 404 with 'you "
+                    "do not have access'; verify catalog access at "
+                    "https://console.gmicloud.ai/ before running. See #193."
+                ),
+            )
+        return result
+
+    def _is_entitlement_gated(self, model_id: str) -> bool:
+        """True if ``model_id`` (raw or wire-canonical) is a known-gated slug."""
+        if model_id in self._entitlement_gated_slugs:
+            return True
+        return self._models.resolve_canonical(model_id) in self._entitlement_gated_slugs
 
     # ``probe_model()`` is intentionally not overridden here. As of
     # genblaze-core 0.3.0 the legacy ``probe_model`` adapter on

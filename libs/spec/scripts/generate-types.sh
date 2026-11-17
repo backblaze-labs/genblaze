@@ -5,18 +5,29 @@
 # a byte-identical file. CI uses `make ts-types-check` (see Makefile) to
 # fail PRs that change schemas without regenerating.
 #
-# Phase 1a: no package.json in the repo; npx fetches a pinned version.
+# Supply-chain hardening (see #270): the generator is installed from the
+# committed libs/spec/package-lock.json via `npm ci`, not fetched live via
+# `npx --yes`, so the transitive dependency tree is pinned and reproducible.
+# --ignore-scripts disables preinstall/postinstall lifecycle hooks — the
+# generator needs none to run — closing off the hook-based attack class used
+# by the Aug 2026 keyv/cacheable npm supply-chain campaign.
 set -euo pipefail
 
-JSTT_VERSION="15.0.4"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-MANIFEST_SCHEMA_DIR="$REPO_ROOT/libs/spec/schemas/manifest/v1"
-EVENT_SCHEMA_DIR="$REPO_ROOT/libs/spec/schemas/events/v1"
-OUT_FILE="$REPO_ROOT/libs/spec/ts/genblaze.d.ts"
+SPEC_DIR="$REPO_ROOT/libs/spec"
+MANIFEST_SCHEMA_DIR="$SPEC_DIR/schemas/manifest/v1"
+EVENT_SCHEMA_DIR="$SPEC_DIR/schemas/events/v1"
+OUT_FILE="$SPEC_DIR/ts/genblaze.d.ts"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 mkdir -p "$(dirname "$OUT_FILE")"
+
+# Install the pinned toolchain from the lockfile. `npm ci` fails on any
+# lockfile/manifest drift instead of silently re-resolving versions.
+npm ci --ignore-scripts --prefix "$SPEC_DIR"
+
+JSTT_BIN="$SPEC_DIR/node_modules/.bin/json2ts"
 
 # Shared CLI flags: --declareExternallyReferenced walks $refs so a single
 # input file emits the full connected tree. --unknownAny prefers `unknown`
@@ -34,20 +45,20 @@ EVENT_FLAGS=(
 )
 
 # Manifest pulls Run → Step → Asset via $ref. Emits the full tree.
-npx --yes "json-schema-to-typescript@$JSTT_VERSION" \
+"$JSTT_BIN" \
   -i "$MANIFEST_SCHEMA_DIR/manifest.schema.json" \
   "${MANIFEST_FLAGS[@]}" \
   > "$TMP_DIR/manifest.ts"
 
 # EmbedPolicy is standalone (not referenced by Manifest).
-npx --yes "json-schema-to-typescript@$JSTT_VERSION" \
+"$JSTT_BIN" \
   -i "$MANIFEST_SCHEMA_DIR/policy.schema.json" \
   "${MANIFEST_FLAGS[@]}" \
   > "$TMP_DIR/policy.ts"
 
 # StreamEvent is the discriminated-union root — pulls every variant via
 # oneOf/$ref. One invocation emits the full event tree.
-npx --yes "json-schema-to-typescript@$JSTT_VERSION" \
+"$JSTT_BIN" \
   -i "$EVENT_SCHEMA_DIR/stream-event.schema.json" \
   "${EVENT_FLAGS[@]}" \
   > "$TMP_DIR/events.ts"

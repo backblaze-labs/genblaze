@@ -297,3 +297,16 @@ class StorageError(GenblazeError):
 
 class WebhookError(GenblazeError):
     """Raised when a webhook delivery fails."""
+
+
+class SigningError(GenblazeError):
+    """Raised when Mode 2 manifest signing/verification setup is invalid.
+
+    Covers non-cryptographic failures — malformed key material, wrong-length
+    seeds, unset environment variables — surfaced before a
+    :class:`~genblaze_core.signing.base.SignatureBundle` is even produced.
+    Missing ``cryptography`` itself raises
+    :class:`~genblaze_core._optional.OptionalDependencyError` instead, and a
+    bad signature at verify time returns ``False`` rather than raising — see
+    ``genblaze_core.signing.verify_signature_bundle``.
+    """

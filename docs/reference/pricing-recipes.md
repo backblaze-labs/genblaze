@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-06-15 -->
+<!-- last_verified: 2026-07-28 -->
 # Pricing recipes
 
 > **Not maintained.** Prices in this document are snapshots taken at the
@@ -471,10 +471,11 @@ different shapes:
 - **TTS**: per-1M-character rates per model tier.
 - **Image** (DALL-E + GPT-Image): tiered by `(quality, size)` per model.
 - **Sora** (video): per-second rates that depend on `(model, size,
-  seconds)`. **The SDK ships no Sora pricing recipe** because a flat
-  table can't represent the per-second formula honestly. Use the
-  upstream's published rate calculator until OpenAI exposes a stable
-  programmatic shape.
+  seconds)`. A flat per-video dict would misreport cost by 10x+ across
+  duration/size combinations, so the SDK ships no *rate*, only the
+  *shape* of the strategy — see the "OpenAI Sora" section below, which
+  leaves the actual per-second rate for you to fill in after verifying
+  it at the upstream's published rate calculator.
 
 ```python
 from genblaze_core.providers import per_input_chars, tiered
@@ -534,8 +535,12 @@ OPENAI_GPT_IMAGE_1_RATES: dict = {
     ("high", "auto"): 0.167,
 }
 
-# (Similar tables exist for gpt-image-1.5 and gpt-image-1-mini.
-# gpt-image-2 has no published rates — leave its pricing None.)
+# gpt-image-1.5, gpt-image-1-mini, and gpt-image-2 have no rate table here —
+# unlike gpt-image-1 there is no widely-verified per-(quality, size) price
+# list for these variants as of the snapshot date above. Don't guess at
+# numbers for them; build a table the same shape as OPENAI_GPT_IMAGE_1_RATES
+# once you've confirmed current rates at openai.com/pricing, then register
+# it the same way.
 
 dalle = DalleProvider(api_key="...")
 dalle.models.register_pricing("dall-e-3", tiered(OPENAI_DALLE3_RATES, key=image_key))
@@ -546,6 +551,63 @@ dalle.models.register_pricing("gpt-image-1", tiered(OPENAI_GPT_IMAGE_1_RATES, ke
 OpenAI ships new image variants frequently. Match the family pattern
 via `provider.discover_models(refresh=True)`, then extend the rate
 tables and register the new slugs as they appear in the catalog.
+
+---
+
+## OpenAI Sora
+
+Sora bills per `(model, size, seconds)`. See the module docstring in
+`genblaze_openai/provider.py` for why the SDK ships no *rate* for it: a
+flat per-video dict would misreport cost by 10x+ across duration/size
+combinations, and no widely-verified per-second rate table was available
+to source at the snapshot date above. The strategy *shape* below is
+still useful — register it once you've confirmed your own rate.
+
+The strategy reads `seconds` directly off `step.params`, falling back to
+the canonical `duration` alias — `estimate_cost()` never runs
+`normalize_params()`, so a caller passing `{"duration": 8}` (the alias
+`generate()` would otherwise rewrite to `seconds` at submit time) must
+still resolve to a cost, the same dual-key guard the Veo recipe below
+uses for `duration_seconds` / `duration`. Sora assets also carry no
+probed `duration` metadata (see `fetch_output()`), so
+`ctx.output_duration_s` won't work here the way it does for Stability
+Audio, which probes the rendered file's real duration (see that section
+below).
+
+```python
+from genblaze_core.providers import PricingContext, PricingStrategy
+from genblaze_openai import SoraProvider
+
+
+def per_second(rate: float) -> PricingStrategy:
+    def _strategy(ctx: PricingContext) -> float | None:
+        seconds = ctx.step.params.get("seconds") or ctx.step.params.get("duration")
+        if seconds is None:
+            return None
+        try:
+            seconds_f = float(seconds)
+        except (TypeError, ValueError):
+            return None
+        # Reject non-finite/negative values (NaN, inf, malformed input)
+        # rather than silently returning a poisoned or negative cost.
+        if seconds_f < 0 or seconds_f != seconds_f or seconds_f in (float("inf"), float("-inf")):
+            return None
+        return seconds_f * rate
+
+    return _strategy
+
+
+sora = SoraProvider(api_key="...")
+# RATE is intentionally left undefined — confirm current per-second pricing
+# at openai.com/pricing before registering; a guessed number here is worse
+# than the default `None`, since a budget gate reading a silently-wrong
+# concrete cost is harder to catch than one reading "unknown." Sora rates
+# also vary by both model tier and requested size, which this simplified
+# strategy ignores (extend the key to (model, size) via `tiered()` if you
+# need per-size accuracy).
+sora.models.register_pricing("sora-2", per_second(RATE))  # RATE: confirm first
+sora.models.register_pricing("sora-2-pro", per_second(RATE))  # RATE: confirm first
+```
 
 ---
 

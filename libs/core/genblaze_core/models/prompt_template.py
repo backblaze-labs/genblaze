@@ -12,6 +12,11 @@ _FORMATTER = string.Formatter()
 _MAX_TEMPLATE_FIELD_LENGTH = 256
 _SUPPORTED_CONVERSIONS = {None, "a", "r", "s"}
 
+# Sentinel for "no positional template given", so that an explicit
+# ``PromptTemplate(None)`` still reaches Pydantic and fails with the normal
+# "Input should be a valid string" error rather than "Field required".
+_UNSET: Any = object()
+
 
 def _unescape_literal_braces(text: str) -> str:
     """Collapse doubled braces in literal template segments."""
@@ -151,14 +156,33 @@ class PromptTemplate(BaseModel):
     Literal text that starts like a field, such as ``{name: "cat"}``, must use
     doubled braces.
 
+    The template may be passed positionally or by keyword — both spellings
+    build the same model.
+
     Example::
 
+        tpl = PromptTemplate("A {animal} in {style} style")
         tpl = PromptTemplate(template="A {animal} in {style} style")
         tpl.render(animal="cat", style="watercolor")  # "A cat in watercolor style"
         tpl.variables  # {"animal", "style"}
     """
 
     template: str
+
+    def __init__(self, template: str = _UNSET, /, **data: Any) -> None:
+        """Accept the template positionally as well as by keyword.
+
+        ``BaseModel.__init__`` is keyword-only, so the positional spelling used
+        by the docs and by ``examples/batch_with_templates.py`` raised
+        ``TypeError: BaseModel.__init__() takes 1 positional argument but 2
+        were given``. Normalizing here keeps both forms working while leaving
+        validation, ``model_validate()``, and ``model_dump()`` untouched.
+        """
+        if template is not _UNSET:
+            if "template" in data:
+                raise TypeError("PromptTemplate() got multiple values for argument 'template'")
+            data["template"] = template
+        super().__init__(**data)
 
     @property
     def variables(self) -> set[str]:

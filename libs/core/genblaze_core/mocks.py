@@ -42,6 +42,14 @@ class MockProvider(SyncProvider):
         error_code: ProviderErrorCode to use when failing.
         error_message: Error message when failing.
         cost_usd: Cost to set on the step.
+        min_inputs: Minimum number of ``step.inputs`` required before
+            ``generate()`` will proceed. Default 0 preserves the historical
+            permissive behavior (any step, including one with no chain
+            inputs, generates canned assets). Set to 1+ to catch pipeline
+            steps that were built without the input media a real provider
+            would require (e.g. an image-to-video model called without
+            ``external_inputs=``) — opt-in, since flipping it on by default
+            would break existing test suites that don't attach inputs.
     """
 
     def __init__(
@@ -54,6 +62,7 @@ class MockProvider(SyncProvider):
         error_code: ProviderErrorCode = ProviderErrorCode.UNKNOWN,
         error_message: str = "Mock provider error",
         cost_usd: float | None = None,
+        min_inputs: int = 0,
     ) -> None:
         super().__init__()
         self.name = name  # type: ignore[assignment]
@@ -63,6 +72,7 @@ class MockProvider(SyncProvider):
         self.error_code = error_code
         self.error_message = error_message
         self._cost_usd = cost_usd
+        self.min_inputs = min_inputs
         # Track calls for test assertions
         self.call_count = 0
         self.received_steps: list[Step] = []
@@ -81,6 +91,15 @@ class MockProvider(SyncProvider):
         """Return canned assets or raise on demand."""
         self.call_count += 1
         self.received_steps.append(step)
+
+        if len(step.inputs) < self.min_inputs:
+            raise ProviderError(
+                f"Step has {len(step.inputs)} input(s), but this MockProvider "
+                f"requires at least {self.min_inputs} (min_inputs={self.min_inputs}). "
+                "Attach input media via Pipeline.step(..., external_inputs=[...]) "
+                "or lower min_inputs if this step is genuinely input-free.",
+                error_code=ProviderErrorCode.INVALID_INPUT,
+            )
 
         if self.latency > 0:
             time.sleep(self.latency)

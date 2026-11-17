@@ -27,6 +27,8 @@ CORE_IMPORTS = (
 # tools/tests/test_release_import_smoke.py fails when a new all-extra package
 # is added without a matching import smoke target.
 ALL_EXTRA_PACKAGE_IMPORTS = (
+    ("genblaze-atlascloudai", "genblaze_atlascloud"),
+    ("genblaze-falai", "genblaze_fal"),
     ("genblaze-gmicloud", "genblaze_gmicloud"),
     ("genblaze-openai", "genblaze_openai"),
     ("genblaze-google", "genblaze_google"),
@@ -37,7 +39,6 @@ ALL_EXTRA_PACKAGE_IMPORTS = (
     ("genblaze-elevenlabs", "genblaze_elevenlabs"),
     ("genblaze-stability-audio", "genblaze_stability_audio"),
     ("genblaze-lmnt", "genblaze_lmnt"),
-    ("genblaze-hume", "genblaze_hume"),
     ("genblaze-assemblyai", "genblaze_assemblyai"),
     ("genblaze-langsmith", "genblaze_langsmith"),
     ("genblaze-nvidia", "genblaze_nvidia"),
@@ -72,7 +73,7 @@ SENSITIVE_ENV_NAME_RE = re.compile(
     r"(?:"
     r"API|AUTH|AZURE|B2_|BACKBLAZE|CREDENTIAL|GCP|GITHUB|GOOGLE|KEY|NPM|OPENAI|"
     r"PASSWORD|PYPI|SECRET|TOKEN|TWINE|AWS|ANTHROPIC|ASSEMBLYAI|ELEVEN|GMI|"
-    r"HUME|LANGSMITH|LMNT|LUMA|NVIDIA|REPLICATE|RUNWAY|STABILITY"
+    r"ATLAS|FAL_|HUME|LANGSMITH|LMNT|LUMA|NVIDIA|REPLICATE|RUNWAY|STABILITY"
     r")",
     re.IGNORECASE,
 )

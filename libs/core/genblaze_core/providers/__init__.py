@@ -1,6 +1,18 @@
 """Provider interfaces and model-spec registry."""
 
 from genblaze_core._asset_url import strip_asset_url_credentials
+from genblaze_core._utils import local_file_url
+
+# Deterministic-provider ffmpeg helpers (#195): public here, implemented in the
+# private module so existing `_ffmpeg_utils` imports keep working.
+from genblaze_core.providers._ffmpeg_utils import (
+    FFMPEG_TIMEOUT,
+    get_output_path,
+    populate_file_asset_integrity,
+    resolve_ffmpeg,
+    resolve_input_path,
+    run_ffmpeg,
+)
 from genblaze_core.providers.base import (
     BaseProvider,
     ProviderCapabilities,
@@ -72,6 +84,7 @@ from genblaze_core.providers.retry import (
     MAX_RETRY_AFTER_SEC,
     PRE_RESPONSE_EXCEPTIONS,
     RetryPolicy,
+    call_with_rate_limit_retry,
     retry_after_from_response,
 )
 from genblaze_core.providers.spec import (
@@ -96,6 +109,7 @@ __all__ = [
     "DEFAULT_TTL_SECONDS",
     "EMPTY_REGISTRY",
     "FALLBACK_SPEC",
+    "FFMPEG_TIMEOUT",
     "MAX_PROVIDER_FAMILIES",
     "MAX_RETRY_AFTER_SEC",
     "MAX_USER_FAMILIES",
@@ -134,27 +148,34 @@ __all__ = [
     "bucketed_by_duration",
     "by_model_and_param",
     "by_param",
+    "call_with_rate_limit_retry",
     "chain_routers",
     "compute_cost",
     "discover_providers",
     "first_match",
+    "get_output_path",
     "implies",
     "instantiate_with_credential",
+    "local_file_url",
     "modality_defaults",
     "mutually_exclusive",
     "per_input_chars",
     "per_output_second",
     "per_response_metric",
     "per_unit",
+    "populate_file_asset_integrity",
     "register_modality_default",
     "required_one_of",
     "requires_together",
+    "resolve_ffmpeg",
+    "resolve_input_path",
     "retry_after_from_response",
     "route_audio",
     "route_by_media_type",
     "route_images",
     "route_keyframes",
     "route_video",
+    "run_ffmpeg",
     "tiered",
     "strip_asset_url_credentials",
     "validate_asset_url",

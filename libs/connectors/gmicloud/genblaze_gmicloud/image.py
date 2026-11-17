@@ -47,6 +47,13 @@ class GMICloudImageProvider(GMICloudBase):
 
     name = "gmicloud-image"
 
+    # seededit-3-0-i2i-250628 is a gated third-party model on GMICloud —
+    # the empty-payload probe returns LIVE (it exists in the catalog) but
+    # a real submit 404s "you do not have access" for accounts without
+    # extra entitlement. See ``GMICloudBase._entitlement_gated_slugs``
+    # and #193.
+    _entitlement_gated_slugs = frozenset({"seededit-3-0-i2i-250628"})
+
     @classmethod
     def create_registry(cls) -> ModelRegistry:
         return build_image_registry()

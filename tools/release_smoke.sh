@@ -50,11 +50,14 @@ PACKAGES=(
     "libs/connectors/elevenlabs"
     "libs/connectors/stability-audio"
     "libs/connectors/lmnt"
-    "libs/connectors/hume"
+    # libs/connectors/hume is skipped while every `hume` SDK release on PyPI is yanked (Nov 2026):
+    # its wheel would not install. Restore it once Hume republishes.
     "libs/connectors/gmicloud"
     "libs/connectors/langsmith"
     "libs/connectors/nvidia"
     "libs/connectors/assemblyai"
+    "libs/connectors/atlascloud"
+    "libs/connectors/fal"
     "cli"
     "libs/meta"
 )

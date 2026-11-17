@@ -17,6 +17,15 @@ def test_mp3_embed_and_extract(tmp_mp3: Path, sample_manifest: Manifest) -> None
     assert extracted.run.steps[0].prompt == "hello"
 
 
+def test_mp3_embed_and_extract_accept_str_path(tmp_mp3: Path, sample_manifest: Manifest) -> None:
+    handler = Mp3Handler()
+    embed_result = handler.embed(str(tmp_mp3), sample_manifest)
+    assert isinstance(embed_result, Path)
+
+    extracted = handler.extract(str(tmp_mp3))
+    assert extracted.canonical_hash == sample_manifest.canonical_hash
+
+
 def test_mp3_verify(tmp_mp3: Path, sample_manifest: Manifest) -> None:
     handler = Mp3Handler()
     handler.embed(tmp_mp3, sample_manifest)

@@ -7,6 +7,648 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Fixed** `PipelineTemplate.instantiate()` now constructs only providers
+  referenced by the template during auto-discovery. Unused providers that need
+  credentials no longer prevent a valid template from loading. Empty templates
+  fail before discovery; explicit provider maps remain authoritative (#67).
+
+## [0.8.2] - 2026-11-16
+
+Security hardening wave. `genblaze-core` now requires `urllib3>=2.8.0`, which
+fixes memory-exhaustion bugs in the streaming download path
+(CVE-2026-97688, CVE-2026-97689). Twelve connector call sites now name output
+files through `get_output_path()`, closing the remaining ways a `step_id` or
+output format could write outside `output_dir` (follow-up to
+GHSA-x99g-wcm2-r2v8).
+
+This heading is the release **wave** name and the git tag (`v0.8.2`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.7`). Don't pin `genblaze==0.8.2`; pin the
+umbrella version above, or use a lockfile.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.6 → **0.4.7**
+- `genblaze-core` 0.3.9 → **0.3.10**
+- `genblaze-cli` 0.3.7 → **0.3.8**
+- `genblaze-decart` 0.3.3 → **0.3.4**
+- `genblaze-elevenlabs` 0.3.3 → **0.3.4**
+- `genblaze-google` 0.3.5 → **0.3.6**
+- `genblaze-hume` 0.3.3 → **0.3.4**
+- `genblaze-lmnt` 0.3.3 → **0.3.4**
+- `genblaze-openai` 0.3.5 → **0.3.6**
+- `genblaze-stability-audio` 0.3.3 → **0.3.4**
+
+### genblaze
+
+- **Changed** raised the `decart`, `elevenlabs`, `hume`, `lmnt` and
+  `stability-audio` extra floors to the releases that name output files
+  through `get_output_path()`.
+
+### genblaze-core
+
+- **Security** `genblaze-core` now requires `urllib3>=2.8.0` (was `>=1.26`).
+  `AssetTransfer` streams provider asset URLs through urllib3's streaming
+  API, which before 2.8.0 can exhaust memory on a crafted chunked or
+  compressed response (CVE-2026-97688, CVE-2026-97689). The 1.26.x line has
+  no fix; environments pinned to it must upgrade.
+- **Changed** the `parquet` extra now accepts `pyarrow` 26 (`<27`, was
+  `<26`). The test-only Pillow cap moves to `<14`, so CI picks up Pillow
+  13.0.0 and its fixes for 35 image-decoder CVEs.
+
+### genblaze-decart
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` and `image.py`,
+  so a `step_id` containing a path separator (for example one set on a `Step`
+  after it was built) or a non-alphanumeric output format can no longer write
+  outside `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-elevenlabs
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` and `sfx.py`,
+  so a `step_id` containing a path separator (for example one set on a `Step`
+  after it was built) or a non-alphanumeric output format can no longer write
+  outside `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-google
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `imagen.py` and
+  `gemini_image.py`, so a `step_id` containing a path separator (for example
+  one set on a `Step` after it was built) or a non-alphanumeric output format
+  can no longer write outside `output_dir`. Same class as the Veo fix (#284).
+
+### genblaze-hume
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-lmnt
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-openai
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` (Sora),
+  `tts.py` and `dalle.py`, so a `step_id` containing a path separator (for
+  example one set on a `Step` after it was built) or a non-alphanumeric output
+  format can no longer write outside `output_dir`. Same class as the Veo fix
+  (#284).
+
+### genblaze-stability-audio
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+## [0.8.1] - 2026-11-16
+
+Completes the 0.8.0 wave. The fal.ai and Atlas Cloud connectors ship under new
+PyPI names, `genblaze-falai` and `genblaze-atlascloudai`, because the names
+listed in 0.8.0 were registered by a third party before we published. The
+umbrella `genblaze` 0.4.6, which did not publish in 0.8.0, ships here with the
+renamed connectors and without `genblaze-hume` in its bundles.
+
+This heading is the release **wave** name and the git tag (`v0.8.1`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.6`). Don't pin `genblaze==0.8.1`; pin the
+umbrella version above, or use a lockfile.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.5 → **0.4.6**
+- `genblaze-falai` **0.1.0** (new; replaces the unpublished `genblaze-fal`)
+- `genblaze-atlascloudai` **0.1.0** (new; replaces the unpublished `genblaze-atlascloud`)
+
+### genblaze
+
+- **Security** the fal.ai and Atlas Cloud connectors now publish as
+  `genblaze-falai` and `genblaze-atlascloudai`. The names listed in 0.8.0,
+  `genblaze-fal` and `genblaze-atlascloud`, were registered on PyPI by a third
+  party (now quarantined by PyPI) and were never ours: do not install them.
+  Import names (`genblaze_fal`, `genblaze_atlascloud`) and the umbrella
+  extras (`genblaze[fal]`, `genblaze[atlascloud]`) are unchanged.
+
+## [0.8.0] - 2026-11-16
+
+Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
+fal.ai), experimental Mode 2 Ed25519 manifest signing, and a failed-attempt
+ledger that keeps fallback history in the manifest. JPEG and WebP embedding
+now splices XMP metadata byte-for-byte, so content binding holds for every
+image format. `chat()` opt-in backoff now also covers transient 5xx
+responses, `ObjectStorageSink` can upload from a provider's `output_dir`, the
+ffmpeg helpers are public for custom deterministic providers, and
+`MockProvider` gains opt-in input validation.
+
+Upgrade notes: `genblaze-core` no longer installs Pillow; declare `pillow`
+yourself if you import `PIL`. Manifests that recorded a fallback carry
+`failed_attempts` and need a reader at `genblaze-core` 0.3.9 or later. This wave
+also fixes a path-traversal issue in `ParquetSink` / `genblaze index`
+(GHSA-x99g-wcm2-r2v8): identity fields must now be a single path component,
+so manifests with ids containing `/` or `\` (or `:`, outside tenant ids)
+no longer load. `genblaze-hume`
+is temporarily out of the `audio` and `all` bundles because its `hume` SDK
+dependency is yanked on PyPI.
+
+This heading is the release **wave** name and the git tag (`v0.8.0`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.6`). Wave tags and the umbrella's PyPI
+versions are separate sequences that happen to look alike — don't pin
+`genblaze==0.8.0`. A pin on a wave tag either fails outright or, worse,
+resolves silently to an unrelated umbrella build from a different wave (e.g.
+`genblaze==0.4.0` on PyPI predates the `v0.4.0` wave). Pin the exact umbrella
+version above, or a lockfile for full reproducibility (the umbrella pins
+ranges, not exact versions, for its own dependencies).
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.5 → **0.4.6**
+- `genblaze-core` 0.3.8 → **0.3.9**
+- `genblaze-cli` 0.3.6 → **0.3.7**
+- `genblaze-s3` 0.3.6 → **0.3.7**
+- `genblaze-atlascloud` **0.1.0** (new)
+- `genblaze-fal` **0.1.0** (new)
+- `genblaze-assemblyai` 0.3.2 → **0.3.3**
+- `genblaze-gmicloud` 0.3.5 → **0.3.6**
+- `genblaze-google` 0.3.4 → **0.3.5**
+- `genblaze-nvidia` 0.3.3 → **0.3.4**
+- `genblaze-openai` 0.3.4 → **0.3.5**
+- `genblaze-runway` 0.3.3 → **0.3.4**
+- `@genblaze/spec` 0.4.0 → **0.4.1**
+
+### genblaze
+
+- **Changed** removed `genblaze-hume` from the `audio` and `all` bundles.
+  Every release of Hume's `hume` SDK is currently yanked on PyPI, so any
+  bundle that included it failed to install. The `hume` extra is kept, but
+  `pip install "genblaze[hume]"` fails until Hume republishes the SDK.
+- **Added** an `atlascloud` extra and included Atlas Cloud in the `image`,
+  `video`, and `all` bundles.
+- **Added** a `fal` extra and included fal.ai in the `image`, `video`,
+  `audio`, and `all` bundles.
+
+### genblaze-atlascloud
+
+- **Added** an opt-in Atlas Cloud connector for asynchronous image and video
+  generation. Submission is single-attempt to avoid duplicate billable jobs;
+  prediction GET requests use bounded transient retries, and URL-bearing model
+  inputs are validated before being forwarded.
+
+### genblaze-fal
+
+- **Added** an opt-in fal.ai connector that reaches fal's image, video, and
+  audio catalog through its queue API over plain HTTP. Ships starter defaults
+  for FLUX, Wan video, and Stable Audio; any other endpoint id passes through.
+  Submission is single-attempt to avoid duplicate billable jobs, and status
+  and result GETs use the provider's bounded `RetryPolicy`. URL-bearing
+  inputs are validated before being forwarded, `FAL_KEY` is sent only to the
+  queue host, and checkpointed request ids can be resumed from any process
+  (#267).
+
+### genblaze-google
+
+- **Changed** requires `genblaze-core>=0.3.9` so the widened `chat()` retry
+  scope (#264) is always present.
+- **Fixed** Veo on the Gemini Developer API (`api_key` / `GEMINI_API_KEY`) now
+  downloads the generated video to a local file and exposes a `file://` asset
+  URL — matching the Vertex path — instead of leaving a credentialed Files API
+  URI that `ObjectStorageSink`/B2 could not fetch unauthenticated (#263).
+- **Security** `VeoProvider` no longer interpolates an unvalidated `step_id`
+  into the local output filename. A `Step` built or deserialized with a
+  caller-supplied `step_id` containing `../` traversal or an absolute path
+  could previously escape the configured `output_dir` and, following an
+  existing symlink, silently overwrite another job's output or any
+  process-writable file. `step_id` is now validated as a UUID, the resolved
+  path is verified to stay under `output_dir`, and the write refuses to follow
+  symlinks or clobber an existing file — on both the Vertex and Gemini auth
+  paths (#284).
+- **Fixed** README and `examples/imagen_pipeline.py` quickstarts referenced
+  the delisted `imagen-3.0-*` slugs, which now 404 at preflight for every
+  new user; updated to the catalog-listed `imagen-4.0-*` slugs, documented
+  the entitlement caveat, and documented the previously-unlisted
+  `GeminiImageProvider` as the no-entitlement alternative (#233).
+- **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
+  `retry_policy=`) now retries a Gemini `503 UNAVAILABLE` / model-overloaded
+  error under the same backoff as a 429 instead of failing on the first
+  attempt. Requires the genblaze-core release carrying this fix (#264).
+
+### genblaze-core
+
+- **Security** `genblaze index` and `ParquetSink` no longer write or delete
+  files outside the index directory when given an untrusted manifest
+  (GHSA-x99g-wcm2-r2v8). `run_id` was joined into file paths unchecked, so a
+  manifest with `run_id="../../x"` or an absolute path could create or
+  overwrite `.parquet`/`.partition` files anywhere the user could write.
+  `run_id` is excluded from the canonical hash, so such a manifest still
+  verified. `Run.run_id`, `Run.parent_run_id`, `Run.tenant_id`,
+  `Step.step_id`, `Step.run_id` and `Asset.asset_id` must now be a single
+  path component, and `ParquetSink` refuses any path that lies outside its
+  `base_dir` (a lexical check; symlinks inside `base_dir` are trusted). Thanks to @orshih6 for the report.
+- **Changed** identity fields that are empty, `.` or `..`, or contain `/`,
+  `\`, NUL or (except `tenant_id`) `:` now fail validation, including in
+  `parse_manifest()`. UUIDs and ids such as `"intro clip"`, `"v1.2"` or a
+  tenant `"org:acme"` are unaffected. `Pipeline(tenant_id=...)` is checked at
+  construction, before any provider call. Existing manifests with ids like
+  `"urn:x:1"` or a tenant like `"org/team"` no longer load: replace those
+  characters (e.g. with `-`) in the JSON. Ids are excluded from
+  `canonical_hash`, so the edited manifest still verifies.
+  `get_output_path()` now also rejects a `step_id` of `.` or `..`.
+- **Fixed** a step rescued by `fallback_models` no longer erases the failed
+  primary from provenance. Each superseded failure is now recorded, oldest
+  first, in the new `Step.failed_attempts` list (`StepAttempt`: step id,
+  model, provider, sanitized error, error code, upstream prediction id, cost,
+  retries, timestamps), on both `run()` and `arun()`. The field is omitted
+  from serialization when empty, so manifests without a fallback keep their
+  `canonical_hash` byte-for-byte. Only each attempt's `model`, `provider` and
+  `error_code` enter the hash, so identical runs still hash identically.
+  Failed-attempt cost is reported per attempt (usually `None`: providers
+  price successes only) and is not added to `Step.cost_usd`.
+  **Compatibility:** a manifest that recorded a fallback carries the new
+  `failed_attempts` key and needs genblaze-core at this release or later to
+  parse; older releases reject the unknown key (#239).
+- **Changed** `genblaze-core` no longer depends on Pillow at runtime, since
+  JPEG/WebP embedding no longer decodes images. If your code imports `PIL`,
+  declare `pillow` as your own dependency (#249).
+- **Added** `ObjectStorageSink(..., allowed_roots=[...])` to opt a
+  provider-configured `output_dir` (e.g. `ElevenLabsTTSProvider(output_dir=
+  "work/generated")`) into local-file asset transfer. Previously a valid
+  generation written outside the built-in temp-dir allowlist failed only at
+  storage finalization, after provider quota was already spent. The default
+  stays temp-only — no behavior change without opting in — and each root is
+  resolved and validated at construction (rejects a missing directory or the
+  filesystem root) so a typo'd or overly broad root fails loudly immediately
+  rather than silently widening what's readable (#247).
+- **Added** an opt-in `min_inputs` constructor kwarg on `MockProvider`
+  (`genblaze_core.testing`/`genblaze_core.mocks`). The mock previously
+  accepted any step regardless of `step.inputs`, so a pipeline step built
+  without `external_inputs=` — input media a real provider would reject —
+  passed a full contract-test suite and only failed on the first live run.
+  `MockProvider(min_inputs=1)` now raises `ProviderError(INVALID_INPUT)` when
+  `step.inputs` has fewer than the configured minimum. Default is `0`,
+  preserving existing behavior for callers who don't opt in (#174).
+- **Fixed** `PromptTemplate("A {animal}")` now accepts the template
+  positionally instead of raising `TypeError: BaseModel.__init__() takes 1
+  positional argument but 2 were given`. The positional spelling is the one
+  shipped in `examples/batch_with_templates.py`, so the example crashed on its
+  first `PromptTemplate` line. The keyword form is unchanged, and passing both
+  raises `TypeError` (P1-02).
+- **Changed** the run entry points (`run`, `arun`, `batch_run`, `abatch_run`)
+  now raise a `TypeError` that names the call site that works when a
+  constructor- or builder-level option is passed to them. `run(cache=...)`
+  previously produced a bare `got an unexpected keyword argument 'cache'`,
+  which named neither where caching is configured nor how to spell it;
+  it now adds `— caching is configured on the pipeline:
+  .cache(StepCache(...))`. Covers `cache`, `config`, `metadata`, `tracer`,
+  `preflight`, `tenant_id`, `project_id`, `chain`, `moderation`,
+  `structured_log`, and `max_concurrency` (the last only on `run()`, the one
+  entry point that does not take it). Genuinely unknown names keep CPython's
+  exact wording (P1-03).
+- **Fixed** lazy top-level exports now appear in `dir(genblaze_core)` before
+  first access, and `RunnableConfig` is available directly from
+  `genblaze_core` (#55).
+- **Fixed** `BaseProvider` subclasses now fail loudly at construction with a
+  `TypeError` if `super().__init__()` never ran — most commonly because the
+  subclass was decorated with `@dataclass`, whose generated `__init__` silently
+  replaces the inherited one. Previously this produced a half-initialized
+  provider that constructed fine and then failed confusingly inside
+  `invoke()`/`ainvoke()` with an `AttributeError` naming an unrelated private
+  attribute (#261).
+- **Fixed** library loggers no longer write to stderr by default; a
+  `NullHandler` on the `genblaze` namespace root hands the decision back to
+  the consuming application, which opts in via its own handlers (#46).
+- **Added** `ModelRegistry(fallback_probe=...)` — an optional liveness probe
+  connectors can attach for slugs that match no `ModelFamily`. Previously
+  `validate_model()` only ever consulted a probe when a family pattern
+  matched, so any slug covered only by the permissive fallback (a
+  connector's mainline models included) graded `UNKNOWN_PERMISSIVE`
+  regardless of whether it was real or fabricated. `fallback_probe` is the
+  liveness counterpart to the existing `fallback` param-shape spec; it is
+  opt-in and defaults to `None`, so registries that don't configure it are
+  unaffected (#248).
+- **Fixed** `import genblaze_core.testing` no longer requires `pytest`. The
+  mock providers moved to the pytest-free `genblaze_core.mocks` in 0.3.5, but
+  `genblaze_core.testing` kept a module-level `import pytest` for
+  `ProviderComplianceTests` — so the documented re-export path
+  (`from genblaze_core.testing import MockVideoProvider`, used by the
+  zero-API-key quickstart in `libs/core/README.md`) still failed with
+  `ModuleNotFoundError: No module named 'pytest'` on a clean
+  `pip install genblaze-core`. `pytest` is now imported inside the four
+  compliance-harness methods that use it (P1-01).
+- **Fixed** JPEG and WebP embedding now splices the XMP metadata into the
+  existing container instead of decoding and re-encoding the image through
+  Pillow, matching the PNG and MP4 handlers. Previously every JPEG/WebP embed
+  silently altered pixels (lossy WebP by up to ~16% of subpixels), so the
+  delivered image no longer matched the bytes the manifest committed to.
+  JPEG gains one XMP `APP1` segment; WebP gains one `XMP ` chunk (a
+  simple-format `VP8`/`VP8L` file is promoted to extended `VP8X`). EXIF, ICC,
+  third-party XMP and the compressed image data are kept byte-for-byte,
+  re-embedding replaces the previous manifest, and files embedded by earlier
+  versions still extract. Extraction now reads only real XMP containers, so a
+  `<mf:manifest>` string planted in EXIF or other bytes can no longer shadow
+  the embedded manifest. Handlers no longer transcode, so a non-JPEG/WebP
+  source passed straight to `JpegHandler`/`WebpHandler` now raises
+  `EmbeddingError` (`SmartEmbedder` already routes by magic bytes) (#249).
+- **Deprecated** `WebpHandler.embed(lossless=..., quality=...)`. Both
+  configured the former re-encode; they are now ignored, emit a
+  `DeprecationWarning`, and will be removed in genblaze-core 0.4.0 (#249).
+- **Changed** `call_with_rate_limit_retry` (behind the `retry_on_rate_limit=`
+  flag on the `chat()` helpers) now retries `SERVER_ERROR` (5xx, e.g. Gemini
+  `503 UNAVAILABLE`) as well as `RATE_LIMIT` by default, and honors an explicit
+  `RetryPolicy`'s full `retryable_codes` — matching `BaseProvider`'s poll/fetch
+  path. `TIMEOUT` retries only via an explicit policy, since a timed-out long
+  generation can still be billed; callers already passing an explicit
+  `RetryPolicy()` now retry `TIMEOUT` too. Pass
+  `RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))` for
+  the previous 429-only behavior (#264).
+- **Added** public ffmpeg helpers behind `FFmpegCompositor` / `FFmpegTransform`
+  for custom deterministic providers:
+  `from genblaze_core.providers import resolve_ffmpeg, resolve_input_path,
+  run_ffmpeg, get_output_path, populate_file_asset_integrity, local_file_url,
+  FFMPEG_TIMEOUT`.
+  Authors no longer re-implement the security-sensitive parts (the SSRF check
+  on `https://` inputs, presigned-URL redaction in logs and errors). As part of
+  the promotion, `get_output_path` now rejects an `ext` that is not
+  alphanumeric and a `step_id` containing `/`, `\`, `:` or NUL, so a crafted
+  value cannot write outside `output_dir`; it also accepts a `str` directory
+  and always returns an absolute path. `genblaze_core.providers._ffmpeg_utils`
+  still imports. See the "Deterministic ffmpeg provider" section of
+  `docs/guides/new-provider.md` (#195).
+- **Fixed** `SmartEmbedder`/`SidecarHandler` sidecar and pointer embed modes
+  now copy the source media to a distinct `output=` path (streamed, so it
+  shares MP4's 2 GB size ceiling rather than a smaller in-memory cap) before
+  writing the sidecar, matching the inline handlers' contract. Previously,
+  `output=` in pointer mode (or any sidecar fallback) wrote only the sidecar
+  JSON next to the requested path and reported it in `EmbedResult.path`, even
+  though no media file existed there (#238).
+
+### genblaze-s3
+
+- **Docs** clarified browser access to private B2 buckets: a durable URL
+  (`asset.url` under the default `URLPolicy.AUTO`) carries no credentials
+  and 401s in a browser by design — use `presigned_get`/`presigned_get_url`
+  instead. Added regression coverage proving those methods already emit
+  the path-style, SigV4-signed URL shape B2 requires (virtual-host-style
+  presigns 403 against B2) with no extra `boto3.Config`, since
+  `for_backblaze()`'s custom `endpoint_url` already selects that addressing
+  style by default; see `docs/features/object-storage.md` (#246).
+
+### Internal
+
+- CI no longer installs, typechecks or tests `genblaze-hume` while its `hume`
+  SDK dependency is uninstallable.
+- **Security** hardened the `@genblaze/spec` TypeScript type-generation
+  toolchain against npm supply-chain attacks (#270): `generate-types.sh` now
+  installs `json-schema-to-typescript`/`typescript` via `npm ci
+  --ignore-scripts` from a new committed `libs/spec/package-lock.json`
+  instead of an unpinned `npx --yes` fetch, and the release workflow's
+  `publish-npm` job (which holds `id-token: write`) no longer installs or
+  executes any npm package — type generation moved to a new low-privilege
+  `build-npm-types` job whose verified output is handed to `publish-npm` as
+  a build artifact, and now sets `NPM_CONFIG_IGNORE_SCRIPTS=true` for the
+  whole job. No change to the generated `genblaze.d.ts` or to the tarball's
+  published file contents (`ts/genblaze.d.ts`, `schemas/**/*.json`,
+  `README.md`); `package.json` itself gains the new `devDependencies`/
+  `scripts` fields used for local regeneration.
+
+### genblaze-gmicloud
+
+- **Fixed** the video poll loop is now bounded by a `max_poll_seconds`
+  ceiling. A request stuck reporting `dispatched` previously polled forever,
+  wedging the pipeline with no way to recover; it now fails the step with a
+  timeout once the ceiling is passed. The ceiling is tracked per prediction
+  id and cleared on a terminal status, and can be disabled by passing
+  `None` (#262).
+- **Fixed** `validate_model()` now probes slugs that match none of the
+  connector's specialized model families (Seedream, Gemini-Flash,
+  FLUX-Kontext, Reve create, Bria fibo, and any new GMI model) using the
+  same empty-payload probe the specialized families already use. Previously
+  these slugs — including a connector's actual production models — graded
+  identically to a fabricated slug (`unknown_permissive`, no signal). A slug
+  the probe confirms dead now raises at `Pipeline` preflight instead of
+  failing mid-run; a slug the probe confirms live grades authoritative
+  (#248).
+- **Fixed** every GMI Cloud audio model (TTS and music) was unreachable —
+  the `gmi-audio-tts` and `gmi-audio-music` families' `param_allowlist`
+  didn't include the API's required `text`/`lyrics` fields, so every request
+  400'd with "Required parameter is missing" before it reached GMI. `prompt`
+  now aliases to `text` for TTS and to `lyrics` for music, matching the same
+  `prompt=` idiom every other modality uses (#251).
+
+### genblaze-openai
+
+- **Changed** requires `genblaze-core>=0.3.9` so the widened `chat()` retry
+  scope (#264) is always present. The `openai` SDK cap widened to `<4`;
+  verified against 3.17.0 (#274).
+- **Fixed** `DalleProvider` image edits from an `https://` reference image
+  (e.g. a presigned object-storage URL) always failed upstream with
+  `unsupported mimetype`. The download's temp file was named with a fixed
+  `.img` suffix, so the OpenAI client inferred `Content-Type:
+  application/octet-stream` instead of the source's real type. The suffix
+  is now derived from the input `Asset.media_type` (falling back to `.png`)
+  (#253).
+- **Fixed** `chat()`/`achat()` with `retry_on_rate_limit=True` (or
+  `retry_policy=`) now also retries 5xx, which previously failed fast because
+  opting in disables the OpenAI SDK's own retry. Requires the genblaze-core
+  release carrying this fix (#264).
+- **Fixed** `DalleProvider.generate()` dropped the `usage` block on
+  `gpt-image-*` responses, leaving `Step.provider_payload` empty and no way
+  to reconcile actual token-based cost against the registry's pre-flight
+  estimate. Input/output/total token counts are now copied into
+  `Step.provider_payload["usage"]` before pricing runs, so a user-registered
+  usage-based pricing recipe can read them; `dall-e-2`/`dall-e-3` responses
+  carry no `usage` block and are unaffected (#240).
+
+### genblaze-assemblyai
+
+- **Changed** the `assemblyai` SDK cap widened to `<2`; verified against
+  1.5.5 (#274).
+
+### genblaze-nvidia
+
+- **Changed** the `[chat]` extra's `openai` cap widened to `<4`; verified
+  against 3.17.0 (#274).
+
+### genblaze-runway
+
+- **Changed** the `runwayml` SDK cap widened to `<6` (#243).
+
+### genblaze-cli
+
+- **Changed** requires `genblaze-core>=0.3.9`.
+
+## [0.7.0] - 2026-07-28
+
+Bug-fix wave with one new opt-in feature and one new provider. Closes a
+regression in the ReDoS pattern-safety heuristic (both the shape #196/#200
+fixed and two further false-positive/false-negative bugs those same fixes
+introduced), adds an opt-in rate-limit backoff for `chat()`/vision helpers,
+ships a native Gemini image provider, fixes Runway's image-to-video routing,
+and closes a `verify --fetch` SSRF gap.
+
+This heading is the release **wave** name and the git tag (`v0.7.0`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.5`). Wave tags and the umbrella's PyPI
+versions are separate sequences that happen to look alike — don't pin
+`genblaze==0.7.0`. A pin on a wave tag either fails outright or, worse,
+resolves silently to an unrelated umbrella build from a different wave (e.g.
+`genblaze==0.4.0` on PyPI predates the `v0.4.0` wave). Pin the exact umbrella
+version above, or a lockfile for full reproducibility (the umbrella pins
+ranges, not exact versions, for its own dependencies).
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.4 → **0.4.5**
+- `genblaze-core` 0.3.7 → **0.3.8**
+- `genblaze-cli` 0.3.5 → **0.3.6**
+- `genblaze-assemblyai` 0.3.1 → **0.3.2**
+- `genblaze-decart` 0.3.2 → **0.3.3**
+- `genblaze-elevenlabs` 0.3.2 → **0.3.3**
+- `genblaze-gmicloud` 0.3.4 → **0.3.5**
+- `genblaze-google` 0.3.3 → **0.3.4**
+- `genblaze-hume` 0.3.2 → **0.3.3**
+- `genblaze-lmnt` 0.3.2 → **0.3.3**
+- `genblaze-nvidia` 0.3.2 → **0.3.3**
+- `genblaze-openai` 0.3.3 → **0.3.4**
+- `genblaze-runway` 0.3.2 → **0.3.3**
+- `genblaze-stability-audio` 0.3.2 → **0.3.3**
+
+### genblaze-core
+
+- **Security** the ReDoS pattern-safety heuristic (`pattern_safety.py`) missed
+  two more catastrophic-backtracking shapes on top of #157 (fixed in 0.6.0):
+  a quantified alternation with overlapping branches whose textual prefixes
+  differ, and adjacent unbounded-quantified groups whose reachable character
+  sets actually overlap despite looking disjoint by source text alone (#196,
+  #200). Both are now rejected by `assert_safe()`. That charset-overlap gate
+  itself had two bugs, also closed here: an unescaped `.` no longer resolves
+  to the literal character `'.'` (it now correctly means "matches anything"),
+  so a pattern like `(.+)([a-z]+)$` is rejected as it should be; and a
+  `(?:...)`/`(?P<name>...)` group's marker prefix is now stripped before
+  charset analysis, so a genuinely safe pattern like `(?:[a-z]+)(?:[0-9]+)$`
+  is no longer wrongly rejected. **Upgrade impact:** the shipped connector
+  catalog contains no pattern of either shape, so this only affects
+  third-party or future connectors — a `ModelFamily` pattern with two or
+  more adjacent unbounded groups where one uses `.` will now be rejected at
+  import time (fix: separate the groups with a mandatory, non-nullable
+  delimiter, or narrow `.` to an explicit character class); a pattern using
+  `(?:...)`/`(?P<name>...)` that was previously (incorrectly) rejected will
+  now import successfully. Lookaround groups (`(?=...)`, `(?!...)`) keep
+  their existing, unchanged handling.
+- **Fixed** `Mp4Handler.embed()` raised on a `str` path instead of accepting
+  one like every other media handler, and `Pipeline.step()` accepted any
+  object as a provider instead of validating it's a `BaseProvider` — a
+  non-provider value previously surfaced a confusing failure deep inside
+  `run()` instead of immediately at the call site (#224, #225).
+
+### genblaze-openai
+
+- **Added** opt-in rate-limit backoff for `chat()`/`achat()` and the vision
+  helpers via `retry_on_rate_limit=`/`retry_policy=` kwargs, wrapping calls in
+  `genblaze_core.providers.retry.call_with_rate_limit_retry` (#221). A
+  follow-up in this same release disables the SDK's own internal retry when
+  genblaze already manages backoff on an internally-created client, closing a
+  double-retry (multiplicative wait) bug the initial opt-in introduced; a
+  caller-supplied `client=` keeps its own retry configuration untouched
+  (#221, #235). The identical feature and fix landed in `genblaze-google`
+  (see below); currently wired into `openai`/`google` only — see
+  `docs/features/llm-calls.md`.
+- **Docs** confirmed `estimate_cost()` already computed per-model pricing
+  correctly; the reported gap was a documentation error in
+  `docs/reference/pricing-recipes.md`, now corrected, plus added test
+  coverage pinning the existing (correct) behavior (#222, #223). No
+  production code changed.
+
+### genblaze-google
+
+- **Added** the same opt-in rate-limit backoff described under
+  `genblaze-openai` above (#221, #235).
+- **Added** `GeminiImageProvider`, a native Gemini image-generation provider
+  (`google-gemini-image` entry point) alongside the existing Imagen provider,
+  sharing client construction via a new `GoogleClientMixin` (#205).
+- **Fixed** a probe-confirmed-`LIVE` but known-gated Imagen slug reported a
+  misleading authoritative `OK` instead of `OK_PROVISIONAL`, mirroring the
+  same gmicloud fix below (#206).
+- **Fixed** `chat()`/vision calls sent an `ImageURLContent` input as an
+  unsupported field instead of translating it to Gemini's
+  `inline_data`/`file_data` wire format (#217).
+
+### genblaze-gmicloud
+
+- **Fixed** preflight validation didn't distinguish a known-catalog slug from
+  one confirmed callable with the caller's API key, reporting a misleading
+  authoritative `OK` for a probe-confirmed slug that isn't confirmed-callable
+  instead of `OK_PROVISIONAL` (#193). Added a guard against a misconfigured
+  `base_url`/`GMI_BASE_URL` pointed at the wrong endpoint shape (a
+  silent-404 footgun), and an edit-mode fallback path.
+
+### genblaze-runway
+
+- **Fixed** `image_to_video` on models that require an input image (e.g.
+  `gen4_turbo`, `gen3a_turbo`) now raises a clear, actionable error instead of
+  silently failing when no image is supplied; corrected the model catalog's
+  ratio literals, which were wrong pixel-dimension strings for several models
+  (#226).
+
+### genblaze-lmnt
+
+- **Fixed** an unsupported `seed` parameter was silently forwarded to
+  `generate_detailed` instead of being dropped; it's now dropped with a
+  one-time warning so callers know to stop passing it (#207).
+
+### genblaze-cli
+
+- **Fixed** `verify --fetch` accepted a `file://` URL with a remote authority
+  (e.g. `file://evil-host/path`) instead of rejecting it, and could leak
+  presigned-URL userinfo/credentials into output; both are now blocked/
+  redacted. Also dedupes redundant stream-hash computation on the same asset
+  (#214).
+
+### genblaze (umbrella)
+
+- **Fixed** the umbrella's lazy `__getattr__` lost the original install hint
+  to a generic message when propagating `OptionalDependencyError` instead of
+  preserving it (#213).
+- **Added** a `parquet` extra re-exposing `genblaze-core[parquet]`, so
+  `pip install "genblaze[parquet]"` — the exact incantation
+  `OptionalDependencyError` prints for `ParquetSink` — resolves instead of
+  failing with an unknown-extra error.
+
+### Packaging
+
+- **Fixed** nine connectors' (`genblaze-assemblyai`, `-decart`,
+  `-elevenlabs`, `-google`, `-hume`, `-lmnt`, `-nvidia`, `-openai`,
+  `-stability-audio`) `genblaze-core` dependency floor was raised to
+  `>=0.3.7` for `local_file_url()` users, but each package's own published
+  version wasn't bumped alongside it (#209) — a `pypi-pin-parity` trap that
+  would have blocked (not silently shipped) this release. Closed here by
+  bumping all nine to a new patch version.
+- **Fixed** `genblaze-openai` and `genblaze-google` import
+  `call_with_rate_limit_retry`, new in `genblaze-core` 0.3.8 this release,
+  but still declared a `genblaze-core>=0.3.7` floor — the same class of gap
+  as the item above, catchable only because it's caught here rather than by
+  any automated gate (`tools/prepare_release.py` doesn't check connector→core
+  floors against the symbols a connector actually imports). Both floors are
+  now `genblaze-core>=0.3.8,<0.4`.
+
 ### Internal
 
 - **Fixed** `install-verify`'s "Wait for PyPI to index the umbrella" pre-check
@@ -20,6 +662,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   truly missing/unresolvable package still fails the job after retries are
   exhausted. The umbrella pre-check and the import-smoke invocation are
   unchanged. Release tooling only — no packaged code changed.
+- **Fixed** the lint job's `ruff` version could drift from what contributors
+  run locally, producing false-red CI on a clean local run; pinned to
+  `0.14.0` (#212).
+- **Fixed** Dependabot could propose a major-version bump on a runtime
+  dependency, which this repo's pinning policy caps below the next major by
+  hand; Dependabot config now excludes major-version updates for runtime
+  deps (#216).
+- **Fixed** `tools/batch_cluster.py` could drop an in-flight dependency
+  blocker between clustering passes (#210).
+- **Chore** bumped the GitHub Actions dependency group (#191).
 
 ## [0.6.0] - 2026-07-22
 
@@ -37,7 +689,13 @@ verification of output assets against the manifest's committed digests.
 
 This heading is the release **wave** name and the git tag (`v0.6.0`); individual
 PyPI package versions move independently and are listed below (the umbrella
-`genblaze` package is `0.4.4`).
+`genblaze` package is `0.4.4`). Wave tags and the umbrella's PyPI versions are
+separate sequences that happen to look alike — don't pin `genblaze==0.6.0`. A
+pin on a wave tag either fails outright or, worse, resolves silently to an
+unrelated umbrella build from a different wave (e.g. `genblaze==0.4.0` on
+PyPI predates the `v0.4.0` wave). Pin the exact umbrella version above, or a
+lockfile for full reproducibility (the umbrella pins ranges, not exact
+versions, for its own dependencies).
 
 ### Released package versions
 
@@ -337,6 +995,16 @@ on the openai SDK 2.x, Google Veo on Vertex AI). Highlights: the ReDoS guard's
 heuristic now always runs, manifests load tolerantly while `verify()` stays the
 enforcement boundary, `ParquetSink` writes are index-backed and resink-correct,
 stream emitters are per-instance, and a batch of connector patch-republishes.
+
+This heading is the release **wave** name and the git tag (`v0.5.0`); individual
+PyPI package versions move independently and are listed below (the umbrella
+`genblaze` package is `0.4.3`). Wave tags and the umbrella's PyPI versions are
+separate sequences that happen to look alike — don't pin `genblaze==0.5.0`. A
+pin on a wave tag either fails outright or, worse, resolves silently to an
+unrelated umbrella build from a different wave (e.g. `genblaze==0.4.0` on
+PyPI predates the `v0.4.0` wave). Pin the exact umbrella version above, or a
+lockfile for full reproducibility (the umbrella pins ranges, not exact
+versions, for its own dependencies).
 
 ### Released package versions
 
@@ -749,11 +1417,31 @@ stream emitters are per-instance, and a batch of connector patch-republishes.
   publish; it stops at a release PR. Repo tooling only — no packaged code
   changed.
 
+### genblaze-core
+
+- **Added (experimental)** Trust Mode 2 authenticated integrity: an optional
+  `genblaze_core.signing` module (`pip install "genblaze-core[signing]"`)
+  with an `Ed25519Signer` that signs a manifest's existing `canonical_hash`
+  and a `verify_signature_bundle()` verifier. API surface may still change
+  before this is declared stable. Thanks to @Demiladepy for the original
+  contribution.
+
 ## [0.4.0] - 2026-06-25
 
 Security hardening (SSRF, URL-only asset verification), two new providers
 (Hume Octave TTS, AssemblyAI STT), and a batch of connector patch-republishes
 to update the `genblaze-core>=0.3.4` floor.
+
+This heading is the release **wave** name and the git tag (`v0.4.0`); individual
+PyPI package versions move independently and are listed below (the umbrella
+`genblaze` package is `0.4.1`, after the patch republish noted below). Wave
+tags and the umbrella's PyPI versions are separate sequences that happen to
+look alike — don't pin `genblaze==0.4.0`. That version *is* real and installs
+without error, which is the dangerous case: it's this wave's original wheel,
+published before the `0.4.1` patch republish fixed the connector floors, so
+it silently ships with the older, unfixed pins. Pin `genblaze==0.4.1` (this
+wave's actual umbrella), or a lockfile for full reproducibility (the umbrella
+pins ranges, not exact versions, for its own dependencies).
 
 ### Released package versions
 

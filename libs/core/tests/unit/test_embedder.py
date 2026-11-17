@@ -40,6 +40,35 @@ def test_embed_unknown_format_sidecar(tmp_path: Path) -> None:
     assert result.sidecar_path.exists()
 
 
+def test_embed_accepts_str_output_override(tmp_path: Path) -> None:
+    """EmbedResult.path=output or source used to leak a raw str when
+    output= was passed as a str with no override handling — every branch
+    (inline, sidecar, none, pointer) must return a real Path."""
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+    out = tmp_path / "renamed.png"
+
+    embedder = SmartEmbedder()
+    result = embedder.embed(png, _make_manifest(), output=str(out))
+    assert result.method == "inline"
+    assert isinstance(result.path, Path)
+    assert result.path == out
+
+
+def test_embed_unknown_format_sidecar_accepts_str_source(tmp_path: Path) -> None:
+    """guess_mime()'s extension-fallback branch (magic bytes unrecognized)
+    used to call path.suffix.lower() directly on a raw str source, raising
+    AttributeError instead of correctly falling back to sidecar (#225 —
+    same bug class as Mp4Handler, reachable via SmartEmbedder.embed())."""
+    src = tmp_path / "test.mp4"
+    src.write_bytes(b"fake video data")
+
+    embedder = SmartEmbedder()
+    result = embedder.embed(str(src), _make_manifest())
+    assert result.method == "sidecar"
+    assert isinstance(result.path, Path), "EmbedResult.path must stay Path-typed for str input"
+
+
 def test_embed_none_policy(tmp_path: Path) -> None:
     """embed_mode=none should skip embedding entirely."""
     png = tmp_path / "test.png"
@@ -115,6 +144,63 @@ def test_embed_pointer_mode_preserves_verifiability(tmp_path: Path) -> None:
     assert pointer["canonical_hash"] == manifest.canonical_hash
     # Server-held full manifest still verifies.
     assert manifest.verify()
+
+
+def test_embed_pointer_mode_distinct_output_creates_media(tmp_path: Path) -> None:
+    """Regression for #238: pointer mode + output= pointing at a distinct
+    path used to report EmbedResult.path as if the media existed there,
+    when only the pointer sidecar was ever written."""
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+    out = tmp_path / "redacted.png"
+
+    manifest = _make_manifest()
+    manifest.manifest_uri = "https://example.com/manifests/abc.json"
+
+    embedder = SmartEmbedder()
+    policy = EmbedPolicy(embed_mode="pointer")
+    result = embedder.embed(png, manifest, output=out, policy=policy)
+
+    assert result.method == "pointer"
+    assert result.path == out
+    assert result.path.exists(), "EmbedResult.path must point at real media"
+    assert result.sidecar_path is not None
+    assert result.sidecar_path.exists()
+
+
+def test_embed_pointer_mode_source_only_path_exists(tmp_path: Path) -> None:
+    """Source-only pointer calls (no output=) must also report an existing
+    path — the degenerate case of the #238 contract."""
+    png = tmp_path / "test.png"
+    Image.new("RGBA", (1, 1)).save(png)
+
+    manifest = _make_manifest()
+    manifest.manifest_uri = "https://example.com/manifests/abc.json"
+
+    embedder = SmartEmbedder()
+    policy = EmbedPolicy(embed_mode="pointer")
+    result = embedder.embed(png, manifest, policy=policy)
+
+    assert result.path == png
+    assert result.path.exists()
+
+
+def test_embed_sidecar_fallback_distinct_output_creates_media(tmp_path: Path) -> None:
+    """The non-pointer sidecar fallback (no format handler, or a failed
+    inline embed) shares the same underlying SidecarHandler — it has the
+    same #238 exposure for a distinct output= and must also materialize
+    real media there."""
+    src = tmp_path / "test.mp4"
+    src.write_bytes(b"fake video data")
+    out = tmp_path / "renamed.mp4"
+
+    embedder = SmartEmbedder()
+    result = embedder.embed(src, _make_manifest(), output=out)
+
+    assert result.method == "sidecar"
+    assert result.path == out
+    assert result.path.exists()
+    assert result.path.read_bytes() == src.read_bytes()
 
 
 def test_sniff_mime_routes_misnamed_file(tmp_path: Path) -> None:

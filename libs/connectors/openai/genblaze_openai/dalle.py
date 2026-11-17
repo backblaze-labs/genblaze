@@ -58,6 +58,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    get_output_path,
     validate_asset_url,
     validate_chain_input_url,
 )
@@ -318,7 +319,64 @@ def _resolve_local_file(url: str, extra_root: Path | None) -> Path:
     return resolved
 
 
-def _download_https_to_temp(url: str, timeout: float) -> Path:
+# Derived from _FORMAT_TO_MEDIA/_FORMAT_TO_EXT above so the png/jpeg/webp
+# triple has one source of truth instead of a third parallel copy.
+_MEDIA_TYPE_TO_EXT: dict[str, str] = {
+    media_type: _FORMAT_TO_EXT[fmt] for fmt, media_type in _FORMAT_TO_MEDIA.items()
+}
+
+
+def _suffix_for_media_type(media_type: str | None) -> str:
+    """Map a declared MIME type to the temp-file suffix ``_download_https_to_temp``
+    should use.
+
+    The OpenAI client's multipart upload infers ``Content-Type`` from the temp
+    filename, not the actual bytes. An unrecognized/missing media type falls
+    back to ``.png`` (an OpenAI-accepted type) rather than a made-up extension
+    that would 400 upstream as ``application/octet-stream`` (#253).
+    """
+    return _MEDIA_TYPE_TO_EXT.get((media_type or "").lower(), ".png")
+
+
+# gpt-image's Usage model is 2 levels deep (input_tokens_details /
+# output_tokens_details). This bounds recursion well above that so a
+# malformed or adversarial response can't provoke a stack overflow —
+# mirrors the depth guard genblaze_core.canonical._normalize.normalize()
+# uses for the same reason.
+_MAX_USAGE_DEPTH = 10
+
+
+def _jsonable_usage(value: Any, _depth: int = 0) -> Any:
+    """Recursively collapse an SDK usage value into JSON-safe plain types.
+
+    gpt-image-* responses carry a pydantic ``Usage`` model with nested
+    submodels for input/output token breakdowns (``input_tokens_details``,
+    ``output_tokens_details``). This also accepts an already-plain dict
+    (e.g. a replayed fixture) and lightweight test doubles like
+    ``SimpleNamespace`` that only set the fields they need, so
+    ``Step.provider_payload["usage"]`` is always a plain, serializable dict
+    regardless of how the caller shaped the response (#240).
+
+    ``_depth`` is an internal recursion counter — callers should never pass
+    it explicitly. Past ``_MAX_USAGE_DEPTH`` this gives up normalizing
+    further and falls back to ``repr()`` rather than raising, since usage
+    capture is best-effort enrichment and must never fail the image
+    generation it's attached to.
+    """
+    if _depth >= _MAX_USAGE_DEPTH:
+        return repr(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {k: _jsonable_usage(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_usage(v, _depth + 1) for v in value]
+    if hasattr(value, "__dict__"):
+        return {k: _jsonable_usage(v, _depth + 1) for k, v in vars(value).items()}
+    return value
+
+
+def _download_https_to_temp(url: str, timeout: float, suffix: str = ".png") -> Path:
     """Download an https:// URL to a temp file. SSRF-checked with DNS pinning.
 
     Uses ``open_pinned_https_connection`` which connects to the validated pinned
@@ -329,6 +387,14 @@ def _download_https_to_temp(url: str, timeout: float) -> Path:
     Note: outbound connections bypass HTTP(S)_PROXY / NO_PROXY env vars by
     design — see ``open_pinned_https_connection`` for rationale.
 
+    ``suffix`` should reflect the source's declared media type (see
+    ``_suffix_for_media_type``) — the OpenAI client infers the upload's
+    Content-Type from this filename, so a wrong/unrecognized suffix (the
+    previous hardcoded ``.img``) makes ``/v1/images/edits`` reject the
+    request as ``application/octet-stream`` (#253). Callers that don't
+    upload the result back to OpenAI (e.g. fetching our own generated-image
+    CDN URL) can rely on the ``.png`` default.
+
     Caller is responsible for unlinking the returned temp file.
     """
     parsed = urlparse(url)
@@ -337,7 +403,7 @@ def _download_https_to_temp(url: str, timeout: float) -> Path:
         path = f"{path}?{parsed.query}"
     host = parsed.hostname or ""
 
-    fd, tmp = tempfile.mkstemp(suffix=".img")
+    fd, tmp = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     tmp_path = Path(tmp)
     conn = None
@@ -528,13 +594,7 @@ class DalleProvider(SyncProvider):
         content hash so manifests verify without a storage sink, and
         ``ObjectStorageSink`` can reuse the hash/size on transfer retry.
         """
-        if self._output_dir:
-            self._output_dir.mkdir(parents=True, exist_ok=True)
-            out_path = self._output_dir / f"{step.step_id}_{index}{ext}"
-        else:
-            fd, tmp = tempfile.mkstemp(suffix=ext)
-            os.close(fd)
-            out_path = Path(tmp)
+        out_path = get_output_path(f"{step.step_id}_{index}", ext.lstrip("."), self._output_dir)
         out_path.write_bytes(img_bytes)
         return (
             local_file_url(out_path.resolve()),
@@ -566,7 +626,8 @@ class DalleProvider(SyncProvider):
             if parsed.scheme == "file":
                 local.append(_resolve_local_file(asset.url, self._output_dir))
             else:
-                tmp = _download_https_to_temp(asset.url, self._http_timeout)
+                suffix = _suffix_for_media_type(asset.media_type)
+                tmp = _download_https_to_temp(asset.url, self._http_timeout, suffix=suffix)
                 temps.append(tmp)
                 local.append(tmp)
         return local, temps
@@ -585,7 +646,14 @@ class DalleProvider(SyncProvider):
         return tmp, tmp
 
     def generate(self, step: Step, config: RunnableConfig | None = None) -> Step:
-        """Generate or edit image(s). Routes by ``step.inputs`` presence."""
+        """Generate or edit image(s). Routes by ``step.inputs`` presence.
+
+        gpt-image-* responses report token usage (input/output/total, plus
+        nested per-type breakdowns); the full block is copied verbatim into
+        ``step.provider_payload["usage"]`` for cost reconciliation against the
+        registry's pre-flight estimate. dall-e-2/3 responses carry no
+        ``usage`` block, so the key is simply absent for those models.
+        """
         client = self._get_client()
         spec = _MODELS.get(step.model, _DEFAULT_SPEC)
         _validate_params(step, spec)
@@ -652,6 +720,14 @@ class DalleProvider(SyncProvider):
             step.assets.append(
                 Asset(url=uri, media_type=media_type, sha256=sha256, size_bytes=size)
             )
+
+        # gpt-image-* reports token usage for cost reconciliation; dall-e-2/3
+        # responses have no ``usage`` block. Set before pricing so a
+        # user-registered usage-based recipe (docs/reference/pricing-recipes.md)
+        # can read it via PricingContext.provider_payload.
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            step.provider_payload["usage"] = _jsonable_usage(usage)
 
         self._apply_registry_pricing(step)
         return step

@@ -20,8 +20,14 @@ MAX_FILE_BYTES = 500 * 1024 * 1024
 MAX_MMAP_BYTES = 2 * 1024 * 1024 * 1024
 
 
-def read_media_bytes(source: Path) -> bytes:
-    """Read a media file with size limit to prevent OOM on malicious input."""
+def read_media_bytes(source: str | os.PathLike[str]) -> bytes:
+    """Read a media file with size limit to prevent OOM on malicious input.
+
+    Coerces str/PathLike to Path — shared by PngHandler, JpegHandler,
+    WebpHandler, and WavHandler's embed/extract, so fixing the coercion
+    here (rather than per-handler) covers all four in one place (#225).
+    """
+    source = Path(source)
     file_size = source.stat().st_size
     if file_size > MAX_FILE_BYTES:
         raise EmbeddingError(
@@ -74,16 +80,21 @@ class BaseMediaHandler(ABC):
     """Abstract base for media embedding/extraction."""
 
     @abstractmethod
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
+    def embed(
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
+    ) -> Path:
         """Embed a manifest into a media file. Returns path to output file."""
         ...
 
     @abstractmethod
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         """Extract a manifest from a media file."""
         ...
 
-    def verify(self, source: Path) -> bool:
+    def verify(self, source: str | os.PathLike[str]) -> bool:
         """Extract and run ``Manifest.verify()``."""
         manifest = self.extract(source)
         return manifest.verify()

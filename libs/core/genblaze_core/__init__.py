@@ -1,12 +1,30 @@
 """genblaze-core — orchestration framework for media generation."""
 
+import logging
+
 from genblaze_core._version import __version__
+
+# Library convention: attach a no-op handler to the root of our logger
+# namespace so records don't fall through to logging.lastResort, which
+# writes WARNING+ to stderr for any application that hasn't configured
+# logging itself. Applications opt in via their own handlers (#46).
+#
+# Named "genblaze" (not "genblaze_core") because that is the namespace
+# every module in this package and its connectors logs under. Attached
+# here — not in the "genblaze" umbrella package at libs/meta — because
+# that umbrella is not always installed (pip install genblaze-core alone
+# is a supported path); attaching in genblaze_core covers both cases,
+# since the umbrella re-exports from genblaze_core and would otherwise
+# leave core-only installs unprotected.
+logging.getLogger("genblaze").addHandler(logging.NullHandler())
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # pipeline (primary entry point)
     "Pipeline": ("genblaze_core.pipeline.pipeline", "Pipeline"),
     "PipelineResult": ("genblaze_core.pipeline.result", "PipelineResult"),
     "StepCompleteEvent": ("genblaze_core.pipeline.result", "StepCompleteEvent"),
+    # runnable configuration
+    "RunnableConfig": ("genblaze_core.runnable.config", "RunnableConfig"),
     # pipeline cache
     "StepCache": ("genblaze_core.pipeline.cache", "StepCache"),
     # pipeline templates
@@ -57,6 +75,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "parse_manifest": ("genblaze_core.models.manifest", "parse_manifest"),
     "Run": ("genblaze_core.models.run", "Run"),
     "Step": ("genblaze_core.models.step", "Step"),
+    "StepAttempt": ("genblaze_core.models.step", "StepAttempt"),
     "Asset": ("genblaze_core.models.asset", "Asset"),
     "AudioMetadata": ("genblaze_core.models.asset", "AudioMetadata"),
     "Track": ("genblaze_core.models.asset", "Track"),
@@ -124,14 +143,24 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "UnverifiedAssetError": ("genblaze_core.exceptions", "UnverifiedAssetError"),
     "SinkError": ("genblaze_core.exceptions", "SinkError"),
     "WebhookError": ("genblaze_core.exceptions", "WebhookError"),
+    "SigningError": ("genblaze_core.exceptions", "SigningError"),
     # webhooks
     "WebhookNotifier": ("genblaze_core.webhooks.notifier", "WebhookNotifier"),
     "WebhookConfig": ("genblaze_core.webhooks.notifier", "WebhookConfig"),
     "WebhookEvent": ("genblaze_core.webhooks.notifier", "WebhookEvent"),
     "WebhookSink": ("genblaze_core.webhooks.sink", "WebhookSink"),
+    # signing (Mode 2 — optional extra)
+    "Ed25519Signer": ("genblaze_core.signing.ed25519", "Ed25519Signer"),
+    "ManifestSigner": ("genblaze_core.signing.base", "ManifestSigner"),
+    "SignatureBundle": ("genblaze_core.signing.base", "SignatureBundle"),
+    "verify_signature_bundle": ("genblaze_core.signing.ed25519", "verify_signature_bundle"),
 }
 
 __all__ = [*_LAZY_IMPORTS.keys(), "__version__"]
+
+
+def __dir__() -> list[str]:
+    return sorted(set(__all__) | set(globals().keys()))
 
 
 def __getattr__(name: str):

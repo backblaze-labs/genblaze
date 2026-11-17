@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -114,6 +115,64 @@ def test_api_error_raises_provider_error(mock_tts):
     step = Step(provider="openai-tts", model="tts-1", prompt="test")
     with pytest.raises(ProviderError, match="TTS generation failed"):
         provider.generate(step)
+
+
+# --- Cost tracking ---
+#
+# As of genblaze-core 0.3.0 the SDK ships zero hardcoded prices (see
+# docs/exec-plans/completed/model-registry-decoupling.md and the
+# `test_pricing_phaseout.py` CI guard) — rate tables baked into connectors
+# rot faster than releases ship. Cost tracking is opt-in via
+# ``provider.models.register_pricing()``; the recipe below mirrors the
+# "OpenAI" section of ``docs/reference/pricing-recipes.md`` exactly, so
+# these tests double as a regression guard on that doc staying accurate.
+
+
+def test_estimate_cost_none_by_default():
+    """No ModelSpec ships pricing, so estimate_cost() returns None until the
+    caller registers a strategy — this is the bug reported in #222/#223."""
+    from genblaze_openai.tts import OpenAITTSProvider
+
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        provider = OpenAITTSProvider(api_key="test-key")
+    assert provider.estimate_cost("tts-1", {"prompt": "hello"}) is None
+
+
+def test_estimate_cost_with_registered_per_char_pricing():
+    """Registering the documented ``per_input_chars`` recipe makes
+    estimate_cost() return a real Decimal, and cost scales with input size —
+    doubling the prompt roughly doubles the estimate."""
+    from genblaze_core.providers import per_input_chars
+    from genblaze_openai.tts import OpenAITTSProvider
+
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        provider = OpenAITTSProvider(api_key="test-key")
+    # Fork to avoid polluting the class-level models_default() cache.
+    provider._models = provider.models.fork()
+    # USD per 1M input chars — tts-1 rate from the canonical recipe.
+    provider.models.register_pricing("tts-1", per_input_chars(15.00, per=1_000_000))
+
+    short_cost = provider.estimate_cost("tts-1", {"prompt": "hello " * 100})
+    long_cost = provider.estimate_cost("tts-1", {"prompt": "hello " * 200})
+
+    assert isinstance(short_cost, Decimal)
+    assert isinstance(long_cost, Decimal)
+    assert long_cost == pytest.approx(short_cost * 2, rel=0.01)
+
+
+def test_cost_tracked_on_generated_step(mock_tts):
+    """User-registered pricing also flows through generate() → cost_usd,
+    not just the estimate_cost() preview path. ``cost_usd`` is a plain
+    ``float`` on ``Step`` (unlike ``estimate_cost()``'s ``Decimal``)."""
+    from genblaze_core.providers import per_input_chars
+
+    provider, _ = mock_tts
+    provider._models = provider.models.fork()
+    provider.models.register_pricing("tts-1", per_input_chars(15.00, per=1_000_000))
+
+    step = Step(provider="openai-tts", model="tts-1", prompt="hello " * 1000)
+    result = provider.generate(step)
+    assert result.cost_usd == pytest.approx(len(step.prompt) / 1_000_000 * 15.00)
 
 
 # --- Compliance harness ---

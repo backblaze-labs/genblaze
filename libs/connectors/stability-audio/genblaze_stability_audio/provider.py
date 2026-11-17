@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +44,7 @@ from genblaze_core.providers import (
     ProviderCapabilities,
     RetryPolicy,
     SyncProvider,
+    get_output_path,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -237,13 +237,7 @@ class StabilityAudioProvider(SyncProvider):
                 )
 
             ext = f".{output_format}"
-            if self._output_dir:
-                self._output_dir.mkdir(parents=True, exist_ok=True)
-                out_path = self._output_dir / f"{step.step_id}{ext}"
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=ext)
-                os.close(fd)
-                out_path = Path(tmp)
+            out_path = get_output_path(step.step_id, ext.lstrip("."), self._output_dir)
 
             out_path.write_bytes(response.content)
             file_url = local_file_url(out_path.resolve())

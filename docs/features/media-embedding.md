@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Media Embedding
 
 ## Purpose
@@ -34,7 +34,11 @@ Embed provenance manifests directly into media files (PNG, JPEG, WebP, MP4, MP3,
 
 ## Outputs
 - Modified media file with embedded manifest (inline) or `.json` sidecar
-- `EmbedResult` with `method` ("inline" or "sidecar"), `path`, `sidecar_path`
+- `EmbedResult` with `method` ("inline", "sidecar", "pointer", or "none"), `path`, `sidecar_path`
+- In sidecar/pointer modes, `path` always points at an existing media file: if
+  `output=` names a location distinct from the source, the source bytes are
+  copied there (same atomic-write contract as the inline handlers) before the
+  sidecar is written alongside it (#238)
 
 ## Flow
 - `SmartEmbedder` checks MIME type → selects handler via `get_handler()`
@@ -75,17 +79,45 @@ bytes against a pre-embed hash and fails by design. Verify against the upstream
 artifact instead (option 1 above). See
 [trust-modes.md](trust-modes.md#asset-binding-caveat).
 
-## WebP lossless preservation
+## Byte-preserving image embedding
 
-When embedding into a lossless WebP (VP8L), the handler detects the source codec and
-preserves losslessness automatically. Callers can still override with `lossless=False`
-if a lossy re-encode is acceptable.
+PNG, JPEG, and WebP embeds never decode or re-encode the image. The handlers
+splice a metadata record into the existing container, so the compressed image
+data and every other chunk/segment (EXIF, ICC, third-party XMP) stay
+byte-identical:
+
+- **PNG** — one `iTXt` chunk (`genblaze:manifest`) after `IHDR`.
+- **JPEG** — one XMP `APP1` segment after the leading JFIF `APP0` / EXIF `APP1`
+  segments. Removing that segment yields the original file exactly.
+- **WebP** — one `XMP ` chunk appended to the RIFF container, with the `VP8X`
+  XMP flag set. A simple-format (`VP8 `/`VP8L`-only) file is first promoted to
+  the extended format by prepending a `VP8X` header; the codec chunk itself is
+  unchanged.
+
+Re-embedding replaces the previous genblaze record rather than adding a second
+one. Only packets genblaze wrote are replaced: a packet another tool merged the
+manifest into (exiftool, Lightroom) is kept, and third-party XMP is never
+dropped. A JPEG/WebP that already carries third-party XMP therefore ends up with
+two XMP packets; genblaze reads its own, but tools that honor only the first
+packet may not see the manifest. Extraction reads only XMP containers (JPEG
+`APP1` XMP segments, WebP `XMP ` chunks), so a `<mf:manifest>` string elsewhere
+in the file (EXIF, ICC, image data) is ignored.
+
+`WebpHandler.embed(lossless=..., quality=...)` is deprecated since
+genblaze-core 0.3.9 and ignored (it configured the former re-encode); it emits a
+`DeprecationWarning` and will be removed in 0.4.0.
 
 ## Atomicity
 
 All inline embed paths (PNG, JPEG, WebP, MP4, MP3, WAV) and the sidecar handler use
 atomic temp-file + `os.replace` writes. A crash mid-embed leaves the source file
-intact; partial writes never overwrite the original.
+intact; partial writes never overwrite the original. This includes the sidecar
+handler's source-to-`output` copy when `output=` names a distinct path — copied
+via streaming I/O (not `read_media_bytes()`) so it shares MP4's 2 GB ceiling
+rather than the smaller 500 MB in-memory cap. The copy and the sidecar JSON
+write are each atomic individually but not as one transaction: if the sidecar
+write fails after the copy succeeds, the copied media is left without a
+sidecar. Callers always get an exception in that case, never a false success.
 
 ## Verification
 - Test files: `libs/core/tests/unit/test_png.py`, `test_jpeg.py`, `test_webp.py`, `test_mp4.py`, `test_mp3.py`, `test_wav.py`, `test_aac_handler.py`, `test_flac_handler.py`, `test_sidecar.py`, `test_embedder.py`, `libs/core/tests/golden/test_png_roundtrip.py`

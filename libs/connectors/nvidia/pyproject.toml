@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-nvidia"
-version = "0.3.2"
+version = "0.3.4"
 description = "NVIDIA NIM / build.nvidia.com media provider adapters for genblaze (video, image, audio, chat)"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 keywords = ["genblaze", "ai", "media", "manifest", "provenance", "c2pa-ready", "genai", "pipeline", "nvidia", "nim", "nemotron"]
 
 dependencies = [
-    "genblaze-core>=0.3.4,<0.4",
+    "genblaze-core>=0.3.7,<0.4",
     # <1: bounded-major convention (#61) — httpx is pre-1.0, so this caps at
     # its next major.
     "httpx>=0.24,<1",
@@ -40,9 +40,9 @@ dev = [
     "pytest>=7.0",
 ]
 chat = [
-    # <3: bounded-major convention (#61); matches the cap the openai
+    # <4: bounded-major convention (#61); matches the cap the openai
     # connector (genblaze-openai) uses for the same package.
-    "openai>=1.0,<3",
+    "openai>=1.0,<4",
 ]
 
 [project.entry-points."genblaze.providers"]

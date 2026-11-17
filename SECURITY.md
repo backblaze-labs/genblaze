@@ -2,9 +2,13 @@
 
 ## Supported versions
 
-| Version | Supported |
+Security fixes ship in the latest release of each package. Upgrade to the
+newest umbrella `genblaze` (or the affected package) to receive them.
+
+| Package | Supported |
 |---------|-----------|
-| 0.1.x   | Yes       |
+| `genblaze` 0.4.x, `genblaze-core` 0.3.x and current connector releases | Yes |
+| Older releases | No |
 
 ## Reporting a vulnerability
 
@@ -25,7 +29,11 @@ genblaze handles API tokens and embeds data into media files. Key security bound
 - **Provider API tokens** are never stored in manifests or embedded media.
 - **`EmbedPolicy`** controls what data gets embedded (prompt redaction, pointer mode).
 - **Canonical JSON** ensures hash integrity across serialize/deserialize cycles.
-- **Partition paths** in ParquetSink are sanitized to prevent directory traversal.
+- **Partition paths** in ParquetSink are sanitized to prevent directory traversal,
+  and every file it writes or deletes must stay under its `base_dir`.
+- **Identity fields** (`run_id`, `parent_run_id`, `tenant_id`, `step_id`,
+  `asset_id`) are validated as single path components on every load, because
+  they name files and storage keys and are excluded from the canonical hash.
 - **File writes** use atomic temp-file-then-rename to prevent corruption.
 
 ## Scope

@@ -80,7 +80,12 @@ Before cutting a release, verify on `main`:
 2. **CHANGELOG is cut.** The `[Unreleased]` section is empty; a new
    `## [X.Y.Z] - YYYY-MM-DD` section lists every package version change
    under "Released package versions" (the exact text `prepare_release.py`
-   emits).
+   emits). The section's intro must include the "wave vs. package version"
+   paragraph (see the `## [0.7.0]` entry for the current wording) — the
+   GitHub Release body is generated verbatim from this slice (see below), so
+   this is the only place that warning needs to be written for *release
+   notes*; the root `README.md` and `libs/meta/README.md` carry their own
+   copies for readers who never open a release page.
 3. **TS types are current.** `make ts-types` produces no diff. (CI's
    `ts-types-check` job already enforces this on every push, but the
    release workflow re-runs it as a defense in depth.)
@@ -101,6 +106,10 @@ clean-install crash class behind #37/#106. A clean run on `main` is a strong
 signal that `validate-version`, `changelog-gate`, and `release-smoke` in the
 workflow will all be green once you tag.
 
+`release-smoke` runs `twine check`, and CI installs `twine` unpinned. Keep
+your local `twine` and `packaging` current (`pip install -U twine packaging`);
+older versions reject the wheels' metadata version (2.5) with `InvalidDistribution`.
+
 ## The publish pipeline
 
 Defined in [`.github/workflows/release.yml`](.github/workflows/release.yml).
@@ -116,7 +125,20 @@ Triggered two ways:
    git push origin v0.3.0
    ```
 2. Create a GitHub Release on that tag. Paste the CHANGELOG slice for
-   this version as the body.
+   this version as the body — **do not** use `gh release create --notes-from-tag`;
+   it repeats the annotated tag's one-line message (`Release 0.3.0`) instead of
+   the CHANGELOG content, which is how v0.5.0 and v0.6.0 originally shipped
+   with just the tag message as their entire body (#250). Extract the slice
+   and pass it via `--notes-file`:
+   ```bash
+   awk '/^## \[0.3.0\]/{p=1} p&&/^## \[/&&!/^## \[0.3.0\]/{exit} p' CHANGELOG.md \
+     > /tmp/release-notes-0.3.0.md
+   if test -s /tmp/release-notes-0.3.0.md; then
+     gh release create v0.3.0 --title "0.3.0" --notes-file /tmp/release-notes-0.3.0.md
+   else
+     echo "empty slice — check the wave heading; release NOT created" >&2
+   fi
+   ```
 3. Publishing the Release fires the `Release` workflow.
 
 The workflow then runs:
@@ -239,17 +261,12 @@ and gating, which still gives you ~90% of the value).
 
 ### c. npm publish auth
 
-Add an **`NPM_TOKEN`** repository secret containing a publish-scoped
-token for `@genblaze/spec`.
-
-Token type: **Automation token** with `publish` scope on the `@genblaze`
-org. Generate it from <https://www.npmjs.com/settings/genblaze/tokens>
-→ "Generate New Token" → "Automation".
-
-If/when npm Trusted Publishing supports scoped public packages on your
-org by default, replace the `NODE_AUTH_TOKEN` env var in `publish-npm`
-with the OIDC-based flow (same pattern as PyPI Trusted Publishing) and
-delete the `NPM_TOKEN` secret.
+`publish-npm` uses **npm Trusted Publishing** (OIDC); there is no npm token.
+On npmjs.com, open `@genblaze/spec` → Settings → Trusted Publisher → GitHub
+Actions, and set organization `backblaze-labs`, repository `genblaze`,
+workflow `release.yml`, environment `npm`. It requires npm >= 11.5.1, which
+is why the workflow pins `NODE_VERSION` to 24. Dry runs (`npm publish
+--dry-run`) don't authenticate, so `npm-dryrun` needs no setup.
 
 ### d. GitHub Environments
 

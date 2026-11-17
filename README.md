@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-08-01 -->
 <h1 align="center" style="border-bottom: none">
     Genblaze
 </h1>
@@ -42,10 +42,24 @@ Genblaze sits between "call a single video API" and "run a media pipeline in pro
 pip install genblaze                  # core + B2/S3 storage (the umbrella)
 pip install "genblaze[gmicloud]"      # + GMICloud provider
 pip install "genblaze[video]"         # + curated video bundle
-pip install "genblaze[all]"           # + every provider
+pip install "genblaze[all]"           # + every provider except Hume (see below)
 ```
 
 The umbrella pulls in `genblaze-core` (pipeline + models) and `genblaze-s3` (Backblaze B2 / S3 storage) so you have a working provenance pipeline out of the box. Provider adapters are opt-in extras.
+
+> **A GitHub Release tag (e.g. `v0.7.0`) is not a `genblaze` version — don't pin `genblaze==<wave tag>`.**
+> The tag names a CHANGELOG *wave*; every package in that wave versions independently, so
+> wave tags and the umbrella's PyPI versions are separate sequences that happen to look
+> alike (see [RELEASING.md](RELEASING.md#versioning-policy)). A pin on a wave tag either:
+> - **fails outright** (no such version was published), or
+> - **resolves silently to an unrelated umbrella build from a different wave** — no
+>   error, just stale code (e.g. `genblaze==0.4.0` on PyPI predates the `v0.4.0` wave).
+>
+> Pin the exact umbrella version instead (from that wave's "Released package versions"
+> list in its [release notes](https://github.com/backblaze-labs/genblaze/releases)) — but
+> note the umbrella pins ranges (e.g. `genblaze-core>=0.3.8,<0.4`), not exact versions, so
+> even that isn't fully reproducible on its own. For a locked install, generate a lockfile
+> (`pip freeze`, `uv lock`, or a constraints file) once your stack works.
 
 Install packages individually if you prefer:
 
@@ -56,7 +70,7 @@ pip install genblaze-cli             # CLI: extract, verify, replay, index
 
 # Provider adapters
 pip install genblaze-openai          # OpenAI: Sora, DALL-E / gpt-image, TTS, chat
-pip install genblaze-google          # Google: Veo, Imagen, chat
+pip install genblaze-google          # Google: Veo, Imagen, Gemini-image, chat
 pip install genblaze-nvidia          # NVIDIA NIM: Cosmos, SDXL/FLUX, Fugatto, Riva, chat
 pip install genblaze-gmicloud        # GMICloud: video, image, audio, chat (request queue)
 pip install genblaze-runway          # Runway Gen video
@@ -66,8 +80,10 @@ pip install genblaze-replicate       # Replicate (Flux, SDXL, etc.)
 pip install genblaze-elevenlabs      # ElevenLabs TTS + sound effects
 pip install genblaze-stability-audio # Stability AI Stable Audio (music)
 pip install genblaze-lmnt            # LMNT fast TTS
-pip install genblaze-hume            # Hume AI Octave TTS
+pip install genblaze-hume            # Hume AI Octave TTS (currently uninstallable, see its README)
 pip install genblaze-assemblyai      # AssemblyAI speech-to-text / transcription
+pip install genblaze-atlascloudai    # Atlas Cloud image and video generation
+pip install genblaze-falai           # fal.ai image, video, and audio generation
 ```
 
 Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`.
@@ -151,7 +167,7 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 | **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS / Music | `chat()` — Llama, DeepSeek, Qwen |
 | **NVIDIA NIM** | Cosmos 1.0 / 2.0 (diffusion, text2world / video2world) | SDXL, SD 3.5, FLUX.1, FLUX.2 | Fugatto, Riva TTS, Maxine | `chat()` — Nemotron, Llama, Mistral, Qwen, Phi |
 | **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS | `chat()` — GPT-4o / GPT-4.1 / o-series |
-| **Google** | Veo | Imagen | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
+| **Google** | Veo | Imagen, Gemini-image | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
 | **Runway** | Gen-4 Turbo | — | — | — |
 | **Luma** | Dream Machine | — | — | — |
 | **Decart** | Lucy | Lucy | — | — |
@@ -173,7 +189,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | GMICloud | `GMI_API_KEY` | [console.gmicloud.ai](https://console.gmicloud.ai/) |
 | NVIDIA NIM (Cosmos, SDXL/FLUX, Fugatto, chat) | `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/) |
 | OpenAI (Sora, DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
-| Google (Veo, Imagen) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
+| Google (Veo, Imagen, Gemini-image) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | Runway (Gen video) | `RUNWAYML_API_SECRET` | [dev.runwayml.com](https://dev.runwayml.com/) |
 | Luma (Dream Machine) | `LUMAAI_API_KEY` | [lumalabs.ai/dream-machine/api](https://lumalabs.ai/dream-machine/api) |
 | Decart (Lucy) | `DECART_API_KEY` | [platform.decart.ai](https://platform.decart.ai/) |
@@ -183,6 +199,8 @@ Every provider reads its credentials from an environment variable. You don't nee
 | LMNT (fast TTS) | `LMNT_API_KEY` | [app.lmnt.com](https://app.lmnt.com/account) |
 | Hume (Octave TTS) | `HUME_API_KEY` | [platform.hume.ai](https://platform.hume.ai/) |
 | AssemblyAI (speech-to-text) | `ASSEMBLYAI_API_KEY` | [assemblyai.com/app/api-keys](https://www.assemblyai.com/app/api-keys) |
+| Atlas Cloud (image, video) | `ATLASCLOUD_API_KEY` | [atlascloud.ai/console/api-keys](https://www.atlascloud.ai/console/api-keys) |
+| fal.ai (image, video, audio) | `FAL_KEY` | [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys) |
 
 **Example — one provider + B2 storage:**
 
@@ -440,6 +458,14 @@ examples/               # Usage examples
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [AGENTS.md](AGENTS.md) for repo conventions.
 
 **Adding a new provider?** Provider adapters are the highest-leverage contribution — each one expands what Genblaze pipelines can generate. The [new-provider guide](docs/guides/new-provider.md) walks through package setup, the `submit`/`poll`/`fetch_output` lifecycle, entry points, error mapping, and the compliance test harness.
+
+## Backblaze Labs ecosystem
+
+Part of [Backblaze Labs](https://github.com/backblaze-labs):
+
+- **[b2-mcp](https://github.com/backblaze-labs/b2-mcp)** — MCP server for Backblaze B2 Cloud Storage: a focused, safe set of tools for any MCP-compatible AI client.
+- **[b2-sdk-typescript](https://github.com/backblaze-labs/b2-sdk-typescript)** — Backblaze-maintained TypeScript / JavaScript SDK for B2 Cloud Storage.
+- **[b2-action](https://github.com/backblaze-labs/b2-action)** — Backblaze-maintained GitHub Action for B2 Cloud Storage.
 
 ## License
 

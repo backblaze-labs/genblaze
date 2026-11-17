@@ -10,18 +10,25 @@ keep working unchanged.
 
 from __future__ import annotations
 
+import logging
 import random
+import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from genblaze_core._utils import utc_now
+from genblaze_core.exceptions import ProviderError
 from genblaze_core.models.enums import ProviderErrorCode
 
 if TYPE_CHECKING:
     from genblaze_core.models.step import Step
+
+logger = logging.getLogger("genblaze.provider")
+
+_T = TypeVar("_T")
 
 # Upper bound on a server-supplied Retry-After hint. A misconfigured or hostile
 # upstream should not be able to freeze the pipeline for minutes. 120s is long
@@ -240,11 +247,93 @@ class RetryPolicy:
         return None
 
 
+# Codes the chat loop retries when the caller passes no ``policy``. TIMEOUT is
+# left out on purpose: a client-side timeout on a long non-streaming generation
+# tends to recur for the same payload while the server keeps generating (and
+# billing) each abandoned attempt. Pass an explicit ``RetryPolicy()`` to opt in.
+_CHAT_DEFAULT_RETRYABLE_CODES: frozenset[ProviderErrorCode] = frozenset(
+    {ProviderErrorCode.RATE_LIMIT, ProviderErrorCode.SERVER_ERROR}
+)
+
+
+def call_with_rate_limit_retry(fn: Callable[[], _T], *, policy: RetryPolicy | None = None) -> _T:
+    """Run ``fn()``, retrying transient ``ProviderError`` codes per ``policy`` (#221, #264).
+
+    Backs the opt-in ``retry_on_rate_limit=`` flag on the standalone
+    ``chat()``/``achat()`` convenience helpers (``genblaze_openai.chat``,
+    ``genblaze_google.chat``). Those helpers already parse a server's
+    ``Retry-After`` hint onto ``ProviderError.retry_after`` but historically
+    raised immediately instead of waiting — this wraps the single API call
+    they make and sleeps between attempts using the same backoff math as
+    ``BaseProvider``'s pipeline retry loop (``RetryPolicy.compute_delay`` —
+    server hint wins when present, else exponential backoff with jitter).
+
+    Defers entirely to ``policy.should_retry`` (``retryable_codes`` membership
+    plus the ``max_attempts`` budget), so an explicit ``RetryPolicy`` means the
+    same thing here as on ``BaseProvider``'s poll/fetch path. With no
+    ``policy`` the loop retries ``RATE_LIMIT`` and ``SERVER_ERROR`` (e.g.
+    Gemini 503 UNAVAILABLE) — see ``_CHAT_DEFAULT_RETRYABLE_CODES`` for why
+    ``TIMEOUT`` needs an explicit ``RetryPolicy()``. Narrow via
+    ``RetryPolicy(retryable_codes=frozenset({ProviderErrorCode.RATE_LIMIT}))``
+    for 429-only behavior, or ``RetryPolicy.disabled()`` for none. Codes
+    outside the set — including ``UNKNOWN`` — and non-``ProviderError``
+    exceptions propagate on the first attempt.
+
+    Unlike ``BaseProvider`` submit (which skips post-response retry because a
+    billed async job may already exist), a 429/5xx on a synchronous chat call
+    returns no completion, so re-issuing it is safe.
+
+    Bounded worst case: wall clock is at most ``max_attempts`` request
+    timeouts plus ``(max_attempts - 1) * MAX_RETRY_AFTER_SEC`` of waits — with
+    6 attempts, ~10 minutes of waits alone if a misbehaving upstream returns
+    the maximum ``Retry-After`` hint every time. There's no wall-clock deadline
+    gate (unlike ``BaseProvider``'s pipeline retry, which bails out once a
+    step's overall ``timeout`` would be exceeded) — this is a single,
+    unscheduled call with no equivalent deadline to check against. Pass a tighter ``policy`` (e.g.
+    ``max_attempts=2``) if that worst case is unacceptable for your call site.
+
+    Synchronous by design: callers on the async path (``achat``) already run
+    the whole sync call — including this retry loop — via
+    ``asyncio.to_thread``, so the blocking ``time.sleep`` here only occupies
+    the worker thread, never the event loop.
+
+    Args:
+        fn: Zero-arg callable to invoke. Should raise ``ProviderError`` (with
+            ``error_code``/``retry_after`` set) on failure.
+        policy: Controls the attempt cap, retryable-code set, and backoff
+            timing. Defaults to ``RetryPolicy()`` with ``retryable_codes``
+            narrowed to ``_CHAT_DEFAULT_RETRYABLE_CODES`` (6 attempts,
+            ``Retry-After`` honored, exponential + full-jitter fallback).
+
+    Raises:
+        ProviderError: Re-raised once attempts are exhausted, or immediately
+            if its ``error_code`` isn't in ``policy.retryable_codes``. ``exc.attempts`` is
+            set to the number of attempts made before re-raising, matching
+            ``BaseProvider``'s pipeline retry loop.
+    """
+    policy = policy or RetryPolicy(retryable_codes=_CHAT_DEFAULT_RETRYABLE_CODES)
+    attempt = 1
+    while True:
+        try:
+            return fn()
+        except ProviderError as exc:
+            if not policy.should_retry(exc.error_code, attempt):
+                exc.attempts = attempt
+                raise
+            delay = policy.compute_delay(attempt, retry_after=exc.retry_after)
+            logger.warning(
+                "%s retry %d/%d in %.1fs", exc.error_code, attempt, policy.max_attempts, delay
+            )
+            time.sleep(delay)
+            attempt += 1
+
+
 __all__ = [
     "MAX_RETRY_AFTER_SEC",
     "PRE_RESPONSE_EXCEPTIONS",
     "IdempotencyStrategy",
     "JitterStrategy",
     "RetryPolicy",
+    "call_with_rate_limit_retry",
     "retry_after_from_response",
 ]

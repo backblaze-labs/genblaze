@@ -4,15 +4,26 @@
 outcome is graded by what the SDK can honestly substantiate:
 
 * ``OK_AUTHORITATIVE`` — positive confirmation from a user registration,
-  a NATIVE discovery cache hit, or a ``FamilyProbe`` that returned LIVE.
+  a NATIVE discovery cache hit, a ``FamilyProbe`` that returned LIVE, or
+  (when no family matched) the registry's ``fallback_probe`` returning LIVE.
 * ``OK_PROVISIONAL`` — slug matched a family pattern but liveness is
   unverifiable on this provider's ``DiscoverySupport``. Pipeline preflight
   emits a WARN and proceeds; failures will surface mid-pipeline.
-* ``UNKNOWN_PERMISSIVE`` — no family match. The permissive fallback
-  applies; the slug passes through to upstream untouched. Preflight
-  cannot say anything about liveness.
-* ``NOT_FOUND`` — discovery says absent (NATIVE) or probe returned DEAD.
-  Pipeline preflight raises before any wire calls.
+* ``UNKNOWN_PERMISSIVE`` — no family match, and either no ``fallback_probe``
+  is configured or it returned UNKNOWN. The permissive fallback applies; the
+  slug passes through to upstream untouched. Preflight cannot say anything
+  about liveness.
+* ``NOT_FOUND`` — discovery says absent (NATIVE), or a probe (family-level
+  or fallback) returned DEAD. Pipeline preflight raises before any wire
+  calls.
+
+**A positive outcome confirms existence, not entitlement.** A probe (family
+or fallback) can only observe what upstream reveals before an
+account-entitlement check runs — a slug can be ``OK_AUTHORITATIVE`` here and
+still 404 "you do not have access" on a real submit. Connectors with known
+gated slugs re-grade those explicitly (e.g. GMICloud's
+``_entitlement_gated_slugs``); absent that, treat ``OK_AUTHORITATIVE`` as
+"this slug exists", not "this key can call it".
 
 The ``ValidationOutcome`` × ``ValidationSource`` matrix is the single
 source of truth for slug-validity questions. ``probe_model()`` (deprecated
@@ -54,7 +65,8 @@ class ValidationOutcome(StrEnum):
 
     OK_AUTHORITATIVE = "ok_authoritative"
     """Positive confirmation: user-registered, NATIVE-discovery-confirmed,
-    or family.probe() returned LIVE."""
+    family.probe() returned LIVE, or (no family matched) the registry's
+    fallback_probe returned LIVE. Confirms existence, not entitlement."""
 
     OK_PROVISIONAL = "ok_provisional"
     """Family-matched but liveness is unverifiable. Honest answer when the
@@ -62,8 +74,9 @@ class ValidationOutcome(StrEnum):
     NONE provider with no probe configured, or probe returned UNKNOWN)."""
 
     UNKNOWN_PERMISSIVE = "unknown_permissive"
-    """No family match. Permissive fallback applies; the slug will pass
-    through to upstream untouched. The SDK cannot pre-flight liveness."""
+    """No family match, and no fallback_probe configured (or it returned
+    UNKNOWN). Permissive fallback applies; the slug will pass through to
+    upstream untouched. The SDK cannot pre-flight liveness."""
 
     NOT_FOUND = "not_found"
     """NATIVE discovery says the slug is absent, or family.probe() returned

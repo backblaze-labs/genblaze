@@ -304,3 +304,122 @@ class TestPricingPhaseOut:
         provider = ImagenProvider(api_key="test")
         for slug in ("imagen-3.0-generate-002", "imagen-3.0-fast-generate-001"):
             assert provider._models.get(slug).pricing is None, slug
+
+
+# --- Doc-drift guard (#233) -----------------------------------------------
+#
+# imagen-3.0-* left the catalog and 404s at preflight (see
+# GOOGLE_IMAGEN_FAMILY's example_slugs comment in _families.py), but the
+# tests above mock ``models.get`` to succeed, so a docs/example that still
+# references a delisted slug would grade OK_AUTHORITATIVE in CI while
+# actually being DEAD against the real API. This guards the example script
+# and the README quickstart directly against that drift.
+#
+# Deliberately scoped to the *ImagenProvider* invocation specifically (not
+# "any live slug from any Google family anywhere in the file") — a loose
+# whole-file substring scan would pass even if the actual ImagenProvider
+# call still used a delisted slug, as long as a live Gemini-image slug
+# happened to appear elsewhere (e.g. in a docstring or a different section).
+
+
+def _extract_imagen_model_slug(source: str) -> str | None:
+    """Parse ``source`` and return the ``model=`` kwarg passed to the first
+    ``.step(<ImagenProvider instance>, model=..., ...)`` call found, or
+    ``None``.
+
+    Handles both an inline ``.step(ImagenProvider(...), model=...)`` (as in
+    the README) and a variable bound to ``ImagenProvider(...)`` earlier and
+    passed by name (as in ``examples/imagen_pipeline.py``:
+    ``provider = ImagenProvider(...); .step(provider, model=...)``).
+    """
+    import ast
+
+    tree = ast.parse(source)
+
+    # Track simple `name = ImagenProvider(...)` bindings anywhere in the module.
+    imagen_var_names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "ImagenProvider"
+        ):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    imagen_var_names.add(target.id)
+
+    def _is_imagen_provider_arg(arg: ast.expr) -> bool:
+        if (
+            isinstance(arg, ast.Call)
+            and isinstance(arg.func, ast.Name)
+            and arg.func.id == "ImagenProvider"
+        ):
+            return True
+        return isinstance(arg, ast.Name) and arg.id in imagen_var_names
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "step"):
+            continue
+        if not node.args or not _is_imagen_provider_arg(node.args[0]):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "model" and isinstance(kw.value, ast.Constant):
+                return kw.value.value
+    return None
+
+
+class TestExampleScriptUsesLiveSlugs:
+    """The Imagen quickstart in the example script and the README must pass
+    a catalog-listed ``ImagenProvider`` slug, not a delisted one."""
+
+    def test_example_script_imagen_step_uses_live_slug(self) -> None:
+        import pathlib
+
+        from genblaze_google._families import GOOGLE_IMAGEN_FAMILY
+
+        repo_root = pathlib.Path(__file__).resolve().parents[4]
+        example_path = repo_root / "examples" / "imagen_pipeline.py"
+        slug = _extract_imagen_model_slug(example_path.read_text())
+
+        assert slug is not None, (
+            f"could not find an ImagenProvider .step(model=...) call in {example_path}"
+        )
+        assert slug in GOOGLE_IMAGEN_FAMILY.example_slugs, (
+            f"{example_path} passes model={slug!r} to ImagenProvider, which is "
+            f"not a currently catalog-listed Imagen slug "
+            f"({GOOGLE_IMAGEN_FAMILY.example_slugs}). See issue #233."
+        )
+
+    def test_readme_imagen_quickstart_uses_live_slug(self) -> None:
+        import pathlib
+        import re
+
+        from genblaze_google._families import GOOGLE_IMAGEN_FAMILY
+
+        repo_root = pathlib.Path(__file__).resolve().parents[4]
+        readme_path = repo_root / "libs" / "connectors" / "google" / "README.md"
+        readme = readme_path.read_text()
+
+        # The README has multiple fenced Python snippets (Veo, Imagen,
+        # Gemini-image quickstarts) — isolate the Imagen one specifically.
+        match = re.search(
+            r"## Quickstart — Imagen[^\n]*\n+```python\n(.*?)```",
+            readme,
+            re.DOTALL,
+        )
+        assert match, f"could not find an Imagen quickstart code block in {readme_path}"
+        slug = _extract_imagen_model_slug(match.group(1))
+
+        assert slug is not None, (
+            "could not find an ImagenProvider .step(model=...) call in the "
+            f"Imagen quickstart of {readme_path}"
+        )
+        assert slug in GOOGLE_IMAGEN_FAMILY.example_slugs, (
+            f"{readme_path}'s Imagen quickstart passes model={slug!r}, which "
+            f"is not a currently catalog-listed Imagen slug "
+            f"({GOOGLE_IMAGEN_FAMILY.example_slugs}). See issue #233."
+        )

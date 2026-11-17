@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -18,8 +19,12 @@ FREEFORM_KEY = "----:genblaze:manifest"
 class AacHandler(BaseMediaHandler):
     """Embed and extract manifests in AAC/M4A files via MP4 freeform atoms."""
 
-    def embed(self, source: Path, manifest: Manifest, output: Path | None = None) -> Path:
-        output = output or source
+    def embed(
+        self,
+        source: str | os.PathLike[str],
+        manifest: Manifest,
+        output: str | os.PathLike[str] | None = None,
+    ) -> Path:
         try:
             from mutagen.mp4 import MP4, MP4FreeForm
         except ImportError as exc:
@@ -29,6 +34,10 @@ class AacHandler(BaseMediaHandler):
             ) from exc
 
         try:
+            # Coerce both source= and output= — either being a bare str
+            # would leak into the -> Path contract below (#225).
+            source = Path(source)
+            output = Path(output) if output else source
             with atomic_write(output) as tmp:
                 shutil.copy2(source, tmp)
                 audio = MP4(tmp)
@@ -44,7 +53,7 @@ class AacHandler(BaseMediaHandler):
         except Exception as exc:
             raise EmbeddingError(f"Failed to embed manifest in AAC/M4A: {exc}") from exc
 
-    def extract(self, source: Path) -> Manifest:
+    def extract(self, source: str | os.PathLike[str]) -> Manifest:
         try:
             from mutagen.mp4 import MP4
         except ImportError as exc:
@@ -54,6 +63,7 @@ class AacHandler(BaseMediaHandler):
             ) from exc
 
         try:
+            source = Path(source)
             audio = MP4(source)
             values = audio.tags.get(FREEFORM_KEY) if audio.tags else None
             if not values:

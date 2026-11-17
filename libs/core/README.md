@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-07-29 -->
 # genblaze-core
 
 **Python SDK for building generative AI pipelines across video, image, and audio — with built-in SHA-256 provenance.**
@@ -44,6 +44,19 @@ Optional extras:
 pip install "genblaze-core[parquet]"   # ParquetSink for analytics
 pip install "genblaze-core[audio]"     # Audio metadata embedding (mutagen)
 ```
+
+## Public imports
+
+The supported top-level API is available directly from `genblaze_core`, including
+runnable configuration types:
+
+```python
+from genblaze_core import Pipeline, RunnableConfig
+```
+
+Imports are resolved lazily. `dir(genblaze_core)` still lists the full public
+surface, so REPL completion and introspection work before individual modules are
+loaded.
 
 Add provider adapters separately:
 

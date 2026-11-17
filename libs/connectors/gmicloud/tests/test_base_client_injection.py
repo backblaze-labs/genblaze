@@ -22,24 +22,26 @@ def test_default_base_url_when_no_override():
 
 
 def test_ctor_base_url_wins_over_env(monkeypatch):
-    monkeypatch.setenv("GMI_BASE_URL", "https://env.example/v1")
-    p = GMICloudVideoProvider(api_key="test-key", base_url="https://ctor.example/v1")
-    assert p._base_url == "https://ctor.example/v1"
+    # Queue-shaped URLs (extra path segments after /v1) — a bare /v1 suffix
+    # is rejected as chat/inference-endpoint-shaped, see test_base_url_guard.py.
+    monkeypatch.setenv("GMI_BASE_URL", "https://env.example/v1/queue")
+    p = GMICloudVideoProvider(api_key="test-key", base_url="https://ctor.example/v1/queue")
+    assert p._base_url == "https://ctor.example/v1/queue"
 
 
 def test_env_base_url_used_when_ctor_not_set(monkeypatch):
-    monkeypatch.setenv("GMI_BASE_URL", "https://env.example/v1")
+    monkeypatch.setenv("GMI_BASE_URL", "https://env.example/v1/queue")
     p = GMICloudVideoProvider(api_key="test-key")
-    assert p._base_url == "https://env.example/v1"
+    assert p._base_url == "https://env.example/v1/queue"
 
 
 def test_internally_created_client_uses_configured_base_url(monkeypatch):
     """First real HTTP attempt should build the client against our base_url."""
-    monkeypatch.setenv("GMI_BASE_URL", "https://env.example/v1")
+    monkeypatch.setenv("GMI_BASE_URL", "https://env.example/v1/queue")
     p = GMICloudVideoProvider(api_key="test-key")
     client = p._get_http_client()
     try:
-        assert str(client.base_url).rstrip("/") == "https://env.example/v1"
+        assert str(client.base_url).rstrip("/") == "https://env.example/v1/queue"
     finally:
         p.close()
 

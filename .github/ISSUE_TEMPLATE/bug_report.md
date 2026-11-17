@@ -27,5 +27,6 @@ What actually happened. Include error messages or tracebacks.
 ## Environment
 
 - Python version:
+- genblaze version (`pip show genblaze`, if installed via the umbrella):
 - genblaze-core version:
 - OS:

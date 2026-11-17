@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-15 -->
+<!-- last_verified: 2026-09-21 -->
 # Feature: Pipeline
 
 ## Purpose
@@ -41,6 +41,21 @@ Fluent API for building and executing multi-step generative media workflows with
 - `on_submit`: Callable[[str, Any], None] | None — Callback fired after provider `submit()` with `(step_id, prediction_id)` for checkpoint persistence
 - `input_from`: list[int] | int | None — Route inputs from specific prior steps by index (overrides chain mode)
 - `external_inputs`: list[Asset] | None — Seed `Step.inputs` from caller-held Assets (e.g., user-uploaded media for a multimodal first step). Mutually exclusive with `input_from`. Provider must declare `accepts_chain_input=True`.
+
+## Where each option goes
+
+Pipeline options live in three places. Passing one to the wrong place raises
+`TypeError`; for the options below the error names the call site that works.
+
+| Call site | Options |
+|---|---|
+| Constructor — `Pipeline(...)` | `name`, `tenant_id`, `project_id`, `chain`, `structured_log`, `max_concurrency`, `moderation`, `tracer`, `preflight` |
+| Builders — `pipeline.x(...)` | `.step(...)`, `.cache(StepCache(...))`, `.config({...})`, `.metadata(key=value)`, `.tracer(...)`, `.preflight(bool)` |
+| Run entry points — `.run()` / `.arun()` / `.batch_run()` / `.abatch_run()` | `sink`, `fail_fast`, `raise_on_failure`, `timeout`, `max_retries`, `on_progress`, `pipeline_timeout`, `on_step_complete` |
+
+Three run-entry-point kwargs are not universal: `progress` and `on_retry` are
+`run()`/`arun()` only, and `max_concurrency` is accepted everywhere except
+`run()`, which is always sequential.
 
 ## Step input mechanisms — when to use which
 
@@ -94,6 +109,7 @@ chain-input compatibility) run inline. `run()` behavior is unchanged (sync
 - Cache stores only successful steps — failed steps are not cached
 - Exception-raising tasks in `_gather_fail_fast` → captured as FAILED steps (not dropped), preserving the `step_id` already announced via that step's `step.started` event so cancelled/errored steps correlate correctly with their own stream events
 - Model fallback: on `MODEL_ERROR`, tries each `fallback_models` entry; records `fallback_from`/`fallback_model` in step metadata. Cache stores successful fallback results under the fallback model's key (not the original), so a later run with the fallback model as primary gets a cache hit
+- Fallback attempt ledger: every failure a fallback supersedes is kept, oldest first, in `Step.failed_attempts` (a list of `StepAttempt`: `step_id`, `model`, `provider`, sanitized `error`, `error_code`, `upstream_id`, `cost_usd`, `retries`, `started_at`, `completed_at`) on the step the run returns — the rescued success, or the last failure when every model fails. `run.steps` stays one Step per pipeline step; `StepAttempt.step_id` is the id the failed attempt's tracer/progress events carried. Attempts carry no `provider_payload`, prompt, or params. Hashing: the list is omitted from serialization when empty, so manifests without a fallback keep their pre-existing `canonical_hash`; when present only each attempt's `model`, `provider` and `error_code` enter the hash (see [manifest-provenance.md](manifest-provenance.md#hash-payload-vs-canonical-json)), so identical fallback runs hash identically. Compatibility: a manifest that recorded a fallback needs a genblaze-core reader that knows `failed_attempts` (the release that added it or later); older readers reject the unknown key. Cost: `Step.cost_usd` is the final attempt's cost only; failed-attempt cost is never folded in, so all-in spend is `(step.cost_usd or 0) + sum(a.cost_usd or 0 for a in step.failed_attempts)`. An attempt's `cost_usd` is usually `None` — providers price successful outputs only — and `None` means unknown, not free. Provider-level retries inside one attempt are counted in `StepAttempt.retries`, not listed separately. Cached fallback results drop the ledger — a later cache hit did not re-run those attempts
 - `batch_run` / `abatch_run`: each prompt gets independent pipeline execution. `abatch_run`'s `max_concurrency` genuinely limits parallel runs (validated `>= 1`, else `GenblazeError`). `batch_run` always executes sequentially — `max_concurrency` is validated but otherwise inert; an explicit value warns (`UserWarning`) and points at `abatch_run`, since provider/sink instances are shared across batch clones and not guaranteed thread-safe under real concurrent execution
 - `pipeline_timeout` raises `PipelineTimeoutError` when wall-clock time exceeds limit (checked before each step, not mid-step)
 - `on_step_complete` fires for both succeeded and failed steps; for concurrent `arun()`, fires after all steps complete
@@ -153,13 +169,18 @@ from genblaze_core.testing import MockProvider
 from genblaze_core.models.enums import ProviderErrorCode
 
 provider = MockProvider(should_fail=True, error_code=ProviderErrorCode.RATE_LIMIT)
+
+# Opt-in strict input validation — catches steps built without
+# external_inputs= that a real provider would reject (e.g. an
+# image-to-video model called with no input image attached)
+strict = MockProvider(min_inputs=1)
 ```
 
-See `MockProvider` for full options: `assets`, `latency`, `cost_usd`, `should_fail`, `error_code`.
+See `MockProvider` for full options: `assets`, `latency`, `cost_usd`, `should_fail`, `error_code`, `min_inputs`.
 
 ## Verification
 - Test files: `libs/core/tests/unit/test_pipeline.py`, `libs/core/tests/unit/test_mock_providers.py`, `libs/core/tests/integration/test_pipeline_embed_roundtrip.py`
-- Required cases: single step, multi-step, tuple unpacking, cache hit, cache miss, cache clear, arun, arun with cache, fail_fast, empty pipeline guard, embed roundtrip
+- Required cases: single step, multi-step, tuple unpacking, cache hit, cache miss, cache clear, arun, arun with cache, fail_fast, empty pipeline guard, embed roundtrip, MockProvider min_inputs validation
 - Quick verify: `cd libs/core && pytest tests/unit/test_pipeline.py -v`
 - Full verify: `make test`
 - Pass criteria: all pipeline tests green, PipelineResult fields populated

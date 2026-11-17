@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/backblaze-labs/.github/main/schemas/references.schema.json
+#
+# External references for this repository — official docs and the package
+# registries where Genblaze is published. Machine-parseable source of truth for
+# internal tooling; standard defined in backblaze-labs/.github.
+schema_version: 1
+project: Genblaze
+slug: genblaze
+updated: "2026-09-09"
+
+canonical:
+  repo: https://github.com/backblaze-labs/genblaze
+  package: "genblaze"
+  display_name: Genblaze
+
+references:
+  # --- First-party ---
+  - id: repo
+    title: Genblaze on GitHub
+    url: https://github.com/backblaze-labs/genblaze
+    type: repo
+    source: GitHub
+    official: true
+    canonical_for: repo
+    added: "2026-09-09"
+    status: live
+
+  - id: developer-guide
+    title: genblaze Developer Guide
+    url: https://www.backblaze.com/docs/en/cloud-storage-genblaze-developer-guide
+    type: docs
+    source: Backblaze Docs
+    official: true
+    canonical_for: docs
+    added: "2026-09-09"
+    status: live
+    summary: Official Backblaze developer guide for building AI media pipelines with Genblaze.
+
+  - id: integration-guides
+    title: Backblaze Cloud Storage Integration Guides
+    url: https://www.backblaze.com/docs/en/cloud-storage-integration-guides
+    type: listing
+    source: Backblaze Docs
+    official: true
+    added: "2026-09-09"
+    status: live
+    summary: Backblaze's directory of Cloud Storage integration guides.
+
+  # --- Package registry ---
+  - id: pypi
+    title: genblaze on PyPI
+    url: https://pypi.org/project/genblaze/
+    type: registry
+    source: PyPI
+    official: true
+    canonical_for: pypi
+    added: "2026-09-09"
+    status: live
+    summary: Umbrella distribution that pins the Genblaze package family.
+
+  - id: pypi-core
+    title: genblaze-core on PyPI
+    url: https://pypi.org/project/genblaze-core/
+    type: registry
+    source: PyPI
+    official: true
+    added: "2026-09-09"
+    status: live
+    summary: Core Pipeline / Manifest engine shared by every connector.

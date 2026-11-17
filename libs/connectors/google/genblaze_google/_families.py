@@ -1,7 +1,8 @@
-"""Google model families — Veo (video) and Imagen (image).
+"""Google model families — Veo (video), Imagen (image), and
+Gemini-native image generation.
 
 Pattern-keyed; future ``veo-N`` / ``imagen-N`` slugs inherit param
-shape automatically. Both families ship the
+shape automatically. All families ship the
 ``google_models_get_probe`` so ``Pipeline.preflight()`` returns
 ``OK_AUTHORITATIVE`` when the slug exists on the user's project,
 ``NOT_FOUND`` when it doesn't, and ``OK_PROVISIONAL`` when google-genai
@@ -157,15 +158,47 @@ GOOGLE_IMAGEN_FAMILY = ModelFamily(
         param_constraints=(_check_imagen_aspect_ratio,),
     ),
     description="Google Imagen family — text-to-image generation.",
+    # imagen-3.0-* left the catalog (404 on models.get -> DEAD) and were
+    # replaced by imagen-4.0-*, which IS catalog-listed but entitlement-gated
+    # for new keys. The plain catalog-membership probe can't see that gate
+    # (models.get returns 200); ImagenProvider.validate_model re-grades the
+    # known-gated imagen-4.0-* slugs to OK_PROVISIONAL rather than a billable
+    # :predict probe or a hard DEAD — see issue #206.
     example_slugs=(
-        "imagen-3.0-generate-002",
-        "imagen-3.0-fast-generate-001",
+        "imagen-4.0-generate-001",
+        "imagen-4.0-fast-generate-001",
     ),
     probe=google_models_get_probe,
 )
 
 
+# Gemini-native image models — a DIFFERENT wire shape from Imagen
+# (generateContent + inline base64 bytes, not :predict). The only image
+# path callable on a freshly created Gemini API key, since imagen-4.0-*
+# is entitlement-gated there (issue #205). ``.*`` before the required
+# "image" segment excludes chat models (gemini-2.5-flash) while still
+# matching the "-preview" suffixed slugs (gemini-3-pro-image-preview) —
+# anchoring with a trailing ``$`` would miss those.
+GOOGLE_GEMINI_IMAGE_FAMILY = ModelFamily(
+    name="google-gemini-image",
+    pattern=re.compile(r"^gemini-.*-image"),
+    spec_template=ModelSpec(model_id="*", modality=Modality.IMAGE),
+    description=(
+        "Gemini-native image generation via generateContent — inline "
+        "base64 bytes, not Imagen's :predict shape."
+    ),
+    example_slugs=(
+        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image",
+    ),
+    # No reported entitlement gap for this family (issue #205) — plain
+    # catalog-membership probe is sufficient.
+    probe=google_models_get_probe,
+)
+
+
 __all__ = [
+    "GOOGLE_GEMINI_IMAGE_FAMILY",
     "GOOGLE_IMAGEN_FAMILY",
     "GOOGLE_VEO_FAMILY",
     "GOOGLE_VEO_LEGACY_FAMILY",

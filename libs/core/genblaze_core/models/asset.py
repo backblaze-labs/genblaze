@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-from genblaze_core._utils import compute_sha256, new_id
+from genblaze_core._utils import compute_sha256, new_id, validate_path_component
 
 _SHA256_HEX_CHARS = frozenset("0123456789abcdef")
 
@@ -218,6 +218,13 @@ class Asset(BaseModel):
     # nonstandard media_type) still loads instead of raising ValidationError.
     # is_valid_asset_metadata() + Manifest.verification_report() is the
     # verification boundary that surfaces the problem on loaded data.
+    # asset_id is the exception: it names storage keys and files, so it is
+    # path-checked on tolerant loads too (GHSA-x99g-wcm2-r2v8).
+
+    @field_validator("asset_id", mode="after")
+    @classmethod
+    def _validate_asset_id(cls, value: str) -> str:
+        return validate_path_component(value, field="asset_id")
 
     @field_validator("width", "height", mode="after")
     @classmethod

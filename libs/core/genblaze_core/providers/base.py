@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import warnings
-from abc import abstractmethod
+from abc import ABCMeta, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -315,7 +315,69 @@ def validate_chain_input_url(
             )
 
 
-class BaseProvider(Runnable[Step, Step]):
+#: Private identity sentinel — see ``_ProviderInitGuardMeta``. Deliberately not
+#: a plain ``bool``: a bool default (e.g. ``_base_init_done = True``) is a
+#: one-line accidental or naive bypass for a subclass/dataclass field of the
+#: same name. Checking identity against this module-private object doesn't
+#: make bypass impossible (a subclass could still import and assign this
+#: exact object), but it rules out the accidental collision and raises the
+#: bar to a deliberate act.
+_BASE_INIT_TOKEN = object()
+
+
+class _ProviderInitGuardMeta(ABCMeta):
+    """Fails construction loudly when a subclass never ran ``BaseProvider.__init__``.
+
+    ``@dataclass`` on a provider subclass replaces the inherited ``__init__``
+    with a generated one, so ``BaseProvider.__init__`` silently never runs and
+    the instance is missing attributes (``_poll_cache``, ``_retry_policy_override``,
+    etc.). That surfaces later as a confusing ``AttributeError`` deep inside
+    ``invoke()``, naming a private attribute the caller never wrote.
+
+    This can't be caught in ``__init_subclass__``: that hook runs while the
+    ``class`` statement's body is being built, but ``@dataclass`` is a
+    decorator applied to the class object *afterward* — so at
+    ``__init_subclass__`` time the class isn't a dataclass yet and has no
+    generated ``__init__``. Construction is the earliest point at which both
+    signals (``__dataclass_fields__`` on the class itself, and whether
+    ``BaseProvider.__init__`` actually ran) are reliably observable.
+    """
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+        obj = super().__call__(*args, **kwargs)
+        if getattr(obj, "_base_init_token", None) is not _BASE_INIT_TOKEN:
+            # ``__dataclass_fields__ in cls.__dict__`` (not ``is_dataclass(cls)``,
+            # which is also true when only an inherited *base* is the
+            # dataclass) — so the message names the class actually decorated,
+            # not an unrelated mixin ancestor.
+            if "__dataclass_fields__" in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} is decorated with @dataclass, which replaces "
+                    "BaseProvider.__init__ with a generated one — so BaseProvider "
+                    "never initializes its poll cache, retry policy, or preflight "
+                    "state. Providers cannot be dataclasses. Write a plain "
+                    "__init__ that calls super().__init__() instead."
+                )
+            # Deliberately does not name a specific __init__ as "the" culprit:
+            # cls.__init__ might already call super().__init__() correctly and
+            # still hit this — e.g. a base class further up the MRO is itself
+            # a @dataclass whose generated __init__ doesn't forward the call
+            # any further, so "add super().__init__() to {cls.__name__}"
+            # would be wrong advice in that case. Point at the whole chain.
+            raise TypeError(
+                f"BaseProvider.__init__ never ran for this {cls.__name__} "
+                "instance, so its poll cache, retry policy, and preflight "
+                "state were never initialized. Check every __init__ in "
+                f"{cls.__name__}'s class hierarchy — including any inherited "
+                "from a base class — and make sure each one calls "
+                "super().__init__(). A base class decorated with @dataclass "
+                "is a common cause: its generated __init__ does not forward "
+                "to BaseProvider.__init__ on its own."
+            )
+        return obj
+
+
+class BaseProvider(Runnable[Step, Step], metaclass=_ProviderInitGuardMeta):
     """Abstract base for all provider adapters.
 
     Providers implement the 3-method lifecycle:
@@ -338,6 +400,14 @@ class BaseProvider(Runnable[Step, Step]):
     """
 
     name: str = "base"
+
+    #: Sentinel read by ``_ProviderInitGuardMeta.__call__``. Class-level default
+    #: so a subclass whose ``__init__`` never ran ``super().__init__()`` reads
+    #: ``None`` here instead of raising ``AttributeError``. Set to the private
+    #: ``_BASE_INIT_TOKEN`` object as the last statement of
+    #: ``BaseProvider.__init__`` — last, so a constructor that raises partway
+    #: through still leaves this ``None``.
+    _base_init_token: object | None = None
 
     #: Per-provider declaration of upstream catalog API support. Drives
     #: ``validate_model()`` outcome semantics and the ``tools/probe_models.py``
@@ -495,6 +565,9 @@ class BaseProvider(Runnable[Step, Step]):
         # In-flight probe events keyed by slug; entry exists while a
         # probe is mid-flight, gets removed once the result is cached.
         self._probe_inflight: dict[str, threading.Event] = {}
+        # Last statement: marks this instance as fully initialized for
+        # ``_ProviderInitGuardMeta``. Keep this at the end of ``__init__``.
+        self._base_init_token = _BASE_INIT_TOKEN
 
     @property
     def retry_policy(self) -> RetryPolicy:
@@ -678,17 +751,29 @@ class BaseProvider(Runnable[Step, Step]):
         Outcomes (see ``ValidationOutcome``):
 
         * ``OK_AUTHORITATIVE`` — user-registered, NATIVE-discovery-confirmed,
-          or family probe returned LIVE.
+          or a probe (family-level, or the registry's ``fallback_probe`` when
+          no family matched) returned LIVE.
         * ``OK_PROVISIONAL`` — family-matched but liveness unverifiable.
           Pipeline preflight emits a WARN and proceeds.
-        * ``UNKNOWN_PERMISSIVE`` — no family match; permissive fallback applies.
-        * ``NOT_FOUND`` — discovery says absent or probe returned DEAD.
-          Pipeline preflight raises before any wire calls.
+        * ``UNKNOWN_PERMISSIVE`` — no family match, no ``fallback_probe``
+          configured (or the probe returned UNKNOWN); permissive fallback
+          applies.
+        * ``NOT_FOUND`` — discovery says absent, or a probe (family-level or
+          fallback) returned DEAD. Pipeline preflight raises before any wire
+          calls.
+
+        A positive outcome (``OK_AUTHORITATIVE`` / ``OK_PROVISIONAL``) means
+        the slug is known to exist — it does **not** mean this account is
+        entitled to call it. A probe can only observe what the upstream API
+        reveals before an entitlement check runs (see connectors' own
+        gating overrides, e.g. GMICloud's ``_entitlement_gated_slugs``).
 
         For ``DiscoverySupport.NATIVE`` providers, this method may issue
         a single discovery fetch (subject to TTL and single-flight). For
         ``PARTIAL`` / ``NONE``, it may invoke a family-level ``probe()``
-        when present. ``refresh=True`` forces a fresh discovery snapshot.
+        when present, or the registry's ``fallback_probe`` when no family
+        matched and one is configured. ``refresh=True`` forces a fresh
+        discovery snapshot or re-probe.
         """
         # First pass: non-network — return immediately if we already know.
         result = self._models.validate(model_id, discovery_support=self.discovery_support)
@@ -761,6 +846,62 @@ class BaseProvider(Runnable[Step, Step]):
                     detail="upstream probe returned DEAD",
                 )
             # UNKNOWN: fall through to provisional answer below.
+
+        # No family matched at all (the permissive-fallback case). Connectors
+        # without a full catalog can still opt in to a liveness check here —
+        # ``fallback_probe`` is the liveness counterpart to the registry's
+        # ``fallback`` param-shape spec. Without this, every slug the
+        # fallback covers (a provider's mainline models, as well as
+        # fabricated ones) grades identically as UNKNOWN_PERMISSIVE, with no
+        # way to tell "this account can call this" from "this string looks
+        # plausible" (#248).
+        elif match is None and self._models._fallback_probe is not None:
+            # ``resolve_canonical`` is cheap and non-network (no fetch, no
+            # wire call) — it only ever differs from ``model_id`` here when
+            # ``get()`` resolved through the user-spec or alias layer to
+            # something other than the permissive fallback (family
+            # resolution was already ruled out above by ``match is None``).
+            # That means ``model_id`` is a (possibly deprecated) alias for a
+            # genuine USER-registered spec that ``ModelRegistry.validate()``
+            # missed — it only checks ``_user`` by exact key, not through
+            # ``_alias_index``. Treat it exactly as validating the canonical
+            # slug directly would: USER is documented as "strongest signal
+            # regardless of provider class" and must never be handed to a
+            # probe under the alias's literal (and often non-wire) string
+            # (#248 review).
+            canonical = self._models.resolve_canonical(model_id)
+            if canonical != model_id:
+                return ValidationResult.ok_authoritative(ValidationSource.USER)
+            # Gating on UNKNOWN_PERMISSIVE (not just ``match is None``) is
+            # the second half of that same protection: it excludes a plain
+            # USER exact-match slug under ``refresh=True`` — such a result
+            # is already OK_AUTHORITATIVE/USER, never UNKNOWN_PERMISSIVE, so
+            # this branch leaves it untouched and ``return result`` below
+            # preserves it instead of letting the probe overrule it.
+            if result.outcome is ValidationOutcome.UNKNOWN_PERMISSIVE:
+                # The pre-probe ``result.detail`` may carry "known_unstable"
+                # for a registry-level unstable slug that matched no family
+                # (the orphan case). Preserve it on the LIVE path for the
+                # same reason as the family-probe branch above; NOT_FOUND
+                # speaks for itself on DEAD.
+                fallback_unstable_detail = result.detail
+                probe_result = self._cached_probe(
+                    self._models._fallback_probe, model_id, refresh=refresh
+                )
+                if probe_result is LiveProbeResult.LIVE:
+                    return ValidationResult.ok_authoritative(
+                        ValidationSource.PROBE,
+                        detail=(
+                            fallback_unstable_detail
+                            or "fallback probe: slug matched no family pattern"
+                        ),
+                    )
+                if probe_result is LiveProbeResult.DEAD:
+                    return ValidationResult.not_found(
+                        ValidationSource.PROBE,
+                        detail="upstream fallback probe returned DEAD",
+                    )
+                # UNKNOWN: fall through to permissive answer below.
 
         return result
 
@@ -1825,7 +1966,20 @@ class BaseProvider(Runnable[Step, Step]):
 
                     # Step-level retry: budget from config.max_retries (caller-driven),
                     # retryable codes from the unified RetryPolicy so users tune one knob.
-                    retryable = error_code in self.retry_policy.retryable_codes
+                    # Resolving retry_policy touches instance state set up by
+                    # BaseProvider.__init__. Only re-raise the *original* exc when
+                    # that state is genuinely missing (an improperly-constructed
+                    # provider that bypassed the metaclass guard, e.g. via
+                    # object.__new__) — not for every AttributeError, which would
+                    # also swallow a genuine bug in a *correctly* constructed
+                    # provider's own retry_policy override (pre-existing behavior
+                    # for that case: propagate raw, same as before this guard).
+                    try:
+                        retryable = error_code in self.retry_policy.retryable_codes
+                    except AttributeError:
+                        if getattr(self, "_base_init_token", None) is not _BASE_INIT_TOKEN:
+                            raise exc from None
+                        raise
                     if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
                         step.error = sanitize_error(str(exc))
@@ -2009,7 +2163,16 @@ class BaseProvider(Runnable[Step, Step]):
                     if resume_prediction_id is not None:
                         retry_state.record_resume_failure()
 
-                    retryable = error_code in self.retry_policy.retryable_codes
+                    # See the matching comment in invoke() — only re-raise the
+                    # original exc if the instance genuinely bypassed the
+                    # metaclass guard; otherwise let a real provider bug in
+                    # retry_policy propagate as-is.
+                    try:
+                        retryable = error_code in self.retry_policy.retryable_codes
+                    except AttributeError:
+                        if getattr(self, "_base_init_token", None) is not _BASE_INIT_TOKEN:
+                            raise exc from None
+                        raise
                     if not retryable or attempt >= max_retries:
                         step.status = StepStatus.FAILED
                         step.error = sanitize_error(str(exc))

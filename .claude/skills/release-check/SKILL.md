@@ -51,7 +51,13 @@ A pass/fail table, then the exact next commands:
 git add <path>/pyproject.toml CHANGELOG.md
 git commit -m "release: <package> v<new-version>"
 git push
-gh release create <package>-v<new-version> --title "<package> v<new-version>" --notes-from-tag
 ```
 
-Do NOT create the tag or release yourself — leave it for the user to review and trigger.
+This gate gets one package release-ready within a wave — it does not tag or
+publish. The actual tag/release/publish flow is wave-level, not per-package
+(the workflow's `validate-version` job requires the tag to be `v<wave>`, the
+CHANGELOG's most recent version heading — see RELEASING.md's versioning
+policy); a tag shaped `<package>-v<new-version>` will not trigger it
+correctly. Once every package in the wave is ready, cut the release with
+`/prepare-release`, which also fixes the `--notes-from-tag` bare-body trap
+this skill previously suggested here.

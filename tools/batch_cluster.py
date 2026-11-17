@@ -51,6 +51,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 
+from batch_policy import is_dependency_file, is_guarded_path
+
 # Files touched by so many unrelated changes that treating them as "shared
 # work" would wrongly merge every issue into one cluster. They are handled as
 # a merge-time serialization note, not as a clustering key. fnmatch globs over
@@ -75,6 +77,10 @@ DEFAULT_MAX_FILES = 12
 DEFER_AWAITING_PREREQ = "awaiting-prerequisite"
 DEFER_OVERSIZED = "oversized-serialize"
 DEFER_CYCLE = "dependency-cycle"
+# Needs a file batch executors may not change (CI, release tooling, agent
+# config, CHANGELOG, dependency files): the guard hook and publish would refuse
+# it, so a human must do it.
+DEFER_NEEDS_HUMAN = "needs-human"
 
 
 @dataclass(frozen=True)
@@ -94,7 +100,9 @@ class Cluster:
     pr_mode: str  # "combined" (>1 issue, one PR) | "single"
     layer: int  # dependency depth; 0 == no prerequisite clusters
     executable: bool  # runnable this batch (layer 0 and within cap)
-    blocked_by: list[str] = field(default_factory=list)  # cluster ids
+    blocked_by: list[str] = field(
+        default_factory=list
+    )  # cluster ids, or "issue-N" for a skipped-in-flight prerequisite
     defer_reason: str = ""
 
 
@@ -216,12 +224,25 @@ def build_plan(scout: list[dict], config: Config | None = None) -> Plan:
     # 4. Map each issue to its component root, then build inter-component
     #    dependency edges from explicit "depends on #x" links.
     root_of = {num: root for root, members in components.items() for num in members}
+    # Issues the scout saw but excluded via skip_reason are, today, always
+    # "already has an open PR/branch" (batch-plan.js only sets skip_reason for
+    # that case) — i.e. in flight, not merged. A dep pointing at one of these
+    # must still block its dependent; only deps pointing at numbers the scout
+    # never saw at all (truly closed/merged or out of scope) are safe to drop.
+    skipped_numbers = {row["number"] for row in skipped}
     dep_edges: dict[int, set[int]] = {
         root: set() for root in components
     }  # child_root <- {prereq_root}
+    blocked_by_issue: dict[int, set[int]] = {}  # child_root <- {in-flight issue #}
     for num, row in active.items():
         for dep in row.get("deps", []):
             dep = int(dep)
+            if dep in skipped_numbers:
+                # Prerequisite is skipped-in-flight: it has no cluster/root of
+                # its own, so record it directly as an issue-level blocker
+                # instead of dropping the edge.
+                blocked_by_issue.setdefault(root_of[num], set()).add(dep)
+                continue
             if dep not in root_of:
                 continue  # prereq already merged/closed or out of scope
             child, prereq = root_of[num], root_of[dep]
@@ -263,6 +284,7 @@ def build_plan(scout: list[dict], config: Config | None = None) -> Plan:
         member_files = _normalize([f for n in members for f in files[n]])
         member_hot = _normalize([f for n in members for f in hot[n]])
         blocked_by = sorted(_slug(components[p]) for p in dep_edges[root])
+        blocked_by += [f"issue-{n}" for n in sorted(blocked_by_issue.get(root, ()))]
         oversized = len(members) > cfg.max_issues or len(member_files) > cfg.max_files
 
         if root in cyclic:
@@ -278,8 +300,33 @@ def build_plan(scout: list[dict], config: Config | None = None) -> Plan:
                 )
             )
         elif oversized:
-            # Serialize: run the lowest-numbered issue alone now, defer the rest.
-            head, *tail = members
+            # Serialize: run one issue alone now, defer the rest. The head must
+            # have no unmet "depends on" inside this component, or a dependent
+            # would run before its prerequisite (lowest number is only the
+            # tie-break among issues that are ready).
+            intra = {
+                n: {int(d) for d in active[n].get("deps", [])} & set(members) for n in members
+            }
+            ready = [n for n in members if not intra[n]]
+            if not ready:
+                clusters.append(
+                    _make_cluster(
+                        members,
+                        member_files,
+                        member_hot,
+                        layer[root],
+                        False,
+                        blocked_by,
+                        DEFER_CYCLE,
+                    )
+                )
+                notes.append(
+                    f"Every issue in {_slug(members)} depends on another member; "
+                    f"resolve the circular 'depends on' links by hand."
+                )
+                continue
+            head = ready[0]
+            tail = [n for n in members if n != head]
             clusters.append(
                 _make_cluster(
                     [head],
@@ -321,7 +368,36 @@ def build_plan(scout: list[dict], config: Config | None = None) -> Plan:
                 )
             )
 
+    _defer_guarded_and_flag_unscoped(clusters, notes)
     return Plan(clusters=clusters, skipped=skipped, notes=notes)
+
+
+def _defer_guarded_and_flag_unscoped(clusters: list[Cluster], notes: list[str]) -> None:
+    """Defer runnable clusters an executor can't finish; note unscoped ones.
+
+    Uses the same policy as the executor guard and publish, so the plan never
+    offers a cluster those layers are certain to refuse.
+    """
+    for c in clusters:
+        if not c.executable:
+            continue
+        issues = ", ".join(f"#{n}" for n in c.issues)
+        guarded = sorted(
+            f for f in c.touched_files + c.hot_files if is_guarded_path(f) or is_dependency_file(f)
+        )
+        if guarded:
+            c.executable = False
+            c.defer_reason = DEFER_NEEDS_HUMAN
+            more = "…" if len(guarded) > 5 else ""
+            notes.append(
+                f"{issues} needs files batch executors may not change "
+                f"({', '.join(guarded[:5])}{more}); do it by hand."
+            )
+        elif not c.touched_files:
+            notes.append(
+                f"{issues} has no files of its own (only shared files like "
+                f"{', '.join(c.hot_files) or 'none'}); check its scope before approving."
+            )
 
 
 def _make_cluster(

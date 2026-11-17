@@ -8,10 +8,14 @@
 ```python
 from genblaze_core import PromptTemplate
 
-tpl = PromptTemplate(template="A {animal} in {style} style")
+tpl = PromptTemplate("A {animal} in {style} style")
 tpl.variables    # {"animal", "style"}
 tpl.render(animal="cat", style="oil")  # "A cat in oil style"
 ```
+
+The template can be passed positionally, as above, or by keyword
+(`PromptTemplate(template="A {animal} in {style} style")`). Both build the
+same model; passing both at once raises `TypeError`.
 
 ## Pipeline Integration
 

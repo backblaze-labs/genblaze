@@ -76,6 +76,32 @@ def test_submit_edit_model_with_image_input(provider):
     assert body["payload"]["image"] == "https://example.com/photo.jpg"
 
 
+def test_submit_minimal_edit_model_drops_extra_params(provider):
+    """Regression for #193 item 2: gpt-image-2-edit is a strict OpenAI-shape
+    passthrough that 400s "Generation rejected" on fields every other GMI
+    image model accepts fine (aspect_ratio, number_of_images, seed). The
+    gmi-image-minimal-edit family narrows the payload to prompt + image so
+    those extras are dropped instead of forwarded-and-rejected."""
+    from genblaze_core.models.asset import Asset
+
+    step = Step(
+        provider="gmicloud-image",
+        model="gpt-image-2-edit",
+        prompt="make it brighter",
+        seed=42,
+        params={"aspect_ratio": "16:9", "number_of_images": 2},
+        inputs=[Asset(url="https://example.com/photo.jpg", media_type="image/jpeg")],
+    )
+    provider.submit(step)
+    body = provider._http_client.post.call_args.kwargs.get("json")
+    payload = body["payload"]
+    assert payload["prompt"] == "make it brighter"
+    assert payload["image"] == "https://example.com/photo.jpg"
+    assert "aspect_ratio" not in payload
+    assert "number_of_images" not in payload
+    assert "seed" not in payload
+
+
 # --- Poll ---
 
 

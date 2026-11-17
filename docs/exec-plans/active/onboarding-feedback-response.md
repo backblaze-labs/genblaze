@@ -95,11 +95,15 @@ findings, ranked by how broken they are:
   confirm `python -c "import pyarrow"` succeeds for both. Paste output in PR.
 - **CHANGELOG:** add a `New extras` note that users pinning
   `genblaze-cli[parquet]` will now pull `pyarrow>=14.0` on upgrade.
-- Decision deferred: whether to *also* add `genblaze[parquet]` on the umbrella
-  for symmetry. Default to **no** — keeps the umbrella focused on the SDK
-  surface and avoids dragging pyarrow into pure-SDK installs.
+- **Resolved (v0.7.0, #236):** `genblaze[parquet]` now exists on the
+  umbrella, re-exposing `genblaze-core[parquet]` — the earlier "default to
+  no" call above didn't hold up: it's an opt-in extra like every other one
+  here, so it doesn't drag pyarrow into a plain `pip install genblaze`. This
+  closes the specific complaint in issue #6 (the error message pointing at a
+  nonexistent umbrella extra); `genblaze-cli[index]`/`[parquet]` above is
+  still open, tracked separately.
 
-### A3 — Version compatibility table (#1)
+### A3 — Version compatibility table (feedback item 1, tracked in #254)
 
 - Current state: umbrella `genblaze==0.4.0` ships with `genblaze-core==0.3.2`
   and `genblaze-s3==0.3.2`. Agents installing `genblaze==0.3.2` from public
@@ -120,6 +124,28 @@ findings, ranked by how broken they are:
     is a single-line ≤512-char summary and won't render Markdown. Verify
     rendering by running `twine check dist/*` against a locally built wheel
     before publish.
+- **Partially addressed (2026-08-01, #244/#250):** added a "don't pin
+  `genblaze==<wave tag>`" callout to root `README.md` and to
+  `libs/meta/README.md` (the PyPI long_description); added the same warning
+  (in tense-independent wording, so it doesn't decay into a false claim as the
+  umbrella version advances) to the `## [0.4.0]`, `## [0.5.0]`, `## [0.6.0]`,
+  and `## [0.7.0]` `CHANGELOG.md` wave headers — `0.4.0` because
+  `genblaze==0.4.0` is the one wave tag that actually resolves silently to a
+  stale pre-republish wheel, which three independent reviewers flagged as the
+  gap in the first draft of this fix. `CHANGELOG.md` is the single source the
+  GitHub Release bodies are now generated from (see next item). Fixed
+  `prepare-release`'s and `release-check`'s `--notes-from-tag` (root cause of
+  v0.5.0/v0.6.0 shipping bodies with just the tag message) and mirrored the
+  fix into `RELEASING.md`; added a `genblaze` (umbrella) version field to the
+  bug report issue template. Republishing the v0.5.0/v0.6.0/v0.7.0 GitHub
+  Release bodies from the corrected CHANGELOG slices (with a dated edit
+  marker, since these are already-published artifacts) is applied; `v0.4.0`'s
+  live release already carried an ad-hoc, pre-existing note covering this and
+  was not re-touched. #244 is closed; #250 is closed with the remaining
+  compatibility-table work split into #254. This item (#244/#250 fix) is
+  docs-only and scoped to the umbrella/wave-tag confusion — the full "Version
+  compatibility" table mapping umbrella → core → s3 → every connector floor,
+  and Gate 1's clean-venv verification, remain open in #254.
 
 ### A4 — Python 3.11+ install preamble (#9)
 
@@ -156,7 +182,7 @@ artifact that strictly depends on both.
     `grep -rn 'def .*\(probe\|dimension\|duration\|sha256\|mime\)' libs/core/genblaze_core/media/`
     and document findings in the design doc. The implementer must compose with
     anything found, not duplicate it.
-  - Pillow (already a core dep) for image dimensions; mutagen (existing
+  - Pillow (an optional import since #249; guard it) for image dimensions; mutagen (existing
     `[audio]` extra) for audio duration. No new extra introduced.
 - **Required design decisions (resolve in design doc before coding):**
   - **Streaming SHA-256.** `_utils.compute_sha256(data: bytes)` requires holding

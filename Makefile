@@ -12,11 +12,12 @@ install:
 	pip install -e libs/connectors/elevenlabs
 	pip install -e libs/connectors/stability-audio
 	pip install -e libs/connectors/lmnt
-	pip install -e libs/connectors/hume
 	pip install -e libs/connectors/gmicloud
 	pip install -e libs/connectors/langsmith
 	pip install -e libs/connectors/nvidia
 	pip install -e libs/connectors/assemblyai
+	pip install -e libs/connectors/atlascloud
+	pip install -e libs/connectors/fal
 	pip install -e cli
 	pip install -e libs/meta
 
@@ -32,11 +33,12 @@ install-dev:
 	pip install -e "libs/connectors/elevenlabs[dev]"
 	pip install -e "libs/connectors/stability-audio[dev]"
 	pip install -e "libs/connectors/lmnt[dev]"
-	pip install -e "libs/connectors/hume[dev]"
 	pip install -e "libs/connectors/gmicloud[dev]"
 	pip install -e "libs/connectors/langsmith[dev]"
 	pip install -e "libs/connectors/nvidia[dev]"
 	pip install -e "libs/connectors/assemblyai[dev]"
+	pip install -e "libs/connectors/atlascloud[dev]"
+	pip install -e "libs/connectors/fal[dev]"
 	pip install -e "cli[dev]"
 	pip install -e "libs/meta[dev]"
 
@@ -52,11 +54,12 @@ test:
 	cd libs/connectors/elevenlabs && pytest -v
 	cd libs/connectors/stability-audio && pytest -v
 	cd libs/connectors/lmnt && pytest -v
-	cd libs/connectors/hume && pytest -v
 	cd libs/connectors/gmicloud && pytest -v
 	cd libs/connectors/langsmith && pytest -v
 	cd libs/connectors/nvidia && pytest -v
 	cd libs/connectors/assemblyai && pytest -v
+	cd libs/connectors/atlascloud && pytest -v
+	cd libs/connectors/fal && pytest -v
 	cd cli && pytest tests/ -v
 	cd libs/meta && pytest tests/ -v
 	pytest tools/tests/ -v

@@ -66,6 +66,11 @@ def mock_boto3():
     session would have already bound the real ``ClientError`` into
     backend module scope, breaking ``except ClientError`` tests that
     raise the fake.
+
+    A test module that genuinely needs the real (unmocked) boto3/botocore
+    signer — e.g. to inspect an actual presigned-URL shape — can override
+    this fixture with a module-local no-op of the same name; see
+    ``test_backblaze_presign_addressing.py`` for a documented example.
     """
     mock_mod = MagicMock()
     mock_botocore = MagicMock()

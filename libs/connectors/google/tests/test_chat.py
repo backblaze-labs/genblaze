@@ -50,24 +50,138 @@ def mock_client():
     return client
 
 
-def test_image_block_refused_with_clear_message(mock_client):
-    """Gemini does not accept OpenAI-vision shape — raise INVALID_INPUT, not mid-runtime."""
+def test_data_uri_image_translated_to_inline_data(mock_client):
+    """A `data:` URI ImageURLContent block becomes a Gemini `inline_data` part.
+
+    Regression test for #194: genblaze-google's chat() used to reject any
+    ImageURLContent block pre-flight, breaking provider-swappable multimodal
+    with the OpenAI-wire connectors (which accept it directly).
+    """
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    data_uri = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    msgs = [
+        ChatMessage(role="user", content=[ImageURLContent(image_url=ImageURLRef(url=data_uri))])
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}}]
+
+
+def test_text_and_image_multimodal_message_round_trips(mock_client):
+    """Exact repro from #194: TextContent + ImageURLContent(data URI) in one message."""
     from genblaze_core.models.chat import ImageURLContent, ImageURLRef, TextContent
+
+    data_uri = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                TextContent(text="Describe this frame."),
+                ImageURLContent(image_url=ImageURLRef(url=data_uri)),
+            ],
+        )
+    ]
+    resp = chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"text": "Describe this frame."},
+        {"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}},
+    ]
+    assert resp.text == "Hello!"
+
+
+def test_raw_dict_message_with_image_url_also_works(mock_client):
+    """The raw-dict workaround the old error message recommended must actually work too —
+    `_normalize_to_gemini` coerces dicts back through `ChatMessage(**m)`, so the fix for
+    typed `ImageURLContent` has to cover this path as well (#194)."""
+    data_uri = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    raw = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this frame."},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ],
+    }
+    chat("gemini-2.5-flash", messages=[raw], client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"text": "Describe this frame."},
+        {"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}},
+    ]
+
+
+def test_https_image_url_translated_to_file_data(mock_client):
+    """A non-`data:` URL maps to Gemini's `file_data` part; mime type guessed from
+    extension when `media_type` isn't given."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[ImageURLContent(image_url=ImageURLRef(url="https://x/y.png"))],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"file_data": {"mime_type": "image/png", "file_uri": "https://x/y.png"}}]
+
+
+def test_data_uri_base64_marker_is_case_insensitive(mock_client):
+    """RFC 2397 doesn't mandate lowercase `;base64,`; accept `;BASE64,` too."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
 
     msgs = [
         ChatMessage(
             role="user",
             content=[
-                TextContent(text="describe"),
-                ImageURLContent(image_url=ImageURLRef(url="https://x/y.png")),
+                ImageURLContent(
+                    image_url=ImageURLRef(url="data:image/jpeg;BASE64,/9j/4AAQSkZJRg==")
+                )
             ],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [{"inline_data": {"mime_type": "image/jpeg", "data": "/9j/4AAQSkZJRg=="}}]
+
+
+def test_data_uri_with_malformed_mime_header_falls_back_to_octet_stream(mock_client):
+    """A data-URI header that doesn't look like `type/subtype` (e.g. injected control
+    chars or stray whitespace) must never be forwarded verbatim as `mime_type` — fall
+    back to a safe default instead."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[
+                ImageURLContent(
+                    image_url=ImageURLRef(url="data:not a mime type;base64,/9j/4AAQSkZJRg==")
+                )
+            ],
+        )
+    ]
+    chat("gemini-2.5-flash", messages=msgs, client=mock_client)
+    parts = mock_client.models.generate_content.call_args.kwargs["contents"][0]["parts"]
+    assert parts == [
+        {"inline_data": {"mime_type": "application/octet-stream", "data": "/9j/4AAQSkZJRg=="}}
+    ]
+
+
+def test_malformed_data_uri_raises_invalid_input(mock_client):
+    """A `data:` URI missing the comma-delimited payload is a client error, not a Gemini one."""
+    from genblaze_core.models.chat import ImageURLContent, ImageURLRef
+
+    msgs = [
+        ChatMessage(
+            role="user",
+            content=[ImageURLContent(image_url=ImageURLRef(url="data:image/jpeg;base64"))],
         )
     ]
     with pytest.raises(ProviderError) as info:
         chat("gemini-2.5-flash", messages=msgs, client=mock_client)
     assert info.value.error_code == ProviderErrorCode.INVALID_INPUT
-    assert "ImageURLContent" in str(info.value)
-    assert "inline_data" in str(info.value) or "file_data" in str(info.value)
 
 
 def test_video_block_refused_with_clear_message(mock_client):
@@ -85,7 +199,9 @@ def test_video_block_refused_with_clear_message(mock_client):
 
 
 def test_text_only_list_content_translated(mock_client):
-    """All-text list content translates cleanly to Gemini's parts shape."""
+    """All-text list content translates cleanly to Gemini's parts shape — one
+    `parts` entry per content block, matching the OpenAI connector's block-per-part
+    translation (needed so image blocks can be interleaved, see #194)."""
     from genblaze_core.models.chat import TextContent
 
     msgs = [
@@ -93,9 +209,8 @@ def test_text_only_list_content_translated(mock_client):
     ]
     chat("gemini-2.5-flash", messages=msgs, client=mock_client)
     call = mock_client.models.generate_content.call_args.kwargs
-    # first user content's parts text should join the blocks.
     parts = call["contents"][0]["parts"]
-    assert parts == [{"text": "hello world"}]
+    assert parts == [{"text": "hello"}, {"text": " world"}]
 
 
 def test_prompt_shorthand(mock_client):
@@ -199,3 +314,289 @@ def test_cost_usd_always_none(mock_client):
 def test_achat_runs_in_thread(mock_client):
     resp = asyncio.run(achat("gemini-2.5-flash", prompt="hi", client=mock_client))
     assert resp.text == "Hello!"
+
+
+def test_internally_created_client_closed_once_across_retries(monkeypatch):
+    """The client must be created once, reused across every retry attempt, and
+    closed exactly once after the loop finishes — not per-attempt (#221)."""
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    fake_google = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.models.generate_content.side_effect = [
+            ProviderError(
+                "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+            ),
+            _mock_response(),
+        ]
+        created_clients.append(c)
+        return c
+
+    fake_google.genai.Client.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    resp = chat("gemini-2.5-flash", prompt="hi", api_key="test-key", retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert fake_google.genai.Client.call_count == 1  # one client for the whole retry loop
+    assert created_clients[0].models.generate_content.call_count == 2
+    created_clients[0].close.assert_called_once()
+
+
+def test_own_client_disables_sdk_retry_when_genblaze_manages_it(monkeypatch):
+    """When genblaze creates its own client AND retry is genblaze-managed, the
+    SDK's internal retry must be disabled (a single-attempt `HttpRetryOptions`)
+    — otherwise the SDK would retry underneath `call_with_rate_limit_retry` and
+    `RetryPolicy.max_attempts` wouldn't be authoritative, multiplying
+    rate-limited traffic (#221 panel review)."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    fake_google = MagicMock()
+    created_clients: list[MagicMock] = []
+
+    def _client_factory(**_kwargs):
+        c = MagicMock()
+        c.models.generate_content.side_effect = ProviderError(
+            "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+        )
+        created_clients.append(c)
+        return c
+
+    fake_google.genai.Client.side_effect = _client_factory
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    with pytest.raises(ProviderError):
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            api_key="test-key",
+            retry_policy=RetryPolicy.disabled(),
+        )
+
+    assert "http_options" in fake_google.genai.Client.call_args.kwargs
+    # RetryPolicy.disabled() -> genblaze doesn't retry either -> exactly one SDK call.
+    assert created_clients[0].models.generate_content.call_count == 1
+
+
+def test_own_client_keeps_default_sdk_retry_when_retry_not_opted_in(monkeypatch):
+    """Default (opt-out) path must not set `http_options` — no behavior change
+    for existing callers who rely on the SDK's own retry behavior."""
+    fake_google = MagicMock()
+    fake_google.genai.Client.return_value.models.generate_content.return_value = _mock_response()
+    monkeypatch.setitem(__import__("sys").modules, "google", fake_google)
+
+    chat("gemini-2.5-flash", prompt="hi", api_key="test-key")
+
+    assert "http_options" not in fake_google.genai.Client.call_args.kwargs
+
+
+# --- Opt-in rate-limit backoff (#221) ---
+#
+# `chat()`/`achat()` already parse a 429's `Retry-After` hint onto
+# `ProviderError.retry_after`; these tests cover the opt-in wait-and-retry
+# loop built on top of that (`genblaze_core.providers.retry.call_with_rate_limit_retry`).
+# `time.sleep` is patched at its source in `genblaze_core.providers.retry` so
+# tests never actually block, and so we can assert the delay used.
+
+
+def test_default_does_not_retry_on_rate_limit(mock_client, monkeypatch):
+    """Opt-out is the default — an unadorned `chat()` call must still raise on the
+    first 429, with no sleep and no second attempt."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = ProviderError(
+        "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.5
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        chat("gemini-2.5-flash", prompt="hi", client=mock_client)
+
+    assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
+    assert mock_client.models.generate_content.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_on_rate_limit_waits_then_succeeds(mock_client, monkeypatch):
+    """`retry_on_rate_limit=True` waits the server's `Retry-After` hint, then retries."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        ProviderError("rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.5),
+        _mock_response(),
+    ]
+
+    resp = chat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+    assert sleeps == [0.5]  # server hint honored verbatim, not a computed backoff
+
+
+def test_retry_on_rate_limit_raises_after_attempt_cap(mock_client, monkeypatch):
+    """After `max_attempts`, the last rate-limit error still propagates."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    mock_client.models.generate_content.side_effect = ProviderError(
+        "rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.1
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            client=mock_client,
+            retry_on_rate_limit=True,
+            retry_policy=RetryPolicy(max_attempts=3),
+        )
+
+    assert exc.value.error_code == ProviderErrorCode.RATE_LIMIT
+    assert mock_client.models.generate_content.call_count == 3
+
+
+def test_retry_policy_alone_opts_in_without_the_flag(mock_client, monkeypatch):
+    """Passing `retry_policy=` implies opt-in even without `retry_on_rate_limit=True`."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        ProviderError("rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.2),
+        _mock_response(),
+    ]
+
+    resp = chat(
+        "gemini-2.5-flash",
+        prompt="hi",
+        client=mock_client,
+        retry_policy=RetryPolicy(max_attempts=4),
+    )
+
+    assert resp.text == "Hello!"
+    assert sleeps == [0.2]
+
+
+def test_retry_on_rate_limit_does_not_retry_deterministic_error_codes(mock_client, monkeypatch):
+    """Deterministic codes (content policy) still fail fast even with retries enabled."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = ProviderError(
+        "blocked", error_code=ProviderErrorCode.CONTENT_POLICY
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        chat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+
+    assert exc.value.error_code == ProviderErrorCode.CONTENT_POLICY
+    assert mock_client.models.generate_content.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_on_rate_limit_retries_gemini_503_unavailable(mock_client, monkeypatch):
+    """A raw SDK 503 UNAVAILABLE (model overloaded) is classified SERVER_ERROR and
+    retried under the same backoff when retry is opted in (#264)."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        RuntimeError("503 UNAVAILABLE. The model is overloaded. Please try again later."),
+        _mock_response(),
+    ]
+
+    resp = chat(
+        "gemini-2.5-flash",
+        prompt="hi",
+        client=mock_client,
+        retry_on_rate_limit=True,
+        retry_policy=RetryPolicy(jitter="none", initial_backoff_sec=0.25),
+    )
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+    assert sleeps == [0.25]  # no Retry-After on the 503 — computed backoff used
+
+
+def test_retry_on_rate_limit_retries_real_sdk_server_error(mock_client, monkeypatch):
+    """The exact google-genai ServerError payload from #264 classifies as
+    SERVER_ERROR (guards map_google_error branch order) and is retried."""
+    from google.genai import errors
+
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    overloaded = {
+        "error": {
+            "code": 503,
+            "message": "The model is overloaded. Please try again later.",
+            "status": "UNAVAILABLE",
+        }
+    }
+    mock_client.models.generate_content.side_effect = [
+        errors.ServerError(503, overloaded),
+        _mock_response(),
+    ]
+
+    resp = chat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+
+
+def test_retry_policy_disabled_fails_503_fast(mock_client, monkeypatch):
+    """`RetryPolicy.disabled()` is the documented opt-out — a 503 fails on attempt 1."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = RuntimeError("503 UNAVAILABLE")
+
+    with pytest.raises(ProviderError) as exc:
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            client=mock_client,
+            retry_policy=RetryPolicy.disabled(),
+        )
+
+    assert exc.value.error_code == ProviderErrorCode.SERVER_ERROR
+    assert mock_client.models.generate_content.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_on_rate_limit_503_raises_after_attempt_cap(mock_client, monkeypatch):
+    """A persistent 503 surfaces as SERVER_ERROR once the attempt budget is spent."""
+    from genblaze_core.providers.retry import RetryPolicy
+
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", lambda _s: None)
+    mock_client.models.generate_content.side_effect = RuntimeError("503 UNAVAILABLE")
+
+    with pytest.raises(ProviderError) as exc:
+        chat(
+            "gemini-2.5-flash",
+            prompt="hi",
+            client=mock_client,
+            retry_policy=RetryPolicy(max_attempts=2),
+        )
+
+    assert exc.value.error_code == ProviderErrorCode.SERVER_ERROR
+    assert exc.value.attempts == 2
+    assert mock_client.models.generate_content.call_count == 2
+
+
+def test_achat_retry_on_rate_limit(mock_client, monkeypatch):
+    """`achat()` forwards retry kwargs through to `chat()` via `asyncio.to_thread`."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("genblaze_core.providers.retry.time.sleep", sleeps.append)
+    mock_client.models.generate_content.side_effect = [
+        ProviderError("rate limited", error_code=ProviderErrorCode.RATE_LIMIT, retry_after=0.3),
+        _mock_response(),
+    ]
+
+    resp = asyncio.run(
+        achat("gemini-2.5-flash", prompt="hi", client=mock_client, retry_on_rate_limit=True)
+    )
+
+    assert resp.text == "Hello!"
+    assert mock_client.models.generate_content.call_count == 2
+    assert sleeps == [0.3]

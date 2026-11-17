@@ -6,6 +6,7 @@ import json
 import socket
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2044,3 +2045,139 @@ class TestHeadObject403DoubleTransfer:
         assert mock_get.call_count == 1
         assert asset.url.startswith("https://mem/")
         assert sink.manifest_key_for(run) in backend.store
+
+
+class TestAllowedRoots:
+    """``allowed_roots`` plumbing — issue #247.
+
+    A provider configured with a caller-controlled ``output_dir`` (e.g.
+    ``ElevenLabsTTSProvider(output_dir="work/generated")``) writes assets
+    outside the built-in temp-dir allowlist. Without ``allowed_roots``,
+    ``ObjectStorageSink`` finalization rejects those assets even though the
+    provider quota was already spent generating them.
+    """
+
+    def test_default_still_rejects_files_outside_temp(self):
+        """Secure default is unchanged: no allowed_roots means temp-only.
+
+        Uses a fixed non-temp path (rather than ``tmp_path``) because
+        pytest's own tmp base can itself resolve under the OS temp root
+        (e.g. macOS's ``/var`` -> ``/private/var`` symlink), which would
+        make the "outside allowed dirs" assertion a false negative. Mirrors
+        ``test_transfer.py::test_file_url_outside_allowed_dirs_rejected``.
+        """
+        fake_path = Path("/Users/sensitive/output/clip.mp3")
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url=f"file://{fake_path}", media_type="audio/mpeg")],
+        )
+        run = Run(name="no-allowed-roots", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+
+        with pytest.raises(SinkError, match="failed"):
+            sink.write_run(run, manifest)
+
+    def test_allowed_roots_permits_provider_output_dir(self, tmp_path, monkeypatch):
+        """Reproduces the #247 repro: output_dir passed as allowed_roots
+        lets the sink transfer an asset the provider wrote there.
+
+        Empties the built-in temp-dir allowlist (mirrors
+        test_allowed_roots_still_rejects_symlink_escape) so this test
+        actually exercises the sink's allowed_roots wiring — without it,
+        pytest's tmp_path can itself resolve under the OS temp root (see
+        test_default_still_rejects_files_outside_temp), which would let
+        this asset transfer via the default allowlist alone and leave the
+        allowed_roots plumbing untested.
+        """
+        monkeypatch.setattr("genblaze_core.storage.transfer.ALLOWED_FILE_ROOTS", ())
+        custom_dir = tmp_path / "generated"
+        custom_dir.mkdir()
+        asset_file = custom_dir / "clip.mp3"
+        asset_file.write_bytes(b"audio bytes")
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test", allowed_roots=[custom_dir])
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url=f"file://{asset_file}", media_type="audio/mpeg")],
+        )
+        run = Run(name="with-allowed-roots", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+
+        sink.write_run(run, manifest)  # must not raise
+
+        assert step.assets[0].url.startswith("https://mem/")
+        assert step.assets[0].sha256 is not None
+
+    def test_allowed_roots_accepts_str_paths(self, tmp_path):
+        """Roots may be plain strings, not just Path objects."""
+        custom_dir = tmp_path / "generated"
+        custom_dir.mkdir()
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test", allowed_roots=[str(custom_dir)])
+        assert sink._allowed_roots == [custom_dir.resolve()]
+
+    def test_allowed_roots_still_rejects_symlink_escape(self, tmp_path, monkeypatch):
+        """A symlink inside an allowed root pointing outside it is still
+        rejected — allowed_roots must not weaken the symlink-escape guard
+        AssetTransfer._read_local_file already enforces.
+
+        Empties the built-in temp-dir allowlist for this test (mirrors
+        test_transfer.py::test_symlink_escape_rejected) so ``secret`` — a
+        sibling of ``allowed_dir`` under the same pytest tmp base — isn't
+        accidentally permitted by the default grant, independent of the
+        sink-level allowlist under test.
+        """
+        monkeypatch.setattr("genblaze_core.storage.transfer.ALLOWED_FILE_ROOTS", ())
+        allowed_dir = tmp_path / "allowed"
+        allowed_dir.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("sensitive")
+        link = allowed_dir / "escape.txt"
+        link.symlink_to(secret)
+
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test", allowed_roots=[allowed_dir])
+        step = Step(
+            provider="test",
+            model="test-model",
+            status=StepStatus.SUCCEEDED,
+            assets=[Asset(url=f"file://{link}", media_type="text/plain")],
+        )
+        run = Run(name="symlink-escape", status=RunStatus.COMPLETED, steps=[step])
+        manifest = Manifest(run=run)
+        manifest.compute_hash()
+
+        with pytest.raises(SinkError, match="failed"):
+            sink.write_run(run, manifest)
+
+    def test_allowed_roots_rejects_nonexistent_directory(self, tmp_path):
+        """Fails loudly at construction rather than at first transfer."""
+        missing = tmp_path / "does-not-exist"
+        backend = MemoryBackend()
+        with pytest.raises(SinkError, match="does not resolve to an existing directory"):
+            ObjectStorageSink(backend, prefix="test", allowed_roots=[missing])
+
+    def test_allowed_roots_rejects_filesystem_root(self):
+        """Never widen the allowlist to the whole filesystem, even opt-in."""
+        backend = MemoryBackend()
+        with pytest.raises(SinkError, match="filesystem root"):
+            ObjectStorageSink(backend, prefix="test", allowed_roots=["/"])
+
+    def test_allowed_roots_none_is_default(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test")
+        assert sink._allowed_roots is None
+
+    def test_allowed_roots_empty_list_is_none(self):
+        backend = MemoryBackend()
+        sink = ObjectStorageSink(backend, prefix="test", allowed_roots=[])
+        assert sink._allowed_roots is None

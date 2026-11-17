@@ -108,6 +108,21 @@ def test_speed_warning_emitted_once_per_provider(mock_lmnt, caplog):
     assert len(speed_warnings) == 1
 
 
+def test_seed_param_dropped_with_warning(mock_lmnt, caplog):
+    """``seed`` has no lmnt 2.x equivalent either — generate_detailed()
+    raises TypeError on the unknown kwarg, so it gets the same
+    drop-with-warning treatment as ``speed``."""
+    provider, client = mock_lmnt
+    step = Step(provider="lmnt", model="lmnt-1", prompt="test", seed=42)
+    with caplog.at_level("WARNING", logger="genblaze.lmnt"):
+        provider.generate(step)
+        provider.generate(step)
+    call_kwargs = client.speech.generate_detailed.call_args[1]
+    assert "seed" not in call_kwargs
+    seed_warnings = [rec for rec in caplog.records if "seed" in rec.message]
+    assert len(seed_warnings) == 1
+
+
 def test_durations_stored_in_payload(mock_lmnt):
     provider, client = mock_lmnt
     client.speech.generate_detailed = MagicMock(
@@ -195,6 +210,26 @@ def test_api_error_raises(mock_lmnt):
     step = Step(provider="lmnt", model="lmnt-1", prompt="test")
     with pytest.raises(ProviderError, match="LMNT TTS failed"):
         provider.generate(step)
+
+
+@pytest.mark.parametrize(
+    "bad_step_id",
+    [
+        "../escape",
+        "/tmp/escape",  # noqa: S108 — attacker-controlled payload, never used as a real path
+        "C:escape",
+    ],
+)
+def test_unsafe_step_id_never_writes_outside_output_dir(mock_lmnt, tmp_path, bad_step_id):
+    """The output filename goes through get_output_path, so a step_id set after
+    validation can't escape output_dir (same class as the Veo fix, #284)."""
+    provider, _ = mock_lmnt
+    step = Step(provider="lmnt", model="lmnt-1", prompt="Hello")
+    step.step_id = bad_step_id  # bypasses the Step model's own check
+    with pytest.raises(ProviderError, match="step_id"):
+        provider.generate(step)
+    assert list(tmp_path.iterdir()) == []
+    assert not (tmp_path.parent / "escape.mp3").exists()
 
 
 # --- Real SDK import surface (issue #166 regression) -----------------------

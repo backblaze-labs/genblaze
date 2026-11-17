@@ -90,9 +90,14 @@ class GMICloudVideoProvider(GMICloudBase):
 
             step.provider_payload = {"gmicloud": {"request_id": prediction_id, "status": status}}
 
-            if status in ("failed", "cancelled"):
+            # Any status other than a clean success is a terminal failure here.
+            # ``failed``/``cancelled`` carry an upstream error message; any other
+            # non-``success`` status (e.g. a request that reached fetch still
+            # ``processing``) is surfaced explicitly rather than falling through
+            # to a vague "no video URL found" (#262).
+            if status != "success":
                 raise ProviderError(
-                    str(detail.get("error") or f"Video generation {status}"),
+                    str(detail.get("error") or f"Video generation ended in status {status!r}"),
                     error_code=ProviderErrorCode.UNKNOWN,
                 )
 
