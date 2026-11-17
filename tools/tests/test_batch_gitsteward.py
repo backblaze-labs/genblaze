@@ -121,6 +121,20 @@ def test_preflight_refuses_to_ff_checked_out_main(tmp_path):
     assert report.behind == 1
 
 
+def test_preflight_from_a_worktree_while_main_is_checked_out_elsewhere(tmp_path):
+    """Batches run from a worktree while the main checkout sits on a stale main.
+    git refuses to fast-forward a branch checked out in another worktree, so
+    preflight must report it and continue (batches use origin/main), not crash."""
+    origin, local = _make_origin_and_clone(tmp_path)  # local has main checked out
+    worktree = tmp_path / "wt"
+    _git(local, "worktree", "add", "-q", "-b", "batch", str(worktree))
+    _commit(origin, "feature.py", "new")  # origin/main advances; local main is behind
+    report = preflight(str(worktree))
+    assert report.ok
+    assert report.main_action == "skipped-checked-out-elsewhere"
+    assert any("origin/main" in m for m in report.messages)
+
+
 def test_preflight_blocks_on_divergence(tmp_path):
     origin, local = _make_origin_and_clone(tmp_path)
     _commit(local, "local_only.py", "mine")  # local main ahead

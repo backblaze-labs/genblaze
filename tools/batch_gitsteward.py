@@ -67,6 +67,12 @@ def _has_ref(repo: str, ref: str) -> bool:
     return _git(repo, "show-ref", "--verify", "--quiet", ref, check=False).returncode == 0
 
 
+def _checked_out_elsewhere(repo: str, branch: str) -> bool:
+    """True if ``branch`` is checked out in a worktree other than ``repo``'s."""
+    here = _git(repo, "rev-parse", "--show-toplevel").stdout.strip()
+    return any(tree.get("branch") == branch and tree["path"] != here for tree in _worktrees(repo))
+
+
 def _ahead_behind(repo: str, local: str, remote: str) -> tuple[int, int]:
     out = _git(repo, "rev-list", "--left-right", "--count", f"{local}...{remote}").stdout
     ahead, behind = out.split()
@@ -185,6 +191,24 @@ def preflight(repo: str) -> Preflight:
             + [
                 f"main is checked out and behind by {behind}; I will not "
                 f"fast-forward a checked-out branch. Run `git pull --ff-only`."
+            ],
+        )
+
+    if behind and _checked_out_elsewhere(repo, "main"):
+        # git refuses to move a branch checked out in another worktree, and
+        # nothing in a batch reads local main (executors branch from
+        # origin/main; publish re-fetches it), so report and carry on.
+        return Preflight(
+            ok=not dirty,
+            current_branch=current,
+            dirty=dirty,
+            main_action="skipped-checked-out-elsewhere",
+            ahead=ahead,
+            behind=behind,
+            messages=messages
+            + [
+                f"Local main is behind by {behind} but checked out in another "
+                "worktree; leaving it alone and using origin/main."
             ],
         )
 

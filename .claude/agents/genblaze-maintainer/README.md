@@ -82,6 +82,13 @@ Executors only run sandboxed on **macOS** (`sandbox-exec`); elsewhere they are
 denied. Review the dry-run dispatch before running for real, and keep the first
 real run to one or two clusters.
 
+Start both workflows from your **main Claude Code session**: subagents don't
+have the Workflow tool, so a delegated run can't begin. Preflight refuses a
+dirty tree, so if your checkout has local changes, run from a clean worktree
+(it's fine for `main` to be checked out, and behind, in another worktree).
+Clusters that need CI, release, agent-config, CHANGELOG or dependency files
+are planned as `needs-human`, since executors can't change those.
+
 **Safety model:** issue titles, bodies and comments are written by anyone, so
 the agents that read them are treated as untrusted.
 

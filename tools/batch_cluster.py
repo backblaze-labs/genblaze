@@ -51,6 +51,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 
+from batch_policy import is_dependency_file, is_guarded_path
+
 # Files touched by so many unrelated changes that treating them as "shared
 # work" would wrongly merge every issue into one cluster. They are handled as
 # a merge-time serialization note, not as a clustering key. fnmatch globs over
@@ -75,6 +77,10 @@ DEFAULT_MAX_FILES = 12
 DEFER_AWAITING_PREREQ = "awaiting-prerequisite"
 DEFER_OVERSIZED = "oversized-serialize"
 DEFER_CYCLE = "dependency-cycle"
+# Needs a file batch executors may not change (CI, release tooling, agent
+# config, CHANGELOG, dependency files): the guard hook and publish would refuse
+# it, so a human must do it.
+DEFER_NEEDS_HUMAN = "needs-human"
 
 
 @dataclass(frozen=True)
@@ -362,7 +368,36 @@ def build_plan(scout: list[dict], config: Config | None = None) -> Plan:
                 )
             )
 
+    _defer_guarded_and_flag_unscoped(clusters, notes)
     return Plan(clusters=clusters, skipped=skipped, notes=notes)
+
+
+def _defer_guarded_and_flag_unscoped(clusters: list[Cluster], notes: list[str]) -> None:
+    """Defer runnable clusters an executor can't finish; note unscoped ones.
+
+    Uses the same policy as the executor guard and publish, so the plan never
+    offers a cluster those layers are certain to refuse.
+    """
+    for c in clusters:
+        if not c.executable:
+            continue
+        issues = ", ".join(f"#{n}" for n in c.issues)
+        guarded = sorted(
+            f for f in c.touched_files + c.hot_files if is_guarded_path(f) or is_dependency_file(f)
+        )
+        if guarded:
+            c.executable = False
+            c.defer_reason = DEFER_NEEDS_HUMAN
+            more = "…" if len(guarded) > 5 else ""
+            notes.append(
+                f"{issues} needs files batch executors may not change "
+                f"({', '.join(guarded[:5])}{more}); do it by hand."
+            )
+        elif not c.touched_files:
+            notes.append(
+                f"{issues} has no files of its own (only shared files like "
+                f"{', '.join(c.hot_files) or 'none'}); check its scope before approving."
+            )
 
 
 def _make_cluster(
