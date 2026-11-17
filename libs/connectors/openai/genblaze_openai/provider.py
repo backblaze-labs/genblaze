@@ -19,7 +19,9 @@ Docs: https://platform.openai.com/docs/api-reference/videos
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -152,6 +154,52 @@ _OPENAI_SORA_FAMILY = ModelFamily(
 
 _FALLBACK = ModelSpec(model_id="*", modality=Modality.VIDEO)
 
+_OPENAI_API_BASE = "https://api.openai.com/v1"
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:  # a DNS name other than localhost
+        return False
+
+
+def _validate_base_url(base_url: str) -> None:
+    """Reject a ``base_url`` that could leak the API key.
+
+    The openai SDK sends the key (or ``OPENAI_API_KEY``) to whatever host this
+    names, so require ``https://``, allowing plain ``http://`` only on a
+    loopback host for local servers. Credentials, query, fragment, ``;``
+    parameters and whitespace are rejected; a path such as ``/v1`` is allowed
+    because compatible servers mount the API there. Stricter than fal's
+    bare-origin check because of that path and the local-server case.
+    """
+    parsed = urlparse(base_url)
+    try:
+        port = parsed.port
+    except ValueError:  # non-numeric or out of range
+        port = -1
+    host = parsed.hostname or ""
+    secure = parsed.scheme == "https" or (parsed.scheme == "http" and _is_loopback(host))
+    # Checked on the raw string: urlparse silently strips leading whitespace
+    # and tabs/newlines that httpx would instead reject or misread at first use.
+    if (
+        not secure
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(c in base_url for c in "?#;")
+        or any(c.isspace() or not c.isprintable() for c in base_url)
+        or port in (-1, 0)
+    ):
+        raise ValueError(
+            "base_url must be https://, or http:// on a loopback host (localhost, "
+            "127.0.0.0/8 or ::1), with no credentials, query, fragment, ';' or "
+            f"whitespace; got {base_url!r}"
+        )
+
 
 class SoraProvider(BaseProvider):
     """Provider adapter for OpenAI Sora video generation.
@@ -163,6 +211,14 @@ class SoraProvider(BaseProvider):
         poll_interval: Seconds between status polls (default 5).
         http_timeout: HTTP request timeout in seconds (default 60).
         output_dir: Directory for output files (default system temp).
+        base_url: Keyword-only. Base URL of an OpenAI-compatible Videos API
+            server, including any path prefix the SDK appends ``/videos`` to
+            (for example ``http://localhost:8091/v1``). Must be ``https://``,
+            or ``http://`` on a loopback host, with no credentials, query or
+            fragment, since the API key is sent there. Defaults to the openai
+            SDK default: ``OPENAI_BASE_URL`` (used as-is, not validated) or
+            api.openai.com. Unless the target is api.openai.com, model
+            discovery accepts every slug the server lists, not only ``sora-*``.
         models: Optional custom ``ModelRegistry`` — overrides the class default.
         retry_policy: Optional retry policy override.
         probe_cache_ttl: Per-instance probe-cache TTL (no-op for NATIVE
@@ -190,11 +246,14 @@ class SoraProvider(BaseProvider):
         http_timeout: float = 60.0,
         output_dir: str | Path | None = None,
         *,
+        base_url: str | None = None,
         models: ModelRegistry | None = None,
         retry_policy: RetryPolicy | None = None,
         probe_cache_ttl: float | None = None,
         probe_cache_max_entries: int | None = None,
     ):
+        if base_url is not None:
+            _validate_base_url(base_url)
         super().__init__(
             models=models,
             retry_policy=retry_policy,
@@ -203,9 +262,16 @@ class SoraProvider(BaseProvider):
         )
         self.poll_interval = poll_interval
         self._api_key = api_key
+        self._base_url = base_url
         self._http_timeout = http_timeout
         self._output_dir = Path(output_dir) if output_dir else None
         self._client: Any = None
+        if base_url is not None and models is None:
+            # The default registry is shared per class, and the discovery
+            # cache below hangs off it. A different server has a different
+            # catalog, so give this instance its own registry rather than
+            # swapping the catalog every other SoraProvider validates against.
+            self._models = self._models.fork()
         # Wire NATIVE discovery — fetcher closes over self so it picks
         # up the lazy-initialized openai client.
         self._models._discovery_cache = _DiscoveryCache(
@@ -226,35 +292,48 @@ class SoraProvider(BaseProvider):
     # --- catalog discovery (DiscoverySupport.NATIVE) ----------------------
 
     def _fetch_models(self) -> DiscoveryResult:
-        """Fetcher backing ``discover_models`` — calls /v1/models, filters to Sora.
+        """Fetcher backing ``discover_models`` — calls ``/models`` on the target server.
 
         OpenAI's ``models.list()`` returns the global catalog (chat,
-        embeddings, images, audio, video). We filter to slugs that
-        match the Sora family pattern so a user passing e.g. ``gpt-4o``
-        to Sora gets ``NOT_FOUND`` at preflight rather than a misleading
-        ``OK_AUTHORITATIVE`` from the cross-modality catalog.
+        embeddings, images, audio, video), so against api.openai.com we
+        filter to the Sora family: ``gpt-4o`` passed to Sora gets
+        ``NOT_FOUND`` at preflight rather than a misleading
+        ``OK_AUTHORITATIVE``. A compatible server lists its own video
+        slugs, so its catalog is kept whole.
         """
+        base = self._effective_base_url()
+        source_url = f"{base}/models"
+        filter_to_sora = urlparse(base).hostname == urlparse(_OPENAI_API_BASE).hostname
         try:
             client = self._get_client()
             response = client.models.list()
             slugs: set[str] = set()
             for model in response.data:
                 mid = getattr(model, "id", None)
-                if isinstance(mid, str) and self._models.match_family(mid) is not None:
+                if not isinstance(mid, str):
+                    continue
+                if not filter_to_sora or self._models.match_family(mid) is not None:
                     slugs.add(mid)
-            return DiscoveryResult.ok(slugs, source_url="https://api.openai.com/v1/models")
+            return DiscoveryResult.ok(slugs, source_url=source_url)
         except Exception as exc:
             return DiscoveryResult.failed(
                 f"OpenAI models.list() failed: {exc}",
-                source_url="https://api.openai.com/v1/models",
+                source_url=source_url,
             )
+
+    def _effective_base_url(self) -> str:
+        """The base URL the openai SDK will use, resolved the same way it does:
+        ``base_url``, then ``OPENAI_BASE_URL``, then api.openai.com."""
+        base = self._base_url or os.environ.get("OPENAI_BASE_URL") or _OPENAI_API_BASE
+        return base.rstrip("/")
 
     def discover_models(
         self,
         *,
         max_age_seconds: float | None = ...,  # type: ignore[assignment]
     ) -> DiscoveryResult:
-        """Snapshot the Sora-filtered OpenAI catalog. Single-flight, TTL-bounded."""
+        """Snapshot the target server's catalog (Sora-filtered on api.openai.com).
+        Single-flight, TTL-bounded."""
         cache = self._models._discovery_cache
         assert cache is not None  # wired in __init__
         if max_age_seconds is ...:  # type: ignore[comparison-overlap]
@@ -276,6 +355,8 @@ class SoraProvider(BaseProvider):
             kwargs: dict = {"timeout": self._http_timeout}
             if self._api_key:
                 kwargs["api_key"] = self._api_key
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
             self._client = openai.OpenAI(**kwargs)
         return self._client
 
