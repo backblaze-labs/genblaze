@@ -207,6 +207,44 @@ def test_sandbox_strips_credentials_from_env(repo):
     assert "ghp_SHOULD_NOT_LEAK" not in proc.stdout
 
 
+@needs_sandbox
+def test_sandbox_scrubs_variables_the_hook_never_saw(repo):
+    """Claude Code's Bash tool can add exports (e.g. from a shell profile) that
+    the hook process doesn't have; the scrub inside the sandbox removes them."""
+    out = _decision(
+        _run_hook(_payload("Bash", {"command": "env"}, repo["worktree"]), repo["home"])
+    )
+    env = dict(os.environ, HOME=str(repo["home"]), LATE_EXPORT_TOKEN="late-secret")
+    proc = subprocess.run(
+        ["/bin/bash", "-c", out["updatedInput"]["command"]],
+        cwd=repo["worktree"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "late-secret" not in proc.stdout
+    assert f"HOME={repo['home']}" in proc.stdout  # inherited, not set by us
+
+
+@needs_sandbox
+def test_rewritten_command_sets_neither_home_nor_git_variables(repo):
+    """Claude Code refuses worktree-agent commands that set HOME or inject git
+    config, which made every sandboxed executor command fail."""
+    out = _decision(_run_hook(_payload("Bash", {"command": "ls"}, repo["worktree"]), repo["home"]))
+    command = out["updatedInput"]["command"]
+    assert "HOME=" not in command
+    assert "GIT_" not in command
+    assert "env -i" not in command
+
+
+def test_structured_output_is_allowed(repo):
+    """Workflow agents return results through StructuredOutput."""
+    proc = _run_hook(_payload("StructuredOutput", {"slug": "x"}, repo["worktree"]))
+    assert _decision(proc) == {}
+
+
 _WRITE_AND_RUN_NETWORK_SCRIPT = (
     "printf 'import urllib.request\\n"
     + 'urllib.request.urlopen("https://github.com", timeout=3)\\n'

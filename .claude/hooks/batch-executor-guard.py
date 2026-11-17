@@ -58,6 +58,8 @@ BLOCKED_MACH_SERVICES = (
 )
 FILE_READ_TOOLS = {"Read", "Grep", "Glob"}
 FILE_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+# No file or network access: how a workflow agent returns its result.
+PASS_THROUGH_TOOLS = {"StructuredOutput"}
 
 # Home-relative credential stores the sandbox may not read.
 SECRET_HOME_PATHS = (
@@ -226,13 +228,20 @@ def _sandbox_command(command: str, worktree: Path, git_dir: Path, common: Path) 
     run_tmp = Path(tempfile.gettempdir()).resolve() / f"batch-executor-{digest}"
     run_tmp.mkdir(mode=0o700, exist_ok=True)
 
-    env = {k: os.environ[k] for k in PASSTHROUGH_ENV if k in os.environ}
-    env.update(TMPDIR=str(run_tmp), HOME=str(home), GIT_TERMINAL_PROMPT="0", TERM="dumb")
-    assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    # The environment is scrubbed as the first step *inside* the sandbox,
+    # keeping only PASSTHROUGH_ENV. That covers variables the Bash tool adds
+    # that this hook never sees, and it never sets HOME or git variables, which
+    # Claude Code refuses for worktree-isolated agents (HOME is inherited).
+    keep = "|".join(PASSTHROUGH_ENV)
+    scrub = (
+        f'for _v in $(compgen -e); do case "$_v" in {keep}) ;; '
+        '*) unset "$_v" 2>/dev/null ;; esac; done; unset _v; '
+        f"export TMPDIR={shlex.quote(str(run_tmp))} TERM=dumb; "
+    )
     profile = _profile(worktree, git_dir, common, run_tmp, home)
     return (
-        f"/usr/bin/env -i {assignments} {shlex.quote(sandbox_exec)} "
-        f"-p {shlex.quote(profile)} /bin/bash -c {shlex.quote(command)}"
+        f"{shlex.quote(sandbox_exec)} -p {shlex.quote(profile)} "
+        f"/bin/bash -c {shlex.quote(scrub + command)}"
     )
 
 
@@ -269,6 +278,9 @@ def main() -> None:
             "sandboxed batch-executor command (no network, writes confined to the worktree)",
             {**tool_input, "command": _sandbox_command(command, worktree, git_dir, common)},
         )
+
+    if tool in PASS_THROUGH_TOOLS:
+        sys.exit(0)
 
     if tool in FILE_READ_TOOLS:
         raw = tool_input.get("file_path") or tool_input.get("path")
