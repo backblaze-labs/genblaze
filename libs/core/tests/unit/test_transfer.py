@@ -1156,9 +1156,9 @@ class TestPerformanceDefaults:
         to pay disk I/O for it. Keeping the two constants in lockstep means:
         single-PUT → in-RAM; multipart → disk-spooled. Clean invariant."""
         from genblaze_core.storage import transfer
-        from genblaze_s3.backend import _MULTIPART_THRESHOLD
+        from genblaze_core.storage.config import StorageConfig
 
-        assert transfer._SPOOL_THRESHOLD == _MULTIPART_THRESHOLD, (
+        assert transfer._SPOOL_THRESHOLD == StorageConfig().multipart_threshold, (
             "Spool and multipart thresholds should stay in lockstep. "
             "Changing one without the other either wastes disk I/O (spool "
             "< multipart) or blows memory on single-PUT payloads (spool > "

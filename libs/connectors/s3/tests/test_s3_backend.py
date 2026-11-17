@@ -904,3 +904,48 @@ class TestKeyFromUrl:
         url = "https://minio-other.example.com/my-bucket/some/key.json"
         assert backend.key_from_url(url) is None
         backend._client.head_bucket.assert_not_called()
+
+
+class TestStorageConfigDefaults:
+    """The backend's transfer and client tuning comes from core's
+    ``StorageConfig`` defaults (#42), so changing a core default changes the
+    backend without a second edit."""
+
+    @pytest.fixture
+    def tuned(self, monkeypatch):
+        import genblaze_s3.backend as backend
+        from genblaze_core.storage.config import StorageConfig
+
+        cfg = StorageConfig(
+            multipart_threshold=5 * 1024 * 1024,
+            multipart_chunk_size=8 * 1024 * 1024,
+            max_pool_connections=7,
+            connect_timeout_sec=11.0,
+            read_timeout_sec=99.0,
+            retries=5,
+        )
+        monkeypatch.setattr(backend, "_STORAGE_DEFAULTS", cfg)
+        return backend, cfg
+
+    # boto3/botocore are mocked in conftest, so assert on the kwargs each
+    # config constructor received rather than on the returned objects.
+
+    def test_transfer_config_uses_core_multipart_defaults(self, tuned):
+        backend, cfg = tuned
+        transfer_config = sys.modules["boto3.s3.transfer"].TransferConfig
+        transfer_config.reset_mock()
+        backend.S3StorageBackend._build_transfer_config()
+        kwargs = transfer_config.call_args.kwargs
+        assert kwargs["multipart_threshold"] == cfg.multipart_threshold
+        assert kwargs["multipart_chunksize"] == cfg.multipart_chunk_size
+
+    def test_boto_config_uses_core_client_defaults(self, tuned):
+        backend, cfg = tuned
+        boto_config = sys.modules["botocore.config"].Config
+        boto_config.reset_mock()
+        backend._build_boto_config()
+        kwargs = boto_config.call_args.kwargs
+        assert kwargs["max_pool_connections"] == cfg.max_pool_connections
+        assert kwargs["connect_timeout"] == cfg.connect_timeout_sec
+        assert kwargs["read_timeout"] == cfg.read_timeout_sec
+        assert kwargs["retries"]["max_attempts"] == cfg.retries
