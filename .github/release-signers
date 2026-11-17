@@ -1,0 +1,3 @@
+# SSH signing key published by the code owner on GitHub; review changes via CODEOWNERS.
+# https://api.github.com/users/jeronimodeleon/ssh_signing_keys (key id 1054051)
+jeronimodeleon namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICqM6pMP77/ZW88nSHQ6bfHbxN9Fp5U8m8drqZAmCnNt

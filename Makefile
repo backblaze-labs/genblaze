@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint deptry fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity release-smoke pre-release post-release
+.PHONY: install install-dev test lint deptry fmt typecheck coverage clean ts-types ts-types-check pypi-metadata-check pypi-pin-parity pypi-new-projects release-smoke pre-release post-release verify docs-lint e2e-smoke
 
 install:
 	pip install -e libs/core
@@ -90,8 +90,18 @@ fmt:
 	ruff format libs/ cli/ examples/
 	ruff check --fix libs/ cli/ examples/
 
+# Same scope as CI's typecheck job (which calls this target): core plus every
+# connector. Connectors are checked one at a time because each ships its own
+# top-level package; every failure is reported before exiting.
 typecheck:
 	mypy libs/core/genblaze_core/ --ignore-missing-imports
+	@failed=""; \
+	for conn in libs/connectors/*/; do \
+		conn="$${conn%/}"; \
+		echo "=== mypy: $$conn ==="; \
+		mypy $$conn/genblaze_*/ --ignore-missing-imports || failed="$$failed $${conn##*/}"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "Typecheck failed for:$$failed"; exit 1; fi
 
 coverage:
 	cd libs/core && pytest tests/ --cov=genblaze_core --cov-report=term-missing --cov-report=html --cov-fail-under=70
@@ -129,6 +139,13 @@ pypi-metadata-check:
 pypi-pin-parity:
 	@python tools/check_pin_parity.py
 
+# Pre-release warning (never fails): lists Python packages with no pypi.org
+# project yet. Their first publish needs a pending Trusted Publisher, which
+# PyPI's API can't confirm, so this only reminds. Last in ``pre-release`` so
+# the banner sits above the success line. See tools/check_pypi_projects.py.
+pypi-new-projects:
+	@python tools/check_pypi_projects.py
+
 # Pre-release wheel install smoke test. Builds every package to a
 # local wheelhouse, then installs the local genblaze wheels into a
 # fresh venv while PyPI remains enabled for transitive dependencies.
@@ -137,16 +154,35 @@ pypi-pin-parity:
 release-smoke:
 	@tools/release_smoke.sh
 
+# Docs lint (Repo Docs Standard): frontmatter, links, AGENTS.md commands and
+# the internal-reference guard. Changed-file rules and the leak scan diff
+# against DOCS_BASE; untouched legacy docs only warn. See tools/check_docs.py.
+DOCS_BASE ?= origin/main
+docs-lint:
+	@python tools/check_docs.py --base $(DOCS_BASE)
+
+# End-to-end user flow through the installed CLI: pipeline -> embed ->
+# extract -> verify --fetch, plus a tamper negative control. Offline, ~2s.
+e2e-smoke:
+	@python tools/e2e_smoke.py
+
+# The one "is this change done?" gate. Agents and humans run it before
+# opening a PR and paste the output into the PR's Testing section. CI runs
+# the same targets (ts-types-check stays CI-only: it needs Node).
+verify: lint typecheck test docs-lint e2e-smoke changelog-check
+	@echo ""
+	@echo "verify passed."
+
 # Local pre-flight before tagging a release. Runs the same gates the
 # release workflow runs (validate-version excepted — that needs the
 # tag and the CHANGELOG cut). A clean ``make pre-release`` on ``main``
 # is a strong signal the publish pipeline will be green. Ordered for
 # quick-fail: cheap checks first, then the full test suite and the
-# wheelhouse smoke. See RELEASING.md.
-pre-release: lint typecheck ts-types-check pypi-metadata-check pypi-pin-parity test release-smoke
+# wheelhouse smoke. Covers everything ``verify`` runs. See RELEASING.md.
+pre-release: changelog-check lint typecheck docs-lint ts-types-check pypi-metadata-check pypi-pin-parity test e2e-smoke release-smoke pypi-new-projects
 	@echo ""
 	@echo "pre-release gates passed."
-	@echo "Next: bump pyproject.toml versions, cut CHANGELOG, tag, gh release create."
+	@echo "Next: prepare package versions, batch Changie notes, close milestone, sign tag; see RELEASE.md."
 	@echo "See RELEASING.md for the full flow."
 
 # Post-publish verification. Installs the umbrella from public PyPI
@@ -181,3 +217,24 @@ post-release:
 		rm -rf $$(dirname $$VENV); \
 		echo ""; \
 		echo "genblaze==$(VERSION) verified on PyPI."
+
+# Pinned Go module download is verified by the Go checksum database. Override
+# CHANGIE with an installed v1.26.0 binary for offline development.
+CHANGIE ?= go run github.com/miniscruff/changie@v1.26.0
+export CHANGIE
+.PHONY: changelog-new changelog-merge changelog-check changelog-batch changelog-release-check
+changelog-new:
+	$(CHANGIE) new
+	python tools/changelog.py merge
+
+changelog-merge:
+	python tools/changelog.py merge
+
+changelog-check:
+	python tools/changelog.py check
+
+changelog-batch:
+	python tools/changelog.py batch "$(WAVE)"
+
+changelog-release-check:
+	python tools/changelog.py release-check
