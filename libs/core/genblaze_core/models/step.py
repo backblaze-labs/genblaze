@@ -11,11 +11,13 @@ from pydantic import (
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
+    ValidationInfo,
+    field_validator,
     model_serializer,
     model_validator,
 )
 
-from genblaze_core._utils import new_id, sanitize_error
+from genblaze_core._utils import new_id, sanitize_error, validate_path_component
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.enums import (
     RETRYABLE_ERROR_CODES,
@@ -188,6 +190,15 @@ class Step(BaseModel):
         if not self.failed_attempts:
             data.pop("failed_attempts", None)
         return data
+
+    # step_id names connector output files (output_dir / f"{step_id}{ext}");
+    # enforced on tolerant loads too — see Run._validate_run_ids.
+    @field_validator("step_id", "run_id", mode="after")
+    @classmethod
+    def _validate_ids(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return (
+            None if value is None else validate_path_component(value, field=str(info.field_name))
+        )
 
     @model_validator(mode="after")
     def _validate_provider_required_for_generative_steps(self) -> Step:

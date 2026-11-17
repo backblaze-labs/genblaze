@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-core"
-version = "0.3.9"
+version = "0.3.10"
 description = "Core SDK for genblaze media generation orchestration"
 authors = [{name = "Jeronimo De Leon", email = "jdeleon@backblaze.com"}]
 readme = "README.md"
@@ -30,11 +30,12 @@ dependencies = [
     # genblaze_core.storage` hard-requires it on a clean install. It used to
     # arrive only transitively via a connector's boto3 stack; declaring it
     # closes the same crash class as the replicate/httpx fix (#37/#106).
-    # >=1.26 for the Retry(allowed_methods=...) API; <3 matches the repo's
-    # bounded-major convention (cf. pydantic<3) and resolves cleanly against
-    # boto3/botocore's urllib3 cap (botocore<=1.31 wants <1.27 → 1.26.x; newer
-    # botocore allows 2.x — both inside <3).
-    "urllib3>=1.26,<3",
+    # >=2.8.0: transfer.py streams untrusted bodies (preload_content=False),
+    # the path hit by CVE-2026-97688/97689 (memory DoS on crafted chunked or
+    # compressed responses); 1.26.x has no fix. Resolves with boto3/botocore
+    # on Python>=3.11 (botocore's 1.26.x cap applies only below 3.10). <3
+    # matches the repo's bounded-major convention (cf. pydantic<3).
+    "urllib3>=2.8.0,<3",
 ]
 
 [project.urls]
@@ -45,13 +46,13 @@ Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
-# <23: pyarrow's leading version number bumps roughly every quarterly release
+# <27: pyarrow's leading version number bumps roughly every quarterly release
 # rather than tracking semver majors strictly, and the currently-resolvable
-# release (22.x) is already far past the 14.0 floor; capping at 14 or 15
+# release (26.x) is already far past the 14.0 floor; capping at 14 or 15
 # would reject the version this extra is actually verified against today.
 # Bounded one major past what's currently verified (#61) rather than left
 # uncapped, matching the repo's bounded-major convention (cf. pydantic<3).
-parquet = ["pyarrow>=14.0,<26"]
+parquet = ["pyarrow>=14.0,<27"]
 # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
 # test fixture (#108); cap until 1.49 is vetted against the test suite.
 audio = ["mutagen>=1.47,<1.49"]
@@ -91,7 +92,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
     "deptry>=0.23",
-    "pyarrow>=14.0,<26",
+    "pyarrow>=14.0,<27",
     # <1.49: mutagen 1.48 changed m4a timescale handling in a way that broke our
     # test fixture (#108); cap until 1.49 is vetted against the test suite.
     "mutagen>=1.47,<1.49",
@@ -102,8 +103,8 @@ dev = [
     "opentelemetry-api>=1.20,<2",
     "google-re2>=1.0,<2",
     # Test-only since #249: JPEG/WebP embedding splices XMP bytes directly, so
-    # Pillow is used only to build image fixtures. <13: bounded-major (#61).
-    "pillow>=10.0,<13",
+    # Pillow is used only to build image fixtures. <14: bounded-major (#61).
+    "pillow>=10.0,<14",
 ]
 
 [tool.hatch.build.targets.wheel]

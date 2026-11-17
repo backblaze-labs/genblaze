@@ -98,6 +98,23 @@ class ParquetSink(BaseSink):
         """Sanitize a string for use in partition paths (prevent traversal)."""
         return _SAFE_PARTITION.sub("_", value)
 
+    def _contained(self, path: Path) -> Path:
+        """Return ``path`` if it stays under ``base_dir``; raise ``SinkError`` otherwise.
+
+        Defense in depth behind the model-level id check: catches Runs built
+        without validation and partitions read back from tampered
+        ``.partition`` files (GHSA-x99g-wcm2-r2v8). Lexical (normpath), not
+        resolve(), so symlinks the owner placed inside ``base_dir`` keep working.
+        """
+        normalized = Path(os.path.normpath(path))
+        if not normalized.is_relative_to(self.base_dir):
+            raise SinkError(f"Refusing to touch {path}: outside the sink's base_dir")
+        return normalized
+
+    def _table_path(self, table: str, partition: str, run_id: str) -> Path:
+        """Path of ``run_id``'s file in ``table`` under ``partition``."""
+        return self._contained(self.base_dir / table / partition / f"{run_id}.parquet")
+
     def _bootstrap_run_index(self) -> None:
         """One-time backfill of the run_id -> partition index from an
         existing ``runs/`` tree (e.g. the first use after upgrading past
@@ -137,7 +154,7 @@ class ParquetSink(BaseSink):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _run_index_entry_path(self, run_id: str) -> Path:
-        return self._index_dir / f"{run_id}.partition"
+        return self._contained(self._index_dir / f"{run_id}.partition")
 
     def _lookup_run_partition(self, run_id: str) -> str | None:
         """Return the partition this run_id was last sunk under, or None if unknown."""
@@ -173,7 +190,7 @@ class ParquetSink(BaseSink):
         sentinel pointing at them.
         """
         for table in ("steps", "assets", "runs"):
-            (self.base_dir / table / partition / f"{run_id}.parquet").unlink(missing_ok=True)
+            self._table_path(table, partition, run_id).unlink(missing_ok=True)
 
     def _partition_path(self, run: Run) -> str:
         date_str = run.created_at.strftime("%Y-%m-%d")
@@ -201,7 +218,7 @@ class ParquetSink(BaseSink):
 
         # Idempotency: runs table is written last as a completion sentinel.
         # Fast path first: an exact-path match at the *current* partition.
-        runs_path = self.base_dir / "runs" / partition / f"{run.run_id}.parquet"
+        runs_path = self._table_path("runs", partition, run.run_id)
         if runs_path.exists():
             # Same partition as the last sink of this run_id. Compare content
             # via canonical_hash (already stored in the runs row) rather than
@@ -272,7 +289,7 @@ class ParquetSink(BaseSink):
         if step_rows:
             _atomic_write_table(
                 pa.Table.from_pylist(step_rows),
-                self.base_dir / "steps" / partition / f"{run.run_id}.parquet",
+                self._table_path("steps", partition, run.run_id),
             )
 
         # --- assets table (written before runs) ---
@@ -307,7 +324,7 @@ class ParquetSink(BaseSink):
         if asset_rows:
             _atomic_write_table(
                 pa.Table.from_pylist(asset_rows),
-                self.base_dir / "assets" / partition / f"{run.run_id}.parquet",
+                self._table_path("assets", partition, run.run_id),
             )
 
         # --- runs table (written last as completion sentinel, atomic) ---

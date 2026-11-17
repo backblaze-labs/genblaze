@@ -27,8 +27,8 @@ CORE_IMPORTS = (
 # tools/tests/test_release_import_smoke.py fails when a new all-extra package
 # is added without a matching import smoke target.
 ALL_EXTRA_PACKAGE_IMPORTS = (
-    ("genblaze-atlascloud", "genblaze_atlascloud"),
-    ("genblaze-fal", "genblaze_fal"),
+    ("genblaze-atlascloudai", "genblaze_atlascloud"),
+    ("genblaze-falai", "genblaze_fal"),
     ("genblaze-gmicloud", "genblaze_gmicloud"),
     ("genblaze-openai", "genblaze_openai"),
     ("genblaze-google", "genblaze_google"),
@@ -39,7 +39,6 @@ ALL_EXTRA_PACKAGE_IMPORTS = (
     ("genblaze-elevenlabs", "genblaze_elevenlabs"),
     ("genblaze-stability-audio", "genblaze_stability_audio"),
     ("genblaze-lmnt", "genblaze_lmnt"),
-    ("genblaze-hume", "genblaze_hume"),
     ("genblaze-assemblyai", "genblaze_assemblyai"),
     ("genblaze-langsmith", "genblaze_langsmith"),
     ("genblaze-nvidia", "genblaze_nvidia"),

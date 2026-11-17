@@ -3,6 +3,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("genblaze-atlascloud")
+    __version__ = version("genblaze-atlascloudai")
 except PackageNotFoundError:
     __version__ = "0.0.0"

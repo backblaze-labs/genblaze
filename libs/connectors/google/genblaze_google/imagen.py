@@ -23,8 +23,6 @@ Docs: https://ai.google.dev/gemini-api/docs/image-generation
 
 from __future__ import annotations
 
-import os
-import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -44,6 +42,7 @@ from genblaze_core.providers import (
     ValidationOutcome,
     ValidationResult,
     ValidationSource,
+    get_output_path,
 )
 from genblaze_core.providers.retry import retry_after_from_response
 from genblaze_core.runnable.config import RunnableConfig
@@ -213,13 +212,9 @@ class ImagenProvider(GoogleClientMixin, SyncProvider):
             suffix = ".jpeg" if "jpeg" in mime_type else ".png"
 
             for i, img in enumerate(response.generated_images):
-                if self._output_dir:
-                    self._output_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = self._output_dir / f"{step.step_id}_{i}{suffix}"
-                else:
-                    fd, tmp = tempfile.mkstemp(suffix=suffix)
-                    os.close(fd)
-                    out_path = Path(tmp)
+                out_path = get_output_path(
+                    f"{step.step_id}_{i}", suffix.lstrip("."), self._output_dir
+                )
 
                 img.image.save(str(out_path))
                 file_url = local_file_url(out_path.resolve())

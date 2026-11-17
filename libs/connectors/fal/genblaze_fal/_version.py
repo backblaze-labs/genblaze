@@ -3,6 +3,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("genblaze-fal")
+    __version__ = version("genblaze-falai")
 except PackageNotFoundError:
     __version__ = "0.0.0"

@@ -266,7 +266,7 @@ class TestGetOutputPath:
         assert out.is_dir()
 
     @pytest.mark.parametrize(
-        "step_id", ["../escape", "a/b", "a\\b", "a\x00b", "", "D:evil", "a:ads"]
+        "step_id", ["../escape", "..", ".", "a/b", "a\\b", "a\x00b", "", "D:evil", "a:ads"]
     )
     def test_rejects_unsafe_step_id(self, tmp_path, step_id):
         """step_id is interpolated into a filename; separators must not escape output_dir."""
@@ -296,7 +296,7 @@ class TestGetOutputPath:
         assert path.is_absolute()
         assert path.parent == tmp_path.absolute()
 
-    @pytest.mark.parametrize("step_id", ["intro clip", "..", "-flag", "v1.2"])
+    @pytest.mark.parametrize("step_id", ["intro clip", "-flag", "v1.2"])
     def test_accepts_single_component_step_id(self, tmp_path, step_id):
         """Non-separator ids stay valid (backward compat) and never leave output_dir."""
         path = get_output_path(step_id, "mp4", output_dir=tmp_path)

@@ -1,4 +1,4 @@
-# genblaze-atlascloud
+# genblaze-atlascloudai
 
 Atlas Cloud image and video generation adapter for
 [genblaze](https://github.com/backblaze-labs/genblaze). The connector uses the
@@ -7,7 +7,7 @@ Atlas Cloud asynchronous prediction API and keeps Atlas Cloud fully opt-in.
 ## Install
 
 ```bash
-pip install genblaze-atlascloud
+pip install genblaze-atlascloudai
 export ATLASCLOUD_API_KEY="..."
 ```
 

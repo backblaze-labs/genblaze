@@ -39,6 +39,19 @@ def test_all_extra_import_mapping_matches_umbrella_all_extra() -> None:
     assert [package for package, _module in ALL_EXTRA_PACKAGE_IMPORTS] == all_extra_packages
 
 
+# Third-party projects squatting our original connector names (PyPI-quarantined
+# dependency-confusion canaries). We never owned them, so nothing may depend on them.
+_SQUATTED_NAMES = {"genblaze-fal", "genblaze-atlascloud"}
+
+
+def test_umbrella_never_depends_on_squatted_names() -> None:
+    meta = tomllib.loads((REPO_ROOT / "libs/meta/pyproject.toml").read_text())
+    requirements = list(meta["project"]["dependencies"]) + [
+        req for reqs in meta["project"]["optional-dependencies"].values() for req in reqs
+    ]
+    assert not {_dependency_name(r) for r in requirements} & _SQUATTED_NAMES
+
+
 def test_default_import_mapping_matches_umbrella_dependencies() -> None:
     meta = tomllib.loads((REPO_ROOT / "libs/meta/pyproject.toml").read_text())
     default_packages = [

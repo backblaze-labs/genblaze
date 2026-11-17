@@ -12,7 +12,6 @@ install:
 	pip install -e libs/connectors/elevenlabs
 	pip install -e libs/connectors/stability-audio
 	pip install -e libs/connectors/lmnt
-	pip install -e libs/connectors/hume
 	pip install -e libs/connectors/gmicloud
 	pip install -e libs/connectors/langsmith
 	pip install -e libs/connectors/nvidia
@@ -34,7 +33,6 @@ install-dev:
 	pip install -e "libs/connectors/elevenlabs[dev]"
 	pip install -e "libs/connectors/stability-audio[dev]"
 	pip install -e "libs/connectors/lmnt[dev]"
-	pip install -e "libs/connectors/hume[dev]"
 	pip install -e "libs/connectors/gmicloud[dev]"
 	pip install -e "libs/connectors/langsmith[dev]"
 	pip install -e "libs/connectors/nvidia[dev]"
@@ -56,7 +54,6 @@ test:
 	cd libs/connectors/elevenlabs && pytest -v
 	cd libs/connectors/stability-audio && pytest -v
 	cd libs/connectors/lmnt && pytest -v
-	cd libs/connectors/hume && pytest -v
 	cd libs/connectors/gmicloud && pytest -v
 	cd libs/connectors/langsmith && pytest -v
 	cd libs/connectors/nvidia && pytest -v

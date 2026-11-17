@@ -14,7 +14,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credentials no longer prevent a valid template from loading. Empty templates
   fail before discovery; explicit provider maps remain authoritative (#67).
 
-## [0.8.0] - 2026-10-06
+## [0.8.2] - 2026-11-16
+
+Security hardening wave. `genblaze-core` now requires `urllib3>=2.8.0`, which
+fixes memory-exhaustion bugs in the streaming download path
+(CVE-2026-97688, CVE-2026-97689). Twelve connector call sites now name output
+files through `get_output_path()`, closing the remaining ways a `step_id` or
+output format could write outside `output_dir` (follow-up to
+GHSA-x99g-wcm2-r2v8).
+
+This heading is the release **wave** name and the git tag (`v0.8.2`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.7`). Don't pin `genblaze==0.8.2`; pin the
+umbrella version above, or use a lockfile.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.6 → **0.4.7**
+- `genblaze-core` 0.3.9 → **0.3.10**
+- `genblaze-cli` 0.3.7 → **0.3.8**
+- `genblaze-decart` 0.3.3 → **0.3.4**
+- `genblaze-elevenlabs` 0.3.3 → **0.3.4**
+- `genblaze-google` 0.3.5 → **0.3.6**
+- `genblaze-hume` 0.3.3 → **0.3.4**
+- `genblaze-lmnt` 0.3.3 → **0.3.4**
+- `genblaze-openai` 0.3.5 → **0.3.6**
+- `genblaze-stability-audio` 0.3.3 → **0.3.4**
+
+### genblaze
+
+- **Changed** raised the `decart`, `elevenlabs`, `hume`, `lmnt` and
+  `stability-audio` extra floors to the releases that name output files
+  through `get_output_path()`.
+
+### genblaze-core
+
+- **Security** `genblaze-core` now requires `urllib3>=2.8.0` (was `>=1.26`).
+  `AssetTransfer` streams provider asset URLs through urllib3's streaming
+  API, which before 2.8.0 can exhaust memory on a crafted chunked or
+  compressed response (CVE-2026-97688, CVE-2026-97689). The 1.26.x line has
+  no fix; environments pinned to it must upgrade.
+- **Changed** the `parquet` extra now accepts `pyarrow` 26 (`<27`, was
+  `<26`). The test-only Pillow cap moves to `<14`, so CI picks up Pillow
+  13.0.0 and its fixes for 35 image-decoder CVEs.
+
+### genblaze-decart
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` and `image.py`,
+  so a `step_id` containing a path separator (for example one set on a `Step`
+  after it was built) or a non-alphanumeric output format can no longer write
+  outside `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-elevenlabs
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` and `sfx.py`,
+  so a `step_id` containing a path separator (for example one set on a `Step`
+  after it was built) or a non-alphanumeric output format can no longer write
+  outside `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-google
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `imagen.py` and
+  `gemini_image.py`, so a `step_id` containing a path separator (for example
+  one set on a `Step` after it was built) or a non-alphanumeric output format
+  can no longer write outside `output_dir`. Same class as the Veo fix (#284).
+
+### genblaze-hume
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-lmnt
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+### genblaze-openai
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py` (Sora),
+  `tts.py` and `dalle.py`, so a `step_id` containing a path separator (for
+  example one set on a `Step` after it was built) or a non-alphanumeric output
+  format can no longer write outside `output_dir`. Same class as the Veo fix
+  (#284).
+
+### genblaze-stability-audio
+
+- **Fixed** local output files are now named through
+  `genblaze_core.providers.get_output_path()` in `provider.py`, so a `step_id`
+  containing a path separator (for example one set on a `Step` after it was
+  built) or a non-alphanumeric output format can no longer write outside
+  `output_dir`. Same class as the Veo fix (#284). Requires
+  `genblaze-core>=0.3.9`.
+
+## [0.8.1] - 2026-11-16
+
+Completes the 0.8.0 wave. The fal.ai and Atlas Cloud connectors ship under new
+PyPI names, `genblaze-falai` and `genblaze-atlascloudai`, because the names
+listed in 0.8.0 were registered by a third party before we published. The
+umbrella `genblaze` 0.4.6, which did not publish in 0.8.0, ships here with the
+renamed connectors and without `genblaze-hume` in its bundles.
+
+This heading is the release **wave** name and the git tag (`v0.8.1`);
+individual PyPI package versions move independently and are listed below (the
+umbrella `genblaze` package is `0.4.6`). Don't pin `genblaze==0.8.1`; pin the
+umbrella version above, or use a lockfile.
+
+### Released package versions
+
+- `genblaze` (umbrella) 0.4.5 → **0.4.6**
+- `genblaze-falai` **0.1.0** (new; replaces the unpublished `genblaze-fal`)
+- `genblaze-atlascloudai` **0.1.0** (new; replaces the unpublished `genblaze-atlascloud`)
+
+### genblaze
+
+- **Security** the fal.ai and Atlas Cloud connectors now publish as
+  `genblaze-falai` and `genblaze-atlascloudai`. The names listed in 0.8.0,
+  `genblaze-fal` and `genblaze-atlascloud`, were registered on PyPI by a third
+  party (now quarantined by PyPI) and were never ours: do not install them.
+  Import names (`genblaze_fal`, `genblaze_atlascloud`) and the umbrella
+  extras (`genblaze[fal]`, `genblaze[atlascloud]`) are unchanged.
+
+## [0.8.0] - 2026-11-16
 
 Provenance and connector wave. Adds two opt-in connectors (Atlas Cloud and
 fal.ai), experimental Mode 2 Ed25519 manifest signing, and a failed-attempt
@@ -27,7 +161,13 @@ ffmpeg helpers are public for custom deterministic providers, and
 
 Upgrade notes: `genblaze-core` no longer installs Pillow; declare `pillow`
 yourself if you import `PIL`. Manifests that recorded a fallback carry
-`failed_attempts` and need a reader at `genblaze-core` 0.3.9 or later.
+`failed_attempts` and need a reader at `genblaze-core` 0.3.9 or later. This wave
+also fixes a path-traversal issue in `ParquetSink` / `genblaze index`
+(GHSA-x99g-wcm2-r2v8): identity fields must now be a single path component,
+so manifests with ids containing `/` or `\` (or `:`, outside tenant ids)
+no longer load. `genblaze-hume`
+is temporarily out of the `audio` and `all` bundles because its `hume` SDK
+dependency is yanked on PyPI.
 
 This heading is the release **wave** name and the git tag (`v0.8.0`);
 individual PyPI package versions move independently and are listed below (the
@@ -57,6 +197,10 @@ ranges, not exact versions, for its own dependencies).
 
 ### genblaze
 
+- **Changed** removed `genblaze-hume` from the `audio` and `all` bundles.
+  Every release of Hume's `hume` SDK is currently yanked on PyPI, so any
+  bundle that included it failed to install. The `hume` extra is kept, but
+  `pip install "genblaze[hume]"` fails until Hume republishes the SDK.
 - **Added** an `atlascloud` extra and included Atlas Cloud in the `image`,
   `video`, and `all` bundles.
 - **Added** a `fal` extra and included fal.ai in the `image`, `video`,
@@ -109,6 +253,25 @@ ranges, not exact versions, for its own dependencies).
 
 ### genblaze-core
 
+- **Security** `genblaze index` and `ParquetSink` no longer write or delete
+  files outside the index directory when given an untrusted manifest
+  (GHSA-x99g-wcm2-r2v8). `run_id` was joined into file paths unchecked, so a
+  manifest with `run_id="../../x"` or an absolute path could create or
+  overwrite `.parquet`/`.partition` files anywhere the user could write.
+  `run_id` is excluded from the canonical hash, so such a manifest still
+  verified. `Run.run_id`, `Run.parent_run_id`, `Run.tenant_id`,
+  `Step.step_id`, `Step.run_id` and `Asset.asset_id` must now be a single
+  path component, and `ParquetSink` refuses any path that lies outside its
+  `base_dir` (a lexical check; symlinks inside `base_dir` are trusted). Thanks to @orshih6 for the report.
+- **Changed** identity fields that are empty, `.` or `..`, or contain `/`,
+  `\`, NUL or (except `tenant_id`) `:` now fail validation, including in
+  `parse_manifest()`. UUIDs and ids such as `"intro clip"`, `"v1.2"` or a
+  tenant `"org:acme"` are unaffected. `Pipeline(tenant_id=...)` is checked at
+  construction, before any provider call. Existing manifests with ids like
+  `"urn:x:1"` or a tenant like `"org/team"` no longer load: replace those
+  characters (e.g. with `-`) in the JSON. Ids are excluded from
+  `canonical_hash`, so the edited manifest still verifies.
+  `get_output_path()` now also rejects a `step_id` of `.` or `..`.
 - **Fixed** a step rescued by `fallback_models` no longer erases the failed
   primary from provenance. Each superseded failure is now recorded, oldest
   first, in the new `Step.failed_attempts` list (`StepAttempt`: step id,
@@ -250,6 +413,8 @@ ranges, not exact versions, for its own dependencies).
 
 ### Internal
 
+- CI no longer installs, typechecks or tests `genblaze-hume` while its `hume`
+  SDK dependency is uninstallable.
 - **Security** hardened the `@genblaze/spec` TypeScript type-generation
   toolchain against npm supply-chain attacks (#270): `generate-types.sh` now
   installs `json-schema-to-typescript`/`typescript` via `npm ci
