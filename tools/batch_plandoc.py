@@ -55,6 +55,14 @@ from pathlib import Path
 # validator extracts exactly what is between these markers.
 _META_OPEN = "<!-- BATCH-PLAN-META"
 _META_CLOSE = "BATCH-PLAN-META -->"
+# Shown above the Approve checklist in every plan doc.
+_APPROVAL_HELP = (
+    "> To approve, tick the clusters you want under **Approve**, then run "
+    "`batch-execute` against this doc (a dry run unless you pass "
+    '`"dryRun": false`). Only ticked clusters run. Execution aborts if a '
+    "ticked issue has closed; clusters that already have a PR or branch "
+    "are skipped. Executors never merge, comment or label."
+)
 # A ticked approval line, e.g. "- [x] approve `issues-70-71`".
 _APPROVAL_RE = re.compile(r"^\s*[-*]\s*\[[xX]\]\s*approve\s+`([a-z0-9-]+)`\s*$", re.MULTILINE)
 
@@ -101,21 +109,17 @@ def render_doc(plan: dict, base_sha: str, date: str) -> str:
 
     exec_clusters = [c for c in clusters if c["executable"]]
     deferred = [c for c in clusters if not c["executable"]]
+    exec_issue_count = sum(len(c["issues"]) for c in exec_clusters)
 
     lines: list[str] = [
         f"# Batch Maintainer Plan — {date}",
         "",
         f"- **Base commit** (`origin/main`): `{base_sha}`",
         f"- **Approval token**: `{token}`",
-        f"- **Executable now**: {len(exec_clusters)} cluster(s) — "
-        f"{sum(len(c['issues']) for c in exec_clusters)} issue(s)",
+        f"- **Executable now**: {len(exec_clusters)} cluster(s) — {exec_issue_count} issue(s)",
         f"- **Deferred to re-plan**: {len(deferred)} cluster(s)",
         "",
-        "> To approve, tick the clusters you want under **Approve**, then run "
-        "`batch-execute` against this doc (a dry run unless you pass "
-        '`"dryRun": false`). Only ticked clusters run. Execution aborts if a '
-        "ticked issue has closed; clusters that already have a PR or branch "
-        "are skipped. Executors never merge, comment or label.",
+        _APPROVAL_HELP,
         "",
         "## Approve",
         "",
