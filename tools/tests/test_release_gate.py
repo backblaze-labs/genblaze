@@ -234,3 +234,65 @@ def test_explicit_production_dispatch_mode():
 def test_invalid_validation_only_boolean_fails_closed(value):
     with pytest.raises(ReleaseGateError):
         release_mode("workflow_dispatch", "true", value)
+
+
+def test_real_policy_cli_targets_separate_candidate_root(signed_repo, monkeypatch, tmp_path):
+    import os
+    import shutil
+
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch)
+    policy = tmp_path / "trusted-policy/tools"
+    policy.mkdir(parents=True)
+    for name in ["release_gate.py", "changelog.py"]:
+        shutil.copy(Path(__file__).resolve().parents[1] / name, policy / name)
+    candidate_tool = signed_repo / "tools/release_gate.py"
+    candidate_tool.parent.mkdir()
+    candidate_tool.write_text('raise RuntimeError("candidate policy executed")\n')
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(policy / "release_gate.py"),
+            "--plan",
+            "--repo-root",
+            str(signed_repo),
+        ],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "upload_python=true" in (signed_repo / "outputs").read_text()
+    assert "Verified trusted tag v1.2.3" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [{"title": "v1.2.3", "state": "closed"}],
+        [{"title": "v1.2.3", "state": "closed", "open_issues": 0}] * 2,
+    ],
+)
+def test_malformed_or_duplicate_milestones_fail_closed(items):
+    with pytest.raises(ReleaseGateError):
+        check_milestone(items, "1.2.3")
+
+
+@pytest.mark.parametrize("event", ["push", "pull_request", ""])
+def test_unknown_event_cannot_enable_publication(event):
+    with pytest.raises(ReleaseGateError):
+        release_mode(event, "false", "false")
+
+
+def test_testpypi_plan_requires_explicit_upload_opt_in(signed_repo, monkeypatch):
+    plan_fixture(signed_repo, monkeypatch)
+    monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("INPUT_DRY_RUN", "true")
+    monkeypatch.setenv("INPUT_VALIDATION_ONLY", "false")
+    write_plan(signed_repo)
+    values = dict(
+        line.split("=", 1) for line in (signed_repo / "outputs").read_text().splitlines()
+    )
+    assert values["upload_python"] == "true"
+    assert values["dry_run"] == "true"

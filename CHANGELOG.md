@@ -7,34 +7,29 @@ package versions remain independent of release waves. See [RELEASE.md](RELEASE.m
 
 ### genblaze-core
 
+#### Changed
+
+- `Pipeline.run`, `arun`, `map` and `amap` now type
+  `on_progress`, `on_step_complete` and `on_retry` as precise callables instead
+  of `Any`, and so do the webhook `make_on_progress` / `make_on_step_complete`
+  factories. No runtime change; type checkers now flag a callback with the
+  wrong signature, including an `async def` (#45).
+- the s3 storage backend and the download spool threshold now take
+  their pool size, timeouts, retries and multipart sizes from
+  `StorageConfig`'s defaults instead of separate copies. Values are unchanged
+  (#42).
+#### Removed
+
+- the unused `genblaze_core.providers.canonical_params` module and
+  the private, never-applied `storage._tracer` decorator. Nothing in genblaze
+  imported either. If you imported the canonical name constants, define them
+  locally; connectors still accept those parameter names (#47).
 #### Fixed
 
 - `PipelineTemplate.instantiate()` now constructs only providers
   referenced by the template during auto-discovery. Unused providers that need
   credentials no longer prevent a valid template from loading. Empty templates
   fail before discovery; explicit provider maps remain authoritative (#67).
-- **Changed** `Pipeline.run`, `arun`, `map` and `amap` now type
-  `on_progress`, `on_step_complete` and `on_retry` as precise callables instead
-  of `Any`, and so do the webhook `make_on_progress` / `make_on_step_complete`
-  factories. No runtime change; type checkers now flag a callback with the
-  wrong signature, including an `async def` (#45).
-- **Removed** the unused `genblaze_core.providers.canonical_params` module and
-  the private, never-applied `storage._tracer` decorator. Nothing in genblaze
-  imported either. If you imported the canonical name constants, define them
-  locally; connectors still accept those parameter names (#47).
-- **Changed** the s3 storage backend and the download spool threshold now take
-  their pool size, timeouts, retries and multipart sizes from
-  `StorageConfig`'s defaults instead of separate copies. Values are unchanged
-  (#42).
-- **Fixed** computed costs no longer carry float noise such as
-  `0.30000000000000004`. `cost_usd` from registry pricing, `estimate_cost()` and
-  `AgentResult.total_cost_usd` are rounded to 9 decimal places, which keeps
-  sub-micro-dollar per-token rates. Already-persisted manifests and Parquet rows
-  are unchanged, and canonical hashes are unaffected (#63).
-- **Fixed** `ModelRegistry` now updates its warning-dedup sets under its lock,
-  so a concurrent `fork()` can't copy a set mid-change (a real race on
-  free-threaded Python). The docstring now states the exact concurrency
-  guarantee (#58).
 
 ### genblaze-openai
 

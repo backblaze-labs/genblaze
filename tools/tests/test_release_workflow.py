@@ -139,3 +139,32 @@ def test_npm_dispatch_executes_dry_run_without_registry_upload(tmp_path):
     )
     calls = [json.loads(line) for line in (tmp_path / "npm-calls.jsonl").read_text().splitlines()]
     assert calls == [["--version"], ["publish", "--access", "public", "--dry-run", "--provenance"]]
+
+
+def test_mode_expressions_pin_production_and_preview_outcomes():
+    jobs = workflow()["jobs"]
+    preview = "github.event_name == 'workflow_dispatch' && inputs.dry_run"
+    expected_guard = (
+        "needs.validate-version.outputs.upload_python == 'true' && "
+        "(github.event_name != 'workflow_dispatch' || inputs.dry_run == false || "
+        "inputs.validation_only == false)"
+    )
+    for name in ["publish-core", "publish-cli", "publish-connectors", "publish-meta"]:
+        assert jobs[name]["environment"] == "${{ " + preview + " && 'testpypi' || 'pypi' }}"
+        publish = next(
+            s
+            for s in jobs[name]["steps"]
+            if str(s.get("uses", "")).startswith("pypa/gh-action-pypi-publish@")
+        )
+        assert publish["if"] == expected_guard
+    npm = jobs["publish-npm"]
+    assert npm["environment"] == "${{ " + preview + " && 'npm-dryrun' || 'npm' }}"
+    step = next(s for s in npm["steps"] if s.get("name") == "Publish to npm")
+    assert step["env"]["DRY_RUN"] == "${{ " + preview + " && 'true' || 'false' }}"
+    assert step["if"] == "(" + preview + ") || steps.npm_check.outputs.skip != 'true'"
+    gate = next(s for s in jobs["validate-version"]["steps"] if s.get("id") == "read")
+    assert gate.get("if") is None
+    assert gate.get("continue-on-error", False) is False
+    assert gate["env"]["EVENT_NAME"] == "${{ github.event_name }}"
+    assert gate["env"]["INPUT_DRY_RUN"] == "${{ inputs.dry_run }}"
+    assert gate["env"]["INPUT_VALIDATION_ONLY"] == "${{ inputs.validation_only }}"

@@ -1,0 +1,8 @@
+component: genblaze-core
+kind: Changed
+body: |-
+  the s3 storage backend and the download spool threshold now take
+    their pool size, timeouts, retries and multipart sizes from
+    `StorageConfig`'s defaults instead of separate copies. Values are unchanged
+    (#42).
+time: '2026-11-17T00:00:00Z'

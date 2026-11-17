@@ -302,7 +302,9 @@ workflow":
   uploads. The TestPyPI target stays selected. Set `validation_only=false`
   only to intentionally upload to TestPyPI; its trusted publishers are separate
   from production and must be configured. With `dry_run=false`, this option
-  must be false too; contradictory flags fail closed before production.
+  must be false too; contradictory flags fail closed before production. This
+  is a CI safety contract for the requested non-publishing mode, not a change
+  to the B2/S3 API or any public SDK parameter.
 * **`ref`** — optional. Defaults to the branch you dispatched from.
 
 Dry runs are the recommended way to:
@@ -338,8 +340,9 @@ publish time.
 Same setup as above, but on **test.pypi.org** instead of pypi.org, with
 environment name `testpypi`. This is what the dry-run path uses.
 
-If you skip this, dry-runs will fail at the publish step (after building
-and gating, which still gives you ~90% of the value).
+If you skip this, explicit TestPyPI uploads fail at the publish step. The
+validation-only default never attempts that upload and needs no TestPyPI
+trusted-publisher configuration.
 
 ### c. npm publish auth
 
@@ -354,13 +357,32 @@ is why the workflow pins `NODE_VERSION` to 24. Dry runs (`npm publish
 
 Create four environments under repo Settings → Environments:
 
-* **`pypi`** — production PyPI. No required reviewers.
+* **`pypi`** — production PyPI. Use the restrictions below.
 * **`testpypi`** — TestPyPI for dry-runs. No required reviewers.
-* **`npm`** — production npm. No required reviewers.
+* **`npm`** — production npm. Use the restrictions below.
 * **`npm-dryrun`** — npm dry-run. No required reviewers.
 
-Required reviewers can be added later if you want a human gate on
-production releases (recommended once the project graduates from alpha).
+Before enabling production with this policy, a repository administrator must
+apply these GitHub-side controls, independently of the candidate workflow:
+
+1. For **both `pypi` and `npm`**, select **Selected branches and tags**.
+   Add a **Branch** rule for `main` and a separate **Tag** rule for `v*`.
+   Do not allow arbitrary workflow branches to deploy to production.
+2. Create an **active tag ruleset** targeting `refs/tags/v*`, restricting
+   creation, updates and deletion. Limit bypass to repository administrators
+   or the designated release-maintainer team; exclude the ordinary write role.
+   Activate this ruleset before allowing `v*` tags in the environments.
+3. Require code-owner review for release workflow, policy and signing-key
+   changes on `main`. Required environment reviewers can provide another
+   human gate, but do not replace deployment-ref restrictions.
+
+The signed-tag guarantee depends on these settings as well as the in-repo
+checks: a workflow must not be able to grant itself production authority.
+This PR supplies the reviewable repository policy and setup instructions;
+it does not activate account-level settings or approve the initial key.
+Verify the settings and key with the release owner before production use.
+See GitHub's [environment setup](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+and [tag rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
 
 ## Operational notes
 
