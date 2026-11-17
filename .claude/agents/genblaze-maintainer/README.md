@@ -70,7 +70,8 @@ input mid-run — so the gate becomes an explicit, auditable boundary.
 # 1. Plan — review all issues, cluster + order them, write an approval-gated doc, STOP.
 /batch-plan                       # (or: Workflow tool, name: "batch-plan")
 
-# → review docs/exec-plans/active/batch-plan-<date>.md, then:
+# → review docs/exec-plans/active/batch-plan-<date>.md, tick "- [x] approve `<slug>`"
+#   for each cluster you want, then:
 
 # 2. Execute — validate the approved plan against live state, open one PR per cluster.
 /batch-execute {"docPath": "docs/exec-plans/active/batch-plan-<date>.md"}                   # dry run (default)
@@ -109,9 +110,12 @@ the agents that read them are treated as untrusted.
 - **Preflight never touches your checkout.** It fails fast on a dirty tree, and
   fast-forwards local `main` only when `main` is not checked out and strictly
   behind — never switching, stashing, or committing.
-- **The gate is enforced, not assumed.** The plan doc embeds the `origin/main`
-  SHA and a content token; `batch-execute` re-validates against live state and
-  aborts if main advanced, the doc was hand-edited, or a planned issue closed.
+- **The gate is enforced, not assumed.** Only clusters you tick run; nothing is
+  pre-approved. `batch-execute` refuses a hand-edited plan block (content token),
+  a tick on a deferred cluster, or an approved issue that has closed, and skips
+  clusters that already have a PR or branch (so re-running after a partial batch
+  is safe). If `origin/main` moved since planning it warns instead of aborting:
+  executors branch off live main and `publish` re-checks every diff.
 - **Conflict-aware, capped clusters.** Issues sharing real (non-"hot") files
   cluster into one PR up to a size cap; oversized or dependent work is deferred to
   a re-plan rather than stacked (stacked branches break when a prerequisite is

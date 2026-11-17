@@ -1,6 +1,6 @@
 # Batch tooling hardening (`batch-plan` / `batch-execute`)
 
-**Status:** PR 1 (security) implemented on `feat/batch-tooling-hardening`; PR 2 pending · **Owner:** maintainer
+**Status:** PR 1 merged (#338); PR 2 (approval, ordering) on `feat/batch-approval-and-ordering` · **Owner:** maintainer
 
 ## Goal
 
@@ -84,9 +84,14 @@ release friction.
   list (approved, executable, no existing PR/branch); the JS uses it verbatim.
 - Base-SHA drift becomes a warning (executors branch off live `origin/main`).
 - `dryRun` defaults to **true**.
-- Clustering: keep intra-component dependencies and order inside oversized
-  components (reproduced: dependent #70 scheduled before prerequisite #75);
-  treat `libs/spec/**` as a conflict path.
+- Clustering: an oversized component's first issue is the lowest-numbered one
+  with no unmet dependency inside the component (reproduced: dependent #70 was
+  scheduled before prerequisite #75); all-dependent components defer as a
+  cycle. `libs/spec/**` stays hot: the generated `genblaze.d.ts` changes with
+  most model edits and would merge unrelated issues.
+- `validate --issues-dir` reads open issues and existing work from a fresh
+  `batch_issues.py` fetch (which now clears stale files), so no agent builds
+  that list and re-runs skip clusters that already have a PR or branch.
 - Preflight ignores untracked `docs/exec-plans/active/batch-plan-*.md`.
 - Executors don't touch CHANGELOG or versions; PR bodies carry a
   `Changelog:` line for `/prepare-release`.

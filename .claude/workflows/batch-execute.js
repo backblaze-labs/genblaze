@@ -31,15 +31,16 @@ export const meta = {
   ],
 }
 
+// Relayed verbatim from `tools/batch_plandoc.py validate` (dispatch, warnings).
 const VALIDATE_SCHEMA = {
   type: 'object',
-  required: ['valid', 'clusters'],
+  required: ['valid', 'dispatch'],
   properties: {
     valid: { type: 'boolean' },
     reason: { type: 'string' },
-    base_sha: { type: 'string' },
     repo_root: { type: 'string' },
-    clusters: {
+    warnings: { type: 'array', items: { type: 'string' } },
+    dispatch: {
       type: 'array',
       items: {
         type: 'object',
@@ -85,23 +86,21 @@ if (!docPath) {
 const dryRun = !(args && args.dryRun === false)
 
 phase('Validate')
-// Enforce the approval gate: re-derive live state and run the tested validator.
-// It aborts on a hand-edited doc (token mismatch), an advanced main (SHA drift),
-// or a planned issue that has since closed.
+// Enforce the approval gate with the tested validator. It refuses a hand-edited
+// doc (token mismatch), a doc with no ticked clusters or a tick on a deferred
+// cluster, and an approved issue that has since closed. It drops clusters that
+// already have a PR or branch, and warns (no abort) if origin/main moved. The
+// dispatch list below is its output, relayed verbatim.
 const check = await agent(
-  `Validate the approved batch plan before any execution. Steps:\n` +
-    `1. \`git fetch origin --quiet\` then capture live SHA: \`git rev-parse origin/main\`.\n` +
-    `2. Live open issues: \`gh issue list --state open --json number --limit 200\` ` +
-    `-> a JSON array of numbers, e.g. [70,71].\n` +
-    `3. Run:\n` +
-    `   \`python tools/batch_plandoc.py validate --doc ${docPath} --sha <LIVE_SHA> ` +
-    `--open-issues '<JSON_ARRAY>'\`\n` +
-    `   If it exits non-zero, set valid=false and put its stderr in reason.\n` +
-    `4. Refresh the issue files: \`python tools/batch_issues.py --out-dir .batch/issues\`. ` +
-    `Set repo_root to \`git rev-parse --show-toplevel\`.\n` +
-    `5. If valid, parse the BATCH-PLAN-META block in ${docPath} and return the ` +
-    `clusters whose "executable" is true (slug, issues, pr_mode) in \`clusters\`.\n` +
-    `Do not modify the doc.`,
+  `Run these and relay the result; do not open, edit or summarize the plan doc.\n` +
+    `1. \`git fetch origin --quiet\`, then LIVE_SHA=\`git rev-parse origin/main\` and ` +
+    `repo_root=\`git rev-parse --show-toplevel\`.\n` +
+    `2. \`python tools/batch_issues.py --out-dir .batch/issues\` (refreshes open ` +
+    `issues and existing work). If it exits non-zero, set valid=false, reason=stderr.\n` +
+    `3. \`python tools/batch_plandoc.py validate --doc ${docPath} --sha <LIVE_SHA> ` +
+    `--issues-dir .batch/issues\`\n` +
+    `   Exit 0: valid=true and copy its stdout's "dispatch" and "warnings" exactly.\n` +
+    `   Non-zero: valid=false, dispatch=[], reason=its stderr.`,
   { label: 'validate-plan', phase: 'Validate', schema: VALIDATE_SCHEMA, effort: 'low' },
 )
 
@@ -110,12 +109,13 @@ if (!check || !check.valid) {
   log(`Plan rejected — not executing: ${reason}`)
   return { stopped: 'validation', reason }
 }
+for (const w of check.warnings || []) log(`Warning: ${w}`)
 
-const clusters = check.clusters || []
+const clusters = check.dispatch || []
 const repoRoot = check.repo_root || '.'
 if (clusters.length === 0) {
-  log('No executable clusters in the approved plan.')
-  return { stopped: 'empty', reason: 'nothing executable' }
+  log('No approved clusters left to run (all skipped; see warnings).')
+  return { stopped: 'empty', reason: 'nothing to run', warnings: check.warnings || [] }
 }
 
 // Branch names come from the plan (integer issue numbers), never from an agent.
@@ -195,6 +195,7 @@ const opened = results.filter((r) => r.status === 'pr')
 const notOpened = results.filter((r) => r.status !== 'pr')
 return {
   results,
+  warnings: check.warnings || [],
   cleanup,
   note:
     `${opened.length} PR(s) opened for human review; nothing was merged, commented ` +

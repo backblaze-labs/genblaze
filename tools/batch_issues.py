@@ -121,8 +121,14 @@ def fetch(max_issues: int, run: Callable[[list[str]], str] = _default_run) -> li
 
 
 def write_issue_files(rows: list[dict], out_dir: Path) -> list[dict]:
-    """Write ``<out_dir>/<number>.json`` per issue; return the index for the workflow."""
+    """Write ``<out_dir>/<number>.json`` per issue; return the index for the workflow.
+
+    Files from a previous fetch are removed first, so an issue closed since then
+    can't linger and be treated as open by ``batch_plandoc.py validate``.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in out_dir.glob("*.json"):
+        stale.unlink()
     index = []
     for row in rows:
         path = out_dir / f"{row['number']}.json"

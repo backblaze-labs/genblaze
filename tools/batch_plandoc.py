@@ -19,15 +19,23 @@ mechanical drift checks on top of the human gate:
   and drift, not a motivated editor who recomputes it — the human approval
   gate, not this token, is the trust boundary.
 
-* ``validate`` refuses to let execution proceed unless ALL hold:
+* ``render`` adds a ``- [ ] approve `<slug>``` checkbox per executable cluster,
+  outside the meta block. Nothing is approved by default: the human ticks the
+  clusters they want, and only those run.
+
+* ``validate`` returns the dispatch list (approved, executable clusters with no
+  existing PR or branch), or refuses to let execution proceed unless ALL hold:
     1. the embedded token recomputes from the doc's own contents (catches
        accidental edits to the plan block),
-    2. the embedded base SHA still equals live ``origin/main`` (main hasn't
-       advanced under the plan),
-    3. every planned executable issue is still open (an issue closed or merged
-       since planning aborts the run). Issues opened *after* planning are not a
-       drift trigger — they simply wait for the next ``batch-plan`` rather than
-       being pulled into an already-approved batch.
+    2. at least one cluster is ticked, and every tick names an executable
+       cluster,
+    3. every approved issue is still open (an issue closed or merged since
+       planning aborts the run). Issues opened *after* planning are not a
+       drift trigger — they simply wait for the next ``batch-plan``.
+
+  ``origin/main`` advancing since planning is a *warning*, not an abort:
+  executors branch off live ``origin/main`` and ``publish`` re-checks every
+  diff, so an unrelated merge doesn't force a full re-plan.
 
 Git and GitHub live *outside* this module — the calling workflow supplies the
 live SHA and open-issue list — so the logic here is pure and unit-testable.
@@ -40,11 +48,23 @@ import hashlib
 import json
 import re
 import sys
+from dataclasses import dataclass, field
+from pathlib import Path
 
 # Delimits the machine-readable plan block embedded in the markdown doc. The
 # validator extracts exactly what is between these markers.
 _META_OPEN = "<!-- BATCH-PLAN-META"
 _META_CLOSE = "BATCH-PLAN-META -->"
+# Shown above the Approve checklist in every plan doc.
+_APPROVAL_HELP = (
+    "> To approve, tick the clusters you want under **Approve**, then run "
+    "`batch-execute` against this doc (a dry run unless you pass "
+    '`"dryRun": false`). Only ticked clusters run. Execution aborts if a '
+    "ticked issue has closed; clusters that already have a PR or branch "
+    "are skipped. Executors never merge, comment or label."
+)
+# A ticked approval line, e.g. "- [x] approve `issues-70-71`".
+_APPROVAL_RE = re.compile(r"^\s*[-*]\s*\[[xX]\]\s*approve\s+`([a-z0-9-]+)`\s*$", re.MULTILINE)
 
 
 def _canonical_clusters(clusters: list[dict]) -> str:
@@ -73,11 +93,6 @@ def compute_token(base_sha: str, clusters: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
-def _executable_issues(clusters: list[dict]) -> list[int]:
-    nums = {n for c in clusters if c.get("executable") for n in c["issues"]}
-    return sorted(nums)
-
-
 def render_doc(plan: dict, base_sha: str, date: str) -> str:
     """Render the human-facing markdown plan doc with an embedded meta block."""
     clusters = plan["clusters"]
@@ -94,19 +109,23 @@ def render_doc(plan: dict, base_sha: str, date: str) -> str:
 
     exec_clusters = [c for c in clusters if c["executable"]]
     deferred = [c for c in clusters if not c["executable"]]
+    exec_issue_count = sum(len(c["issues"]) for c in exec_clusters)
 
     lines: list[str] = [
         f"# Batch Maintainer Plan — {date}",
         "",
         f"- **Base commit** (`origin/main`): `{base_sha}`",
         f"- **Approval token**: `{token}`",
-        f"- **Executable now**: {len(exec_clusters)} cluster(s) — "
-        f"{sum(len(c['issues']) for c in exec_clusters)} issue(s)",
+        f"- **Executable now**: {len(exec_clusters)} cluster(s) — {exec_issue_count} issue(s)",
         f"- **Deferred to re-plan**: {len(deferred)} cluster(s)",
         "",
-        "> Review this plan, then run `batch-execute` against it. Execution "
-        "aborts automatically if `origin/main` has advanced or the open-issue "
-        "set has drifted since this plan was written.",
+        _APPROVAL_HELP,
+        "",
+        "## Approve",
+        "",
+    ]
+    lines += [f"- [ ] approve `{c['slug']}`" for c in exec_clusters] or ["_Nothing to approve._"]
+    lines += [
         "",
         "## Executable now",
         "",
@@ -166,14 +185,34 @@ def parse_doc(markdown: str) -> dict:
     return json.loads(match.group(1))
 
 
+def parse_approvals(markdown: str) -> set[str]:
+    """Return the cluster slugs ticked in the doc, ignoring the meta block."""
+    pattern = re.escape(_META_OPEN) + r".*?" + re.escape(_META_CLOSE)
+    visible = re.sub(pattern, "", markdown, flags=re.DOTALL)
+    return set(_APPROVAL_RE.findall(visible))
+
+
 class ValidationError(Exception):
     """Raised when a plan doc must not be executed."""
 
 
-def validate(meta: dict, live_sha: str, live_open_issues: list[int]) -> list[int]:
-    """Return the executable issue set, or raise ValidationError on any drift.
+@dataclass
+class Dispatch:
+    dispatch: list[dict]  # {slug, issues, pr_mode} per cluster to run, in plan order
+    warnings: list[str] = field(default_factory=list)
 
-    Pure: the caller supplies the live SHA and open-issue list from git/gh.
+
+def validate(
+    meta: dict,
+    live_sha: str,
+    live_open_issues: list[int],
+    approved: set[str],
+    in_flight: set[int],
+) -> Dispatch:
+    """Return the clusters to run, or raise ValidationError if the plan can't run.
+
+    Pure: the caller supplies the live SHA, open issues, ticked slugs and the
+    issues that already have a PR or branch.
     """
     clusters = meta.get("clusters", [])
 
@@ -185,25 +224,50 @@ def validate(meta: dict, live_sha: str, live_open_issues: list[int]) -> list[int
             "hand-edited after it was generated; re-run batch-plan."
         )
 
-    # 2. Base drift: main must not have advanced under the plan.
-    if meta.get("base_sha") != live_sha:
+    # 2. Approval: only ticked, executable clusters may run.
+    executable = {c["slug"]: c for c in clusters if c.get("executable")}
+    if not approved:
         raise ValidationError(
-            f"origin/main advanced since planning "
-            f"(plan {meta.get('base_sha')} != live {live_sha}); re-run batch-plan."
+            "No clusters are approved. Tick the box (- [x] approve <slug>) for "
+            "each cluster to run, then re-run batch-execute."
+        )
+    not_runnable = sorted(approved - set(executable))
+    if not_runnable:
+        raise ValidationError(
+            f"approved cluster(s) {', '.join(not_runnable)} are not executable in "
+            "this plan; untick them or re-run batch-plan."
         )
 
-    # 3. Issue-set drift: every planned executable issue must still be open.
-    #    Issues opened after planning are intentionally NOT a drift trigger —
-    #    they wait for the next batch-plan rather than joining an approved batch.
-    planned = set(_executable_issues(clusters))
-    live = set(live_open_issues)
-    closed = planned - live
+    # 3. Issue drift: every approved issue must still be open.
+    chosen = [c for c in clusters if c["slug"] in approved]
+    closed = {n for c in chosen for n in c["issues"]} - set(live_open_issues)
     if closed:
         raise ValidationError(
-            f"planned issues no longer open: "
+            f"approved issues no longer open: "
             f"{', '.join(f'#{n}' for n in sorted(closed))}; re-run batch-plan."
         )
-    return sorted(planned)
+
+    warnings: list[str] = []
+    if meta.get("base_sha") != live_sha:
+        warnings.append(
+            f"origin/main advanced since planning ({str(meta.get('base_sha'))[:12]} -> "
+            f"{live_sha[:12]}); executors branch off live main and publish re-checks "
+            "each diff, but expect rebases if the new commits touch the same files."
+        )
+
+    runnable = []
+    for c in chosen:
+        busy = sorted(set(c["issues"]) & in_flight)
+        if busy:
+            warnings.append(
+                f"skipping {c['slug']}: {', '.join(f'#{n}' for n in busy)} already "
+                "has a PR or branch (re-run after a partial batch)."
+            )
+            continue
+        runnable.append(
+            {"slug": c["slug"], "issues": sorted(c["issues"]), "pr_mode": c["pr_mode"]}
+        )
+    return Dispatch(dispatch=runnable, warnings=warnings)
 
 
 def _cmd_write(args: argparse.Namespace) -> int:
@@ -219,16 +283,30 @@ def _cmd_write(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_issue_state(issues_dir: str) -> tuple[list[int], set[int]]:
+    """Open issues and in-flight issues from a fresh ``batch_issues.py`` fetch."""
+    open_issues: list[int] = []
+    in_flight: set[int] = set()
+    for path in sorted(Path(issues_dir).glob("*.json")):
+        row = json.loads(path.read_text(encoding="utf-8"))
+        open_issues.append(int(row["number"]))
+        if row.get("existing_work"):
+            in_flight.add(int(row["number"]))
+    return open_issues, in_flight
+
+
 def _cmd_validate(args: argparse.Namespace) -> int:
     with open(args.doc, encoding="utf-8") as fh:
-        meta = parse_doc(fh.read())
-    open_issues = json.loads(args.open_issues)
+        markdown = fh.read()
+    open_issues, in_flight = _load_issue_state(args.issues_dir)
     try:
-        executable = validate(meta, args.sha, open_issues)
+        result = validate(
+            parse_doc(markdown), args.sha, open_issues, parse_approvals(markdown), in_flight
+        )
     except ValidationError as exc:
         print(f"PLAN INVALID: {exc}", file=sys.stderr)
         return 1
-    json.dump({"executable_issues": executable}, sys.stdout)
+    json.dump({"dispatch": result.dispatch, "warnings": result.warnings}, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
 
@@ -247,7 +325,11 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("validate", help="Validate a plan doc against live state.")
     v.add_argument("--doc", required=True, help="Plan doc markdown path.")
     v.add_argument("--sha", required=True, help="Live origin/main SHA.")
-    v.add_argument("--open-issues", required=True, help="JSON list of live open issue numbers.")
+    v.add_argument(
+        "--issues-dir",
+        required=True,
+        help="Fresh tools/batch_issues.py output (open issues + existing work).",
+    )
     v.set_defaults(func=_cmd_validate)
 
     args = parser.parse_args(argv)

@@ -151,6 +151,33 @@ def test_oversized_component_serializes_head_and_defers_tail():
     assert any("size cap" in n for n in plan.notes)
 
 
+def test_oversized_component_runs_a_prerequisite_before_its_dependent():
+    """Regression: #70 depends on #75 inside one oversized component. The head
+    that runs alone must be #75, never the lower-numbered dependent #70."""
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [
+            _issue(70, [shared], deps=[75]),
+            _issue(71, [shared]),
+            _issue(72, [shared]),
+            _issue(75, [shared]),
+        ],
+        Config(max_issues=3),
+    )
+    runnable = [c for c in plan.clusters if c.executable]
+    assert [c.issues for c in runnable] == [[71]]
+    assert 70 not in runnable[0].issues
+
+
+def test_oversized_component_with_only_dependent_members_defers_all():
+    shared = "libs/core/shared.py"
+    plan = build_plan(
+        [_issue(n, [shared], deps=[n % 4 + 1]) for n in (1, 2, 3, 4)],
+        Config(max_issues=3),
+    )
+    assert not any(c.executable for c in plan.clusters)
+
+
 def test_oversized_by_file_count():
     files_a = [f"libs/core/f{i}.py" for i in range(20)]
     plan = build_plan(
