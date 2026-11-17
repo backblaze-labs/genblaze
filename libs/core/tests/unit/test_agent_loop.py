@@ -484,3 +484,22 @@ async def test_agent_loop_uses_async_eval_in_arun() -> None:
     await loop.arun()
     assert evaluator.async_calls == 1
     assert evaluator.sync_calls == 0
+
+
+class _AlternatingCost(_Counter):
+    """Reports 0.1 then 0.2: their float sum is 0.30000000000000004."""
+
+    def fetch_output(self, prediction_id, step):
+        step = super().fetch_output(prediction_id, step)
+        step.cost_usd = (0.1, 0.2)[(self.call - 1) % 2]
+        return step
+
+
+def test_agent_loop_total_cost_has_no_float_noise() -> None:
+    provider = _AlternatingCost()
+    loop = AgentLoop(
+        lambda ctx: Pipeline(f"iter-{ctx.iteration}").step(provider, model="m", prompt="p"),
+        CallableEvaluator(lambda _r: False),
+        max_iterations=2,
+    )
+    assert loop.run().total_cost_usd == 0.3

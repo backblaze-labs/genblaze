@@ -33,7 +33,7 @@ from genblaze_core.providers.family import (
     LiveProbeResult,
 )
 from genblaze_core.providers.model_registry import EMPTY_REGISTRY, ModelRegistry, compute_cost
-from genblaze_core.providers.pricing import PricingContext
+from genblaze_core.providers.pricing import PricingContext, round_usd
 from genblaze_core.providers.probe import ProbeResult, ProbeStatus
 from genblaze_core.providers.progress import ProgressEvent
 from genblaze_core.providers.retry import PRE_RESPONSE_EXCEPTIONS, RetryPolicy
@@ -1170,7 +1170,7 @@ class BaseProvider(Runnable[Step, Step], metaclass=_ProviderInitGuardMeta):
         cost = spec.pricing(PricingContext(step=fake_step, assets=fake_assets))
         if cost is None:
             return None
-        return Decimal(str(cost))
+        return Decimal(str(round_usd(cost)))
 
     # --- capability declaration --------------------------------------------
 

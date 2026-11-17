@@ -79,3 +79,9 @@ def test_estimate_cost_passes_duration_to_per_second_pricing() -> None:
     p._models = reg
     assert p.estimate_cost("v1", params={"duration": 10}) == Decimal("0.5")
     assert p.estimate_cost("v1") is None  # missing duration → None
+
+
+def test_provider_estimate_cost_has_no_float_noise() -> None:
+    """``Decimal(str(0.1 * 3))`` would be ``Decimal('0.30000000000000004')`` (#63)."""
+    p = _provider_with_priced_models({"m1": 0.1})
+    assert p.estimate_cost("m1", n=3) == Decimal("0.3")

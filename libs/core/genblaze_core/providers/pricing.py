@@ -16,6 +16,16 @@ from typing import Any
 from genblaze_core.models.asset import Asset
 from genblaze_core.models.step import Step
 
+# Nano-dollar precision: strips binary float noise (0.1 * 3 -> 0.3) without
+# zeroing sub-micro-dollar per-token costs, and stays fixed under the
+# canonical hash's 10-place float normalization.
+_USD_DECIMALS = 9
+
+
+def round_usd(amount: float) -> float:
+    """Round a computed USD amount for storage and display (#63)."""
+    return float(round(amount, _USD_DECIMALS))
+
 
 @dataclass(frozen=True, slots=True)
 class PricingContext:

@@ -1,4 +1,4 @@
-"""ModelRegistry — layered, thread-safe store of ``ModelSpec`` entries.
+"""ModelRegistry — layered store of ``ModelSpec`` entries, safe for concurrent use.
 
 Lookup order:
 1. user spec        — exact-match registration via ``register(spec)``
@@ -7,9 +7,13 @@ Lookup order:
 4. discovery cache  — peek-only here (no fetch); NATIVE providers consult it
 5. fallback spec    — permissive pass-through
 
-User reads through the family scan are lock-free against the immutable
-``_provider_families`` tuple; the user-family list is RLock-guarded with
-snapshot reads.
+Concurrency: every write, including the warning-dedup sets, happens under
+one RLock, which ``fork()`` also holds while copying. Reads are lock-free:
+the family scan reads the immutable ``_provider_families`` tuple and a
+lock-held snapshot of the user families, and spec/alias lookups are single
+dict reads against dicts that writers replace whole. The two alias indexes
+are replaced one after the other, so during a concurrent ``register()`` a
+lookup can briefly fall through to the fallback spec.
 
 Intended use:
 - Each provider class exposes a ``create_registry()`` classmethod returning
@@ -42,7 +46,7 @@ from genblaze_core.providers.family import (
     FamilyProbe,
     ModelFamily,
 )
-from genblaze_core.providers.pricing import PricingStrategy
+from genblaze_core.providers.pricing import PricingStrategy, round_usd
 from genblaze_core.providers.spec import FALLBACK_SPEC, ModelSpec
 from genblaze_core.providers.validation import (
     ValidationResult,
@@ -129,7 +133,7 @@ class ModelRegistry:
         # Mirror of ``_warned_deprecated`` for the ``ModelFamily.canonical_slug``
         # rewrite path. Keyed by ``(family.name, input_slug)`` so the same
         # nudge fires once per non-canonical input per registry lifetime.
-        # Carried through ``with_user_overlay`` so per-request forks inherit
+        # Carried through ``fork()`` so per-request forks inherit
         # the dedup state (otherwise a multi-tenant deployment forking on
         # every request would re-log indefinitely).
         self._warned_canonical_rewrite: set[tuple[str, str]] = set()
@@ -314,8 +318,13 @@ class ModelRegistry:
         if deprecated_canonical is not None:
             spec = self._user.get(deprecated_canonical)
             if spec is not None:
-                if model_id not in self._warned_deprecated:
-                    self._warned_deprecated.add(model_id)
+                # Check-and-add under the lock (fork() copies this set); warn
+                # after releasing it so a slow warnings filter can't hold it.
+                with self._lock:
+                    first_use = model_id not in self._warned_deprecated
+                    if first_use:
+                        self._warned_deprecated.add(model_id)
+                if first_use:
                     warnings.warn(
                         f"Model id {model_id!r} is deprecated; "
                         f"use {deprecated_canonical!r} instead.",
@@ -337,7 +346,7 @@ class ModelRegistry:
         per ``(family, input)`` so callers know they're using a non-
         canonical form (e.g. lowercase ``"veo3"`` against a PascalCase
         wire family). Dedup is instance-level via ``_warned_canonical_rewrite``
-        and is fork-safe (the set is shallow-copied on ``with_user_overlay``).
+        and is fork-safe (the set is copied by ``fork()`` under the lock).
         """
         # Snapshot the user list under the lock so concurrent registration
         # doesn't tear our scan. Provider families are an immutable tuple,
@@ -367,9 +376,12 @@ class ModelRegistry:
         if input_slug == wire_slug:
             return
         key = (family.name, input_slug)
-        if key in self._warned_canonical_rewrite:
-            return
-        self._warned_canonical_rewrite.add(key)
+        # Check-and-add under the lock (fork() copies this set); log after
+        # releasing it so a blocking log handler can't hold the registry.
+        with self._lock:
+            if key in self._warned_canonical_rewrite:
+                return
+            self._warned_canonical_rewrite.add(key)
         logger.info(
             "%s canonical-slug rewrite: %r → %r. Update call sites to the "
             "canonical form to avoid this log line.",
@@ -766,7 +778,8 @@ def compute_cost(
         else step.provider_payload,
     )
     try:
-        return spec.pricing(ctx)
+        cost = spec.pricing(ctx)
+        return None if cost is None else round_usd(cost)
     except Exception:
         logger.exception("Pricing strategy for %s raised — cost unavailable", step.model)
         return None

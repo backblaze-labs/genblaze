@@ -907,3 +907,83 @@ class TestBaseProviderIntegration:
         step = _step(prompt="hi", params={"k": "v"}, seed=42)
         out = p.prepare_payload(step)
         assert out == {"prompt": "hi", "k": "v", "seed": 42}
+
+
+class _LockProbeSet(set):
+    """A dedup set whose ``add`` asks another thread whether the registry lock
+    is free. ``False`` means the writer holds the lock while it mutates (#58)."""
+
+    def __init__(self, lock) -> None:
+        super().__init__()
+        self._lock = lock
+        self.lock_was_free: list[bool] = []
+
+    def add(self, item) -> None:
+        import threading
+
+        seen: list[bool] = []
+
+        def probe() -> None:
+            acquired = self._lock.acquire(blocking=False)
+            if acquired:
+                self._lock.release()
+            seen.append(acquired)
+
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join()
+        self.lock_was_free.append(seen[0])
+        super().add(item)
+
+
+class TestDedupSetsMutateUnderLock:
+    """``fork()`` copies the warning-dedup sets under the lock, so writers
+    must hold it too or a concurrent fork can see the set change mid-copy."""
+
+    def test_deprecated_alias_warning_dedup_holds_lock(self):
+        reg = ModelRegistry()
+        reg.register(ModelSpec(model_id="new", deprecated_aliases=frozenset({"old"})))
+        probe = _LockProbeSet(reg._lock)
+        reg._warned_deprecated = probe
+        with pytest.warns(DeprecationWarning):
+            reg.get("old")
+        assert probe.lock_was_free == [False]
+
+    def test_canonical_rewrite_log_dedup_holds_lock(self):
+        import re
+
+        from genblaze_core.providers import ModelFamily
+
+        family = ModelFamily(
+            name="upper",
+            pattern=re.compile(r"^veo", re.IGNORECASE),
+            spec_template=ModelSpec(model_id="*"),
+            description="test",
+            canonical_slug=str.upper,
+        )
+        reg = ModelRegistry(provider_families=(family,))
+        probe = _LockProbeSet(reg._lock)
+        reg._warned_canonical_rewrite = probe
+        reg.match_family("veo3")
+        assert probe.lock_was_free == [False]
+
+
+class TestCostRounding:
+    """Float noise (``0.1 * 3 == 0.30000000000000004``) must not reach
+    ``cost_usd`` (#63). Rounding keeps nano-dollar precision."""
+
+    def test_compute_cost_has_no_float_noise(self):
+        reg = ModelRegistry()
+        reg.register(ModelSpec(model_id="m", pricing=per_unit(0.1)))
+        step = Step(provider="p", model="m", prompt="x")
+        step.assets = [
+            Asset(url=f"https://x.test/{i}.png", media_type="image/png") for i in range(3)
+        ]
+        assert compute_cost(reg, step) == 0.3
+
+    def test_compute_cost_keeps_sub_micro_dollar_costs(self):
+        reg = ModelRegistry()
+        reg.register(ModelSpec(model_id="m", pricing=per_unit(3e-7)))
+        step = Step(provider="p", model="m", prompt="x")
+        step.assets = [Asset(url="https://x.test/0.png", media_type="image/png")]
+        assert compute_cost(reg, step) == 3e-7

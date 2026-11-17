@@ -33,6 +33,7 @@ from genblaze_core.observability.events import (
 )
 from genblaze_core.observability.tracer import NoOpTracer, Tracer, safe_call
 from genblaze_core.pipeline.streaming import EmitterSlot, QueueEmitter
+from genblaze_core.providers.pricing import round_usd
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -333,7 +334,9 @@ class AgentLoop:
         if not iterations:  # pragma: no cover — max_iterations >= 1 guaranteed
             raise GenblazeError("Agent loop produced no iterations")
         final = iterations[-1]
-        total_cost = sum(step.cost_usd or 0.0 for it in iterations for step in it.result.run.steps)
+        total_cost = round_usd(
+            sum(step.cost_usd or 0.0 for it in iterations for step in it.result.run.steps)
+        )
         return AgentResult(
             iterations=iterations,
             final=final.result,
