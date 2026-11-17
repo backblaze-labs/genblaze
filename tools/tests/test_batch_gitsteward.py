@@ -299,6 +299,23 @@ def test_publish_clean_branch_pushes_and_opens_pr(tmp_path):
     assert "fix(core): handle x" in gh.body
 
 
+def test_publish_pr_body_follows_the_pr_template_sections(tmp_path):
+    # REVIEW.md flags PRs missing these sections, so batch PRs must carry them.
+    origin, local = _bare_origin_and_clone(tmp_path)
+    _branch_with(local, "fix/issue-70", {"libs/core/a.py": "x = 1\n"}, "fix(core): handle x")
+    gh = _FakeGh()
+    publish(str(local), "fix/issue-70", [70], gh=gh)
+    headings = [line for line in gh.body.splitlines() if line.startswith("## ")]
+    assert headings == [
+        "## Summary",
+        "## Testing",
+        "## Risk",
+        "## How to revert",
+        "## Public API / semver",
+    ]
+    assert "make verify" in gh.body
+
+
 @pytest.mark.parametrize(
     "files",
     [
