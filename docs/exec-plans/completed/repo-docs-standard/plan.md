@@ -10,9 +10,11 @@ tags: [docs, ci, agents]
 
 # Adopt the Repo Docs Standard
 
-**Status:** implemented, pending merge. Open: leak-guard digests (needs the
-maintainer's Jira keys and internal hosts), GitHub branch-protection settings,
-private companion repo.
+**Status:** completed. Shipped in #347. The base-branch judging acceptance
+test passed on throwaway PR #349. Not pursued: the hashed Jira-key and host
+lists stay empty, so the leak guard only checks Atlassian links. Left to the
+maintainer as GitHub settings: branch protection (code-owner review,
+dismiss stale approvals).
 
 ## Goal
 
@@ -152,8 +154,7 @@ gaps without renaming folders or rewriting existing docs.
   - These are not matched: `UTF-8`, `SHA-256`, `CVE-2026-1234`, `GHSA-xxxx-…`, `PEP-621`, and the key's prefix inside a longer word.
 - **Exit codes:** warn-only mode exits 0 with warnings. Errors exit 1. Output uses GitHub `::warning`/`::error file=…,line=…` annotations.
 - **Base-branch judging:** a PR that edits `check_docs.py` to drop a rule still
-  fails on that rule in `docs.yml`. Post-merge acceptance: verify on a
-  throwaway PR once `check_docs.py` is on `main`.
+  fails on that rule in `docs.yml`. Verified after merge on throwaway PR #349.
 - **Links:** a broken link on an added line is an error; an older broken link
   in an edited file only warns, so a CHANGELOG entry doesn't inherit it.
 - **E2E smoke:** fails (non-zero) if the embedded manifest is tampered with
