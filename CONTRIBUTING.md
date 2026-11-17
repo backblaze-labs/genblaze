@@ -74,7 +74,7 @@ Maintainer-facing. If you're cutting a release, read
 [RELEASING.md](RELEASING.md) — it documents the wave-naming convention,
 the gates that must pass before any package is built, the order in
 which packages publish (core → cli/connectors → meta umbrella), the
-TestPyPI dry-run path, and how to recover from a partially-failed
+dry-run path, and how to recover from a partially-failed
 release. The release-smoke gate (`make release-smoke`) is the same
 script the CI workflow runs; run it locally before tagging.
 
