@@ -86,3 +86,6 @@ node_modules/
 
 # Batch maintainer: fetched issue files (untrusted text)
 .batch/
+
+# Local editor/plugin caches (e.g. the Impeccable hook)
+.impeccable/
