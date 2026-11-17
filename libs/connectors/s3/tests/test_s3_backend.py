@@ -913,8 +913,8 @@ class TestStorageConfigDefaults:
 
     @pytest.fixture
     def tuned(self, monkeypatch):
-        import genblaze_s3.backend as backend
         from genblaze_core.storage.config import StorageConfig
+        from genblaze_s3 import backend
 
         cfg = StorageConfig(
             multipart_threshold=5 * 1024 * 1024,
