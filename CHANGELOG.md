@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### genblaze-core
+
+- **Fixed** `PipelineTemplate.instantiate()` now constructs only providers
+  referenced by the template during auto-discovery. Unused providers that need
+  credentials no longer prevent a valid template from loading. Empty templates
+  fail before discovery; explicit provider maps remain authoritative (#67).
+
 ## [0.8.2] - 2026-11-16
 
 Security hardening wave. `genblaze-core` now requires `urllib3>=2.8.0`, which

@@ -132,6 +132,107 @@ class TestInstantiation:
         with pytest.raises(GenblazeError, match="no steps"):
             template.instantiate({"mock": MockProvider()})
 
+    def test_auto_discovery_ignores_unused_provider_and_reuses_required(self, monkeypatch):
+        instances = []
+
+        class RequiredProvider(MockProvider):
+            def __init__(self):
+                super().__init__()
+                instances.append(self)
+
+        class UnusedProvider(MockProvider):
+            def __init__(self):
+                raise RuntimeError("requires credentials")
+
+        monkeypatch.setattr(
+            "genblaze_core.providers.registry.discover_providers",
+            lambda: {"unused": UnusedProvider, "mock": RequiredProvider},
+        )
+        template = PipelineTemplate(
+            steps=[
+                StepTemplate(provider_name="mock", model="m1", prompt="first"),
+                StepTemplate(provider_name="mock", model="m2", prompt="second"),
+            ],
+        )
+
+        result = template.instantiate().run()
+
+        assert len(instances) == 1
+        assert [step.prompt for step in instances[0].received_steps] == ["first", "second"]
+        assert [step.status for step in result.run.steps] == [
+            StepStatus.SUCCEEDED,
+            StepStatus.SUCCEEDED,
+        ]
+
+    def test_empty_template_rejects_before_discovery(self, monkeypatch):
+        def unexpected_discovery():
+            pytest.fail("Empty templates must not discover providers")
+
+        monkeypatch.setattr(
+            "genblaze_core.providers.registry.discover_providers", unexpected_discovery
+        )
+        with pytest.raises(GenblazeError, match="Template has no steps"):
+            PipelineTemplate(steps=[]).instantiate()
+
+    def test_auto_discovery_missing_provider_lists_available_names(self, monkeypatch):
+        class UnusedProvider(MockProvider):
+            def __init__(self):
+                raise RuntimeError("requires credentials")
+
+        monkeypatch.setattr(
+            "genblaze_core.providers.registry.discover_providers",
+            lambda: {"zebra": UnusedProvider, "alpha": MockProvider},
+        )
+        template = PipelineTemplate(steps=[StepTemplate(provider_name="missing", model="m1")])
+        with pytest.raises(
+            GenblazeError, match=r"Provider 'missing' not found. Available: \[alpha, zebra\]"
+        ):
+            template.instantiate()
+
+    def test_auto_discovery_required_constructor_error_keeps_cause(self, monkeypatch):
+        cause = RuntimeError("requires credentials")
+
+        class RequiredProvider(MockProvider):
+            def __init__(self):
+                raise cause
+
+        monkeypatch.setattr(
+            "genblaze_core.providers.registry.discover_providers",
+            lambda: {"required": RequiredProvider},
+        )
+        template = PipelineTemplate(steps=[StepTemplate(provider_name="required", model="m1")])
+        with pytest.raises(
+            GenblazeError, match="Failed to instantiate provider 'required'"
+        ) as exc:
+            template.instantiate()
+        assert exc.value.__cause__ is cause
+        assert "Pass providers= explicitly" in str(exc.value)
+
+    @pytest.mark.parametrize("include_required", [True, False])
+    def test_explicit_providers_bypass_discovery_and_remain_unchanged(
+        self, monkeypatch, include_required
+    ):
+        def unexpected_discovery():
+            pytest.fail("Explicit providers must not trigger discovery")
+
+        monkeypatch.setattr(
+            "genblaze_core.providers.registry.discover_providers", unexpected_discovery
+        )
+        provider = MockProvider()
+        providers = {"mock": provider} if include_required else {}
+        original = providers.copy()
+        template = PipelineTemplate(
+            steps=[StepTemplate(provider_name="mock", model="m1", prompt="explicit")]
+        )
+        if include_required:
+            result = template.instantiate(providers).run()
+            assert result.run.steps[0].status == StepStatus.SUCCEEDED
+            assert provider.received_steps[0].prompt == "explicit"
+        else:
+            with pytest.raises(GenblazeError, match="Provider 'mock' not found"):
+                template.instantiate(providers)
+        assert providers == original
+
     def test_instantiate_with_variables(self):
         template = PipelineTemplate(
             name="var-test",
