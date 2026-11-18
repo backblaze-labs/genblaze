@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-11-10 -->
+---
+type: Library
+title: Parquet sink
+description: Write run, step and asset rows to partitioned Parquet for analytics.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Feature: Parquet Sink
 
 ## Purpose
@@ -18,9 +25,9 @@ Write structured run/step/asset data to partitioned Parquet files for analytics 
 
 ## Inputs
 - `Run` and `Manifest` objects
-- `output_dir`: path for Parquet output
+- `base_dir`: path for Parquet output
 
-Every file the sink writes or deletes must stay under `output_dir`; anything
+Every file the sink writes or deletes must stay under `base_dir`; anything
 else raises `SinkError`. `run_id` is checked as a single path component when
 the `Run` is validated (GHSA-x99g-wcm2-r2v8).
 
@@ -32,8 +39,8 @@ the `Run` is validated (GHSA-x99g-wcm2-r2v8).
   scanning `runs/`/`steps`/`assets`
 
 ## Flow
-- `ParquetSink(output_dir, policy=None)` initializes with target directory
-  and optional `EmbedPolicy`. If `output_dir` already has a `runs/` tree but
+- `ParquetSink(base_dir, *, policy=None)` initializes with target directory
+  and optional keyword-only `EmbedPolicy`. If `base_dir` already has a `runs/` tree but
   no `_run_index/` yet (e.g. first use after upgrading), the index is
   backfilled once from that tree.
 - `write_run()` flattens run/steps/assets into tabular rows
@@ -73,7 +80,8 @@ the `Run` is validated (GHSA-x99g-wcm2-r2v8).
   files are replaced by the new write, not duplicated (#72)
 - New `run_id` in a dataset with many existing partitions → resolved via the
   `_run_index/` file for that `run_id`, never a full-tree scan (#150)
-- Missing pyarrow → `ImportError` at sink creation (optional dependency)
+- Missing pyarrow → `OptionalDependencyError` (an `ImportError` subclass) when
+  `ParquetSink` is imported; install `genblaze-core[parquet]`
 - Concurrent writes to the *same* `ParquetSink` instance → thread-safe via internal lock
 - Concurrent writes to *different* `run_id`s from separate `ParquetSink`
   instances (e.g. parallel `genblaze index` invocations into one output

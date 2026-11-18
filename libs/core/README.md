@@ -1,9 +1,9 @@
-<!-- last_verified: 2026-07-29 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-core
 
 **Python SDK for building generative AI pipelines across video, image, and audio — with built-in SHA-256 provenance.**
 
-`genblaze-core` is the core of [genblaze](https://github.com/backblaze-labs/genblaze), an open-source orchestration framework by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for composing multi-step AI media generation workflows. It gives you a single, provider-agnostic `Pipeline` API for text-to-video, text-to-image, text-to-speech, image-to-video, and audio generation — so you can swap models (Sora, Veo, Runway, Luma, Flux, DALL·E, ElevenLabs, Stable Audio, LMNT, GMICloud) without rewriting pipeline logic.
+`genblaze-core` is the core of [genblaze](https://github.com/backblaze-labs/genblaze), an open-source orchestration framework by [Backblaze](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) for composing multi-step AI media generation workflows. It gives you a single, provider-agnostic `Pipeline` API for text-to-video, text-to-image, text-to-speech, image-to-video, and audio generation — so you can swap models (Veo, Runway, Luma, Flux, DALL·E, ElevenLabs, Stable Audio, LMNT, GMICloud) without rewriting pipeline logic.
 
 Every pipeline run emits a canonical, hash-verified **provenance manifest** — a tamper-evident JSON document capturing the provider, model, prompt, parameters, timestamps, and output asset metadata. Outputs are sha256-covered once `sha256` is populated, typically by a storage sink or byte-returning provider path. Manifests can be embedded directly into PNG, JPEG, WebP, MP4, MP3, and WAV files, uploaded alongside assets to S3-compatible storage, or exported to Parquet for analytics.
 
@@ -63,7 +63,8 @@ Add provider adapters separately:
 ```bash
 pip install genblaze-openai genblaze-google genblaze-runway genblaze-luma \
             genblaze-decart genblaze-replicate genblaze-elevenlabs \
-            genblaze-stability-audio genblaze-lmnt genblaze-gmicloud
+            genblaze-stability-audio genblaze-lmnt genblaze-gmicloud \
+            genblaze-assemblyai genblaze-atlascloudai genblaze-falai genblaze-nvidia
 
 pip install genblaze-s3    # Storage backend for Backblaze B2 / AWS S3 / R2 / MinIO
 pip install genblaze-cli   # Extract / verify / replay / index manifests
@@ -88,20 +89,20 @@ print(manifest.verify_hash())    # True: canonical payload hash matches
 print(manifest.verify())         # True when every output asset declares sha256
 ```
 
-## Quickstart — Sora + Backblaze B2 storage
+## Quickstart — Luma + Backblaze B2 storage
 
 Generate a video, upload it + its manifest to [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze), verify the hash:
 
 ```bash
-pip install genblaze-core genblaze-openai genblaze-s3
-export OPENAI_API_KEY="sk-..."
+pip install genblaze-core genblaze-luma genblaze-s3
+export LUMAAI_API_KEY="..."
 export B2_KEY_ID="..."
 export B2_APP_KEY="..."
 ```
 
 ```python
 from genblaze_core import KeyStrategy, Modality, ObjectStorageSink, Pipeline
-from genblaze_openai import SoraProvider
+from genblaze_luma import LumaProvider
 from genblaze_s3 import S3StorageBackend
 
 storage = ObjectStorageSink(
@@ -111,9 +112,9 @@ storage = ObjectStorageSink(
 
 result = (
     Pipeline("hero-reel")
-    .step(SoraProvider(), model="sora-2",
+    .step(LumaProvider(), model="ray-2",
           prompt="Aerial flyover of a mountain lake at sunrise",
-          modality=Modality.VIDEO, seconds=4, size="1280x720")
+          modality=Modality.VIDEO, aspect_ratio="16:9")
     .run(sink=storage, timeout=300)
 )
 
@@ -140,7 +141,7 @@ fetches `asset.url`, hash those bytes separately and compare them to
 
 ## Related packages
 
-Provider adapters: [`genblaze-openai`](https://pypi.org/project/genblaze-openai/) · [`genblaze-google`](https://pypi.org/project/genblaze-google/) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) · [`genblaze-luma`](https://pypi.org/project/genblaze-luma/) · [`genblaze-decart`](https://pypi.org/project/genblaze-decart/) · [`genblaze-replicate`](https://pypi.org/project/genblaze-replicate/) · [`genblaze-elevenlabs`](https://pypi.org/project/genblaze-elevenlabs/) · [`genblaze-stability-audio`](https://pypi.org/project/genblaze-stability-audio/) · [`genblaze-lmnt`](https://pypi.org/project/genblaze-lmnt/) · [`genblaze-gmicloud`](https://pypi.org/project/genblaze-gmicloud/)
+Provider adapters: [`genblaze-openai`](https://pypi.org/project/genblaze-openai/) · [`genblaze-google`](https://pypi.org/project/genblaze-google/) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) · [`genblaze-luma`](https://pypi.org/project/genblaze-luma/) · [`genblaze-decart`](https://pypi.org/project/genblaze-decart/) · [`genblaze-replicate`](https://pypi.org/project/genblaze-replicate/) · [`genblaze-elevenlabs`](https://pypi.org/project/genblaze-elevenlabs/) · [`genblaze-stability-audio`](https://pypi.org/project/genblaze-stability-audio/) · [`genblaze-lmnt`](https://pypi.org/project/genblaze-lmnt/) · [`genblaze-gmicloud`](https://pypi.org/project/genblaze-gmicloud/) · [`genblaze-assemblyai`](https://pypi.org/project/genblaze-assemblyai/) · [`genblaze-atlascloudai`](https://pypi.org/project/genblaze-atlascloudai/) · [`genblaze-falai`](https://pypi.org/project/genblaze-falai/) · [`genblaze-nvidia`](https://pypi.org/project/genblaze-nvidia/) · [`genblaze-hume`](https://pypi.org/project/genblaze-hume/) (retired: Hume's TTS API no longer works)
 
 Storage + tooling: [`genblaze-s3`](https://pypi.org/project/genblaze-s3/) · [`genblaze-cli`](https://pypi.org/project/genblaze-cli/) · [`genblaze-langsmith`](https://pypi.org/project/genblaze-langsmith/)
 

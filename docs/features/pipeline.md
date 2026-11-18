@@ -3,7 +3,7 @@ type: Library
 title: Pipeline
 description: Fluent API for multi-step generative media workflows with automatic manifests.
 status: stable
-stale_after: 2026-12-17T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Feature: Pipeline
@@ -45,7 +45,7 @@ Fluent API for building and executing multi-step generative media workflows with
 - `sink`: optional BaseSink — Output destination on `.run()`
 - `pipeline_timeout`: float | None — End-to-end timeout in seconds for the entire pipeline (checked before each step)
 - `on_step_complete`: Callable[[StepCompleteEvent], None] | None — Callback fired after each step finishes (success or failure)
-- `on_submit`: Callable[[str, Any], None] | None — Callback fired after provider `submit()` with `(step_id, prediction_id)` for checkpoint persistence
+- `on_submit`: Callable[[str, Any], None] | None — Callback fired after provider `submit()` with `(step_id, prediction_id)` for checkpoint persistence. Set it with `.config({"on_submit": ...})`, not as a `.run()` kwarg
 - `input_from`: list[int] | int | None — Route inputs from specific prior steps by index (overrides chain mode)
 - `external_inputs`: list[Asset] | None — Seed `Step.inputs` from caller-held Assets (e.g., user-uploaded media for a multimodal first step). Mutually exclusive with `input_from`. Provider must declare `accepts_chain_input=True`.
 

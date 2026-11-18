@@ -3,7 +3,7 @@ type: Spec
 title: Adding a new provider
 description: Step-by-step contract for contributing a genblaze provider connector package.
 status: stable
-stale_after: 2027-05-17T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Adding a New Provider
@@ -498,7 +498,7 @@ via `register_pricing()`; shipping it on the family was the rot vector
 |---|---|---|
 | `NATIVE` | Vendor exposes a cheap, authoritative `GET /models` (or equivalent). The catalog covers every endpoint your connector targets | Implement `_fetch_models()` returning `Iterable[str]`; the base class wires the discovery cache and returns `OK_AUTHORITATIVE` for cache-confirmed slugs |
 | `PARTIAL` | No global catalog, but you can probe a single slug cheaply (HEAD on a model URL, `client.models.get`, or the empty-payload-POST trick) | Attach a `FamilyProbe` to each `ModelFamily` and override `_invoke_family_probe()` to forward your transport. Probes must be polite (no token spend, no audit-log records) |
-| `NONE` | Vendor SDK exposes no per-slug check, or every probe enqueues a billable generation. Catalog is small and stable | Nothing extra. Family-matched slugs return `OK_PROVISIONAL`; unmatched slugs return `NOT_FOUND`. End users see one WARN at preflight per pipeline |
+| `NONE` | Vendor SDK exposes no per-slug check, or every probe enqueues a billable generation. Catalog is small and stable | Nothing extra. Family-matched slugs return `OK_PROVISIONAL`; unmatched slugs return `UNKNOWN_PERMISSIVE` via the permissive fallback spec. End users see one WARN at preflight per pipeline |
 
 Decision shortcuts:
 
@@ -750,7 +750,7 @@ def test_my_specific_error_handling():
     ...
 ```
 
-The compliance harness covers 15 tests: name uniqueness, lifecycle methods, invoke success, timestamps, asset URL validation, media types, capabilities type, audio metadata, chain input security, normalize_params idempotency, and cost tracking (soft check).
+The compliance harness covers 16 tests: name, lifecycle methods, invoke success, timestamps, asset URL validation, media types, `SyncProvider.generate()` sufficiency, capabilities type, audio metadata, chain input security, normalize_params idempotency, probe-cache kwargs, and cost tracking (soft check).
 
 ## 19. Export and install
 
@@ -783,7 +783,7 @@ pip install -e "libs/connectors/myprovider[dev]"
 - [ ] Provider class is **not** decorated with `@dataclass` (its generated `__init__` would replace yours and skip `super().__init__()`)
 - [ ] `get_capabilities()` declares supported modalities, inputs, models, `accepts_chain_input`
 - [ ] `normalize_params()` maps standard names (`duration`, `resolution`, `aspect_ratio`, `voice_id`, `output_format`) and is idempotent
-- [ ] `create_registry()` returns a `ModelRegistry` with per-model `pricing` strategies (or documents why it doesn't)
+- [ ] `create_registry()` returns a `ModelRegistry` of `ModelFamily` rules plus a permissive `fallback` spec; no shipped pricing (users register strategies from `docs/reference/pricing-recipes.md`)
 
 **Security**
 - [ ] `validate_asset_url()` called on every output asset URL

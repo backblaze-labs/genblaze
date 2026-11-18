@@ -3,7 +3,7 @@ type: Library
 title: Retry policy
 description: RetryPolicy presets and custom policies for provider submit and poll retries.
 status: stable
-stale_after: 2026-12-17T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Retry Policy
@@ -40,7 +40,7 @@ loop retries `RATE_LIMIT` and `SERVER_ERROR` (so a Gemini `503 UNAVAILABLE`
 retries) but not `TIMEOUT`, which can re-bill a long generation. See
 [LLM Calls → Rate limits](llm-calls.md#rate-limits).
 
-## The seven knobs
+## The eight knobs
 
 | Field | Default | What it controls |
 |---|---|---|
@@ -147,6 +147,10 @@ The scaffolding is in core; per-provider header opt-ins are individual PRs.
 | Stability Audio | unconfirmed | provider-API spec doesn't document support |
 | LMNT | unconfirmed | provider-API spec doesn't document support |
 | NVIDIA NIM | unconfirmed | provider-API spec doesn't document support |
+| fal | unset | not opted in; upstream support not evaluated |
+| Atlas Cloud | unset | not opted in; upstream support not evaluated |
+| AssemblyAI | unset | not opted in; upstream support not evaluated |
+| Hume | unset | not opted in; upstream support not evaluated |
 
 To enable for a provider you control, set the class attribute and ensure your
 submit path passes the result of `_inject_idempotency_header(headers, step)`

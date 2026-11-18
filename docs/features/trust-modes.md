@@ -1,17 +1,24 @@
-<!-- last_verified: 2026-07-21 -->
+---
+type: Library
+title: Trust modes
+description: What the provenance manifest proves under integrity, signed and C2PA trust modes.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Feature: Trust Modes
 
 ## Purpose
 Define what the genblaze provenance manifest does and does not prove, so downstream consumers can pick the right verification posture for their threat model.
 
 ## Used By
-- API: `Manifest.verify()`, `Manifest.canonical_hash`, `Manifest.signature` (reserved)
+- API: `Manifest.verify()`, `Manifest.canonical_hash`, `Manifest.signature` (Mode 2 bundle)
 - CLI: `genblaze verify <file>`
 - Storage: any consumer reading manifests from B2 / S3 / sidecar / embedded media
 
 ## Three trust modes
 
-Genblaze supports a layered trust model. Today only Mode 1 ships in core; Modes 2 and 3 are roadmap items with reserved schema fields already in place.
+Genblaze supports a layered trust model. Mode 1 ships in core; Mode 2 ships experimentally behind the `signing` extra (`genblaze_core.signing`); Mode 3 is a roadmap item.
 
 ### Mode 1 — Integrity (default, ships today)
 
@@ -47,7 +54,7 @@ assert manifest.verify_hash()
 # $ genblaze verify video.mp4
 ```
 
-### Mode 2 — Authenticated integrity (experimental — `feat/mode2-ed25519-signer`)
+### Mode 2 — Authenticated integrity (experimental, `signing` extra)
 
 **What it proves:** Mode 1 + only the holder of a specific signing key could have produced the manifest.
 
@@ -135,11 +142,11 @@ verification.
 ## Choosing a mode
 
 - Building an internal pipeline whose output stays in your own bucket → **Mode 1 is sufficient.**
-- Publishing assets to customers and need to prove "this came from us" → **wait for Mode 2** or layer your own signing on the embedded JSON today.
+- Publishing assets to customers and need to prove "this came from us" → **use the experimental Mode 2 signer** (`pip install 'genblaze-core[signing]'`) or layer your own signing on the embedded JSON.
 - Publishing into an ecosystem that displays provenance badges → **wait for Mode 3** or use [c2pa-python](https://github.com/contentauth/c2pa-python) directly today.
 
 ## Verification
-- Mode 1 test files: `libs/core/tests/unit/test_canonical.py`, `test_canonical_hash_stability.py`, `tests/integration/test_pipeline_embed_roundtrip.py`
+- Mode 1 test files: `libs/core/tests/unit/test_canonical.py`, `tests/golden/test_canonical_hash_stability.py`, `tests/integration/test_pipeline_embed_roundtrip.py`
 - Required cases: hash determinism, embed→extract→verify roundtrip per format, asset.sha256 binding, URL-only output assets do not verify
 - Quick verify: `cd libs/core && pytest tests/unit/test_canonical.py tests/integration/test_pipeline_embed_roundtrip.py -v`
 - Full verify: `make test`

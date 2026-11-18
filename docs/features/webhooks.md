@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-06-23 -->
+---
+type: Library
+title: Webhooks
+description: Send step and pipeline lifecycle events to an HTTP endpoint.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Webhooks
 
 `WebhookNotifier` delivers fire-and-forget HTTP notifications for pipeline events via a background thread. Uses only stdlib (`http.client`, `ssl`, `threading`).
@@ -42,8 +49,8 @@ notifier.close()
 {
   "event": "step.completed",
   "step_id": "uuid",
-  "provider": "openai",
-  "model": "sora-2",
+  "provider": "luma",
+  "model": "ray-2",
   "status": "succeeded",
   "elapsed_sec": 12.5,
   "timestamp": "2026-03-17T12:00:00+00:00"

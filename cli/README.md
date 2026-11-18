@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-cli
 
 **Command-line toolkit for inspecting, verifying, and indexing genblaze AI-generated-media provenance manifests.**
@@ -19,7 +19,11 @@
 pip install genblaze-cli
 ```
 
-Installs the `genblaze` console script.
+Installs the `genblaze` console script. `genblaze index` writes Parquet and needs pyarrow:
+
+```bash
+pip install "genblaze-core[parquet]"
+```
 
 ## Usage
 
@@ -35,7 +39,7 @@ genblaze verify manifest.json             # Or verify a standalone manifest file
 
 genblaze replay manifest.json             # Show what a replay would do (dry run)
 
-genblaze index manifest.json -o data/     # Index into partitioned Parquet tables
+genblaze index manifest.json -o data/     # Index into partitioned Parquet tables (needs genblaze-core[parquet])
 ```
 
 Exit codes are non-zero on verification failure; safe to drop into CI pipelines, release checks, or content-moderation workflows. By default verify checks the manifest only; `--fetch` also downloads each output asset (through the same SSRF-hardened transfer path the pipeline uses) and compares its bytes against the declared sha256. Local pipelines that wrote assets outside the system temp directories (e.g. `output_dir=./out`) can admit them with `--allowed-root <dir>`.
@@ -49,9 +53,11 @@ genblaze extract delivered-ad.mp4 -o manifest.json
 # 2. Confirm it hasn't been tampered with
 genblaze verify delivered-ad.mp4
 
-# 3. Index into your analytics warehouse
-genblaze index manifest.json -o s3://analytics/genblaze/
+# 3. Index into partitioned Parquet tables
+genblaze index manifest.json -o ./analytics/genblaze/
 ```
+
+`-o` is a local directory. To land the tables in object storage, sync that directory afterward (for example with `aws s3 sync` or `b2 sync`).
 
 ## Documentation
 

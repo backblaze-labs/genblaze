@@ -3,7 +3,7 @@ type: Library
 title: Dev workflows
 description: Contributor checklists for features, bugfixes, refactors, docs and PRs, plus test placement and the doc update mapping.
 status: stable
-stale_after: 2027-05-16T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Dev Workflows
@@ -108,6 +108,9 @@ This is a human-inspection step, not an automated probe. Upstream catalog pages 
 | Stability (audio) | https://platform.stability.ai/docs/api-reference | Stable Audio section. |
 | LMNT | https://docs.lmnt.com/ | Public docs; voices + models. |
 | NVIDIA NIM | https://build.nvidia.com/explore | Public catalog; live model listing. |
+| AssemblyAI | https://www.assemblyai.com/docs | Public docs; speech models for transcription. |
+| Atlas Cloud | https://www.atlascloud.ai/models | Public catalog; image and video models. |
+| fal.ai | https://fal.ai/models | Public catalog; search by endpoint ID. |
 
 Keep this table aligned with `libs/connectors/*/` — when a new connector lands, add its provider's catalog link here in the same PR.
 

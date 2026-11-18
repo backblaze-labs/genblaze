@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-11-16 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-hume
 
 [Hume AI](https://www.hume.ai/) **Octave TTS** provider adapter for
@@ -13,6 +13,9 @@ persist the result to Backblaze B2 / S3 like any other genblaze step.
 > **Temporarily uninstallable:** every `hume` SDK release on PyPI is yanked (Nov 2026), so pip cannot
 > resolve this package's `hume` dependency. It is left out of the
 > `genblaze[audio]` and `genblaze[all]` bundles until Hume republishes.
+>
+> **Retired upstream:** Hume's TTS API was retired on 2026-11-13, so this
+> connector no longer works even where it installs.
 
 ```bash
 pip install genblaze-hume          # or: pip install "genblaze[hume]"

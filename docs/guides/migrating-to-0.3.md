@@ -3,7 +3,7 @@ type: Library
 title: Migrating to genblaze-core 0.3.0
 description: Upgrade guide for genblaze-core 0.2.x callers.
 status: stable
-stale_after: 2027-05-16T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Migrating to genblaze-core 0.3.0
@@ -139,8 +139,8 @@ reg.register(
 provider = GMICloudVideoProvider(models=reg)
 ```
 
-If your slug fits an existing family pattern (e.g. `kling-text2video-v1.7`
-matches `^kling-text2video-`), `provider.invoke(step)` already works
+If your slug fits an existing family pattern (e.g. `pixverse-v5.6-t2v`
+matches `^pixverse-`), `provider.invoke(step)` already works
 without any registration — the family's `spec_template` carries the
 param shape. `register()` is for *overriding* the family-derived spec
 or for adding a slug whose pattern doesn't exist yet.
@@ -307,7 +307,7 @@ from genblaze_core import Pipeline
 
 run = (
     Pipeline("my-run", preflight=False)
-    .step(provider="my-vendor", model="bleeding-edge", prompt="...")
+    .step(MyProvider(), model="bleeding-edge", prompt="...")
     .run()
 )
 ```
@@ -346,8 +346,8 @@ would enqueue a billable generation. End users see:
   instance — the `_warned_preflight` set deduplicates so a busy
   pipeline doesn't spam the log.
 
-Connectors currently classified `NONE`: Decart, Runway, Luma, LMNT,
-Stability-Audio. ElevenLabs SFX is `NONE` for the SFX modality only;
+Connectors currently classified `NONE`: AssemblyAI, Atlas Cloud, Decart,
+fal, Hume, Runway, Luma, LMNT, Stability-Audio. ElevenLabs SFX is `NONE` for the SFX modality only;
 ElevenLabs TTS is `NATIVE`.
 
 ---

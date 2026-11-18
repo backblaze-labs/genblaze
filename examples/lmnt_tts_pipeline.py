@@ -20,7 +20,7 @@ def main() -> None:
         Pipeline("lmnt-tts-demo", project_id="examples")
         .step(
             provider,
-            model="lmnt-1",
+            model="lmnt-1",  # recorded in the manifest only; not sent to LMNT
             prompt="The quick brown fox jumps over the lazy dog.",
             modality=Modality.AUDIO,
             voice="lily",

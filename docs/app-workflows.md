@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-04-16 -->
+---
+type: Library
+title: App workflows
+description: End-user flows for building, running, saving, embedding, verifying and replaying pipelines.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # App Workflows
 
 ## Generate Media with Provenance
@@ -20,8 +27,8 @@
 
 ## Embed Manifest into Media
 
-- User has a manifest and a media file (PNG, JPEG, WebP)
-- Uses `SmartEmbedder.embed(path, manifest)` for auto-format detection
+- User has a manifest and a media file (PNG, JPEG, WebP, MP4, MP3, WAV, AAC, FLAC)
+- Uses `SmartEmbedder().embed(path, manifest)` (from `genblaze_core.media`) for auto-format detection
 - Or uses format-specific handler directly (e.g., `PngHandler`)
 - If inline embedding fails or format unsupported → sidecar JSON created
 - Optionally applies `EmbedPolicy` to redact prompts or use pointer mode

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-langsmith
 
 **[LangSmith](https://www.langchain.com/langsmith) tracer backend for [genblaze](https://github.com/backblaze-labs/genblaze) — AI-pipeline observability for generative media, with every run, step, and asset traced alongside its SHA-256 provenance manifest.**
@@ -7,10 +7,10 @@
 
 ## Why genblaze-langsmith
 
-- **End-to-end AI pipeline traces** — every provider call (Sora, Veo, Runway, Flux, ElevenLabs, …) appears as a LangSmith span with prompt, model, params, cost, and manifest hash.
+- **End-to-end AI pipeline traces** — every provider call (Veo, Runway, Flux, ElevenLabs, …) appears as a LangSmith span with prompt, model, params, cost, and manifest hash.
 - **Drop-in tracer** — attach to `Pipeline(tracer=…)`; no code changes to providers or steps.
 - **Composable** — wrap with `CompositeTracer` to send to LangSmith + OTel + logs simultaneously.
-- **Project-aware** — traces land in the LangSmith project of your choice via standard `LANGSMITH_*` env vars.
+- **Project-aware** — traces land in the LangSmith project you pass as `project_name`.
 - **Works offline** — tracer no-ops if LangSmith isn't configured; no production risk.
 
 ## Install
@@ -28,11 +28,14 @@ export LANGSMITH_PROJECT="genblaze-prod"
 ```
 
 ```python
+import os
+
 from genblaze_core import Modality, Pipeline
 from genblaze_core.testing import MockVideoProvider
 from genblaze_langsmith import LangSmithTracer
 
-tracer = LangSmithTracer()   # reads LANGSMITH_* env vars
+# The langsmith Client reads LANGSMITH_API_KEY; the project must be passed explicitly.
+tracer = LangSmithTracer(project_name=os.environ.get("LANGSMITH_PROJECT", "default"))
 
 run, manifest = (
     Pipeline("traced-demo", tracer=tracer)
@@ -60,9 +63,10 @@ tracer = CompositeTracer([LangSmithTracer(), OTelTracer(), LoggingTracer()])
 
 | Env var | Notes |
 |---|---|
-| `LANGSMITH_API_KEY` | LangSmith API key |
-| `LANGSMITH_PROJECT` | Target project (optional; defaults to LangSmith default) |
-| `LANGSMITH_ENDPOINT` | Override the LangSmith endpoint (optional) |
+| `LANGSMITH_API_KEY` | LangSmith API key, read by the `langsmith` Client (or pass `api_key=`) |
+| `LANGSMITH_ENDPOINT` | Override the LangSmith endpoint, read by the `langsmith` Client (optional) |
+
+`LangSmithTracer` does not read `LANGSMITH_PROJECT`. Pass `project_name=` explicitly; it defaults to `"default"`.
 
 ## Documentation
 

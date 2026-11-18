@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-09-03 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-google
 
 **Google provider adapters for [genblaze](https://github.com/backblaze-labs/genblaze) — [Veo](https://deepmind.google/technologies/veo/) text-to-video and Imagen/Gemini text-to-image — with SHA-256 provenance manifests on every output.**
@@ -11,7 +11,7 @@
 - **Imagen 4 high-fidelity images** — photorealistic stills with full parameter tracking.
 - **Gemini-native image generation** — the only image path callable on a freshly created Gemini API key (Imagen requires account entitlement — see caveat below).
 - **Two auth modes** — Gemini API (`GEMINI_API_KEY`) for quick start, Vertex AI for enterprise / GCP orgs.
-- **Same SDK, any provider** — swap to Sora, Runway, Luma, Flux without rewriting pipeline logic.
+- **Same SDK, any provider** — swap to Runway, Luma, Flux without rewriting pipeline logic.
 - **Provenance by default** — SHA-256 hash + canonical manifest on every generation.
 - **Durable storage** — plug `genblaze-s3` in for Backblaze B2 / AWS S3 / Cloudflare R2 / MinIO.
 

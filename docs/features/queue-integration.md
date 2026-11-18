@@ -3,18 +3,23 @@ type: Library
 title: Queue integration
 description: Run pipelines from background workers with checkpoints and resume.
 status: stable
-stale_after: 2026-12-17T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Queue Integration
 
 Video generation takes 1–10 minutes. In web services, run pipelines from
 background workers, not request handlers. Use the `on_submit` callback to
-persist prediction IDs for crash recovery.
+persist prediction IDs for crash recovery. `on_submit`, `timeout` and
+`max_retries` are `RunnableConfig` keys: set them together in `.config({...})`.
+Passing `timeout=` or `max_retries=` to `.run()` builds a fresh config and
+drops everything set with `.config()`.
 
 ## Pattern: Checkpoint + Resume
 
 ```python
+from typing import Any
+
 from genblaze_core import Pipeline, Modality
 from genblaze_core.testing import MockVideoProvider
 
@@ -28,12 +33,12 @@ def checkpoint(step_id: str, prediction_id: Any) -> None:
 
 result = (
     Pipeline("video-job")
-    .step(MockVideoProvider(), model="sora-2", prompt="sunset", modality=Modality.VIDEO)
-    .run(
-        timeout=600,
-        on_progress=lambda e: print(f"Progress: {e.status}"),
-        on_submit=checkpoint,  # fires after submit(), before polling
-    )
+    .step(MockVideoProvider(), model="ray-2", prompt="sunset", modality=Modality.VIDEO)
+    .config({
+        "timeout": 600,
+        "on_submit": checkpoint,  # fires after submit(), before polling
+    })
+    .run(on_progress=lambda e: print(f"Progress: {e.status}"))
 )
 ```
 
@@ -45,7 +50,7 @@ prediction ID is already persisted and can be used to resume.
 
 ```python
 # enqueue.py — web handler
-import json
+import uuid
 from your_queue import enqueue
 
 def handle_request(prompt: str) -> str:
@@ -61,10 +66,12 @@ def generate_video(payload: dict) -> None:
     result = (
         Pipeline(payload["job_id"])
         .step(LumaProvider(), model="ray-2", prompt=payload["prompt"], modality=Modality.VIDEO)
+        .config({
+            "timeout": 600,
+            "on_submit": lambda sid, pid: save_checkpoint(payload["job_id"], sid, pid),
+        })
         .run(
-            timeout=600,
             pipeline_timeout=900,
-            on_submit=lambda sid, pid: save_checkpoint(payload["job_id"], sid, pid),
             on_step_complete=lambda e: update_job_status(payload["job_id"], e),
         )
     )
@@ -75,7 +82,7 @@ def generate_video(payload: dict) -> None:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `on_submit` | `Callable[[str, Any], None]` | Receives `(step_id, prediction_id)` after submit |
+| `on_submit` | `Callable[[str, Any], None]` | `RunnableConfig` key; receives `(step_id, prediction_id)` after submit |
 | `on_step_complete` | `Callable[[StepCompleteEvent], None]` | Receives event after each step finishes |
 | `on_progress` | `Callable[[ProgressEvent], None]` | Receives event during provider polling |
 | `pipeline_timeout` | `float` | Wall-clock limit for entire pipeline |

@@ -1,10 +1,10 @@
-<!-- last_verified: 2026-05-07 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-nvidia
 
 NVIDIA NIM / [build.nvidia.com](https://build.nvidia.com/models) provider adapters for
 [genblaze](https://github.com/backblaze-labs/genblaze). Covers four modalities on one
-`nvapi-` key: **video** (Cosmos, Edify), **image** (SDXL, SD 3.5, FLUX), **audio**
-(Fugatto, Riva TTS), and **chat** (Nemotron, Llama, Mistral, Qwen, …).
+`nvapi-` key: **video** (Cosmos), **image** (SDXL, SD 3.5, FLUX), **audio**
+(Fugatto, Magpie TTS), and **chat** (Nemotron, Llama, Mistral, Qwen, …).
 
 ## Install
 
@@ -48,8 +48,9 @@ NvidiaImageProvider(
 
 ## Video — `NvidiaVideoProvider`
 
-Cosmos and Edify Video return async (`202 Accepted` + `NVCF-REQID` header) and
-the provider polls NVCF for completion. Some fast models return inline
+Cosmos returns async (`202 Accepted` + `NVCF-REQID` header) and the provider
+polls NVCF for completion. Other video slugs (e.g. Edify Video) match no
+family and run through the permissive fallback spec. Some fast models return inline
 synchronous responses — both paths converge on the same lifecycle.
 
 ```python
@@ -97,7 +98,7 @@ from genblaze_nvidia import NvidiaAudioProvider
 provider = NvidiaAudioProvider()
 
 # TTS (mono)
-step = Step(provider="nvidia-audio", model="nvidia/riva-tts", prompt="Hello, world.")
+step = Step(provider="nvidia-audio", model="nvidia/magpie-tts-multilingual", prompt="Hello, world.")
 
 # Music / SFX (stereo)
 step = Step(provider="nvidia-audio", model="nvidia/fugatto", prompt="upbeat synthwave intro")
@@ -160,7 +161,7 @@ content block based on its `media_type`. Verified against the Nemotron 3 Nano
 Omni model card on build.nvidia.com.
 
 ```python
-from genblaze_core import Asset, Pipeline
+from genblaze_core import Asset, Modality, Pipeline
 from genblaze_nvidia import NvidiaChatProvider
 
 # Eyes-and-ears: image + audio + video in one step.
@@ -174,10 +175,11 @@ pipe = Pipeline().step(
     NvidiaChatProvider(reasoning=False),  # turn off thinking for a fast perception pass
     model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
     prompt="Describe what's happening across these inputs.",
+    modality=Modality.TEXT,
     external_inputs=inputs,  # caller-held Assets seeded directly into step.inputs
 )
 result = pipe.run()
-print(result.steps[-1].assets[0].metadata["text"])
+print(result.run.steps[-1].assets[0].metadata["text"])
 ```
 
 `reasoning` is tri-state: `None` (default) lets the server pick based on the
@@ -205,7 +207,7 @@ so a retired slug like the historical `nvidia/riva-tts` surfaces as
 
 | Modality | Family pattern(s) | Example slugs |
 |---|---|---|
-| Video | `^nvidia/cosmos-` | `nvidia/cosmos-1.0-7b-diffusion-text2world`, `.../video2world`, `nvidia/cosmos-2.0-diffusion-*` |
+| Video | `^nvidia/cosmos-.*-text2world`, `^nvidia/cosmos-.*-video2world` | `nvidia/cosmos-1.0-7b-diffusion-{text2world,video2world}`, `nvidia/cosmos-2.0-diffusion-{text2world,video2world}` |
 | Image | `^stabilityai/stable-diffusion`, `^black-forest-labs/flux` | `stable-diffusion-xl`, `stable-diffusion-3-5-{large,large-turbo,medium}`, `flux.1-{schnell,dev}` |
 | Audio | `^nvidia/fugatto`, `^nvidia/(?:magpie-tts\|riva-tts\|maxine-)` | `nvidia/fugatto`, `nvidia/magpie-tts-multilingual`, `nvidia/maxine-voice-font` |
 | Chat | n/a — `NATIVE` discovery | Any NIM chat model id |
