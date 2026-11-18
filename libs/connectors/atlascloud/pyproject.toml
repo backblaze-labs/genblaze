@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genblaze-atlascloudai"
-version = "0.1.0"
+version = "0.1.1"
 description = "Atlas Cloud image and video provider adapter for genblaze"
 authors = [{name = "genblaze contributors"}]
 readme = "README.md"

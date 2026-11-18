@@ -1,8 +1,0 @@
-component: genblaze-core
-kind: Removed
-body: |-
-  the unused `genblaze_core.providers.canonical_params` module and
-    the private, never-applied `storage._tracer` decorator. Nothing in genblaze
-    imported either. If you imported the canonical name constants, define them
-    locally; connectors still accept those parameter names (#47).
-time: '2026-11-17T00:00:00Z'

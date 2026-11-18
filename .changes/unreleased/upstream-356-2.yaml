@@ -1,6 +1,0 @@
-component: genblaze-core
-kind: Fixed
-body: ModelRegistry now updates its warning-dedup sets under its lock, so a concurrent
-  fork() cannot copy a set mid-change on free-threaded Python. Document the concurrency
-  guarantee (#58).
-time: '2026-11-17T02:00:02Z'

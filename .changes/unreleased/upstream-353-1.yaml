@@ -1,9 +1,0 @@
-component: genblaze-core
-kind: Changed
-body: |-
-  `Pipeline.run`, `arun`, `map` and `amap` now type
-    `on_progress`, `on_step_complete` and `on_retry` as precise callables instead
-    of `Any`, and so do the webhook `make_on_progress` / `make_on_step_complete`
-    factories. No runtime change; type checkers now flag a callback with the
-    wrong signature, including an `async def` (#45).
-time: '2026-11-17T00:00:00Z'
