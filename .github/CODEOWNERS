@@ -11,5 +11,26 @@ cli/ @jeronimodeleon
 # Connectors
 libs/connectors/ @jeronimodeleon
 
+# Gates: files that decide how changes are judged. Changing one needs a code
+# owner (incl. a security owner once one exists) on the protected branch.
+/AGENTS.md @jeronimodeleon
+/CLAUDE.md @jeronimodeleon
+/REVIEW.md @jeronimodeleon
+/SECURITY.md @jeronimodeleon
+/.claude/ @jeronimodeleon
+/.mcp.json @jeronimodeleon
+/.worktreeinclude @jeronimodeleon
+/tools/check_docs.py @jeronimodeleon
+/tools/e2e_smoke.py @jeronimodeleon
+/Makefile @jeronimodeleon
+
 # CI / repo config
 .github/ @jeronimodeleon
+
+# Release policy and signing trust
+/.changie.yaml @jeronimodeleon
+/.changes/ @jeronimodeleon
+/RELEASE.md @jeronimodeleon
+/RELEASING.md @jeronimodeleon
+/tools/changelog.py @jeronimodeleon
+/tools/release_gate.py @jeronimodeleon

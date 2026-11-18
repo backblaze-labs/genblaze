@@ -1,11 +1,7 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
+Generated from Changie fragments. Add a fragment with `make changelog-new`;
+package versions remain independent of release waves. See [RELEASE.md](RELEASE.md).
 
 ## [0.8.2] - 2026-11-16
 
@@ -1950,7 +1946,7 @@ migration guide.
 
 Closes the BLOCKER + HIGH-severity findings from the post-rollout deep
 review. See
-[`docs/exec-plans/active/model-registry-decoupling-hardening.md`](docs/exec-plans/active/model-registry-decoupling-hardening.md)
+[`docs/exec-plans/completed/model-registry-decoupling-hardening.md`](docs/exec-plans/completed/model-registry-decoupling-hardening.md)
 for the design trail.
 
 **Security:**

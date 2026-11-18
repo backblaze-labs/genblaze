@@ -6,21 +6,20 @@ name: Release
 #                             `## [X.Y.Z]` heading is `## [0.3.0]`). Per-package
 #                             pyproject versions are NOT tag-validated; they
 #                             version independently. See RELEASING.md.
-#   2. workflow_dispatch    — manual. Defaults to dry_run=true → TestPyPI + npm --dry-run.
-#                             Use this to exercise the full pipeline (build, smoke, gates,
-#                             OIDC, sigstore attestations) without touching prod registries.
+#   2. workflow_dispatch    — manual. Defaults to dry_run=true: build + twine check
+#                             every dist (no registry upload) + npm --dry-run.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Route publishes to TestPyPI + npm --dry-run instead of real registries"
+        description: "Build and validate everything but skip the PyPI upload; npm runs with --dry-run"
         type: boolean
         required: true
         default: true
       ref:
-        description: "Git ref to release from (default: current branch). Only honored on workflow_dispatch."
+        description: "Optional expected workflow branch/tag or commit; select the candidate with Run workflow / --ref."
         type: string
         required: false
         default: ""
@@ -47,7 +46,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Pre-publish gates. All four must pass before any package is built:
+  # Pre-publish gates. All four must pass before publishing builds start:
   # validate-version, changelog-gate, release-smoke, pin-parity.
   # ─────────────────────────────────────────────────────────────────────
 
@@ -58,114 +57,69 @@ jobs:
     #
     # Versioning model: each package's pyproject.toml carries its own
     # version, and they do NOT move in lockstep. The GitHub Release tag
-    # follows the most recent CHANGELOG.md version header — that's the
-    # only source that always exists and always reflects the maintainer's
-    # intent for "what to call this wave". Per-package versions are
+    # follows the latest Changie wave file in .changes/. The generated
+    # CHANGELOG.md reflects that same wave and is checked independently. Per-package versions are
     # whatever their own pyproject says; the workflow publishes those
     # as-is.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
     outputs:
       wave_version: ${{ steps.read.outputs.wave }}
       umbrella_version: ${{ steps.read.outputs.umbrella }}
       core_version: ${{ steps.read.outputs.core }}
       spec_version: ${{ steps.read.outputs.spec }}
       dry_run: ${{ steps.read.outputs.dry_run }}
+      upload_python: ${{ steps.read.outputs.upload_python }}
+      source_sha: ${{ steps.read.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out production policy from main
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: main
+          path: release-policy
           persist-credentials: false
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
       - id: read
-        name: Read CHANGELOG + pyproject versions and validate release tag
-        # SECURITY: all GitHub-controlled values (event name, release tag,
-        # dispatch inputs) are passed via `env:` rather than templated
-        # directly into the shell script. This prevents script injection
-        # from a maliciously-named tag like  v1.0.0"; rm -rf /  on a
-        # release-create event.
-        # See https://securitylab.github.com/research/github-actions-untrusted-input/
+        name: Validate wave, trusted signed production tag, and closed milestone
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_REF: ${{ inputs.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          # `wave` = the latest non-Unreleased version header in CHANGELOG.md.
-          # `## [0.3.0] - 2026-05-11` → wave="0.3.0". This is the canonical
-          # release name for the wave.
-          wave=$(grep -m1 -E '^## \[[0-9]' CHANGELOG.md | sed -E 's/^## \[([^]]+)\].*/\1/')
-          if [ -z "$wave" ]; then
-            echo "::error file=CHANGELOG.md::Could not find a versioned heading in CHANGELOG.md"
-            exit 1
+          policy_dir=release-policy
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_DRY_RUN" = "true" ]; then
+            policy_dir=candidate
           fi
-
-          # Per-package versions for downstream visibility (logs, install-verify).
-          umbrella=$(awk -F'"' '/^version *= */ {print $2; exit}' libs/meta/pyproject.toml)
-          core=$(awk -F'"' '/^version *= */ {print $2; exit}' libs/core/pyproject.toml)
-          spec=$(python -c "import json; print(json.load(open('libs/spec/package.json'))['version'])")
-
-          echo "wave=$wave" >> "$GITHUB_OUTPUT"
-          echo "umbrella=$umbrella" >> "$GITHUB_OUTPUT"
-          echo "core=$core" >> "$GITHUB_OUTPUT"
-          echo "spec=$spec" >> "$GITHUB_OUTPUT"
-
-          # Normalize the dry_run flag. On `release` trigger there's no input,
-          # so we hard-code false. On workflow_dispatch we honor the user's
-          # toggle (defaults to true — see inputs.dry_run.default above).
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            dry_run="$INPUT_DRY_RUN"
-          else
-            dry_run="false"
-          fi
-          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
-
-          # On `release` trigger, enforce tag matches the CHANGELOG wave name.
-          # This catches "tagged v0.3.0 but forgot to cut the CHANGELOG" and
-          # vice-versa. Per-package pyproject versions are NOT validated
-          # against the tag — they version independently by design.
-          if [ "$EVENT_NAME" = "release" ]; then
-            expected="v$wave"
-            if [ "$RELEASE_TAG" != "$expected" ]; then
-              echo "::error file=CHANGELOG.md::Release tag '$RELEASE_TAG' does not match latest CHANGELOG.md wave '$wave' (expected '$expected'). Either re-tag, or cut a new CHANGELOG section before tagging."
-              exit 1
-            fi
-          fi
-
-          echo "Release plan: wave=$wave (umbrella=$umbrella, core=$core, spec=$spec), dry_run=$dry_run"
+          python "$policy_dir/tools/release_gate.py" --plan --repo-root candidate
 
   changelog-gate:
-    # CHANGELOG hygiene: block release if [Unreleased] still contains entries.
-    # Cheap insurance against publishing with an uncut changelog — caught a
-    # near-miss during the 0.2.x cycle when a connector PR landed inside
-    # the same merge window as a release-prep PR.
+    # Generated notes must match committed fragments/history, and a release
+    # candidate must have no unbatched fragments, including on dry runs.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    needs: [validate-version]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Ensure CHANGELOG [Unreleased] is empty
-        run: |
-          # Extract lines BETWEEN `## [Unreleased]` (exclusive) and the next
-          # `## [...]` versioned heading (exclusive). A range-style
-          # `awk '/A/,/B/'` would collapse to a single line because
-          # `[Unreleased]` matches both start and end patterns — use a flag.
-          unreleased_body=$(awk '
-              /^## \[Unreleased\]$/ { flag=1; next }
-              /^## \[/ && flag       { flag=0; exit }
-              flag                   { print }
-          ' CHANGELOG.md)
-          # A real entry is `- ` (bullet) or `### ` (subsection heading).
-          # Blank lines and prose are tolerated in a clean [Unreleased] block.
-          if echo "$unreleased_body" | grep -qE "^- |^### "; then
-            echo "::error file=CHANGELOG.md::CHANGELOG.md [Unreleased] block has entries — must be cut to a versioned heading before release"
-            echo "Offending content:"
-            echo "$unreleased_body"
-            exit 1
-          fi
-          echo "CHANGELOG.md [Unreleased] block is empty — ok"
+      - name: Verify generated notes and require all fragments batched
+        run: make changelog-release-check
 
   release-smoke:
     # Build every wheel, install local genblaze wheels while keeping PyPI
@@ -178,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -203,7 +157,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -222,17 +176,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [validate-version, changelog-gate, release-smoke, pin-parity]
-    # Dry-run dispatches use the `testpypi` environment so we can configure
-    # a SEPARATE Trusted Publisher on test.pypi.org without leaking that
-    # OIDC trust into production. Real publishes use `pypi`.
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    # Dry runs build and twine-check every dist without an upload or a
+    # production environment deployment. Keep the production condition first:
+    # an empty string is falsy in GitHub expressions.
+    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == false) && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write   # Trusted Publishing to PyPI + sigstore attestations.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -242,11 +196,11 @@ jobs:
         run: cd libs/core && python -m build
       - name: Validate wheel metadata
         run: twine check libs/core/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/core/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true   # PEP 740 sigstore attestations — provenance into PyPI's integrity registry.
           skip-existing: true  # Idempotent: re-running a partially-failed release is safe. PyPI duplicates are treated as success.
 
@@ -254,14 +208,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-core, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == false) && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -271,11 +225,11 @@ jobs:
         run: cd cli && python -m build
       - name: Validate wheel metadata
         run: twine check cli/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: cli/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -283,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-core, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == false) && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write
@@ -316,7 +270,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -326,11 +280,11 @@ jobs:
         run: cd libs/connectors/${{ matrix.connector }} && python -m build
       - name: Validate wheel metadata
         run: twine check libs/connectors/${{ matrix.connector }}/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/connectors/${{ matrix.connector }}/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -344,14 +298,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [publish-connectors, validate-version]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == false) && 'pypi' || '' }}
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -361,11 +315,11 @@ jobs:
         run: cd libs/meta && python -m build
       - name: Validate wheel metadata
         run: twine check libs/meta/dist/*
-      - name: Publish
+      - name: Publish (skipped on dry runs)
+        if: needs.validate-version.outputs.upload_python == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: libs/meta/dist/
-          repository-url: ${{ needs.validate-version.outputs.dry_run == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           attestations: true
           skip-existing: true
 
@@ -389,11 +343,11 @@ jobs:
     # touches npm publish credentials — default permissions are read-only.
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-version]
+    needs: [validate-version, changelog-gate, release-smoke, pin-parity]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # zizmor: ignore[cache-poisoning] (this job's output artifact feeds the id-token publish job — no cache: input, nothing to poison); v7.1.0
         with:
@@ -421,8 +375,8 @@ jobs:
   publish-npm:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [build-npm-types, validate-version, changelog-gate, pin-parity]
-    environment: ${{ needs.validate-version.outputs.dry_run == 'true' && 'npm-dryrun' || 'npm' }}
+    needs: [build-npm-types, validate-version, changelog-gate, release-smoke, pin-parity]
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'npm-dryrun' || 'npm' }}
     permissions:
       contents: read
       id-token: write   # npm provenance — signed attestation that this tarball was built from this commit by this workflow.
@@ -436,7 +390,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # zizmor: ignore[cache-poisoning] (publish job sets no cache: input, nothing to poison); v7.1.0
         with:
@@ -474,7 +428,7 @@ jobs:
         # Authenticates via npm trusted publishing (OIDC, `id-token: write`
         # above); no long-lived NPM_TOKEN.
         env:
-          DRY_RUN: ${{ needs.validate-version.outputs.dry_run }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
         run: |
           npm --version
           if [ "$DRY_RUN" = "true" ]; then
@@ -487,26 +441,26 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Post-publish: install from the public registry and import each
   # package to confirm the publish actually worked end-to-end. Skipped
-  # on dry-runs because TestPyPI metadata indexing lags real PyPI by
-  # enough that this would flake.
+  # on dry runs because nothing was uploaded.
   # ─────────────────────────────────────────────────────────────────────
 
   install-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: [publish-meta, publish-npm, validate-version]
-    if: needs.validate-version.outputs.dry_run != 'true'
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Wait for PyPI to index the umbrella
-        # PyPI's CDN can take ~30-60s to surface a fresh release. Poll with
-        # a bounded retry so an indexing lag doesn't fail the whole run.
+        # PyPI's CDN usually surfaces a fresh release in ~30-60s, but has
+        # taken 5+ minutes (v0.8.2). Poll for up to 10 minutes so an
+        # indexing lag doesn't fail the whole run.
         # Indexing is checked against the umbrella's own version because
         # that's what `pip install genblaze` resolves to — the wave name
         # (which the tag follows) doesn't appear in the package metadata.
@@ -514,15 +468,15 @@ jobs:
           UMBRELLA_VERSION: ${{ needs.validate-version.outputs.umbrella_version }}
         run: |
           version="$UMBRELLA_VERSION"
-          for i in $(seq 1 12); do
-            if pip index versions genblaze 2>/dev/null | grep -q "$version"; then
+          for i in $(seq 1 60); do
+            if pip index versions --no-cache-dir genblaze 2>/dev/null | grep -q "$version"; then
               echo "genblaze==$version is visible on PyPI"
               exit 0
             fi
-            echo "[$i/12] genblaze==$version not yet on PyPI, sleeping 10s…"
+            echo "[$i/60] genblaze==$version not yet on PyPI, sleeping 10s…"
             sleep 10
           done
-          echo "::error::genblaze==$version did not appear on PyPI within 2 minutes"
+          echo "::error::genblaze==$version did not appear on PyPI within 10 minutes"
           exit 1
       - name: Fresh install and import smoke
         # Resolves ``genblaze[all]`` (every connector), not bare ``genblaze``
@@ -545,17 +499,17 @@ jobs:
           # install can still 404 on a connector's stale edge even when the
           # umbrella wait passed (#189). Retry the install itself — it's the
           # operation that actually fails, regardless of which package lags.
-          attempts=5
+          attempts=10
           for i in $(seq 1 "$attempts"); do
-            if /tmp/verify/bin/pip install "genblaze[all]==$version"; then
+            if /tmp/verify/bin/pip install --no-cache-dir "genblaze[all]==$version"; then
               break
             fi
             if [ "$i" -eq "$attempts" ]; then
               echo "::error::pip install genblaze[all]==$version failed after $attempts attempts"
               exit 1
             fi
-            echo "[$i/$attempts] pip install genblaze[all]==$version failed, retrying in 30s…"
-            sleep 30
+            echo "[$i/$attempts] pip install genblaze[all]==$version failed, retrying in 60s…"
+            sleep 60
           done
 
           /tmp/verify/bin/python tools/release_import_smoke.py

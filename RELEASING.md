@@ -14,7 +14,7 @@ history that ran ahead of core), so the wave is called "0.3.0" but the
 umbrella package version is `0.4.0`. That's expected, not a bug.
 
 We call each release a **wave**. The canonical name of the wave is the
-most recent versioned heading in `CHANGELOG.md`. The GitHub Release tag
+latest version file in `.changes/`, rendered into `CHANGELOG.md`. The GitHub Release tag
 follows the wave name — _not_ any individual package's version — because:
 
 * No single package is bumped on every wave (a connectors-only wave
@@ -31,10 +31,84 @@ Convention:
 | GitHub Release tag               | `v` + latest `## [X.Y.Z] - …` heading in `CHANGELOG.md` |
 | Per-package PyPI versions        | Each package's own `pyproject.toml`                |
 | `@genblaze/spec` version (npm)   | `libs/spec/package.json`                           |
-| What changed                     | `CHANGELOG.md` (Keep a Changelog format)           |
+| What changed                     | Changie fragments → `.changes/vX.Y.Z.md` → `CHANGELOG.md` |
 
 The release workflow validates `tag == "v" + latest CHANGELOG wave name`
 before doing anything else. A mismatch fails the run.
+
+## Changie notes and wave names
+
+Changie v1.26.0 is pinned in the Makefile. Go downloads it with checksum
+verification; an installed binary of that version can be selected with
+`CHANGIE=/path/to/changie`. Fragments are grouped by package, while a wave is
+still an explicitly selected `X.Y.Z`. There are no Changie replacements that
+rewrite package versions. Historical wave text was migrated verbatim into
+`.changes/vX.Y.Z.md` files. The legacy PEP 440 `0.2.5.post1` section is
+retained after `0.2.6` in that archive file because Changie only sorts SemVer
+filenames; its original heading, contents and position remain unchanged.
+
+During development:
+
+```bash
+make changelog-new          # component, kind, and user-facing description
+make changelog-merge        # refresh after manually editing a fragment
+make changelog-check        # reject hand edits / stale generated output
+```
+
+At the release freeze, after choosing the wave and applying the package-version
+plan with `tools/prepare_release.py`:
+
+```bash
+make changelog-batch WAVE=X.Y.Z
+make changelog-release-check
+```
+
+Batching creates `.changes/vX.Y.Z.md` with an exact package-version inventory,
+consumes the pending fragments, and regenerates CHANGELOG.md. It never bumps
+package versions. Use that version file as the GitHub Release body:
+
+```bash
+gh release create vX.Y.Z --verify-tag --title X.Y.Z --notes-file .changes/vX.Y.Z.md
+```
+
+Close the matching milestone only after every issue and PR assigned to it has
+landed or been moved to a later wave. A missing/open milestone or any open
+issue/PR blocks production in `validate-version`. Historical unsigned tags and
+missing historical milestones are not retroactively rewritten.
+
+## Signing trust
+
+`.github/release-signers` contains approved SSH public signing keys. Its initial
+entry is the code owner's published signing key (GitHub key id 1054051). Review
+its fingerprint with the owner before merging this trust bootstrap. Additions,
+rotation, and revocation require CODEOWNERS review on protected `main`; never
+fetch a key from a keyserver or trust an allowlist supplied only by a tag.
+
+Production runs the verifier from a separate protected-main checkout, pointed
+at the candidate repository. Preview validation may use candidate tooling, but
+upload conditions, registry selection and npm's dry-run flag come directly from
+workflow inputs, independently of candidate outputs. Production executes
+`git verify-tag` using the allowlist read from `origin/main`,
+requires the tag commit on that branch, and pins every downstream checkout to
+that verified commit. Use `python tools/release_gate.py --tag vX.Y.Z` locally
+with GitHub read access to check both the signature and milestone. Signed,
+unsigned, lightweight, unknown-key and off-main tags have regression tests.
+
+## Trigger decision pending human review
+
+The current trigger remains **GitHub Release published → gates → publish →
+install verification**. A failed publish can therefore leave a visible Release
+whose packages are absent. GitHub Release publication is a request to run the
+pipeline, not proof of its completion.
+
+The fleet standard is **signed tag → gates → publish → install verification →
+GitHub Release**. Recommend adopting it in a separately approved change: it
+makes the Release a completion signal and avoids announcing a failed publish.
+That change must include tag rulesets, release-note creation permissions and
+partial-publication recovery. A human can instead approve the current ordering
+as an exception, protected by signed tags, closed milestones, the four gates,
+protected publishing environments and post-publish verification. This PR does
+not record that exception as approved and does not change the event trigger.
 
 ## Dependency pinning policy
 
@@ -77,19 +151,21 @@ Before cutting a release, verify on `main`:
    `python3 tools/prepare_release.py --check`/`--apply` automates this
    step deterministically — see `.claude/skills/prepare-release/SKILL.md`
    for the end-to-end driver.
-2. **CHANGELOG is cut.** The `[Unreleased]` section is empty; a new
-   `## [X.Y.Z] - YYYY-MM-DD` section lists every package version change
-   under "Released package versions" (the exact text `prepare_release.py`
-   emits). The section's intro must include the "wave vs. package version"
-   paragraph (see the `## [0.7.0]` entry for the current wording) — the
-   GitHub Release body is generated verbatim from this slice (see below), so
-   this is the only place that warning needs to be written for *release
-   notes*; the root `README.md` and `libs/meta/README.md` carry their own
-   copies for readers who never open a release page.
+2. **Changie notes are batched.** Follow the commands below. No YAML fragments
+   remain in `.changes/unreleased/`, and `make changelog-release-check` passes.
+   The generated wave header lists exact package versions; `prepare_release.py`
+   still controls version bumps and dependency floors.
 3. **TS types are current.** `make ts-types` produces no diff. (CI's
    `ts-types-check` job already enforces this on every push, but the
    release workflow re-runs it as a defense in depth.)
 4. **CI is green** on the commit you're about to release.
+5. **Milestone is closed.** The wave's exact `vX.Y.Z` milestone exists, is
+   closed, and has no open issues or PRs. Assign related issues and PRs when
+   planning; move deferred work before closing the milestone. Choose the next
+   wave explicitly rather than inferring it from a package version.
+6. **Tag is signed.** Create a signed annotated SSH tag with an approved
+   maintainer key. Production verifies it against `.github/release-signers`
+   from protected `main`, and rejects commits outside `main`.
 
 Step 3 plus the local equivalents of every gate the publish pipeline
 will run are bundled into a single target:
@@ -99,7 +175,8 @@ make pre-release
 ```
 
 This runs `lint`, `typecheck`, `ts-types-check`, `pypi-metadata-check`,
-`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order. `lint`
+`pypi-pin-parity`, `test`, and `release-smoke` in quick-fail order, then
+`pypi-new-projects` (warning only, see [§a](#a-pypi-trusted-publishing-per-package)). `lint`
 now also runs the `deptry` dependency-hygiene gate (`make deptry`), which
 fails if any package imports a dependency it doesn't declare — the
 clean-install crash class behind #37/#106. A clean run on `main` is a strong
@@ -117,11 +194,11 @@ Triggered two ways:
 
 ### 1. Production release (`release: published`)
 
-1. Manually create an annotated Git tag matching the latest CHANGELOG
+1. Manually create a signed annotated Git tag matching the latest CHANGELOG
    wave name:
    ```bash
    # If CHANGELOG's most recent versioned heading is `## [0.3.0] - …`:
-   git tag -a v0.3.0 -m "Release 0.3.0"
+   git -c gpg.format=ssh -c user.signingkey=/path/to/signing-key tag -s v0.3.0 -m "Release 0.3.0"
    git push origin v0.3.0
    ```
 2. Create a GitHub Release on that tag. Paste the CHANGELOG slice for
@@ -134,7 +211,7 @@ Triggered two ways:
    awk '/^## \[0.3.0\]/{p=1} p&&/^## \[/&&!/^## \[0.3.0\]/{exit} p' CHANGELOG.md \
      > /tmp/release-notes-0.3.0.md
    if test -s /tmp/release-notes-0.3.0.md; then
-     gh release create v0.3.0 --title "0.3.0" --notes-file /tmp/release-notes-0.3.0.md
+     gh release create v0.3.0 --verify-tag --title "0.3.0" --notes-file /tmp/release-notes-0.3.0.md
    else
      echo "empty slice — check the wave heading; release NOT created" >&2
    fi
@@ -169,7 +246,7 @@ Notes on the graph:
   `publish-npm` before declaring the wave released.
 
 * **`validate-version`** — reads the canonical wave name from the
-  most recent versioned heading in `CHANGELOG.md`, enforces `tag ==
+  latest version file in `.changes/`, rendered into `CHANGELOG.md`, enforces `tag ==
   "v$wave"` on `release` trigger, and emits the wave name +
   per-package versions + `dry_run` flag to every downstream job.
 * **`changelog-gate`** — fails if `[Unreleased]` still has entries.
@@ -211,7 +288,7 @@ Notes on the graph:
   against the live registry, which is what catches drift like the 0.3.2
   langsmith/cli wheels (a bare `genblaze==$version` resolve only pulls
   the umbrella defaults and misses connector-specific pin breakage).
-  Skipped on dry-runs (TestPyPI indexing lag makes this flaky).
+  Skipped on dry runs because nothing was uploaded.
 
 ### 2. Dry run (`workflow_dispatch`)
 
@@ -219,15 +296,23 @@ Use this to exercise the full pipeline without touching production
 registries. From the GitHub Actions tab → Release workflow → "Run
 workflow":
 
-* **`dry_run`** — defaults to `true`. PyPI publishes route to TestPyPI;
-  npm publish runs with `--dry-run`. No production registry changes.
-* **`ref`** — optional. Defaults to the branch you dispatched from.
+* **`dry_run`** — defaults to `true`. Build and `twine check` every Python
+  package, skip all Python uploads, and run npm publish with `--dry-run`.
+  No registry changes and no TestPyPI configuration are needed. Production
+  dispatches require explicit `dry_run=false` and the signed-tag/milestone gates.
+* Select the candidate branch or tag with the **Run workflow** branch selector
+  or `gh workflow run --ref`. Every candidate checkout uses the immutable
+  workflow event commit (`github.sha`).
+* **`ref`** — optional assertion of that selected branch/tag, its full Git ref,
+  or its exact commit SHA. A different value fails validation; it cannot select
+  code from another commit. Production dispatches must select the signed release
+  tag itself.
 
 Dry runs are the recommended way to:
 
 * Test the workflow after editing `release.yml`.
-* Verify Trusted Publishing is configured correctly on a brand-new
-  package before its first real publish.
+* Validate builds for a brand-new package before its first real publish.
+  Dry runs cannot validate its production Trusted Publisher.
 * Sanity-check a release candidate without using up a version number on
   prod PyPI (you can't re-publish the same version; a botched 0.4.0
   burns the slot forever).
@@ -251,15 +336,15 @@ No `PYPI_API_TOKEN` is needed once Trusted Publishing is configured —
 the workflow uses OIDC and the action obtains a short-lived token at
 publish time.
 
-### b. TestPyPI Trusted Publishing (per package, for dry-runs)
+For a **new package** that is not on PyPI yet, add a *pending* publisher
+(pypi.org → Your account → Publishing) with the same values before its first
+release. Without it, publication fails with an OIDC authorization error.
+`make pre-release` ends with `make pypi-new-projects`, which prints a warning
+naming packages with no pypi.org project. It never fails the gate: PyPI's API
+cannot see pending publishers, so the warning remains until the first upload
+even when the publisher is configured. Dry runs cannot check this authentication.
 
-Same setup as above, but on **test.pypi.org** instead of pypi.org, with
-environment name `testpypi`. This is what the dry-run path uses.
-
-If you skip this, dry-runs will fail at the publish step (after building
-and gating, which still gives you ~90% of the value).
-
-### c. npm publish auth
+### b. npm publish auth
 
 `publish-npm` uses **npm Trusted Publishing** (OIDC); there is no npm token.
 On npmjs.com, open `@genblaze/spec` → Settings → Trusted Publisher → GitHub
@@ -268,17 +353,35 @@ workflow `release.yml`, environment `npm`. It requires npm >= 11.5.1, which
 is why the workflow pins `NODE_VERSION` to 24. Dry runs (`npm publish
 --dry-run`) don't authenticate, so `npm-dryrun` needs no setup.
 
-### d. GitHub Environments
+### c. GitHub Environments
 
-Create four environments under repo Settings → Environments:
+Create three environments under repo Settings → Environments:
 
-* **`pypi`** — production PyPI. No required reviewers.
-* **`testpypi`** — TestPyPI for dry-runs. No required reviewers.
-* **`npm`** — production npm. No required reviewers.
+* **`pypi`** — production PyPI. Use the restrictions below.
+* **`npm`** — production npm. Use the restrictions below.
 * **`npm-dryrun`** — npm dry-run. No required reviewers.
 
-Required reviewers can be added later if you want a human gate on
-production releases (recommended once the project graduates from alpha).
+Before enabling production with this policy, a repository administrator must
+apply these GitHub-side controls, independently of the candidate workflow:
+
+1. For **both `pypi` and `npm`**, select **Selected branches and tags**.
+   Add a **Branch** rule for `main` and a separate **Tag** rule for `v*`.
+   Do not allow arbitrary workflow branches to deploy to production.
+2. Create an **active tag ruleset** targeting `refs/tags/v*`, restricting
+   creation, updates and deletion. Limit bypass to repository administrators
+   or the designated release-maintainer team; exclude the ordinary write role.
+   Activate this ruleset before allowing `v*` tags in the environments.
+3. Require code-owner review for release workflow, policy and signing-key
+   changes on `main`. Required environment reviewers can provide another
+   human gate, but do not replace deployment-ref restrictions.
+
+The signed-tag guarantee depends on these settings as well as the in-repo
+checks: a workflow must not be able to grant itself production authority.
+This PR supplies the reviewable repository policy and setup instructions;
+it does not activate account-level settings or approve the initial key.
+Verify the settings and key with the release owner before production use.
+See GitHub's [environment setup](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+and [tag rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
 
 ## Operational notes
 
@@ -334,15 +437,41 @@ redundant.
 
 ## Releasing manually (fallback only)
 
-If the workflow is broken and a release must ship, the legacy manual
-path still works:
+If the workflow is unavailable, the release owner must approve an emergency
+manual publication. The same readiness and trust checks still apply first:
 
 ```bash
+make pre-release
+make changelog-release-check
+python tools/release_gate.py --tag vX.Y.Z
 make release-smoke                    # build + install + import all
 cd libs/core && python -m build && twine upload dist/*
 # repeat for cli, every connector, then libs/meta last
 cd libs/spec && npm publish --access public --provenance
 ```
 
-This bypasses the changelog gate, version-tag validation, and
-install-verify. Use only when the automated path is unavailable.
+Do not continue after a failed check. This fallback lacks the workflow's
+OIDC identity and automated install-verify; record the reason, require the
+release owner's approval, and run post-release verification explicitly.
+
+
+## Non-publishing workflow validation
+
+Pending fragments and pin mismatches still fail the normal gates on dry runs.
+For a mid-wave tooling PR, prepare a separate, auditable candidate snapshot:
+apply its package-version plan and batch its notes without tagging or publishing.
+The candidate branch must contain the workflow changes being validated.
+Dispatch that branch's workflow and assert its expected immutable SHA:
+
+```bash
+gh workflow run release.yml --ref "$CANDIDATE_BRANCH" \
+  -f ref="$CANDIDATE_SHA" -f dry_run=true
+```
+
+This validates the release build graph without registry uploads. It
+exercises the four gates, metadata checks, type generation and npm dry run;
+it does not claim to validate OIDC upload authentication or a production tag.
+Do not remove fragments, relax assertions, or bypass a gate to obtain a green run.
+
+This preserves the non-publishing dry-run behavior introduced by
+[#352](https://github.com/backblaze-labs/genblaze/pull/352); TestPyPI is not used.
