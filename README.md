@@ -25,7 +25,7 @@ A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, Elev
 Genblaze sits between "call a single video API" and "run a media pipeline in production." The differentiators:
 
 - **Provenance by default.** Every run yields a canonical manifest — deterministic, embeddable into `.mp4 / .png / .jpg / .webp / .mp3 / .wav`, or persisted alongside the asset. Outputs become SHA-256-covered when providers return bytes or `ObjectStorageSink` transfers them into durable storage; URL-only outputs do not pass `Manifest.verify()`. Tamper-evident in trusted storage; pair with your own signer or C2PA when adversarial verification matters. See [trust modes](docs/features/trust-modes.md).
-- **One pipeline, many providers.** Eleven adapters across video, image, audio, and chat behind a single `Pipeline` / `Step` API. Swap Sora → Runway → Veo by changing one line; chain text → image → video without re-plumbing.
+- **One pipeline, many providers.** Eleven adapters across video, image, audio, and chat behind a single `Pipeline` / `Step` API. Swap Luma → Runway → GMICloud by changing one line; chain text → image → video without re-plumbing.
 - **Storage is first-class.** `S3StorageBackend.for_backblaze("bucket")` ships durable, credential-free asset URLs and content-addressable layouts. Designed for Backblaze B2; works against any S3-compatible store (AWS S3, Cloudflare R2, MinIO).
 - **Fallback chains and conformance.** `fallback_models=[...]` retries on `MODEL_ERROR`; CI-grade `probe_models` and provider-contract tests catch upstream drift before users do.
 - **Replayable runs.** Every manifest captures the full provenance — provider, model, prompt, params, timestamps — so a run can be reconstructed via `genblaze replay manifest.json` or by feeding the canonical params back into a Pipeline.
@@ -69,7 +69,7 @@ pip install genblaze-s3              # S3-compatible storage (B2, AWS, R2, MinIO
 pip install genblaze-cli             # CLI: extract, verify, replay, index
 
 # Provider adapters
-pip install genblaze-openai          # OpenAI: Sora, DALL-E / gpt-image, TTS, chat
+pip install genblaze-openai          # OpenAI: DALL-E / gpt-image, TTS, chat, Sora-compatible servers
 pip install genblaze-google          # Google: Veo, Imagen, Gemini-image, chat
 pip install genblaze-nvidia          # NVIDIA NIM: Cosmos, SDXL/FLUX, Fugatto, Riva, chat
 pip install genblaze-gmicloud        # GMICloud: video, image, audio, chat (request queue)
@@ -166,7 +166,7 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 |---|---|---|---|---|
 | **GMICloud** | Seedance, Kling, Veo, Sora, Wan, etc. | Seedream, FLUX, Gemini, etc. | ElevenLabs, MiniMax TTS / Music | `chat()` — Llama, DeepSeek, Qwen |
 | **NVIDIA NIM** | Cosmos 1.0 / 2.0 (diffusion, text2world / video2world) | SDXL, SD 3.5, FLUX.1, FLUX.2 | Fugatto, Riva TTS, Maxine | `chat()` — Nemotron, Llama, Mistral, Qwen, Phi |
-| **OpenAI** | Sora | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS | `chat()` — GPT-4o / GPT-4.1 / o-series |
+| **OpenAI** | Sora via OpenAI-compatible servers (OpenAI's own Videos API was retired 2026-09-24) | DALL-E / gpt-image family (2 / 1.5 / 1 / 1-mini) + edits | TTS | `chat()` — GPT-4o / GPT-4.1 / o-series |
 | **Google** | Veo | Imagen, Gemini-image | — | `chat()` — Gemini 1.5 / 2.0 / 2.5 |
 | **Runway** | Gen-4 Turbo | — | — | — |
 | **Luma** | Dream Machine | — | — | — |
@@ -188,7 +188,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | **Backblaze B2** (storage) | `B2_KEY_ID`, `B2_APP_KEY` (optional: `B2_BUCKET`, `B2_REGION`) | [B2 Application Keys](https://secure.backblaze.com/app_keys.htm) |
 | GMICloud | `GMI_API_KEY` | [console.gmicloud.ai](https://console.gmicloud.ai/) |
 | NVIDIA NIM (Cosmos, SDXL/FLUX, Fugatto, chat) | `NVIDIA_API_KEY` | [build.nvidia.com](https://build.nvidia.com/) |
-| OpenAI (Sora, DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
+| OpenAI (DALL-E, TTS) | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
 | Google (Veo, Imagen, Gemini-image) | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | Runway (Gen video) | `RUNWAYML_API_SECRET` | [dev.runwayml.com](https://dev.runwayml.com/) |
 | Luma (Dream Machine) | `LUMAAI_API_KEY` | [lumalabs.ai/dream-machine/api](https://lumalabs.ai/dream-machine/api) |
@@ -255,7 +255,7 @@ Upload assets and manifests to any S3-compatible bucket with `sink=storage`. The
 
 ```python
 from genblaze_core import Pipeline, Modality, ObjectStorageSink, KeyStrategy
-from genblaze_openai import SoraProvider
+from genblaze_luma import LumaProvider
 from genblaze_s3 import S3StorageBackend
 
 storage = ObjectStorageSink(
@@ -264,8 +264,8 @@ storage = ObjectStorageSink(
 )
 
 result = Pipeline("my-pipeline").step(
-    SoraProvider(),
-    model="sora-2",
+    LumaProvider(),
+    model="ray-2",
     prompt="Aerial flyover of a mountain lake at sunrise",
     modality=Modality.VIDEO,
 ).run(sink=storage, timeout=300)
@@ -317,13 +317,13 @@ Link runs together to track prompt refinement, parameter tuning, and forking:
 ```python
 # First attempt
 v1 = Pipeline("hero-video").step(
-    SoraProvider(), model="sora-2",
+    LumaProvider(), model="ray-2",
     prompt="product reveal on dark background", modality=Modality.VIDEO,
 ).run(timeout=300)
 
 # Refine — linked to v1 via parent_run_id
 v2 = Pipeline("hero-video").from_result(v1).step(
-    SoraProvider(), model="sora-2",
+    LumaProvider(), model="ray-2",
     prompt="product reveal on dark background, dramatic lighting, slow motion",
     modality=Modality.VIDEO,
 ).run(timeout=300)

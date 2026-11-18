@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-03-16 -->
+---
+type: Library
+title: Queue integration
+description: Run pipelines from background workers with checkpoints and resume.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Queue Integration
 
 Video generation takes 1–10 minutes. In web services, run pipelines from
@@ -48,12 +55,12 @@ def handle_request(prompt: str) -> str:
 
 # worker.py — background worker
 from genblaze_core import Pipeline, Modality
-from genblaze_openai import SoraProvider
+from genblaze_luma import LumaProvider
 
 def generate_video(payload: dict) -> None:
     result = (
         Pipeline(payload["job_id"])
-        .step(SoraProvider(), model="sora-2", prompt=payload["prompt"], modality=Modality.VIDEO)
+        .step(LumaProvider(), model="ray-2", prompt=payload["prompt"], modality=Modality.VIDEO)
         .run(
             timeout=600,
             pipeline_timeout=900,

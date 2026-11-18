@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-09-21 -->
+---
+type: Library
+title: LLM calls
+description: One-shot chat() helpers for text generation outside the media Pipeline.
+status: stable
+stale_after: 2026-12-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Feature: LLM Calls
 
 Thin standalone wrappers around OpenAI, Google Gemini, and GMICloud chat /
@@ -114,8 +121,10 @@ resp = chat("gpt-4o", prompt="A cinematic sunset over Tokyo")
 Compose with a media step manually:
 
 ```python
+from genblaze_luma import LumaProvider
+
 description = chat("gpt-4o", prompt="A cinematic sunset").text
-pipe = Pipeline("hero").step(SoraProvider(), model="sora-2", prompt=description)
+pipe = Pipeline("hero").step(LumaProvider(), model="ray-2", prompt=description)
 ```
 
 ## Rate limits
