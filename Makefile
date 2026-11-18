@@ -169,7 +169,7 @@ e2e-smoke:
 # The one "is this change done?" gate. Agents and humans run it before
 # opening a PR and paste the output into the PR's Testing section. CI runs
 # the same targets (ts-types-check stays CI-only: it needs Node).
-verify: lint typecheck test docs-lint e2e-smoke
+verify: lint typecheck test docs-lint e2e-smoke changelog-check
 	@echo ""
 	@echo "verify passed."
 
@@ -179,10 +179,10 @@ verify: lint typecheck test docs-lint e2e-smoke
 # is a strong signal the publish pipeline will be green. Ordered for
 # quick-fail: cheap checks first, then the full test suite and the
 # wheelhouse smoke. Covers everything ``verify`` runs. See RELEASING.md.
-pre-release: lint typecheck docs-lint ts-types-check pypi-metadata-check pypi-pin-parity test e2e-smoke release-smoke pypi-new-projects
+pre-release: changelog-release-check lint typecheck docs-lint ts-types-check pypi-metadata-check pypi-pin-parity test e2e-smoke release-smoke pypi-new-projects
 	@echo ""
 	@echo "pre-release gates passed."
-	@echo "Next: bump pyproject.toml versions, cut CHANGELOG, tag, gh release create."
+	@echo "Next: prepare package versions, batch Changie notes, close milestone, sign tag; see RELEASE.md."
 	@echo "See RELEASING.md for the full flow."
 
 # Post-publish verification. Installs the umbrella from public PyPI
@@ -217,3 +217,24 @@ post-release:
 		rm -rf $$(dirname $$VENV); \
 		echo ""; \
 		echo "genblaze==$(VERSION) verified on PyPI."
+
+# Pinned Go module download is verified by the Go checksum database. Override
+# CHANGIE with an installed v1.26.0 binary for offline development.
+CHANGIE ?= go run github.com/miniscruff/changie@v1.26.0
+export CHANGIE
+.PHONY: changelog-new changelog-merge changelog-check changelog-batch changelog-release-check
+changelog-new:
+	$(CHANGIE) new
+	python tools/changelog.py merge
+
+changelog-merge:
+	python tools/changelog.py merge
+
+changelog-check:
+	python tools/changelog.py check
+
+changelog-batch:
+	python tools/changelog.py batch "$(WAVE)"
+
+changelog-release-check:
+	python tools/changelog.py release-check

@@ -26,3 +26,11 @@ libs/connectors/ @jeronimodeleon
 
 # CI / repo config
 .github/ @jeronimodeleon
+
+# Release policy and signing trust
+/.changie.yaml @jeronimodeleon
+/.changes/ @jeronimodeleon
+/RELEASE.md @jeronimodeleon
+/RELEASING.md @jeronimodeleon
+/tools/changelog.py @jeronimodeleon
+/tools/release_gate.py @jeronimodeleon

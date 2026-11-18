@@ -62,11 +62,15 @@ update the matching schema in `libs/spec/schemas/manifest/v1/` and run
 4. Reference the issue or execution plan
 5. Every PR check passes on a fork with no secrets. Reviews follow
    [REVIEW.md](REVIEW.md)
-6. If your change should ship in a release, add a bullet to the
-   `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) under the
-   appropriate package heading. The release workflow's `changelog-gate`
-   fails any release where `[Unreleased]` still contains entries — so
-   you _will_ remember to write release notes.
+6. If your change should ship, add a Changie fragment with
+   `make changelog-new`, selecting the package component and change kind.
+   Run `make changelog-merge` after editing a fragment and commit both it and
+   the generated CHANGELOG. Use `Internal` for repository/release tooling.
+   Do not edit generated CHANGELOG sections by hand.
+7. Assign release-bound issues and PRs to the same `vX.Y.Z` wave milestone.
+   The maintainer chooses that wave; package versions remain independent.
+   Before release, move deferred work to a later milestone and close the
+   completed milestone with no open issues or PRs.
 
 ## Releases
 

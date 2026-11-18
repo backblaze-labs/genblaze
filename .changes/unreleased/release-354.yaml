@@ -1,0 +1,6 @@
+component: Internal
+kind: Changed
+body: Generate wave release notes with Changie; require trusted signed tags and closed wave
+  milestones before production publication; bind release candidates to the workflow
+  commit (#354).
+time: '2026-11-17T00:00:00Z'

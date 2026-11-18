@@ -1,0 +1,47 @@
+changesDir: .changes
+unreleasedDir: unreleased
+headerPath: header.tpl.md
+changelogPath: CHANGELOG.md
+versionExt: md
+versionFormat: '## [{{.VersionNoPrefix}}] - {{.Time.Format "2006-01-02"}}'
+componentFormat: '### {{.Component}}'
+kindFormat: '#### {{.Kind}}'
+changeFormat: '- {{.Body}}'
+components:
+  - 'genblaze'
+  - 'genblaze-core'
+  - 'genblaze-cli'
+  - 'genblaze-assemblyai'
+  - 'genblaze-atlascloudai'
+  - 'genblaze-decart'
+  - 'genblaze-elevenlabs'
+  - 'genblaze-falai'
+  - 'genblaze-gmicloud'
+  - 'genblaze-google'
+  - 'genblaze-hume'
+  - 'genblaze-langsmith'
+  - 'genblaze-lmnt'
+  - 'genblaze-luma'
+  - 'genblaze-nvidia'
+  - 'genblaze-openai'
+  - 'genblaze-replicate'
+  - 'genblaze-runway'
+  - 'genblaze-s3'
+  - 'genblaze-stability-audio'
+  - '@genblaze/spec'
+  - 'Internal'
+kinds:
+  - label: Added
+  - label: Changed
+  - label: Deprecated
+  - label: Removed
+  - label: Fixed
+  - label: Security
+newlines:
+  afterChangelogHeader: 0
+  beforeChangelogVersion: 1
+  afterComponent: 1
+  beforeComponent: 1
+  afterKind: 1
+  beforeKind: 0
+  endOfVersion: 1
