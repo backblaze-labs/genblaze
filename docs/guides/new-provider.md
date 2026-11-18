@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-09-21 -->
+---
+type: Spec
+title: Adding a new provider
+description: Step-by-step contract for contributing a genblaze provider connector package.
+status: stable
+stale_after: 2027-05-17T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Adding a New Provider
 
 Step-by-step guide for contributing a provider adapter to genblaze. This guide is the canonical contract — every section maps to a check the compliance harness or pipeline relies on.
@@ -81,6 +88,7 @@ dependencies = [
 Homepage = "https://github.com/backblaze-labs/genblaze"
 Documentation = "https://github.com/backblaze-labs/genblaze"
 Repository = "https://github.com/backblaze-labs/genblaze"
+Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]

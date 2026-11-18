@@ -45,6 +45,7 @@ keywords = ["genblaze"]
 Homepage = "https://github.com/backblaze-labs/genblaze"
 Documentation = "https://github.com/backblaze-labs/genblaze#readme"
 Repository = "https://github.com/backblaze-labs/genblaze"
+Changelog = "https://github.com/backblaze-labs/genblaze/blob/main/CHANGELOG.md"
 Issues = "https://github.com/backblaze-labs/genblaze/issues"
 """,
         encoding="utf-8",
@@ -287,6 +288,18 @@ def test_check_package_rejects_redundant_license_classifier(tmp_path: Path):
         "genblaze-example: redundant `License ::` classifier alongside "
         "`license` SPDX expression (PEP 639)"
     ]
+
+
+def test_check_package_requires_changelog_url(tmp_path: Path):
+    """The Changelog URL is required so every PyPI page links the release notes (#25)."""
+    pyproject = _write_package(tmp_path, "See [docs](https://example.com/docs).\n")
+    text = pyproject.read_text(encoding="utf-8")
+    pyproject.write_text(
+        "\n".join(line for line in text.splitlines() if not line.startswith("Changelog")),
+        encoding="utf-8",
+    )
+
+    assert cpm._check_package(pyproject) == ["genblaze-example: missing `project.urls.Changelog`"]
 
 
 def test_check_package_allows_no_license_classifier(tmp_path: Path):

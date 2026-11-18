@@ -15,7 +15,7 @@ see on PyPI:
 * ``requires-python`` — ``>=3.11`` (matches AGENTS.md invariant)
 * ``classifiers`` — Python versions (3.11/3.12/3.13), Topic, Development
   Status
-* ``project.urls`` — Homepage, Documentation, Repository, Issues
+* ``project.urls`` — Homepage, Documentation, Repository, Changelog, Issues
 * ``keywords`` — non-empty
 * ``readme`` Markdown links — absolute URLs only for files rendered on PyPI
 
@@ -55,7 +55,7 @@ _REQUIRED_CLASSIFIER_GROUPS: dict[str, list[str]] = {
 _LICENSE_CLASSIFIER_PREFIX = "License :: "
 
 # Required project_urls keys (case-sensitive — matches PyPI rendering).
-_REQUIRED_PROJECT_URLS = ("Homepage", "Documentation", "Repository", "Issues")
+_REQUIRED_PROJECT_URLS = ("Homepage", "Documentation", "Repository", "Changelog", "Issues")
 
 # Description must fit comfortably in PyPI's search-result preview.
 _DESCRIPTION_MAX_CHARS = 200  # Plan suggested 120 but real packages run a bit longer

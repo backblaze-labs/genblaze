@@ -251,7 +251,8 @@ def fetch_pypi_metadata(name: str, version: str) -> dict | None:
     """
     url = f"https://pypi.org/pypi/{name}/{version}/json"
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
+        # Fixed https://pypi.org URL; no caller-supplied scheme reaches urlopen.
+        with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310
             return json.load(resp)
     except urllib.error.HTTPError as e:
         if e.code == 404:
