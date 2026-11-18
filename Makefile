@@ -65,8 +65,8 @@ test:
 	pytest tools/tests/ -v
 
 lint:
-	ruff check libs/ cli/ examples/
-	ruff format --check libs/ cli/ examples/
+	ruff check libs/ cli/ examples/ tools/
+	ruff format --check libs/ cli/ examples/ tools/
 	$(MAKE) deptry
 
 # Dependency hygiene gate. Per-package because each carries its own
@@ -87,8 +87,8 @@ deptry:
 	done
 
 fmt:
-	ruff format libs/ cli/ examples/
-	ruff check --fix libs/ cli/ examples/
+	ruff format libs/ cli/ examples/ tools/
+	ruff check --fix libs/ cli/ examples/ tools/
 
 # Same scope as CI's typecheck job (which calls this target): core plus every
 # connector. Connectors are checked one at a time because each ships its own

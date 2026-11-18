@@ -36,3 +36,4 @@ ignore = [
 "tests/**/*.py" = ["S101", "S106"]
 "libs/core/tests/**/*.py" = ["S101", "S106"]
 "libs/connectors/**/tests/**/*.py" = ["S101", "S106"]
+"tools/tests/**/*.py" = ["S101", "S106"]

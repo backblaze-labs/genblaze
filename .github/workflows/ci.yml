@@ -37,8 +37,8 @@ jobs:
       # alongside a matching `make format`, and keep libs/core/pyproject.toml's
       # dev pin (used by `make lint`) on the same version.
       - run: pip install ruff==0.14.0
-      - run: ruff check libs/ cli/ examples/
-      - run: ruff format --check libs/ cli/ examples/
+      - run: ruff check libs/ cli/ examples/ tools/
+      - run: ruff format --check libs/ cli/ examples/ tools/
 
   ts-types:
     if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
