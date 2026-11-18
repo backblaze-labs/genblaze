@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,10 +27,55 @@ def batch_fixture(root):
     )
 
 
-def test_historical_pep440_post_release_survives_changie_merge():
-    text = (ROOT / "CHANGELOG.md").read_text()
-    assert "## [0.2.5.post1] - 2026-04-24" in text
-    assert text.index("## [0.2.6]") < text.index("## [0.2.5.post1]") < text.index("## [0.2.5]")
+def test_every_historical_release_section_preserves_original_bytes():
+    import hashlib
+    import json
+    import re
+
+    snapshot = json.loads(
+        (ROOT / "tools/tests/fixtures/historical_changelog_pre_migration.json").read_text()
+    )["sections_sha256"]
+    text = (ROOT / "CHANGELOG.md").read_bytes()
+    headings = list(re.finditer(rb"^## \[([0-9][^\]]*)\][^\n]*(?:\n|$)", text, re.M))
+    historical = []
+    for index, heading in enumerate(headings):
+        version = heading[1].decode()
+        if version not in snapshot:
+            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        assert hashlib.sha256(text[heading.start() : end]).hexdigest() == snapshot[version], (
+            version
+        )
+        historical.append(version)
+    assert historical == list(snapshot)
+
+
+def test_pre_release_rejects_unbatched_notes_before_other_checks(tmp_path):
+    shutil.copytree(ROOT / ".changes", tmp_path / ".changes")
+    for name in [".changie.yaml", "CHANGELOG.md", "Makefile"]:
+        shutil.copy(ROOT / name, tmp_path)
+    (tmp_path / "tools").mkdir()
+    shutil.copy(ROOT / "tools/changelog.py", tmp_path / "tools/changelog.py")
+    (tmp_path / ".changes/unreleased/_regression.yaml").write_text(
+        "component: Internal\nkind: Fixed\nbody: Pending regression fixture\n"
+        "time: 2026-11-18T00:00:00Z\n"
+    )
+    subprocess.run([sys.executable, "tools/changelog.py", "merge"], cwd=tmp_path, check=True)
+    # Isolate the real note gate from unrelated SDK and wheel checks.
+    (tmp_path / "other-checks.mk").write_text(
+        "lint deptry typecheck docs-lint ts-types ts-types-check "
+        "pypi-metadata-check pypi-pin-parity "
+        "test e2e-smoke release-smoke pypi-new-projects:\n\t@touch other-checks-ran\n"
+    )
+    result = subprocess.run(
+        ["make", "-f", "Makefile", "-f", "other-checks.mk", "pre-release"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0, result.stdout
+    assert "unreleased fragments must be batched" in result.stderr
+    assert not (tmp_path / "other-checks-ran").exists()
 
 
 def test_latest_wave_uses_semver_and_checks_heading(tmp_path):

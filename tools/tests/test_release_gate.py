@@ -246,6 +246,35 @@ def test_wrong_wave_milestone_does_not_satisfy_readiness():
         check_milestone([{"title": "v9.9.9", "state": "closed", "open_issues": 0}], "1.2.3")
 
 
+@pytest.mark.parametrize("second_page_state", ["closed", "open", "duplicate"])
+def test_production_checks_every_milestone_page(signed_repo, monkeypatch, second_page_state):
+    import json
+
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch)
+    target = {"title": "v1.2.3", "state": "closed", "open_issues": 0}
+    first = [{"title": "v0.1.0", "state": "closed", "open_issues": 0}]
+    if second_page_state == "duplicate":
+        first.append(target.copy())
+    elif second_page_state == "open":
+        target["state"] = "open"
+    (signed_repo / "bin/gh").write_text(
+        "#!" + sys.executable + "\nimport sys\n"
+        "assert '--paginate' in sys.argv and '--slurp' in sys.argv\n"
+        "assert any('state=all' in a for a in sys.argv)\n"
+        + "print("
+        + repr(json.dumps([first, [target]]))
+        + ")\n"
+    )
+    if second_page_state == "closed":
+        write_plan(signed_repo)
+        assert "upload_python=true\n" in (signed_repo / "outputs").read_text()
+    else:
+        with pytest.raises(ReleaseGateError, match="milestone|Milestone"):
+            write_plan(signed_repo)
+        assert not (signed_repo / "outputs").exists()
+
+
 def test_explicit_production_dispatch_mode():
     assert release_mode("workflow_dispatch", "false") is False
 

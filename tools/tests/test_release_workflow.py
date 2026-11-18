@@ -203,3 +203,91 @@ def test_mode_expressions_pin_production_and_preview_outcomes():
     assert gate["env"]["RELEASE_TAG"] == "${{ github.event.release.tag_name }}"
     assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105 — expression, not a credential
     assert "INPUT_VALIDATION_ONLY" not in gate["env"]
+
+
+def test_midwave_gate_commands_fail_and_block_every_publish_job(tmp_path):
+    """Run the workflow's real gate commands with fixed published metadata."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import tomllib
+
+    import check_pin_parity
+
+    shutil.copytree(ROOT / ".changes", tmp_path / ".changes")
+    for name in [".changie.yaml", "CHANGELOG.md", "Makefile"]:
+        shutil.copy(ROOT / name, tmp_path)
+    (tmp_path / "tools").mkdir()
+    for name in ["changelog.py", "check_pin_parity.py"]:
+        shutil.copy(ROOT / "tools" / name, tmp_path / "tools" / name)
+    (tmp_path / ".changes/unreleased/_regression.yaml").write_text(
+        "component: Internal\nkind: Fixed\nbody: Pending regression fixture\n"
+        "time: 2026-11-18T00:00:00Z\n"
+    )
+    subprocess.run([sys.executable, "tools/changelog.py", "merge"], cwd=tmp_path, check=True)
+    for folder in check_pin_parity.PACKAGES:
+        original = tomllib.loads((ROOT / folder / "pyproject.toml").read_text())["project"]
+        manifest = tmp_path / folder / "pyproject.toml"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        deps = '["urllib3>=2"]' if original["name"] == "genblaze-core" else "[]"
+        manifest.write_text(
+            f'[project]\nname="{original["name"]}"\nversion="1.0.0"\ndependencies={deps}\n'
+        )
+    # Replace only the external PyPI transport, not pin comparison or gate exits.
+    transport = tmp_path / "published-metadata"
+    transport.mkdir()
+    (transport / "sitecustomize.py").write_text(
+        "import io,json,urllib.request\n"
+        "def metadata(url, **kwargs):\n"
+        "    assert url.startswith('https://pypi.org/pypi/') and url.endswith('/1.0.0/json')\n"
+        "    deps=['urllib3>=1'] if '/genblaze-core/' in url else []\n"
+        "    return io.BytesIO(json.dumps({'info': {'requires_dist': deps}}).encode())\n"
+        "urllib.request.urlopen=metadata\n"
+    )
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(transport),
+        PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+    )
+    jobs = workflow()["jobs"]
+    outcomes = {"validate-version": "success", "release-smoke": "success"}
+    for name, diagnostic in [
+        ("changelog-gate", "unreleased fragments must be batched"),
+        ("pin-parity", "1 drift"),
+    ]:
+        command = next(s["run"] for s in reversed(jobs[name]["steps"]) if "run" in s)
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", command],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode != 0
+        assert diagnostic in result.stdout + result.stderr
+        outcomes[name] = "failure"
+
+    # GitHub's default job condition is success(): failed or skipped needs block
+    # dependent jobs. Check the complete publish graph, including transitive needs.
+    pending = set(jobs) - outcomes.keys()
+    while pending:
+        ready = {name for name in pending if set(jobs[name].get("needs", [])) <= outcomes.keys()}
+        assert ready, "Release workflow has a dependency cycle"
+        for name in ready:
+            needs = jobs[name].get("needs", [])
+            outcomes[name] = (
+                "success" if all(outcomes[dep] == "success" for dep in needs) else "skipped"
+            )
+        pending -= ready
+    publishers = {name for name in jobs if name.startswith("publish-")}
+    assert publishers == {
+        "publish-core",
+        "publish-cli",
+        "publish-connectors",
+        "publish-meta",
+        "publish-npm",
+    }
+    for name in publishers | {"build-npm-types"}:
+        assert jobs[name].get("if") is None, "Publish jobs must retain default success gating"
+        assert outcomes[name] == "skipped", name

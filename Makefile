@@ -179,7 +179,7 @@ verify: lint typecheck test docs-lint e2e-smoke changelog-check
 # is a strong signal the publish pipeline will be green. Ordered for
 # quick-fail: cheap checks first, then the full test suite and the
 # wheelhouse smoke. Covers everything ``verify`` runs. See RELEASING.md.
-pre-release: changelog-check lint typecheck docs-lint ts-types-check pypi-metadata-check pypi-pin-parity test e2e-smoke release-smoke pypi-new-projects
+pre-release: changelog-release-check lint typecheck docs-lint ts-types-check pypi-metadata-check pypi-pin-parity test e2e-smoke release-smoke pypi-new-projects
 	@echo ""
 	@echo "pre-release gates passed."
 	@echo "Next: prepare package versions, batch Changie notes, close milestone, sign tag; see RELEASE.md."
