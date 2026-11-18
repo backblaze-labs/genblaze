@@ -79,7 +79,7 @@ re2 = ["google-re2>=1.0,<2"]
 # (MockProvider/ProviderComplianceTests — see connector test suites and the
 # langsmith README). It imports pytest at module load, so it's only usable with
 # this extra installed: `pip install "genblaze-core[testing]"`.
-testing = ["pytest>=7.0"]
+testing = ["pytest>=999.0"]
 # 42.0 is a conservative "recent at the time this experimental extra shipped"
 # floor, not a specific CVE/API cutoff — Ed25519 raw-key encode/decode has
 # been available since cryptography~=2.6. Revisit once Mode 2 signing is

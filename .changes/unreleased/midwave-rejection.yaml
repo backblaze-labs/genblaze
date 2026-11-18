@@ -1,0 +1,4 @@
+component: Internal
+kind: Fixed
+body: Negative release-validation fixture; must remain unbatched.
+time: 2026-11-18T00:00:00Z
