@@ -102,6 +102,24 @@ def production(root: Path, tag: str, repository: str) -> None:
 def write_plan(root: Path) -> None:
     from changelog import read_wave
 
+    source_sha = git(root, "rev-parse", "HEAD")
+    workflow_sha = os.environ.get("WORKFLOW_SHA", "")
+    workflow_ref = os.environ.get("WORKFLOW_REF", "")
+    if workflow_sha and source_sha != workflow_sha:
+        raise ReleaseGateError("Candidate must match the workflow commit")
+    requested_ref = os.environ.get("INPUT_REF", "")
+    if os.environ["EVENT_NAME"] == "workflow_dispatch" and requested_ref:
+        prefix = "refs/heads/" if workflow_ref.startswith("refs/heads/") else "refs/tags/"
+        current_refs = {
+            workflow_sha,
+            workflow_ref,
+            workflow_ref.removeprefix(prefix),
+        }
+        if not workflow_sha or requested_ref not in current_refs:
+            raise ReleaseGateError(
+                "Dispatch ref must match the selected workflow branch/tag or commit; "
+                "select the candidate with gh workflow run --ref"
+            )
     wave = read_wave(root)
     dry = release_mode(
         os.environ["EVENT_NAME"],
@@ -116,7 +134,7 @@ def write_plan(root: Path) -> None:
         production(root, tag, os.environ["GITHUB_REPOSITORY"])
     values = {
         "wave": wave,
-        "source_sha": git(root, "rev-parse", "HEAD"),
+        "source_sha": source_sha,
         "dry_run": str(dry).lower(),
         "upload_python": str(not dry).lower(),
     }

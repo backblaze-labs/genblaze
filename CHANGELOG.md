@@ -49,7 +49,7 @@ package versions remain independent of release waves. See [RELEASE.md](RELEASE.m
 
 #### Changed
 
-- Generate wave release notes with Changie; require trusted signed tags and closed wave milestones before production publication (#354).
+- Generate wave release notes with Changie; require trusted signed tags and closed wave milestones before production publication; bind release candidates to the workflow commit (#354).
 - Release dry runs build and twine-check every package without Python uploads; npm runs with --dry-run. TestPyPI is no longer used (#352).
 
 ## [0.8.2] - 2026-11-16

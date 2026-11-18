@@ -70,3 +70,11 @@ pypi-new-projects target and package-list parity tests. The requested validation
 runs with dry_run=true and uploads nothing; it does not use TestPyPI after #352.
 
 Preserve #356 core fixes and migrate its two pending notes into fragments.
+
+## Workflow commit binding
+
+Candidate and downstream checkouts use the workflow event's immutable SHA.
+The optional dispatch ref asserts the selected workflow branch/tag or commit;
+it cannot select a second code revision. Run previews from the prepared
+candidate branch and production dispatches from the signed release tag.
+The production signature, milestone checks and release trigger are retained.

@@ -94,7 +94,8 @@ gate; this skill has no permission to install anything, and one-time machine set
 If `make pre-release` can't run locally for environment reasons (missing Node for
 `ts-types`, no local PyPI network access, etc.), fall back to the `workflow_dispatch`
 dry-run instead of forcing it: push the branch, then from the Actions tab → Release
-workflow → "Run workflow" with `dry_run: true`. This runs the same gates and
+workflow → "Run workflow", select the prepared candidate branch, and set
+`dry_run: true`. This runs the same gates and
 builds without a local toolchain, skipping registry uploads.
 
 ## Step 4 — Open the release PR

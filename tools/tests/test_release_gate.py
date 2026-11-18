@@ -339,3 +339,71 @@ def test_dry_run_cannot_enable_upload_through_obsolete_input(signed_repo, monkey
     )
     assert values["upload_python"] == "false"
     assert values["dry_run"] == "true"
+
+
+@pytest.mark.parametrize("requested", ["", "sha", "preview", "refs/heads/preview"])
+def test_dispatch_accepts_only_its_own_workflow_commit(signed_repo, monkeypatch, requested):
+    plan_fixture(signed_repo, monkeypatch)
+    sha = run(signed_repo, "git", "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("INPUT_DRY_RUN", "true")
+    monkeypatch.setenv("WORKFLOW_SHA", sha)
+    monkeypatch.setenv("WORKFLOW_REF", "refs/heads/preview")
+    monkeypatch.setenv("INPUT_REF", sha if requested == "sha" else requested)
+    write_plan(signed_repo)
+    values = (signed_repo / "outputs").read_text()
+    assert f"source_sha={sha}\n" in values
+    assert "upload_python=false\n" in values
+
+
+@pytest.mark.parametrize("requested", ["unreviewed", "refs/heads/unreviewed", "f" * 40])
+def test_cross_commit_dispatch_ref_is_rejected_before_outputs(signed_repo, monkeypatch, requested):
+    plan_fixture(signed_repo, monkeypatch)
+    monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("INPUT_DRY_RUN", "true")
+    monkeypatch.setenv("WORKFLOW_SHA", run(signed_repo, "git", "rev-parse", "HEAD").stdout.strip())
+    monkeypatch.setenv("WORKFLOW_REF", "refs/heads/preview")
+    monkeypatch.setenv("INPUT_REF", requested)
+    with pytest.raises(ReleaseGateError, match="workflow"):
+        write_plan(signed_repo)
+    assert not (signed_repo / "outputs").exists()
+
+
+def test_checkout_must_match_workflow_sha_before_production_outputs(signed_repo, monkeypatch):
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch)
+    monkeypatch.setenv("WORKFLOW_SHA", "f" * 40)
+    with pytest.raises(ReleaseGateError, match="workflow"):
+        write_plan(signed_repo)
+    assert not (signed_repo / "outputs").exists()
+
+
+@pytest.mark.parametrize("requested", ["v1.2.3", "refs/tags/v1.2.3"])
+def test_signed_production_dispatch_uses_its_workflow_tag(signed_repo, monkeypatch, requested):
+    run(signed_repo, "git", "tag", "-s", "v1.2.3", "-m", "release")
+    plan_fixture(signed_repo, monkeypatch)
+    sha = run(signed_repo, "git", "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("INPUT_DRY_RUN", "false")
+    monkeypatch.setenv("WORKFLOW_SHA", sha)
+    monkeypatch.setenv("WORKFLOW_REF", "refs/tags/v1.2.3")
+    monkeypatch.setenv("INPUT_REF", requested)
+    write_plan(signed_repo)
+    assert "upload_python=true\n" in (signed_repo / "outputs").read_text()
+
+
+@pytest.mark.parametrize("requested", ["refs/tags/preview", "preview"])
+def test_branch_name_with_tag_prefix_keeps_its_full_name(signed_repo, monkeypatch, requested):
+    plan_fixture(signed_repo, monkeypatch)
+    monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("INPUT_DRY_RUN", "true")
+    monkeypatch.setenv("WORKFLOW_SHA", run(signed_repo, "git", "rev-parse", "HEAD").stdout.strip())
+    monkeypatch.setenv("WORKFLOW_REF", "refs/heads/refs/tags/preview")
+    monkeypatch.setenv("INPUT_REF", requested)
+    if requested == "refs/tags/preview":
+        write_plan(signed_repo)
+        assert "upload_python=false\n" in (signed_repo / "outputs").read_text()
+    else:
+        with pytest.raises(ReleaseGateError, match="workflow"):
+            write_plan(signed_repo)
+        assert not (signed_repo / "outputs").exists()

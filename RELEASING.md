@@ -300,7 +300,13 @@ workflow":
   package, skip all Python uploads, and run npm publish with `--dry-run`.
   No registry changes and no TestPyPI configuration are needed. Production
   dispatches require explicit `dry_run=false` and the signed-tag/milestone gates.
-* **`ref`** — optional. Defaults to the branch you dispatched from.
+* Select the candidate branch or tag with the **Run workflow** branch selector
+  or `gh workflow run --ref`. Every candidate checkout uses the immutable
+  workflow event commit (`github.sha`).
+* **`ref`** — optional assertion of that selected branch/tag, its full Git ref,
+  or its exact commit SHA. A different value fails validation; it cannot select
+  code from another commit. Production dispatches must select the signed release
+  tag itself.
 
 Dry runs are the recommended way to:
 
@@ -454,10 +460,11 @@ release owner's approval, and run post-release verification explicitly.
 Pending fragments and pin mismatches still fail the normal gates on dry runs.
 For a mid-wave tooling PR, prepare a separate, auditable candidate snapshot:
 apply its package-version plan and batch its notes without tagging or publishing.
-Dispatch the branch's workflow against that candidate's immutable SHA:
+The candidate branch must contain the workflow changes being validated.
+Dispatch that branch's workflow and assert its expected immutable SHA:
 
 ```bash
-gh workflow run release.yml --ref "$WORKFLOW_BRANCH" \
+gh workflow run release.yml --ref "$CANDIDATE_BRANCH" \
   -f ref="$CANDIDATE_SHA" -f dry_run=true
 ```
 

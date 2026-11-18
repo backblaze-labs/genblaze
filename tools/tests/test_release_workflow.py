@@ -42,13 +42,14 @@ def test_all_four_gates_precede_python_and_npm_builds():
         assert gates <= set(workflow()["jobs"][name]["needs"])
 
 
-def test_downstream_checkouts_use_the_validated_commit():
+def test_candidate_and_downstream_checkouts_use_the_workflow_commit():
     for name, job in workflow()["jobs"].items():
         for step in job.get("steps", []):
-            if name != "validate-version" and str(step.get("uses", "")).startswith(
-                "actions/checkout@"
-            ):
-                assert step["with"]["ref"] == "${{ needs.validate-version.outputs.source_sha }}"
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
+                if name == "validate-version" and step["with"].get("path") == "release-policy":
+                    assert step["with"]["ref"] == "main"
+                else:
+                    assert step["with"]["ref"] == "${{ github.sha }}"
 
 
 def test_production_trust_gate_is_invoked():
@@ -200,6 +201,9 @@ def test_mode_expressions_pin_production_and_preview_outcomes():
     assert gate.get("continue-on-error", False) is False
     assert gate["env"]["EVENT_NAME"] == "${{ github.event_name }}"
     assert gate["env"]["INPUT_DRY_RUN"] == "${{ inputs.dry_run }}"
+    assert gate["env"]["INPUT_REF"] == "${{ inputs.ref }}"
+    assert gate["env"]["WORKFLOW_SHA"] == "${{ github.sha }}"
+    assert gate["env"]["WORKFLOW_REF"] == "${{ github.ref }}"
     assert gate["env"]["RELEASE_TAG"] == "${{ github.event.release.tag_name }}"
     assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105 — expression, not a credential
     assert "INPUT_VALIDATION_ONLY" not in gate["env"]
