@@ -25,7 +25,7 @@ A unified `Pipeline` API spans providers like OpenAI, Google, Runway, Luma, Elev
 Genblaze sits between "call a single video API" and "run a media pipeline in production." The differentiators:
 
 - **Provenance by default.** Every run yields a canonical manifest — deterministic, embeddable into `.mp4 / .png / .jpg / .webp / .mp3 / .wav`, or persisted alongside the asset. Outputs become SHA-256-covered when providers return bytes or `ObjectStorageSink` transfers them into durable storage; URL-only outputs do not pass `Manifest.verify()`. Tamper-evident in trusted storage; pair with your own signer or C2PA when adversarial verification matters. See [trust modes](docs/features/trust-modes.md).
-- **One pipeline, many providers.** Eleven adapters across video, image, audio, and chat behind a single `Pipeline` / `Step` API. Swap Luma → Runway → GMICloud by changing one line; chain text → image → video without re-plumbing.
+- **One pipeline, many providers.** Fifteen adapters across video, image, audio, and chat behind a single `Pipeline` / `Step` API. Swap Luma → Runway → GMICloud by changing one line; chain text → image → video without re-plumbing.
 - **Storage is first-class.** `S3StorageBackend.for_backblaze("bucket")` ships durable, credential-free asset URLs and content-addressable layouts. Designed for Backblaze B2; works against any S3-compatible store (AWS S3, Cloudflare R2, MinIO).
 - **Fallback chains and conformance.** `fallback_models=[...]` retries on `MODEL_ERROR`; CI-grade `probe_models` and provider-contract tests catch upstream drift before users do.
 - **Replayable runs.** Every manifest captures the full provenance — provider, model, prompt, params, timestamps — so a run can be reconstructed via `genblaze replay manifest.json` or by feeding the canonical params back into a Pipeline.
@@ -67,6 +67,7 @@ Install packages individually if you prefer:
 pip install genblaze-core            # Pipeline, Step, Run, Manifest, sinks, tracers
 pip install genblaze-s3              # S3-compatible storage (B2, AWS, R2, MinIO)
 pip install genblaze-cli             # CLI: extract, verify, replay, index
+pip install genblaze-langsmith       # LangSmith tracer
 
 # Provider adapters
 pip install genblaze-openai          # OpenAI: DALL-E / gpt-image, TTS, chat, Sora-compatible servers
@@ -86,7 +87,7 @@ pip install genblaze-atlascloudai    # Atlas Cloud image and video generation
 pip install genblaze-falai           # fal.ai image, video, and audio generation
 ```
 
-Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`.
+Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`. Two exceptions: `genblaze-atlascloudai` → `import genblaze_atlascloud`, `genblaze-falai` → `import genblaze_fal`.
 
 TypeScript types for the manifest schema are published on npm:
 
@@ -175,7 +176,9 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 | **ElevenLabs** | — | — | TTS + Sound Effects | — |
 | **Stability AI** | — | — | Stable Audio (music) | — |
 | **LMNT** | — | — | TTS | — |
-| **Hume** | — | — | Octave TTS | — |
+| **Hume** | — | — | Octave TTS (API retired 2026-11-13; not installable) | — |
+| **Atlas Cloud** | ✓ | ✓ | — | — |
+| **fal.ai** | ✓ | ✓ | ✓ | — |
 
 > **Speech-to-Text / Transcription:** [`genblaze-assemblyai`](libs/connectors/assemblyai/README.md) is the inverse of the matrix above — it *consumes* an audio URL and *produces* a hash-verified **TEXT transcript** asset (with word-level timings), composable into pipelines like any other step.
 
@@ -197,7 +200,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | ElevenLabs (TTS + SFX) | `ELEVENLABS_API_KEY` | [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) |
 | Stability AI (music) | `STABILITY_API_KEY` | [platform.stability.ai](https://platform.stability.ai/account/keys) |
 | LMNT (fast TTS) | `LMNT_API_KEY` | [app.lmnt.com](https://app.lmnt.com/account) |
-| Hume (Octave TTS) | `HUME_API_KEY` | [platform.hume.ai](https://platform.hume.ai/) |
+| Hume (Octave TTS; API retired 2026-11-13, not installable) | `HUME_API_KEY` | [platform.hume.ai](https://platform.hume.ai/) |
 | AssemblyAI (speech-to-text) | `ASSEMBLYAI_API_KEY` | [assemblyai.com/app/api-keys](https://www.assemblyai.com/app/api-keys) |
 | Atlas Cloud (image, video) | `ATLASCLOUD_API_KEY` | [atlascloud.ai/console/api-keys](https://www.atlascloud.ai/console/api-keys) |
 | fal.ai (image, video, audio) | `FAL_KEY` | [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys) |
@@ -285,6 +288,7 @@ storage = ObjectStorageSink(
 **Cloud + Parquet analytics** — one sink does both:
 
 ```python
+# pip install "genblaze[parquet]"
 from genblaze_core import ParquetSink
 
 storage = ObjectStorageSink(

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-07-21 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-lmnt
 
 **[LMNT](https://www.lmnt.com) ultra-low-latency text-to-speech provider adapter for [genblaze](https://github.com/backblaze-labs/genblaze) — real-time AI voice pipelines with SHA-256 provenance manifests on every clip.**
@@ -15,9 +15,9 @@
 
 ## Models
 
-| Model | Notes |
-|---|---|
-| `lmnt-1` | LMNT's fast TTS model |
+LMNT has no enumerable model catalog. `step.model` (e.g. `lmnt-1`) is a label
+recorded in the manifest for provenance and pricing; it is not forwarded to the
+LMNT API, which picks its default model. Choose the voice with `voice=`.
 
 ## Install
 
@@ -41,7 +41,7 @@ from genblaze_lmnt import LMNTProvider
 run, manifest = (
     Pipeline("lmnt-tts-demo")
     .step(LMNTProvider(output_dir="output/audio"),
-          model="lmnt-1",
+          model="lmnt-1",  # recorded in the manifest only; not sent to LMNT
           prompt="The quick brown fox jumps over the lazy dog.",
           modality=Modality.AUDIO, voice="lily")
     .run(timeout=30)

@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-07-21 -->
+---
+type: Library
+title: CLI
+description: The genblaze command for extracting, verifying, replaying and indexing manifests.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Feature: CLI
 
 ## Purpose
@@ -11,7 +18,7 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
 - `extract` — Extract and display manifest from any supported media file (auto-detects format)
 - `verify` — Verify manifest hash integrity and output `sha256` coverage from media, sidecar JSON, or standalone manifest JSON (exit code 0=OK, 1=failed verification); the opt-in `--fetch` mode also downloads each output asset and re-hashes its bytes against the declared digest, and `--allowed-root <dir>` (repeatable) admits `file://` assets outside the temp-dir allowlist, which you need when your pipeline wrote assets via `output_dir=` to a non-default location
 - `replay` — Preview (`--dry-run`) or re-execute (`--no-dry-run`) a pipeline from manifest JSON
-- `index` — Write manifest data to a Parquet sink
+- `index` — Write manifest data to a Parquet sink (needs `genblaze-core[parquet]`)
 
 ## Canonical Files
 - CLI entry: `cli/genblaze_cli/main.py`
@@ -21,13 +28,13 @@ Command-line tools to extract, verify, replay, and index manifests from media fi
 - Index command: `cli/genblaze_cli/commands/index.py`
 
 ## Inputs
-- `extract <file>` — Media file path
-- `verify <file>` — Media file path, direct `*.genblaze.json` sidecar, or standalone `manifest.json` file. JSON suffix matching is case-insensitive.
-- `replay <manifest.json>` — Manifest JSON file, `--no-dry-run` flag
-- `index <manifest.json> -o <dir>` — Manifest JSON + output directory
+- `extract <file> [--format json|summary] [-o/--output <file>]` — Media file path; `--format` defaults to `json`; `-o` writes the manifest JSON to a file instead of stdout (the summary always goes to stdout)
+- `verify <file> [--hash-only | --fetch [--allowed-root <dir>]...]` — Media file path, direct `*.genblaze.json` sidecar, or standalone `manifest.json` file. JSON suffix matching is case-insensitive. `--hash-only` checks only `canonical_hash` and skips output `sha256` and asset-metadata checks; it is mutually exclusive with `--fetch`, and `--allowed-root` requires `--fetch`
+- `replay <manifest.json> [--dry-run/--no-dry-run] [--allow-provider <name>]... [--show-prompts] [--force]` — `--allow-provider` (repeatable) skips the per-provider confirmation prompt for the named providers; `--show-prompts` prints public-visibility prompts in the summary (non-public prompts stay redacted); `--force` skips the manifest hash check
+- `index <manifest.json> [-o/--output <dir>]` — Manifest JSON + output directory (default `./genblaze_index`). Requires pyarrow: `pip install 'genblaze-core[parquet]'`
 
 ## Outputs
-- `extract` → manifest JSON to stdout
+- `extract` → manifest JSON to stdout or the `-o` file; `--format summary` prints run ID, step count, hash and verification status
 - `verify` → exit code (0 or 1)
 - `replay` → dry-run summary or re-executed pipeline
 - `index` → Parquet files in output directory

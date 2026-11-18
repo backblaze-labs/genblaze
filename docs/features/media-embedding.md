@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-09-21 -->
+---
+type: Library
+title: Media embedding
+description: Embed and extract provenance manifests in images, video and audio files, with sidecar fallback.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Feature: Media Embedding
 
 ## Purpose
@@ -109,7 +116,7 @@ genblaze-core 0.3.9 and ignored (it configured the former re-encode); it emits a
 
 ## Atomicity
 
-All inline embed paths (PNG, JPEG, WebP, MP4, MP3, WAV) and the sidecar handler use
+All inline embed paths (PNG, JPEG, WebP, MP4, MP3, WAV, AAC, FLAC) and the sidecar handler use
 atomic temp-file + `os.replace` writes. A crash mid-embed leaves the source file
 intact; partial writes never overwrite the original. This includes the sidecar
 handler's source-to-`output` copy when `output=` names a distinct path — copied

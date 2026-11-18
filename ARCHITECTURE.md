@@ -14,7 +14,7 @@
   - `genblaze-elevenlabs` — ElevenLabs (TTS + sound effects)
   - `genblaze-stability-audio` — Stability AI (Stable Audio music)
   - `genblaze-lmnt` — LMNT (fast TTS)
-  - `genblaze-hume` — Hume AI (Octave TTS)
+  - `genblaze-hume` — Hume AI (Octave TTS; Hume's TTS API was retired 2026-11-13)
   - `genblaze-gmicloud` — GMICloud (video, image, audio via request queue)
   - `genblaze-nvidia` — NVIDIA NIM / build.nvidia.com (video, image, audio, chat)
   - `genblaze-assemblyai` — AssemblyAI (speech-to-text / transcription → TEXT output)
@@ -28,7 +28,7 @@
 
 ## Deployment
 
-- All packages are installable via pip (`genblaze-core`, `genblaze-replicate`, `genblaze-cli`)
+- All 20 packages are on PyPI; most users install the `genblaze` umbrella plus extras
 - Library-only — no running services; users embed into their own applications
 - `pyarrow` is an optional dependency via `genblaze-core[parquet]`
 
@@ -56,7 +56,7 @@
 - **Parquet sink** — Partitioned by `dt=/tenant_id=/modality=/provider=`
   - Three tables: `runs/`, `steps/`, `assets/`
   - Idempotent writes keyed by `run_id`
-- **Media embedding** — Manifests embedded inline (PNG iTXt, JPEG/WebP XMP, MP4 UUID box, MP3 ID3v2 TXXX, WAV LIST/INFO) or as sidecar JSON
+- **Media embedding** — Manifests embedded inline (PNG iTXt, JPEG/WebP XMP, MP4 UUID box, MP3 ID3v2 TXXX, WAV LIST/INFO, AAC/M4A, FLAC; audio handlers need `genblaze-core[audio]`) or as sidecar JSON
 
 ## External Services
 
@@ -69,7 +69,7 @@
 - **ElevenLabs API** — TTS + sound effects (`genblaze-elevenlabs`)
 - **Stability AI API** — Stable Audio music (`genblaze-stability-audio`)
 - **LMNT API** — Fast TTS (`genblaze-lmnt`)
-- **Hume AI API** — Octave TTS (`genblaze-hume`)
+- **Hume AI API** — Octave TTS, retired 2026-11-13 (`genblaze-hume`)
 - **GMICloud API** — Video, image, audio via request queue (`genblaze-gmicloud`)
 - **AssemblyAI API** — Speech-to-text / transcription → TEXT transcript (`genblaze-assemblyai`)
 - **Atlas Cloud API** — Asynchronous image and video generation (`genblaze-atlascloudai`)
@@ -105,7 +105,7 @@
 - Model fallback chains: `fallback_models` in `.step()` auto-retries with alternate models on `MODEL_ERROR`
 - Step provenance fields: `.step(metadata=..., prompt_visibility=...)` route to dedicated `Step` fields, not provider `params` — reserved-name guard raises if either is smuggled through `params={}` or collides with internal `_fallback_models`/`_input_from` graph metadata. `Pipeline.metadata(**kwargs)` attaches run-scoped metadata additively
 - Cost tracking: pricing is **user-registered** as of 0.3.0 — connectors ship zero hardcoded prices; users register a `PricingStrategy` per slug (or per family) and the base class populates `step.cost_usd` after `fetch_output()`. Per-provider rate sheets live in `docs/reference/pricing-recipes.md`
-- Catalog routing: connectors ship pattern-keyed `ModelFamily` rules instead of slug lists. Each family declares a regex, a `spec_template`, and optionally a `FamilyProbe`. The registry's `validate_model()` returns a typed `ValidationResult` (`OK_AUTHORITATIVE` / `OK_PROVISIONAL` / `NOT_FOUND` / `KNOWN_UNSTABLE`); `Pipeline.preflight()` gates against it. Provider classes declare a `DiscoverySupport` tier (`NATIVE` / `PARTIAL` / `NONE`) so the SDK is honest about what it can verify
+- Catalog routing: connectors ship pattern-keyed `ModelFamily` rules instead of slug lists. Each family declares a regex, a `spec_template`, and optionally a `FamilyProbe`. The provider's `validate_model()` returns a typed `ValidationResult` (`OK_AUTHORITATIVE` / `OK_PROVISIONAL` / `UNKNOWN_PERMISSIVE` / `NOT_FOUND`); `Pipeline.preflight()` gates against it. Provider classes declare a `DiscoverySupport` tier (`NATIVE` / `PARTIAL` / `NONE`) so the SDK is honest about what it can verify
 - Capability validation: `ProviderCapabilities.accepts_chain_input` flag; pipeline validates modality + chain compatibility at `run()` time before executing any steps
 - Chain input validation: `validate_chain_input_url()` checks chain input URLs before forwarding to external APIs (allows `file://` + `https://`)
 - Pipeline chain safety: failed steps in `chain=True` mode clear `prev_assets` so subsequent steps receive empty inputs (no stale output leakage)
@@ -123,7 +123,7 @@
 - SSRF protection: shared `check_ssrf()` in `_utils.py` blocks private/loopback IPs; used by both `AssetTransfer` and `WebhookNotifier`
 - OTel bridging: `StepSpan` optionally starts real OpenTelemetry spans when the SDK is installed
 - Tracer abstraction: pluggable `Tracer` ABC with NoOp/Logging/OTel/Composite backends; routes run+step lifecycle hooks + StreamEvents
-- Streaming: `Pipeline.stream()` / `astream()` yield `StreamEvent` iterators; events also forwarded to the attached tracer. `StreamEvent` is a Pydantic discriminated union with 10 per-variant classes (`PipelineStartedEvent`, `StepFailedEvent`, `AgentCompletedEvent`, …) — narrow via `event.type` or `isinstance(event, ...)`. Wire schemas live in `libs/spec/schemas/events/v1/`; generated TS types in `libs/spec/ts/genblaze.d.ts`.
+- Streaming: `Pipeline.stream()` / `astream()` yield `StreamEvent` iterators; events also forwarded to the attached tracer. `StreamEvent` is a Pydantic discriminated union with 12 per-variant classes (`PipelineStartedEvent`, `StepFailedEvent`, `AgentCompletedEvent`, …) — narrow via `event.type` or `isinstance(event, ...)`. Wire schemas live in `libs/spec/schemas/events/v1/`; generated TS types in `libs/spec/ts/genblaze.d.ts`.
 - Agent loop: `AgentLoop` composes a `Pipeline` factory with an `Evaluator`; each iteration linked via `parent_run_id` for lineage-preserving retry
 
 ## Canonical Files

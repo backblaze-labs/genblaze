@@ -3,12 +3,12 @@ type: Library
 title: LLM calls
 description: One-shot chat() helpers for text generation outside the media Pipeline.
 status: stable
-stale_after: 2026-12-17T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Feature: LLM Calls
 
-Thin standalone wrappers around OpenAI, Google Gemini, and GMICloud chat /
+Thin standalone wrappers around OpenAI, Google Gemini, GMICloud, and NVIDIA NIM chat /
 completion APIs. Returns a uniform `ChatResponse` so callers can swap
 providers without rewriting response handling.
 
@@ -32,8 +32,8 @@ in a small local `SyncProvider`:
 ```python
 import hashlib
 
-from genblaze_core import Asset, Pipeline, SyncProvider
-from genblaze_openai import chat
+from genblaze_core import Asset, Modality, Pipeline, SyncProvider
+from genblaze_openai import OpenAITTSProvider, chat
 
 class ChatStep(SyncProvider):
     name = "openai-chat"
@@ -67,7 +67,7 @@ script = chat_result.run.steps[0].assets[0].metadata["text"]
 tts_result = (
     Pipeline("narration-audio")
     .from_result(chat_result)  # links parent_run_id for provenance lineage
-    .step(TtsProvider(), model="tts-1", prompt=script)
+    .step(OpenAITTSProvider(), model="tts-1", prompt=script, modality=Modality.AUDIO)
     .run()
 )
 ```
@@ -76,7 +76,9 @@ tts_result = (
 submit/poll/fetch_output lifecycle. `Pipeline.from_result()` links the two
 runs via `parent_run_id` so the manifest for the audio step points back at
 the run that produced its script. This is a documentation recipe, not a
-built-in class; there is no first-party text/chat `BaseProvider` today (see
+built-in class. The only first-party chat `BaseProvider` today is
+`genblaze_nvidia.NvidiaChatProvider` (NIM chat as a Pipeline step, with
+multimodal `step.inputs`); there is no generic chat base class (see
 `docs/exec-plans/active/multimodal-chat-provider.md`).
 
 ## Surface
@@ -84,6 +86,7 @@ built-in class; there is no first-party text/chat `BaseProvider` today (see
 - `genblaze_openai.chat`, `genblaze_openai.achat`
 - `genblaze_google.chat`, `genblaze_google.achat`
 - `genblaze_gmicloud.chat`, `genblaze_gmicloud.achat`
+- `genblaze_nvidia.chat`, `genblaze_nvidia.achat`, `genblaze_nvidia.NvidiaChatProvider`
 - Models: `genblaze_core.models.chat.{ChatMessage, ToolCall, ChatResponse}`
 
 ## Signature
@@ -98,7 +101,10 @@ chat(
     tools: list[dict] | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    response_format: dict | type | None = None,  # openai / gmicloud / nvidia
     api_key: str | None = None,
+    base_url: str | None = None,                 # openai / gmicloud / nvidia
+    timeout: float = 60.0,                       # openai / gmicloud / nvidia
     client: Any = None,        # escape hatch
     retry_on_rate_limit: bool = False,   # openai / google only — see "Rate limits" below
     retry_policy: RetryPolicy | None = None,
@@ -121,7 +127,9 @@ resp = chat("gpt-4o", prompt="A cinematic sunset over Tokyo")
 Compose with a media step manually:
 
 ```python
+from genblaze_core import Pipeline
 from genblaze_luma import LumaProvider
+from genblaze_openai import chat
 
 description = chat("gpt-4o", prompt="A cinematic sunset").text
 pipe = Pipeline("hero").step(LumaProvider(), model="ray-2", prompt=description)

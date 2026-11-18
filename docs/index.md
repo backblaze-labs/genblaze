@@ -11,7 +11,8 @@ storage sinks (Backblaze B2 first).
 New here? Read [README.md](../README.md) → [ARCHITECTURE.md](../ARCHITECTURE.md) →
 [AGENTS.md](../AGENTS.md) → the relevant feature doc below. Reviewers:
 [REVIEW.md](../REVIEW.md). Every doc under `docs/` carries OKF v0.2
-frontmatter once edited (`type`, `owner`, `status`, `stale_after`), checked
+frontmatter once edited (`type`, `title`, `description`, `status`,
+`stale_after`, `owner`), checked
 by `make docs-lint`.
 
 ---
@@ -21,7 +22,7 @@ by `make docs-lint`.
 - [App workflows](app-workflows.md) — end-user flows: build a pipeline, run it,
   save with provenance, verify, replay.
 - [Dev workflows](dev-workflows.md) — contributor setup, adding features,
-  running tests, releasing.
+  running tests. Releasing: [RELEASING.md](../RELEASING.md).
 - [Adding a new provider](guides/new-provider.md) — canonical contract for
   contributing a provider adapter (start with `/scaffold-provider`).
 - [Migrating to 0.3.0](guides/migrating-to-0.3.md) — upgrade guide from
@@ -94,6 +95,8 @@ by `make docs-lint`.
 
 - [CLI](features/cli.md) — `genblaze` command: extract, verify, replay, index
   manifests in media files.
+- [Maintainer agent](features/maintainer-agent.md) — autonomous Claude Code
+  agent that resolves issues and audits the repo.
 
 ## Reference
 

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-luma
 
 **[Luma Dream Machine](https://lumalabs.ai/dream-machine) (Ray-2) video provider adapter for [genblaze](https://github.com/backblaze-labs/genblaze) — text-to-video AI pipelines with SHA-256 provenance manifests on every render.**
@@ -7,7 +7,7 @@
 
 ## Why genblaze-luma
 
-- **Luma Ray-2, unified API** — same `Pipeline` API as Sora, Veo, Runway, Flux.
+- **Luma Ray-2, unified API** — same `Pipeline` API as Veo, Runway, Flux.
 - **Provenance by default** — SHA-256-verified manifest with prompt, model, and params on every render.
 - **Production-ready** — timeouts, retries, progress streaming, moderation hooks, step caching.
 - **Composable** — chain Luma outputs into downstream FFmpeg steps or AV compositors.
@@ -79,7 +79,7 @@ storage = ObjectStorageSink(
 
 - [`genblaze-core`](https://pypi.org/project/genblaze-core/) — the pipeline SDK
 - [`genblaze-s3`](https://pypi.org/project/genblaze-s3/) — durable storage on Backblaze B2 and other S3-compatible backends
-- Other video providers: [`genblaze-openai`](https://pypi.org/project/genblaze-openai/) (Sora) · [`genblaze-google`](https://pypi.org/project/genblaze-google/) (Veo) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) (Gen-4) · [`genblaze-decart`](https://pypi.org/project/genblaze-decart/) (Lucy)
+- Other video providers: [`genblaze-google`](https://pypi.org/project/genblaze-google/) (Veo) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) (Gen-4) · [`genblaze-decart`](https://pypi.org/project/genblaze-decart/) (Lucy)
 
 ## License
 

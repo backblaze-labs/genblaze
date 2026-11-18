@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-04-24 -->
+---
+type: Library
+title: Observability
+description: Pluggable tracers that send pipeline lifecycle events to logs, OpenTelemetry, LangSmith or a custom backend.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Observability
 
 Pluggable tracers surface pipeline lifecycle events to logs, OpenTelemetry, LangSmith, or any custom backend.
@@ -20,9 +27,9 @@ tracer = CompositeTracer([LoggingTracer(), OTelTracer()])
 Pipeline("my-pipe", tracer=tracer).step(...).run()
 ```
 
-## Tracer ABC
+## Tracer base class
 
-Implement any subset of these hooks — defaults are no-ops:
+`Tracer` is a plain base class, not an ABC. Implement any subset of these hooks — defaults are no-ops:
 
 | Hook | When |
 |------|------|
@@ -87,7 +94,7 @@ class PrometheusTracer(Tracer):
 
 ## Internals
 
-- `libs/core/genblaze_core/observability/tracer.py` — ABC + built-ins
-- `libs/core/genblaze_core/observability/events.py` — `StreamEvent` base + 10 per-variant classes (Pydantic discriminated union)
+- `libs/core/genblaze_core/observability/tracer.py` — `Tracer` base class + built-ins
+- `libs/core/genblaze_core/observability/events.py` — `StreamEvent` base + 12 per-variant classes (Pydantic discriminated union)
 - `libs/spec/schemas/events/v1/` — authoritative JSON Schemas for every variant; drives `libs/spec/ts/genblaze.d.ts`
 - `libs/connectors/langsmith/` — LangSmith backend (separate package)

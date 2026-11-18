@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-29 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-s3
 
 **S3-compatible storage backend for [genblaze](https://github.com/backblaze-labs/genblaze) AI media pipelines — durable, content-addressable, dedup-ready. Works with [Backblaze B2](https://www.backblaze.com/cloud-storage?utm_source=github&utm_medium=referral&utm_campaign=ai_artifacts&utm_content=genblaze) (recommended default), Cloudflare R2, MinIO, and AWS S3.**
@@ -144,6 +144,8 @@ SigV4 signature in `repr()`/`str()`/`f"{...}"`**, so accidental log-line
 interpolation no longer leaks credentials:
 
 ```python
+import requests
+
 download = backend.presigned_get("k", expires_in=3600)
 upload = backend.presigned_put("k", expires_in=600, content_type="image/png")
 
@@ -163,6 +165,8 @@ the old return value to logs/manifests/DB rows.
 `get`, and `copy`:
 
 ```python
+import secrets
+
 from genblaze_s3 import Encryption
 
 # SSE-S3 (server-managed AES-256)

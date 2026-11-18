@@ -15,7 +15,7 @@ make test          # Verify setup
 
 ```
 libs/core/              # genblaze-core Python SDK
-libs/connectors/        # Provider adapters (replicate/)
+libs/connectors/        # Provider adapters + s3 storage + langsmith tracer (one package each)
 libs/spec/              # Language-neutral JSON Schemas
 cli/                    # CLI tool
 examples/               # Usage examples
@@ -38,7 +38,7 @@ See [docs/guides/new-provider.md](docs/guides/new-provider.md) for a complete wa
 ```bash
 make verify     # The done check: lint + typecheck + tests + docs lint + e2e smoke
 make test       # Full test suite
-make lint       # Ruff linter + format check
+make lint       # Ruff linter + format check + deptry
 make fmt        # Auto-format code
 make typecheck  # mypy type checking
 make coverage   # Tests with coverage report (70% minimum)

@@ -1,4 +1,11 @@
-<!-- last_verified: 2026-07-14 -->
+---
+type: Library
+title: Ingest workflows
+description: Record provenance for media you already have with Pipeline.ingest, then chain later runs on it.
+status: stable
+stale_after: 2027-05-18T00:00:00Z
+owner: "@jeronimodeleon"
+---
 # Ingest workflows
 
 genblaze's pipeline surface is generation-shaped by default — you compose
@@ -65,7 +72,8 @@ print(f"Manifest hash: {result.manifest.canonical_hash}")
 A podcast app polls an RSS feed, finds new episodes, and ingests them.
 `Pipeline.ingest` records each episode's source URL, ingest timestamp,
 and content hash. Later transcription / transcoding runs chain on top
-via `input_from=` referencing the ingest step indices.
+by passing the ingested assets as `external_inputs=` (`input_from=` only
+routes outputs between steps of the same pipeline).
 
 ```python
 result = Pipeline.ingest(
@@ -254,7 +262,7 @@ result = Pipeline.ingest(
     sink=sink,
 )
 # Subsequent generative work (transcribe, classify, transform) is its own
-# Pipeline instance that references the ingested assets via input_from=.
+# Pipeline instance that takes the ingested assets via external_inputs=.
 ```
 
 The two surfaces compose: ingest the assets via `Pipeline.ingest`, then
@@ -266,6 +274,9 @@ Once assets are durable in your sink, downstream generation references
 them by URL or by asset_id:
 
 ```python
+from genblaze_assemblyai import AssemblyAIProvider
+from genblaze_core import Asset, Modality, Pipeline
+
 # Step 1: ingest podcasts
 ingest_result = Pipeline.ingest(
     assets=[Asset(url=ep.url, media_type="audio/mp3") for ep in episodes],
@@ -273,12 +284,18 @@ ingest_result = Pipeline.ingest(
     sink=sink,
 )
 
-# Step 2: transcribe via Whisper (chains in once Wave 6 ships)
-# transcribed = (
-#     Pipeline("transcribe-batch")
-#     .step(WhisperProvider(), input_from=[*range(len(ingest_result.run.steps))], …)
-#     .run(sink=sink)
-# )
+# Step 2: transcribe with AssemblyAI (reads ASSEMBLYAI_API_KEY). It
+# transcribes step.inputs[0], so add one step per ingested asset.
+stt = AssemblyAIProvider()
+transcribe = Pipeline("transcribe-batch").from_result(ingest_result)
+for ingested in ingest_result.run.steps:
+    transcribe.step(
+        stt,
+        model="universal-2",
+        modality=Modality.TEXT,
+        external_inputs=ingested.assets,
+    )
+transcribed = transcribe.run(sink=sink)
 ```
 
 ## See also

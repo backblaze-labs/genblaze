@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-22 -->
+<!-- last_verified: 2026-11-18 -->
 # genblaze-decart
 
 **[Decart Lucy](https://platform.decart.ai) video + image provider adapter for [genblaze](https://github.com/backblaze-labs/genblaze) — text-to-video, image-to-video, and image generation/editing AI pipelines with SHA-256 provenance manifests.**
@@ -96,7 +96,7 @@ storage = ObjectStorageSink(
 
 - [`genblaze-core`](https://pypi.org/project/genblaze-core/) — the pipeline SDK
 - [`genblaze-s3`](https://pypi.org/project/genblaze-s3/) — durable storage on Backblaze B2 and other S3-compatible backends
-- Other video providers: [`genblaze-openai`](https://pypi.org/project/genblaze-openai/) (Sora) · [`genblaze-google`](https://pypi.org/project/genblaze-google/) (Veo) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) (Gen-4) · [`genblaze-luma`](https://pypi.org/project/genblaze-luma/) (Dream Machine)
+- Other video providers: [`genblaze-google`](https://pypi.org/project/genblaze-google/) (Veo) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) (Gen-4) · [`genblaze-luma`](https://pypi.org/project/genblaze-luma/) (Dream Machine)
 
 ## License
 

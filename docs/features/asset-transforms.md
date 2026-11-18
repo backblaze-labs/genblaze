@@ -3,7 +3,7 @@ type: Library
 title: Asset transforms
 description: Local transform steps that post-process prior step outputs.
 status: stable
-stale_after: 2026-12-17T00:00:00Z
+stale_after: 2027-05-18T00:00:00Z
 owner: "@jeronimodeleon"
 ---
 # Asset Transforms
@@ -35,7 +35,7 @@ result = (
 | `crop` | EDIT | `width`, `height`, `x`(0), `y`(0) | `-vf crop=w:h:x:y` |
 | `overlay_text` | EDIT | `text`, `fontsize`(24), `x`(10), `y`(10), `fontcolor`("white") | `-vf drawtext=...` |
 | `audio_normalize` | TRANSCODE | (none) | `-af loudnorm` |
-| `convert_format` | TRANSCODE | `format` (mp4, webm, mkv, mov, mp3, wav, flac, ogg, aac) | output extension |
+| `convert_format` | TRANSCODE | `format`("mp4"): mp4, webm, mkv, mov, mp3, wav, flac, ogg, aac | output extension |
 
 ## Architecture
 
