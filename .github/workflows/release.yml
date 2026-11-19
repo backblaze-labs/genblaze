@@ -352,6 +352,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # zizmor: ignore[cache-poisoning] (this job's output artifact feeds the id-token publish job — no cache: input, nothing to poison); v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
       - name: Regenerate TS types from JSON Schemas
         # Defensive — CI already runs ts-types-check on every push, but a
         # release shouldn't trust that the committed types are still
@@ -396,6 +397,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
       - name: Download verified TS types
         # No npm install and no code generation happens in this job — the
         # types were already regenerated and drift-checked by
