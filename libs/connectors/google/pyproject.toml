@@ -31,7 +31,7 @@ dependencies = [
     # <2: bounded-major convention (#61) — caps below the next major so a
     # future google-genai release can't silently break this connector at
     # resolve time.
-    "google-genai>=1.0,<3",
+    "google-genai>=1.0,<4",
 ]
 
 [project.urls]
