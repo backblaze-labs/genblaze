@@ -31,7 +31,7 @@ dependencies = [
     # <4: bounded-major convention (#61). The documented floor (1.0) predates
     # the SDK's current major line; openai resolves to 3.x today (verified
     # against 3.17.0), so the cap sits one major past what's verified.
-    "openai>=1.0,<4",
+    "openai>=3.51.0,<4",
 ]
 
 [project.urls]
@@ -43,7 +43,7 @@ Issues = "https://github.com/backblaze-labs/genblaze/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "pytest>=9.2.0",
 ]
 
 [project.entry-points."genblaze.providers"]

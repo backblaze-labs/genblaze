@@ -90,7 +90,7 @@ dev = [
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     # Pinned to CI's ruff (ci.yml lint job) so `make lint` and CI agree.
-    "ruff==0.14.0",
+    "ruff==0.17.5",
     "mypy>=1.8",
     "deptry>=0.23",
     "pyarrow>=14.0,<27",
