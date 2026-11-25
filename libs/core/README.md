@@ -64,7 +64,8 @@ Add provider adapters separately:
 pip install genblaze-openai genblaze-google genblaze-runway genblaze-luma \
             genblaze-decart genblaze-replicate genblaze-elevenlabs \
             genblaze-stability-audio genblaze-lmnt genblaze-gmicloud \
-            genblaze-assemblyai genblaze-atlascloudai genblaze-falai genblaze-nvidia
+            genblaze-assemblyai genblaze-atlascloudai genblaze-falai genblaze-nvidia \
+            genblaze-anex
 
 pip install genblaze-s3    # Storage backend for Backblaze B2 / AWS S3 / R2 / MinIO
 pip install genblaze-cli   # Extract / verify / replay / index manifests
@@ -141,7 +142,7 @@ fetches `asset.url`, hash those bytes separately and compare them to
 
 ## Related packages
 
-Provider adapters: [`genblaze-openai`](https://pypi.org/project/genblaze-openai/) · [`genblaze-google`](https://pypi.org/project/genblaze-google/) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) · [`genblaze-luma`](https://pypi.org/project/genblaze-luma/) · [`genblaze-decart`](https://pypi.org/project/genblaze-decart/) · [`genblaze-replicate`](https://pypi.org/project/genblaze-replicate/) · [`genblaze-elevenlabs`](https://pypi.org/project/genblaze-elevenlabs/) · [`genblaze-stability-audio`](https://pypi.org/project/genblaze-stability-audio/) · [`genblaze-lmnt`](https://pypi.org/project/genblaze-lmnt/) · [`genblaze-gmicloud`](https://pypi.org/project/genblaze-gmicloud/) · [`genblaze-assemblyai`](https://pypi.org/project/genblaze-assemblyai/) · [`genblaze-atlascloudai`](https://pypi.org/project/genblaze-atlascloudai/) · [`genblaze-falai`](https://pypi.org/project/genblaze-falai/) · [`genblaze-nvidia`](https://pypi.org/project/genblaze-nvidia/) · [`genblaze-hume`](https://pypi.org/project/genblaze-hume/) (retired: Hume's TTS API no longer works)
+Provider adapters: [`genblaze-openai`](https://pypi.org/project/genblaze-openai/) · [`genblaze-google`](https://pypi.org/project/genblaze-google/) · [`genblaze-runway`](https://pypi.org/project/genblaze-runway/) · [`genblaze-luma`](https://pypi.org/project/genblaze-luma/) · [`genblaze-decart`](https://pypi.org/project/genblaze-decart/) · [`genblaze-replicate`](https://pypi.org/project/genblaze-replicate/) · [`genblaze-elevenlabs`](https://pypi.org/project/genblaze-elevenlabs/) · [`genblaze-stability-audio`](https://pypi.org/project/genblaze-stability-audio/) · [`genblaze-lmnt`](https://pypi.org/project/genblaze-lmnt/) · [`genblaze-gmicloud`](https://pypi.org/project/genblaze-gmicloud/) · [`genblaze-assemblyai`](https://pypi.org/project/genblaze-assemblyai/) · [`genblaze-atlascloudai`](https://pypi.org/project/genblaze-atlascloudai/) · [`genblaze-falai`](https://pypi.org/project/genblaze-falai/) · [`genblaze-anex`](https://pypi.org/project/genblaze-anex/) · [`genblaze-nvidia`](https://pypi.org/project/genblaze-nvidia/) · [`genblaze-hume`](https://pypi.org/project/genblaze-hume/) (retired: Hume's TTS API no longer works)
 
 Storage + tooling: [`genblaze-s3`](https://pypi.org/project/genblaze-s3/) · [`genblaze-cli`](https://pypi.org/project/genblaze-cli/) · [`genblaze-langsmith`](https://pypi.org/project/genblaze-langsmith/)
 

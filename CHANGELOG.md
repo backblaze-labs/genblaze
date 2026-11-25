@@ -5,6 +5,12 @@ package versions remain independent of release waves. See [RELEASE.md](RELEASE.m
 
 ## [Unreleased]
 
+### genblaze
+
+#### Added
+
+- An `anex` extra, and anex.sh in the `video` and `all` bundles.
+
 ### genblaze-core
 
 #### Changed
@@ -32,6 +38,23 @@ package versions remain independent of release waves. See [RELEASE.md](RELEASE.m
   fail before discovery; explicit provider maps remain authoritative (#67).
 - Computed costs no longer carry float noise such as 0.30000000000000004. cost_usd from registry pricing, estimate_cost() and AgentResult.total_cost_usd are rounded to 9 decimal places, preserving sub-micro-dollar per-token rates. Persisted manifests, Parquet rows and canonical hashes are unchanged (#63).
 - ModelRegistry now updates its warning-dedup sets under its lock, so a concurrent fork() cannot copy a set mid-change on free-threaded Python. Document the concurrency guarantee (#58).
+
+### genblaze-anex
+
+#### Added
+
+- An opt-in anex.sh connector for MiniMax H3 video through the
+  MiniMax-compatible task API over plain HTTP: text to video, first and last
+  frame, reference to video and video editing (`MiniMax-H3`,
+  `MiniMax-H3-Ref2VA`, `MiniMax-H3-Ref2VA-SMD-4step`, `FastH3-8-Step-V2`),
+  plus upscaling a finished clip to 2K or 4K with `StepType.UPSCALE`.
+  Submission is single-attempt to avoid duplicate billable tasks, task reads
+  use the provider's bounded `RetryPolicy`, and `base_url` selects the EU
+  host. Discovery is `NATIVE`: model names, resolutions, input kinds and
+  seed support are read from anex.sh's public catalog, so a new model works
+  and a retired one is refused at preflight without a connector release.
+  The task's billed usage is recorded, and `catalog_rates()` returns the
+  current rates for user-registered pricing.
 
 ### genblaze-openai
 

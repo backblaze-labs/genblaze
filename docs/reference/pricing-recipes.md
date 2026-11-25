@@ -854,6 +854,87 @@ and re-register as you adopt them.
 
 ---
 
+## anex.sh
+
+**Source:** read at run time from anex.sh's public catalog (the SDK ships no
+prices for anex.sh).
+**Snapshot date:** none needed; the recipe holds no rate.
+**Verify at:** [anex.sh/docs/video-pricing](https://anex.sh/docs/video-pricing);
+the catalog is described on
+[anex.sh/docs/video-models](https://anex.sh/docs/video-models).
+
+anex.sh bills per second of video, at a rate set by the model and the
+resolution. A clip bills the duration asked for. A reference video bills the
+part of it the model reads, at the clip's rate. A number of images per request
+are included, then each one is billed. Reference audio is free. Taking a
+finished clip to 2K or 4K bills the upscale rate per second of video delivered.
+Failed, refused and cancelled-while-queued requests cost nothing.
+
+`AnexProvider.catalog_rates()` returns the current rates from the catalog
+(`GET https://anex.sh/api/estimate/catalog`, no key), so this recipe does not
+change when a price or a model does:
+
+- `per_second`: `{model name: {resolution: USD per second}}`
+- `upscale_per_second`: `{resolution: USD per second}` for an upscale
+- `free_images`, `image_usd`: `{model name: ...}` for images past the included ones
+
+The connector records the task's billed units in
+`step.provider_payload["anex"]["usage"]` (`total_seconds`,
+`input_seconds`, `output_seconds`, `input_image_count`), so the strategy below
+prices what was billed. For an upfront `estimate_cost()` there is no task yet,
+and it falls back to the requested `duration`.
+
+```python
+from genblaze_anex import AnexProvider, CatalogRates
+from genblaze_core import StepType
+from genblaze_core.providers.pricing import PricingContext, PricingStrategy
+
+
+def anex_pricing(rates: CatalogRates) -> PricingStrategy:
+    def cost(ctx: PricingContext) -> float | None:
+        task = ctx.provider_payload.get("anex", {})
+        usage = task.get("usage", {})
+        model = ctx.step.model
+        resolution = task.get("resolution") or str(ctx.step.params.get("resolution", "768P")).upper()
+        if ctx.step.step_type == StepType.UPSCALE:
+            rate = rates.upscale_per_second.get(resolution)
+        else:
+            rate = rates.per_second.get(model, {}).get(resolution)
+        seconds = usage.get("total_seconds", ctx.step.params.get("duration"))
+        if rate is None or seconds is None:
+            return None
+        extra_images = max(usage.get("input_image_count", 0) - rates.free_images.get(model, 0), 0)
+        image_usd = rates.image_usd.get(model)
+        if extra_images and image_usd is None:
+            return None
+        return seconds * rate + extra_images * (image_usd or 0)
+
+    return cost
+
+
+provider = AnexProvider()
+rates = provider.catalog_rates()  # None when the catalog cannot be read
+if rates is not None:
+    for slug in rates.per_second:
+        provider.models.register_pricing(slug, anex_pricing(rates))
+```
+
+The rates are read once, when the strategy is built, because a pricing
+strategy does no I/O. A long-running process picks up a price change by
+calling `catalog_rates()` and registering again; the catalog is read at most
+every five minutes. A model name is left out of `per_second` when the catalog
+entries that share it disagree on a rate, so its cost stays unset instead of
+being guessed.
+
+An upscale is submitted under `model="MiniMax-H3"`, so registering that slug
+covers it. On the compatible APIs anex.sh holds the price at its upper bound
+when the task is created and settles to the measured units when the clip is
+delivered, never above the hold. A live run on 2026-11-25 billed a 4 second
+768P `MiniMax-H3` clip at 4 x $0.068 and its 2K upscale at 4 x $0.0425, as
+this recipe computes.
+
+---
+
 <!--
   Subsequent connectors append their sections here as they migrate:
     - nvidia (chat / generative)

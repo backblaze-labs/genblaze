@@ -16,7 +16,7 @@ pip install "genblaze[gmicloud]"
 pip install "genblaze[openai,google]"
 
 # Curated bundles
-pip install "genblaze[video]"     # Atlas Cloud + fal + GMICloud + Google + Runway + Luma + Decart + NVIDIA
+pip install "genblaze[video]"     # Atlas Cloud + fal + anex.sh + GMICloud + Google + Runway + Luma + Decart + NVIDIA
 pip install "genblaze[image]"     # Atlas Cloud + fal + GMICloud + OpenAI + Google + NVIDIA
 pip install "genblaze[audio]"     # fal + ElevenLabs + LMNT + Stability Audio + GMICloud + NVIDIA
 

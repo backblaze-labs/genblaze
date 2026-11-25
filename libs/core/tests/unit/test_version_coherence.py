@@ -136,3 +136,6 @@ class TestConnectorVersionCoherence:
 
     def test_genblaze_fal(self):
         self._check("genblaze_fal", "genblaze-falai")
+
+    def test_genblaze_anex(self):
+        self._check("genblaze_anex", "genblaze-anex")

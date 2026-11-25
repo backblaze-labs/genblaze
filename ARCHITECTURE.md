@@ -20,6 +20,7 @@
   - `genblaze-assemblyai` — AssemblyAI (speech-to-text / transcription → TEXT output)
   - `genblaze-atlascloudai` — Atlas Cloud (asynchronous image and video generation)
   - `genblaze-falai` — fal.ai (image, video, audio via the fal queue API)
+  - `genblaze-anex` - anex.sh (MiniMax H3 video generation and upscaling via the task API)
 - **genblaze-s3** (`libs/connectors/s3/`) — S3-compatible storage backend
 - **genblaze-langsmith** (`libs/connectors/langsmith/`) — LangSmith observability tracer
 - **genblaze-cli** (`cli/`) — Click-based CLI: extract, verify, replay, index
@@ -74,6 +75,7 @@
 - **AssemblyAI API** — Speech-to-text / transcription → TEXT transcript (`genblaze-assemblyai`)
 - **Atlas Cloud API** — Asynchronous image and video generation (`genblaze-atlascloudai`)
 - **fal.ai queue API** — Image, video, and audio generation across the fal catalog (`genblaze-falai`)
+- **anex.sh task API** - MiniMax H3 video generation and upscaling (`genblaze-anex`)
 - All accessed via lazy SDK imports — no runtime dependency unless the connector is used
 
 ## Trust Boundaries
