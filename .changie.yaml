@@ -12,6 +12,7 @@ components:
   - 'genblaze-core'
   - 'genblaze-cli'
   - 'genblaze-assemblyai'
+  - 'genblaze-anex'
   - 'genblaze-atlascloudai'
   - 'genblaze-decart'
   - 'genblaze-elevenlabs'

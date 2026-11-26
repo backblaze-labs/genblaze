@@ -2,7 +2,7 @@
 # Agents
 
 Orchestration framework for generative media pipelines with manifest-based
-provenance. 20 pip packages: `genblaze-core` (`libs/core/`), 17 connectors
+provenance. 21 pip packages: `genblaze-core` (`libs/core/`), 18 connectors
 (`libs/connectors/*`), `genblaze-cli` (`cli/`), and the `genblaze` umbrella
 (`libs/meta/`). Read order: README.md → ARCHITECTURE.md → this file → the
 relevant `docs/features/` doc. Contributor process: [CONTRIBUTING.md](CONTRIBUTING.md).

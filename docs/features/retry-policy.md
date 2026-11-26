@@ -149,6 +149,7 @@ The scaffolding is in core; per-provider header opt-ins are individual PRs.
 | NVIDIA NIM | unconfirmed | provider-API spec doesn't document support |
 | fal | unset | not opted in; upstream support not evaluated |
 | Atlas Cloud | unset | not opted in; upstream support not evaluated |
+| anex.sh | unset | not opted in; the task API documents no idempotency key |
 | AssemblyAI | unset | not opted in; upstream support not evaluated |
 | Hume | unset | not opted in; upstream support not evaluated |
 

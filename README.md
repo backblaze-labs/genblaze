@@ -85,6 +85,7 @@ pip install genblaze-hume            # Hume AI Octave TTS (currently uninstallab
 pip install genblaze-assemblyai      # AssemblyAI speech-to-text / transcription
 pip install genblaze-atlascloudai    # Atlas Cloud image and video generation
 pip install genblaze-falai           # fal.ai image, video, and audio generation
+pip install genblaze-anex            # anex.sh MiniMax H3 video generation and upscaling
 ```
 
 Install names use hyphens, Python imports use underscores: `pip install genblaze-<name>` → `import genblaze_<name>`. Two exceptions: `genblaze-atlascloudai` → `import genblaze_atlascloud`, `genblaze-falai` → `import genblaze_fal`.
@@ -179,6 +180,7 @@ Genblaze ships adapters for major generative AI platforms. The matrix below is t
 | **Hume** | — | — | Octave TTS (API retired 2026-11-13; not installable) | — |
 | **Atlas Cloud** | ✓ | ✓ | — | — |
 | **fal.ai** | ✓ | ✓ | ✓ | — |
+| **anex.sh** | MiniMax H3 + upscaling | - | - | - |
 
 > **Speech-to-Text / Transcription:** [`genblaze-assemblyai`](libs/connectors/assemblyai/README.md) is the inverse of the matrix above — it *consumes* an audio URL and *produces* a hash-verified **TEXT transcript** asset (with word-level timings), composable into pipelines like any other step.
 
@@ -204,6 +206,7 @@ Every provider reads its credentials from an environment variable. You don't nee
 | AssemblyAI (speech-to-text) | `ASSEMBLYAI_API_KEY` | [assemblyai.com/app/api-keys](https://www.assemblyai.com/app/api-keys) |
 | Atlas Cloud (image, video) | `ATLASCLOUD_API_KEY` | [atlascloud.ai/console/api-keys](https://www.atlascloud.ai/console/api-keys) |
 | fal.ai (image, video, audio) | `FAL_KEY` | [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys) |
+| anex.sh (video) | `ANEX_API_KEY` | [anex.sh](https://anex.sh) (console, Keys page) |
 
 **Example — one provider + B2 storage:**
 

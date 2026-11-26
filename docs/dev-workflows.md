@@ -111,6 +111,7 @@ This is a human-inspection step, not an automated probe. Upstream catalog pages 
 | AssemblyAI | https://www.assemblyai.com/docs | Public docs; speech models for transcription. |
 | Atlas Cloud | https://www.atlascloud.ai/models | Public catalog; image and video models. |
 | fal.ai | https://fal.ai/models | Public catalog; search by endpoint ID. |
+| anex.sh | https://anex.sh/docs/video-models | Public docs; video model names per API. |
 
 Keep this table aligned with `libs/connectors/*/` — when a new connector lands, add its provider's catalog link here in the same PR.
 
